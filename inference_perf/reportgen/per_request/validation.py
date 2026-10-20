@@ -151,7 +151,13 @@ class PerRequestLifecycleValidator(ReportSetValidator):
                 continue
             client_tokens = response_metrics.get("output_tokens")
             server_usage = response_metrics.get("server_usage")
-            server_tokens = server_usage.get("completion_tokens") if isinstance(server_usage, dict) else None
+            server_tokens = None
+            if isinstance(server_usage, dict):
+                for key in ("completion_tokens", "output_tokens"):
+                    value = server_usage.get(key)
+                    if value is not None:
+                        server_tokens = value
+                        break
             if not (is_number(client_tokens) and client_tokens > 0 and is_number(server_tokens) and server_tokens > 0):
                 continue
             if abs(client_tokens - server_tokens) > _TOKEN_AGREEMENT_REL_TOL * max(client_tokens, server_tokens):
@@ -159,7 +165,7 @@ class PerRequestLifecycleValidator(ReportSetValidator):
         return _aggregate(
             f"{self.name}.token_agreement",
             Severity.WARNING,
-            "have client output_tokens diverging from server completion_tokens by more than "
+            "have client output_tokens diverging from server output count (completion_tokens / output_tokens) by more than "
             f"{_TOKEN_AGREEMENT_REL_TOL:.0%} (reasoning-channel tokens can account for some divergence)",
             bad,
         )

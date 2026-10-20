@@ -35,7 +35,15 @@ class UnaryResponseMetrics(ResponseMetrics):
 class StreamedResponseMetrics(ResponseMetrics):
     response_chunks: List[str] = []
     chunk_times: List[float] = []
+    # Every generated token, reasoning included. The basis for TTFT, TPOT and
+    # ITL, since the server generates and counts reasoning tokens like any
+    # other (#559).
     output_token_times: List[float] = []
+    # Reasoning-only chunks (delta.reasoning_content / delta.reasoning, or
+    # Anthropic thinking deltas). Kept apart from response_chunks/chunk_times,
+    # which stay the content channel alone and give time to first output token.
+    reasoning_chunks: List[str] = []
+    reasoning_chunk_times: List[float] = []
 
 
 class InferenceInfo(BaseModel):
@@ -95,6 +103,7 @@ class ErrorResponseInfo(BaseModel):
 class RequestLifecycleMetric(BaseModel):
     stage_id: Optional[int] = None
     session_id: Optional[str] = None
+    request_session_id: Optional[str] = None
     scheduled_time: float
     start_time: float
     end_time: float
@@ -176,6 +185,9 @@ class InferenceAPIData(BaseModel):
     # loadgen should assign this request to preferred worker if possible
     preferred_worker_id: int = -1  # no preferred worker by default
     session_id: Optional[str] = None  # set by loadgen for session-based workloads
+    # Optional wire identity for a conversation within the enclosing replay
+    # session. session_id remains the scheduler/reporting identity.
+    request_session_id: Optional[str] = None
     graph_event_id: Optional[str] = None
     otel_context: Optional[dict[str, str]] = None  # OTEL trace context for distributed tracing
     stage_id: int = 0  # stage id

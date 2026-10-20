@@ -52,6 +52,41 @@ populated with the BR0.2 percentile set (`p0p1, p1, p5, p10, p25, p50, p75,
 p90, p95, p99, p99p9`) and the unit annotations the schema validators
 require.
 
+The `requests` block also includes `request_size` in UTF-8 bytes and a `multimodal`
+block for recorded image, video, and audio measurements. Counts are distributions
+across successful requests, including zero for requests without that modality.
+Filesize, pixels, aspect ratio, video frames, and audio duration describe individual
+media instances. BR video pixels are summed across frames for each video, while
+the native lifecycle report records pixels per frame. Failed requests are excluded
+from these distributions.
+
+The `throughput` block includes `image_rate`, `video_rate`, and `audio_rate` for
+recorded modalities. Each rate is the successful media count divided by the same
+first-send-to-last-completion window as the existing request and token rates,
+including failed requests when determining the window. Modalities with no recorded
+measurements are omitted; explicitly recorded zero counts remain zero. Rates are
+omitted when there are no successful requests or the window has zero duration.
+
+For workloads that ran sessions (OTel trace-replay agentic workloads),
+`results.session_performance.sessions` is populated as well: session counts
+(`total`, `succeeded`, `failed`), event totals (`total_events`,
+`total_events_completed`, `total_events_cancelled`), `session_rate` (session
+completions per second over the window spanning the sessions), and the
+per-session distributions `session_duration`, `events_per_session`,
+`events_cancelled_per_session`, `input_tokens_per_session`, and
+`output_tokens_per_session`. These figures match the native session lifecycle
+report for the same run; the token distributions depend on the same
+request-level enrichment that report uses.
+
+`total` counts every session the stage ran: sessions that ended without
+recording a metric — still active or never dispatched when the stage was cut
+short by `max_stage_duration` — are added to the ones that did, so a truncated
+stage cannot read as a clean run. The remaining counts and distributions
+describe the recorded sessions only.
+
+The block is omitted entirely for a stage that ran no sessions, so partials from
+non-session workloads are unchanged.
+
 `run.uid` is generated per stage. A composer is free to overwrite it during
 merge.
 
@@ -105,10 +140,8 @@ The merged document validates against `BenchmarkReportV021` in
 
 ## Schema source
 
-The pydantic models in
-`inference_perf/reportgen/br/v0_2/{base,schema_v0_2,schema_v0_2_1,schema_v0_2_components}.py`
-are vendored from `llm-d/llm-d-benchmark`. The header of each file pins the
-upstream commit SHA. To resync after a BR0.2 schema bump, replace those
-four files from upstream and re-run
-`tests/reportgen/br/v0_2/test_schema_fixture.py` to confirm round-trip
-validation against the upstream example still holds.
+The pydantic models come from the
+[`llmd-benchmark-report`](https://pypi.org/project/llmd-benchmark-report/)
+package, published from `llm-d/llm-d-benchmark`. inference-perf depends on
+`>=0.2.1,<0.3`. Releases within a minor line only add optional fields, so a
+partial that validates today keeps validating on every later 0.2.x.

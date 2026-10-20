@@ -20,7 +20,7 @@ the partial-report's job (see ``test_partial_report.py``).
 
 import json
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import pytest
 
@@ -28,6 +28,7 @@ from inference_perf.apis import (
     ErrorResponseInfo,
     InferenceInfo,
     RequestLifecycleMetric,
+    SessionLifecycleMetric,
     StreamedResponseMetrics,
     UnaryResponseMetrics,
 )
@@ -94,7 +95,7 @@ def test_build_results_latency_calculations() -> None:
 
 
 def test_build_results_aggregate_units() -> None:
-    """The vendored BR0.2 schema enforces unit compatibility per metric
+    """The BR0.2 schema enforces unit compatibility per metric
     category. Guards that the adapter assigns units the schema accepts."""
     now = time.time()
     metrics = [_streaming_metric(now + i * 0.1) for i in range(10)]
@@ -321,3 +322,206 @@ def test_chunk_retokenization_counts_fragments_without_special_tokens() -> None:
     # TPOT spans the timeline over the client whole-message count (3 tokens).
     assert aggregate.latency.time_per_output_token is not None
     assert aggregate.latency.time_per_output_token.mean == pytest.approx(0.2 / 2, abs=1e-9)
+
+
+# Fallback path (no output_token_times). Reasoning "a b" at +0.2, content "c" at
+# +0.5: timeline [+0.2, +0.2, +0.5], so TTFT = 0.2 and ITL mean = 0.3 / 2 = 0.15.
+# Reasoning only, "a b" at +0.2 and "c" at +0.4: TTFT = 0.2 rather than missing.
+@pytest.mark.parametrize(
+    "content, reasoning, expected_itl",
+    [
+        ([(0.5, "c")], [(0.2, "a b")], 0.15),
+        ([], [(0.2, "a b"), (0.4, "c")], 0.1),
+    ],
+)
+def test_chunk_retokenization_counts_reasoning_chunks(
+    content: List[Tuple[float, str]], reasoning: List[Tuple[float, str]], expected_itl: float
+) -> None:
+    """The fallback re-tokenizes reasoning chunks the same way the native
+    reports do (#559)."""
+    start = 100.0
+    metric = RequestLifecycleMetric(
+        stage_id=0,
+        scheduled_time=start - 0.001,
+        start_time=start,
+        end_time=start + 0.8,
+        request_data="{}",
+        response_data="ok",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=128)),
+            response_metrics=StreamedResponseMetrics(
+                response_chunks=[json.dumps({"choices": [{"delta": {"content": text}}]}) for _, text in content],
+                chunk_times=[start + t for t, _ in content],
+                reasoning_chunks=[json.dumps({"choices": [{"delta": {"reasoning": text}}]}) for _, text in reasoning],
+                reasoning_chunk_times=[start + t for t, _ in reasoning],
+                output_tokens=3,
+                output_token_times=[],
+            ),
+        ),
+        error=None,
+    )
+
+    results = build_results([metric], tokenizer=_FragmentTokenizer())
+
+    assert results.request_performance is not None
+    aggregate = results.request_performance.aggregate
+    assert aggregate is not None and aggregate.latency is not None
+    assert aggregate.latency.time_to_first_token is not None
+    assert aggregate.latency.time_to_first_token.mean == pytest.approx(0.2, abs=1e-9)
+    assert aggregate.latency.inter_token_latency is not None
+    assert aggregate.latency.inter_token_latency.mean == pytest.approx(expected_itl, abs=1e-9)
+
+
+# Fallback path with raw chunks but no tokenizer: nothing to re-tokenize with,
+# so no token times. TTFT is absent and the build does not fail.
+def test_chunk_retokenization_needs_a_tokenizer() -> None:
+    start = 100.0
+    metric = RequestLifecycleMetric(
+        stage_id=0,
+        scheduled_time=start - 0.001,
+        start_time=start,
+        end_time=start + 0.8,
+        request_data="{}",
+        response_data="ok",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=128)),
+            response_metrics=StreamedResponseMetrics(
+                response_chunks=[json.dumps({"choices": [{"delta": {"content": "a b"}}]})],
+                chunk_times=[start + 0.5],
+                output_tokens=2,
+                output_token_times=[],
+            ),
+        ),
+        error=None,
+    )
+
+    results = build_results([metric], tokenizer=None)
+
+    assert results.request_performance is not None
+    aggregate = results.request_performance.aggregate
+    assert aggregate is not None and aggregate.latency is not None
+    assert aggregate.latency.time_to_first_token is None
+
+
+def _session_metric(
+    session_id: str,
+    start: float,
+    duration: float = 1.0,
+    num_events: int = 3,
+    num_events_completed: int = 3,
+    success: Optional[bool] = True,
+    input_tokens: Optional[int] = 100,
+    output_tokens: Optional[int] = 50,
+) -> SessionLifecycleMetric:
+    return SessionLifecycleMetric(
+        session_id=session_id,
+        stage_id=0,
+        file_path=f"/traces/{session_id}.json",
+        start_time=start,
+        end_time=start + duration,
+        duration_sec=duration,
+        num_events=num_events,
+        num_events_completed=num_events_completed,
+        success=success,
+        total_input_tokens=input_tokens,
+        total_output_tokens=output_tokens,
+    )
+
+
+# Every non-session workload takes this path: no sessions means no
+# session_performance block, so the emitted partial is unchanged.
+def test_build_results_without_session_metrics_omits_session_performance() -> None:
+    results = build_results([_streaming_metric(time.time())])
+
+    assert results.request_performance is not None
+    assert results.session_performance is None
+
+
+def test_build_results_session_performance_aggregates_sessions() -> None:
+    now = time.time()
+    sessions = [
+        _session_metric("s1", now, duration=2.0, num_events=4),
+        _session_metric("s2", now + 2.0, duration=1.0, num_events=2, success=False),
+    ]
+
+    results = build_results([], session_metrics=sessions)
+
+    assert results.request_performance is None
+    assert results.session_performance is not None
+    aggregate = results.session_performance.sessions
+    assert aggregate is not None
+    assert aggregate.total == 2
+    assert aggregate.succeeded == 1
+    assert aggregate.failed == 1
+    assert aggregate.total_events == 6
+    assert aggregate.total_events_completed == 6
+    assert aggregate.session_duration is not None
+    assert aggregate.session_duration.mean == pytest.approx(1.5, abs=1e-9)
+    assert aggregate.events_per_session is not None
+    assert aggregate.events_per_session.mean == pytest.approx(3.0, abs=1e-9)
+    assert aggregate.input_tokens_per_session is not None
+    assert aggregate.input_tokens_per_session.mean == pytest.approx(100.0, abs=1e-9)
+    assert aggregate.output_tokens_per_session is not None
+    assert aggregate.output_tokens_per_session.mean == pytest.approx(50.0, abs=1e-9)
+    # Two sessions over the 3s window that spans them.
+    assert aggregate.session_rate is not None
+    assert aggregate.session_rate.units == Units.QUERY_PER_S
+    assert aggregate.session_rate.mean == pytest.approx(2 / 3, abs=1e-9)
+
+
+# Token totals come from the enrichment step: an unrecorded distribution must
+# stay absent rather than be reported as a measured zero.
+def test_build_results_session_token_totals_absent_when_not_recorded() -> None:
+    now = time.time()
+    sessions = [_session_metric("s1", now, input_tokens=None, output_tokens=None)]
+
+    results = build_results([], session_metrics=sessions)
+
+    assert results.session_performance is not None
+    aggregate = results.session_performance.sessions
+    assert aggregate is not None
+    assert aggregate.total == 1
+    assert aggregate.input_tokens_per_session is None
+    assert aggregate.output_tokens_per_session is None
+
+
+# A stage cut short by max_stage_duration leaves no metric behind for the
+# sessions it stranded, so their count arrives beside the metrics, not in them.
+# Landing them in `total` is what keeps a truncated stage from reading as a
+# clean run: 1 completed + 3 stranded is not "1 session, 1 succeeded".
+def test_build_results_counts_stranded_sessions_in_total() -> None:
+    now = time.time()
+    results = build_results([], session_metrics=[_session_metric("s1", now)], sessions_not_completed=3)
+
+    assert results.session_performance is not None
+    aggregate = results.session_performance.sessions
+    assert aggregate is not None
+    assert aggregate.total == 4
+    assert aggregate.succeeded == 1
+    assert aggregate.failed == 0
+    # The distributions describe the sessions that reported, not the ones that
+    # never got to run a request.
+    assert aggregate.session_duration is not None
+    assert aggregate.session_duration.mean == pytest.approx(1.0, abs=1e-9)
+    assert aggregate.input_tokens_per_session is not None
+    assert aggregate.input_tokens_per_session.mean == pytest.approx(100.0, abs=1e-9)
+
+
+# A stage where every session stranded still reports its count, so the block is
+# emitted for a non-zero total even with no session metrics to describe.
+def test_build_results_reports_a_fully_stranded_stage() -> None:
+    results = build_results([], sessions_not_completed=2)
+
+    assert results.session_performance is not None
+    aggregate = results.session_performance.sessions
+    assert aggregate is not None
+    assert aggregate.total == 2
+    assert aggregate.succeeded == 0
+    assert aggregate.failed == 0
+    # Nothing to measure over: event totals are sums over an empty set (0, as in
+    # the native report), everything distribution-shaped stays absent.
+    assert aggregate.total_events == 0
+    assert aggregate.total_events_completed == 0
+    assert aggregate.session_rate is None
+    assert aggregate.session_duration is None
+    assert aggregate.events_per_session is None

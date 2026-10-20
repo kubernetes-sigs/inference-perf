@@ -52,6 +52,8 @@ class StageRuntimeInfo(BaseModel):
     # Requests generated for the stage but never dispatched to the model
     # server because the stage ended first; > 0 marks a truncated stage.
     dropped_requests: Optional[int] = None
+    # False when the queue could not count every dropped request, which makes dropped_requests a lower bound.
+    dropped_requests_exact: Optional[bool] = None
     # Session-replay stages only: sessions still active (dispatched but not finished) or
     # pending (never dispatched) when the stage ended.
     sessions_not_completed_active: int = 0
@@ -76,6 +78,8 @@ class ModelServerMetrics(BaseModel):
     # --- Common to every real model server; defaulted so a client that declares no metrics
     # (e.g. the mock client's empty BaseMetrics) still validates and reports zeros ---
     # prompt/output tokens are a counter on vllm/sglang but a histogram on tgi; only avg/per_second are read.
+    # A failed Prometheus query is reported as missing inside the result (None
+    # value fields) instead of a real-looking zero (#822).
     prompt_tokens: CounterResult | HistogramResult = Field(default_factory=CounterResult)
     output_tokens: CounterResult | HistogramResult = Field(default_factory=CounterResult)
     requests: CounterResult = Field(default_factory=CounterResult)

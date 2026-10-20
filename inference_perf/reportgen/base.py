@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import heapq
 import logging
 import json
 import re
@@ -26,6 +27,7 @@ import numpy as np
 from pydantic import BaseModel, model_serializer
 
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
+from inference_perf.apis.chat import reasoning_field
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageRuntimeInfo, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
@@ -425,7 +427,7 @@ def calculate_goodput_metrics(
     goodput_config: Optional[GoodputConfig],
     ttft_values: List[Optional[float]],
     tpot_values: List[Optional[float]],
-    ntpot_values: List[float],
+    ntpot_values: List[Optional[float]],
     request_latency_values: List[float],
     itl_values: List[Optional[float]],
     use_server_output_tokens: bool = False,
@@ -532,7 +534,9 @@ def calculate_goodput_metrics(
     return result
 
 
-def _ratio(num: float, den: float) -> float:
+def _ratio(num: Optional[float], den: Optional[float]) -> Optional[float]:
+    if num is None or den is None:
+        return None
     return (num / den) * 100.0 if den > 0 else 0.0
 
 
@@ -581,58 +585,143 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
     )
 
 
+def _chunk_content(data: Any) -> Optional[str]:
+    """Content text from a parsed SSE chunk (chat/completions choices or an Anthropic text delta)."""
+    if choices := data.get("choices"):
+        delta = choices[0]
+        text = delta.get("text") or delta.get("delta", {}).get("content")
+        if text:
+            return str(text)
+    elif delta := data.get("delta"):
+        if isinstance(delta, dict) and (text := delta.get("text")):
+            return str(text)
+    elif data.get("type") == "content_block_start":
+        block = data.get("content_block") or {}
+        if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+            return str(block["text"])
+    return None
+
+
+def _extract_chunk_text(chunk_str: str) -> Optional[str]:
+    """Extract text content from an SSE streaming response JSON chunk."""
+    try:
+        return _chunk_content(json.loads(chunk_str))
+    except (json.JSONDecodeError, IndexError, TypeError, AttributeError):
+        return None
+
+
+def _extract_chunk_reasoning(data: dict[str, Any]) -> Optional[str]:
+    """Reasoning text from a parsed SSE chunk: OpenAI-style delta fields or an Anthropic thinking event."""
+    if choices := data.get("choices"):
+        delta = choices[0].get("delta") or {}
+        return reasoning_field(delta) if isinstance(delta, dict) else None
+    event_type = data.get("type")
+    if event_type == "content_block_delta":
+        delta = data.get("delta") or {}
+        if isinstance(delta, dict) and delta.get("type") == "thinking_delta" and (thinking := delta.get("thinking")):
+            return str(thinking)
+    elif event_type == "content_block_start":
+        block = data.get("content_block") or {}
+        if isinstance(block, dict) and block.get("type") == "thinking" and (thinking := block.get("thinking")):
+            return str(thinking)
+    return None
+
+
+def _extract_chunk_generated_texts(chunk_str: str) -> list[str]:
+    """Generated text in an SSE chunk, one entry per channel: reasoning, then content (#559).
+
+    Kept apart because the server generated them as separate tokens. Joined, the
+    last reasoning word and the first content word can tokenize as one.
+    """
+    try:
+        data = json.loads(chunk_str)
+        texts = [_extract_chunk_reasoning(data), _chunk_content(data)]
+    except (json.JSONDecodeError, IndexError, TypeError, AttributeError):
+        return []
+    return [text for text in texts if text]
+
+
 def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Optional[CustomTokenizer]) -> bool:
     """Re-derive output_token_times for a streamed response from its raw chunks.
 
     Mutates m.info.response_metrics in place so that the summary, per-stage, and
     per-request reports all see the same tokenizer-corrected token timings.
     Returns True if the tokenizer-derived token count doesn't match the
-    server-reported completion_tokens.
+    server-reported output count (completion_tokens / output_tokens).
     """
     if not (
-        isinstance(m.info.response_metrics, StreamedResponseMetrics) and m.info.response_metrics.response_chunks and tokenizer
+        isinstance(m.info.response_metrics, StreamedResponseMetrics)
+        and (m.info.response_metrics.response_chunks or m.info.response_metrics.reasoning_chunks)
+        and tokenizer
     ):
         return False
 
-    output_token_times = []
-    accumulated_tokens = 0
-    parsed_chunks = []
-    expected_output_tokens = (
-        m.info.response_metrics.server_usage.get("completion_tokens") if m.info.response_metrics.server_usage else None
-    )
-
-    for chunk_str, chunk_time in zip(
-        m.info.response_metrics.response_chunks, m.info.response_metrics.chunk_times, strict=True
-    ):
-        try:
-            data = json.loads(chunk_str)
-            if choices := data.get("choices"):
-                delta = choices[0]
-                text = delta.get("text") or delta.get("delta", {}).get("content")
-                if text:
-                    parsed_chunks.append((text, chunk_time))
-        except json.JSONDecodeError:
-            continue
-
-    for text, chunk_time in parsed_chunks:
-        # Count each chunk as a sequence fragment (add_special_tokens=False): re-tokenizing a
-        # chunk with special tokens prepends a BOS per chunk, which inflates the count (~2x at
-        # one token per chunk) and, since these timestamps are the basis for ITL, deflates ITL
-        # by the same factor. See #564.
-        tokens_in_chunk = tokenizer.count_tokens(text, add_special_tokens=False)
-        if tokens_in_chunk > 0:
-            # Assign every token in a chunk the chunk's arrival time to match user-perceived
-            # latency: intra-chunk ITL is 0, inter-chunk ITL absorbs the full gap. TPOT still
-            # reports the smoothed average.
-            for _ in range(tokens_in_chunk):
-                output_token_times.append(chunk_time)
-            accumulated_tokens += tokens_in_chunk
-
+    expected_output_tokens = server_reported_tokens(m.info.response_metrics.server_usage, SERVER_OUTPUT_TOKEN_KEYS)
+    output_token_times = retokenize_output_token_times(m.info.response_metrics, tokenizer)
     m.info.response_metrics.output_token_times = output_token_times
     # Do not overwrite output_tokens with the per-chunk sum. Keep the API layer's whole-message
     # count_tokens value, and surface the exact server count as `output_tokens`. See #564.
 
-    return expected_output_tokens is not None and accumulated_tokens != expected_output_tokens
+    return expected_output_tokens is not None and len(output_token_times) != expected_output_tokens
+
+
+def retokenize_output_token_times(response_metrics: StreamedResponseMetrics, tokenizer: CustomTokenizer) -> list[float]:
+    """One timestamp per generated token, from re-tokenizing the raw content and reasoning chunks."""
+    output_token_times: list[float] = []
+    token_cache = getattr(tokenizer, "_count_tokens_cache", None)
+    if not isinstance(token_cache, dict):
+        token_cache = {}
+        try:
+            tokenizer._count_tokens_cache = token_cache  # type: ignore[attr-defined]
+        except Exception:
+            token_cache = None
+
+    # Content and reasoning-only chunks, in arrival order. The server counts
+    # reasoning tokens in completion_tokens, so they belong on the timeline
+    # and in the mismatch accounting alike (#559).
+    chunks = heapq.merge(
+        zip(response_metrics.chunk_times, response_metrics.response_chunks, strict=True),
+        zip(response_metrics.reasoning_chunk_times, response_metrics.reasoning_chunks, strict=True),
+        key=lambda pair: pair[0],
+    )
+    for chunk_time, chunk_str in chunks:
+        tokens_in_chunk = 0
+        for text in _extract_chunk_generated_texts(chunk_str):
+            # Count each chunk as a sequence fragment (add_special_tokens=False): re-tokenizing a
+            # chunk with special tokens prepends a BOS per chunk, which inflates the count (~2x at
+            # one token per chunk) and, since these timestamps are the basis for ITL, deflates ITL
+            # by the same factor. See #564.
+            if token_cache is not None and text in token_cache:
+                tokens_in_text = token_cache[text]
+            else:
+                tokens_in_text = tokenizer.count_tokens(text, add_special_tokens=False)
+                if token_cache is not None and len(token_cache) < 8192:
+                    token_cache[text] = tokens_in_text
+            tokens_in_chunk += tokens_in_text
+
+        if tokens_in_chunk > 0:
+            # Assign every token in a chunk the chunk's arrival time to match user-perceived
+            # latency: intra-chunk ITL is 0, inter-chunk ITL absorbs the full gap. TPOT still
+            # reports the smoothed average.
+            output_token_times.extend([chunk_time] * tokens_in_chunk)
+
+    return output_token_times
+
+
+def first_content_token_time(response_metrics: StreamedResponseMetrics) -> Optional[float]:
+    """Arrival time of the first content chunk, skipping reasoning.
+
+    chunk_times is the content channel alone. A record with no chunk_times
+    and no reasoning predates the split, so its output_token_times is content.
+    """
+    if response_metrics.chunk_times:
+        # Tokenizer correction drops chunks that re-tokenize to nothing from the
+        # timeline. Skipping them here too keeps TTFO from landing before TTFT.
+        token_times = set(response_metrics.output_token_times)
+        return next((t for t in response_metrics.chunk_times if t in token_times), None)
+    if response_metrics.output_token_times and not response_metrics.reasoning_chunk_times:
+        return response_metrics.output_token_times[0]
+    return None
 
 
 def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output_tokens: bool = False) -> dict[str, Any]:
@@ -645,19 +734,30 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
     request_latency = m.end_time - m.start_time
     response_metrics = m.info.response_metrics
 
-    # NTPOT: (End - Start) / Output Tokens
+    # NTPOT: (End - Start) / Output Tokens. Not measurable without output tokens
+    # (e.g. embeddings), so None rather than a fabricated 0.0, matching the
+    # llm-d benchmark report (reportgen/br/v0_2/adapter.py).
     ntpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
-    ntpot = request_latency / ntpot_output_tokens if ntpot_output_tokens > 0 else 0.0
+    ntpot: Optional[float] = request_latency / ntpot_output_tokens if ntpot_output_tokens > 0 else None
 
     ttft: Optional[float] = None
+    ttfo: Optional[float] = None
     tpot: Optional[float] = None
     itl: Optional[float] = None
     itl_deltas: List[float] = []
 
-    # Check if streamable: Must have more than 1 output token timestamp
+    # output_token_times holds every generated token, reasoning included
+    # (#559): the server generates and counts reasoning tokens like any other,
+    # so TTFT, TPOT and ITL do too. Streamable means more than one timestamp.
     if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
         # TTFT: First Token Time - Start Time
         ttft = response_metrics.output_token_times[0] - m.start_time
+
+        # Time to first output token: the first content token, after any
+        # reasoning. Equals TTFT when the model emits no reasoning; None when
+        # the output budget ran out before any content arrived.
+        if (first_content := first_content_token_time(response_metrics)) is not None:
+            ttfo = first_content - m.start_time
 
         # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
         duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
@@ -676,6 +776,7 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
         "request_latency": request_latency,
         "normalized_time_per_output_token": ntpot,
         "time_to_first_token": ttft,
+        "time_to_first_output_token": ttfo,
         "time_per_output_token": tpot,
         "inter_token_latency": itl,
         "inter_token_latency_deltas": itl_deltas,
@@ -722,9 +823,10 @@ def summarize_requests(
     # --- Pre-calculate Metrics for all successful requests ---
     # We maintain 1:1 mapping with 'all_successful' to pass to SLO calculator
 
-    ntpot_values: List[float] = []
+    ntpot_values: List[Optional[float]] = []  # Optional: None without output tokens
     tpot_values: List[Optional[float]] = []  # Optional: None if not streamable
     ttft_values: List[Optional[float]] = []  # Optional: None if not streamable
+    ttfo_values: List[Optional[float]] = []  # Optional: None if not streamable or no content
     request_latency_values: List[float] = []
     itl_values: List[Optional[float]] = []
     inter_token_latencies: List[float] = []
@@ -738,6 +840,7 @@ def summarize_requests(
         request_latency_values.append(latency["request_latency"])
         ntpot_values.append(latency["normalized_time_per_output_token"])
         ttft_values.append(latency["time_to_first_token"])
+        ttfo_values.append(latency["time_to_first_output_token"])
         tpot_values.append(latency["time_per_output_token"])
         itl_values.append(latency["inter_token_latency"])
         inter_token_latencies.extend(latency["inter_token_latency_deltas"])
@@ -756,7 +859,9 @@ def summarize_requests(
 
     # --- Filter lists for summarization (remove Nones) ---
     valid_tpot = [v for v in tpot_values if v is not None]
+    valid_ntpot = [v for v in ntpot_values if v is not None]
     valid_ttft = [v for v in ttft_values if v is not None]
+    valid_ttfo = [v for v in ttfo_values if v is not None]
 
     request_sizes = [len(x.request_data.encode("utf-8")) for x in all_successful]
     all_images = []
@@ -784,9 +889,10 @@ def summarize_requests(
         "count": len(all_successful),
         "latency": {
             "request_latency": summarize(request_latency_values, percentiles),
-            "normalized_time_per_output_token": summarize(ntpot_values, percentiles),
+            "normalized_time_per_output_token": summarize(valid_ntpot, percentiles),
             "time_per_output_token": summarize(valid_tpot, percentiles),
             "time_to_first_token": summarize(valid_ttft, percentiles),
+            "time_to_first_output_token": summarize(valid_ttfo, percentiles),
             "inter_token_latency": summarize(inter_token_latencies, percentiles),
         },
         "throughput": {
@@ -889,7 +995,14 @@ def build_per_request_lifecycle_entry(
     entry: dict[str, Any] = {
         "start_time": metric.start_time,
         "end_time": metric.end_time,
+        "scheduled_time": metric.scheduled_time,
     }
+    if metric.stage_id is not None:
+        entry["stage_id"] = metric.stage_id
+    if metric.session_id is not None:
+        entry["session_id"] = metric.session_id
+    if metric.request_session_id is not None:
+        entry["request_session_id"] = metric.request_session_id
 
     if fields.request:
         entry["request"] = metric.request_data
@@ -902,7 +1015,9 @@ def build_per_request_lifecycle_entry(
         if info and not fields.response_chunks:
             response_metrics = info.get("response_metrics")
             if isinstance(response_metrics, dict):
+                # Reasoning chunks are raw stream JSON too, and most of a reasoning model's stream.
                 response_metrics.pop("response_chunks", None)
+                response_metrics.pop("reasoning_chunks", None)
         entry["info"] = info
 
     if fields.computed_metrics and metric.error is None:
@@ -911,6 +1026,7 @@ def build_per_request_lifecycle_entry(
             "request_latency": latency["request_latency"],
             "normalized_time_per_output_token": latency["normalized_time_per_output_token"],
             "time_to_first_token": latency["time_to_first_token"],
+            "time_to_first_output_token": latency["time_to_first_output_token"],
             "time_per_output_token": latency["time_per_output_token"],
             "inter_token_latency": latency["inter_token_latency"],
             "inter_token_latencies": latency["inter_token_latency_deltas"],
@@ -1090,7 +1206,30 @@ class ReportGenerator:
             except Exception:
                 logger.exception("Prometheus metrics report generation failed; continuing without it")
 
-        if request_metrics:
+        # Session metrics are enriched once, ahead of the partial-report loop:
+        # the BR0.2 partial carries the same per-session token totals the native
+        # session reports render, and _enrich_sessions is what derives them from
+        # the request metrics. Bucketing by stage_id mirrors br_stage_buckets
+        # below so each stage's partial gets exactly its own sessions.
+        session_metrics: List[SessionLifecycleMetric] = []
+        session_metrics_by_stage: dict[int, List[SessionLifecycleMetric]] = defaultdict(list)
+        # Stages whose session counts the partial has to report. A stage cut
+        # short by max_stage_duration whose sessions all stranded leaves no
+        # request metric either, so it would be missing from br_stage_buckets
+        # below; generate_session_reports emits a per-stage file for it, and the
+        # partial has to match.
+        session_stage_ids: set[int] = set()
+        if self.session_metrics_collector and report_config.session_lifecycle:
+            session_metrics = self.session_metrics_collector.get_metrics()
+            self._enrich_sessions(session_metrics, request_metrics, use_server_output_tokens)
+            for session_metric in session_metrics:
+                session_metrics_by_stage[session_metric.stage_id].append(session_metric)
+                session_stage_ids.add(session_metric.stage_id)
+            for stage_id, stage_runtime_info in runtime_parameters.stages.items():
+                if stage_runtime_info.sessions_not_completed_active or stage_runtime_info.sessions_not_completed_pending:
+                    session_stage_ids.add(stage_id)
+
+        if request_metrics or session_stage_ids:
             # Always emit the inference-perf slice of a BR0.2 report per stage,
             # alongside the native inference-perf reports. Downstream composers
             # (llm-d-benchmark CLI, wrappers, ad-hoc yq merges) layer their
@@ -1106,18 +1245,24 @@ class ReportGenerator:
             # One eid for the whole invocation: run.eid is what lets a
             # composer group the per-stage partials as a single experiment.
             br_run_eid = generate_experiment_eid()
-            for br_stage_id, stage_metrics in br_stage_buckets.items():
+            for br_stage_id in sorted(set(br_stage_buckets) | session_stage_ids):
                 # run.time needs the stage's wall-clock window: the request
                 # timestamps are monotonic and can't be mapped to epoch here.
                 stage_info = runtime_parameters.stages.get(br_stage_id)
                 partial = build_partial_report(
-                    stage_metrics,
+                    br_stage_buckets.get(br_stage_id, []),
                     tokenizer,
                     run_uid=generate_run_uid(br_stage_id),
                     run_eid=br_run_eid,
                     use_server_output_tokens=use_server_output_tokens,
                     stage_start=stage_info.start_time if stage_info else None,
                     stage_end=stage_info.end_time if stage_info else None,
+                    session_metrics=session_metrics_by_stage.get(br_stage_id, []),
+                    sessions_not_completed=(
+                        stage_info.sessions_not_completed_active + stage_info.sessions_not_completed_pending
+                        if stage_info
+                        else 0
+                    ),
                 )
                 lifecycle_reports.append(
                     ReportFile(
@@ -1129,8 +1274,6 @@ class ReportGenerator:
 
         # Session-level reports (OTel agentic workloads only)
         if self.session_metrics_collector and report_config.session_lifecycle:
-            session_metrics = self.session_metrics_collector.get_metrics()
-            self._enrich_sessions(session_metrics, request_metrics, use_server_output_tokens)
             session_reports = self.generate_session_reports(
                 session_metrics,
                 report_config.session_lifecycle,
@@ -1416,10 +1559,13 @@ class ReportGenerator:
             if not isinstance(response_metrics, StreamedResponseMetrics):
                 has_non_streaming = True
                 continue
-            if len(response_metrics.output_token_times) < 1:
+            # User-visible means content: reasoning tokens are in
+            # output_token_times but never reach the user (#559).
+            first_content = first_content_token_time(response_metrics)
+            if first_content is None:
                 has_no_output_tokens = True
                 continue
-            tfut = response_metrics.output_token_times[0] - sm.dispatch_perf_counter
+            tfut = first_content - sm.dispatch_perf_counter
             candidates.append(tfut)
 
         # TFUT is the minimum across user-facing events (earliest user-visible output)
@@ -1500,6 +1646,7 @@ class ReportGenerator:
                         "actual_duration": stage_info.end_time - stage_info.start_time,
                         "teardown_duration": stage_info.teardown_duration,
                         "dropped_requests": stage_info.dropped_requests,
+                        "dropped_requests_exact": stage_info.dropped_requests_exact,
                         "concurrent_sessions": stage_info.concurrency_level,
                         "session_rate": stage_info.rate if stage_info.rate > 0 else None,
                     }

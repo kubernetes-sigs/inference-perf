@@ -13,6 +13,7 @@
    - [Storage](#storage)
    - [Tokenizer](#tokenizer)
    - [Credentials](#credentials)
+   - [Observability](#observability)
 3. [Full Configuration Examples](#full-configuration-examples)
 4. [Advanced Use Cases](#advanced-use-cases)
    - [OpenTelemetry Trace Replay](#opentelemetry-trace-replay)
@@ -29,7 +30,7 @@ Controls the API interaction behavior. If SLO headers are present, each request 
 
 ```yaml
 api:
-  type: completion             # API type (completion|chat|anthropic_messages)
+  type: completion             # API type (completion|chat|anthropic_messages|embeddings|rerank)
   streaming: true             # Enable streaming for TTFT, ITL, and TPOT metrics
   headers:                     # Optional custom HTTP headers
     x-inference-model: llama
@@ -41,6 +42,30 @@ api:
   slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
 ```  
 
+With `type: embeddings`, requests go to `/v1/embeddings`. Embeddings responses have no generated tokens, so `streaming` and `response_format` are not supported and TTFT, TPOT, ITL and NTPOT are not reported. Request options go under `embeddings`:
+
+```yaml
+api:
+  type: embeddings
+  embeddings:                  # Optional; only valid with type: embeddings
+    batch_size: 16             # Input strings per request (default: 1)
+    dimensions: 512            # Optional embedding size; default is the model's
+    encoding_format: float     # Optional: float|base64; default is the server's
+```
+
+With `type: rerank`, requests go to `/v1/rerank` by default. A rerank request scores a query against a list of documents and generates no tokens, so `streaming` and `response_format` are not supported and TTFT, TPOT, ITL and NTPOT are not reported. There is no single rerank wire format across vendors, so the route and request field names are configurable under `rerank`:
+
+```yaml
+api:
+  type: rerank
+  rerank:                      # Optional; only valid with type: rerank
+    document_count: 20         # Documents scored per query (default: 10)
+    route: /v1/rerank          # Optional; vLLM also serves /rerank and /v2/rerank
+    query_field: query         # Optional request field name for the query
+    documents_field: documents # Optional request field name for the documents list
+    top_n: 5                   # Optional; ask the server to return only the top N results
+```
+
 ### Data Generation
 
 Configures the test data generation methodology:
@@ -49,6 +74,7 @@ Configures the test data generation methodology:
 data:
   type: mock|shareGPT|synthetic|random|shared_prefix|cnn_dailymail|billsum_conversations|infinity_instruct|otel_trace_replay|visionarena # Data generation type
   path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type, path where dataset to be used is present. Path needs to be set for cnn_dailymail, billsum_conversations and infinity_instruct as well
+  load_timeout: 300.0                                  # Dataset loading deadline (seconds); null disables
   input_distribution:                                 # For synthetic/random types
     min: 10                                           # Minimum prompt length (tokens)
     max: 100                                          # Maximum prompt length
@@ -67,6 +93,7 @@ data:
     system_prompt_len: 100    # Shared prefix length (tokens)
     question_len: 50          # Default question length (tokens), used when question_distribution is absent
     output_len: 50            # Default output length (tokens), used when output_distribution is absent
+    max_model_len: 225000     # Optional multi-turn context ceiling; defaults to 225000, matching conversation_replay
     question_distribution:    # Optional: distribution for question lengths (overrides question_len)
       min: 10
       max: 1024
@@ -78,6 +105,19 @@ data:
       mean: 50
       std_dev: 5
 ```
+
+`data.load_timeout` bounds Hub dataset initialization for ShareGPT, CNN/DailyMail,
+VisionArena, and OTel trace replay (300 seconds by default). For ShareGPT and
+CNN/DailyMail, this includes loading and reading the first row, when streaming
+downloads begin. For VisionArena, it includes building the entire startup row pool.
+For OTel, it bounds the non-streaming `load_dataset()` call. Later streaming
+iteration and local JSON streaming loaders have no deadline.
+
+The value must be positive and finite; YAML `null` disables the deadline. The
+`--data.load_timeout` CLI flag accepts a number, not `null`. Increase the timeout
+for large datasets or slow connections. A timed-out loader runs in a daemon thread
+and cannot be cancelled. As with tokenizer loading, the deadline applies to waits
+that release the GIL, such as network and file I/O.
 
 **Note:** For `otel_trace_replay` type, see the [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) section for complete configuration details.
 
@@ -163,7 +203,7 @@ load:
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
-  num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
+  num_workers: 4                    # Concurrent worker threads (default: cgroup-aware CPU count: min(CPU affinity, cgroup CPU quota when present, host CPUs))
   worker_max_concurrency: 10        # Max concurrent requests per worker
   worker_max_tcp_connections: 2500  # Max TCP connections per worker
   request_timeout: 900              # Optional: per-request timeout in seconds (applies per attempt)
@@ -257,6 +297,9 @@ metrics:
     url: "http://localhost:9090"  # Prometheus server URL
     scrape_interval: 15           # Metrics scrape interval (seconds)
     google_managed: false         # Whether using Google Managed Prometheus (see 'Google Managed Prometheus (GMP) Requirements' section)
+    bearer_token: ""              # Optional bearer token for authenticated Prometheus servers
+    verify_ssl: true              # Verify the server's TLS certificate (disable for self-signed certificates)
+    headers: {}                   # Optional extra HTTP headers sent with every query
     filters: []                   # List of metric names to collect
 ```
 
@@ -329,6 +372,14 @@ report:
 Setting `info: false` removes the entire `info` block, including
 `response_chunks`; in that case `response_chunks` has no effect.
 
+Each entry includes `scheduled_time`, the request's scheduled timestamp, alongside
+`start_time` and `end_time`. It also includes `stage_id` when set, so requests can
+be grouped by load stage. These fields are included regardless of `per_request_fields`.
+
+In `trace_session_replay` runs, each entry also carries a top-level
+`session_id` naming the session the request belongs to, regardless of
+`per_request_fields`. Other workloads do not set it.
+
 `computed_metrics` (off by default) adds a `computed_metrics` block to each
 successful entry with `request_latency`, `normalized_time_per_output_token`,
 `time_to_first_token`, `time_per_output_token`, `inter_token_latency` (mean),
@@ -379,7 +430,7 @@ tokenizer:
 
 ### Credentials
 
-A config can carry a credential in three places: `server.api_key`, `tokenizer.token`, and an authentication header under `api.headers`.
+A config can carry a credential in five places: `server.api_key`, `tokenizer.token`, an authentication header under `api.headers`, `metrics.prometheus.bearer_token`, and an authentication header under `metrics.prometheus.headers`.
 
 A run renders its config twice, to the log at startup and to `config.yaml` in the report bundle. Both copies replace these values with `[REDACTED]`, so pod logs and reports uploaded to GCS or S3 do not carry keys. The requests themselves still use the real values.
 
@@ -394,6 +445,20 @@ Because the saved `config.yaml` is redacted, re-running from it needs the creden
 ```bash
 inference-perf --config_file reports-20260914-101500/config.yaml --server.api_key "$API_KEY"
 ```
+
+### Observability
+
+Runtime metrics inference-perf exports about the benchmark run itself (stage state, request counts, in-flight requests, latency histograms), as opposed to the server-side metrics it collects under [Metrics Collection](#metrics-collection). The metric set is documented in [runtime_metrics.md](./runtime_metrics.md).
+
+```yaml
+observability:
+  metrics:
+    enabled: true       # Serve the metrics over HTTP /metrics for Prometheus to scrape
+    host: "127.0.0.1"   # Bind address of the endpoint; 0.0.0.0 where a scraper reaches the run by pod/host IP
+    port: 9464          # Port of the endpoint; 0 picks an ephemeral port (logged at startup)
+```
+
+Metrics are always collected in-process; `enabled` only controls the HTTP endpoint. It is on by default, so a run is observable without having been configured for it. If the port cannot be bound the run continues and the reports are unaffected: that is logged as a warning on the default port, where side-by-side runs on one host are expected to contend, and as an error on a port you asked for explicitly. Set `enabled: false` to keep the port free. The endpoint binds to loopback by default, so an unconfigured run exposes nothing to the network. For an in-cluster Job, set `host: 0.0.0.0` (the Helm chart values and the `deploy/` config do) and point a `PodMonitor`/scrape config at the port; transient signals (current stage, in-flight requests) only exist while the run is active, so they need a scraper attached during the run.
 
 ## Full Configuration Examples
 

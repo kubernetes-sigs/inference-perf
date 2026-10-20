@@ -78,6 +78,7 @@ def test_shared_prefix_multimodal_post_load_shape() -> None:
     assert isinstance(api_data, ChatCompletionAPIData)
     assert len(api_data.messages) == 1
     assert isinstance(api_data.messages[0].content, str)  # text-only at this stage
+    assert api_data.messages[0].content == generator.question_texts[0]
     assert api_data.prefix_text is not None
     assert api_data.prefix_multimodal_spec is not None
     assert len(api_data.prefix_multimodal_spec.images) == 1
@@ -101,6 +102,51 @@ async def test_shared_prefix_multimodal_request_body_has_both_images() -> None:
     # Realized metrics aggregate prefix + payload images.
     assert api_data.realized_images is not None
     assert api_data.realized_images.count == 2
+
+
+@pytest.mark.asyncio
+async def test_shared_prefix_text_boundary_does_not_duplicate_decoded_whitespace() -> None:
+    """The chat separator must respect whitespace already present in the suffix."""
+    generator = _build_generator()
+    api_data = generator.load_lazy_data(cast(LazyLoadInferenceAPIData, next(generator.get_data())))
+    assert isinstance(api_data, ChatCompletionAPIData)
+    assert api_data.prefix_text is not None
+
+    # Keep the prefix-side image to exercise the multimodal path, and use a
+    # tokenizer-style leading-space suffix in the text-only payload.
+    api_data.messages[0].content = " QUESTION"
+    api_data.multimodal_spec = None
+    payload = await api_data.to_request_body(effective_model_name="test", max_tokens=10, ignore_eos=False, streaming=False)
+
+    text_blocks = [block["text"] for block in payload["messages"][0]["content"] if block.get("type") == "text"]
+    assert text_blocks == [api_data.prefix_text + " QUESTION"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question_text", "expected_text_blocks"),
+    [(" QUESTION", [" QUESTION"]), ("QUESTION", [" ", "QUESTION"])],
+    ids=["question-has-leading-whitespace", "separator-needed"],
+)
+async def test_shared_prefix_image_boundary_respects_question_whitespace(
+    question_text: str, expected_text_blocks: list[str]
+) -> None:
+    """A prefix image needs a separator only when the question supplies none."""
+    generator = _build_generator()
+    api_data = generator.load_lazy_data(cast(LazyLoadInferenceAPIData, next(generator.get_data())))
+    assert isinstance(api_data, ChatCompletionAPIData)
+
+    # With no textual prefix, the request starts with the image. The decoded
+    # question may already supply the whitespace after it.
+    api_data.prefix_text = ""
+    api_data.messages[0].content = question_text
+    api_data.multimodal_spec = None
+    payload = await api_data.to_request_body(effective_model_name="test", max_tokens=10, ignore_eos=False, streaming=False)
+
+    content = payload["messages"][0]["content"]
+    assert content[0].get("type") == "image_url"
+    text_blocks = [block["text"] for block in content if block.get("type") == "text"]
+    assert text_blocks == expected_text_blocks
 
 
 @pytest.mark.asyncio

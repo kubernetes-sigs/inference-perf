@@ -85,6 +85,33 @@ jobs:
         run: |
           nix develop -c pdm sync -d
 
+      # guidellm is the second tool in the cross-tool parity test
+      # (e2e/tests/test_reasoning_metric_parity.py). It gets its own venv,
+      # outside the Nix shell and pdm.lock, because its dependency set
+      # (pydantic, datasets, torch) is not inference-perf's. The lock file is
+      # the cache key, so bumping the pin is a reviewed change that rebuilds
+      # the venv. GUIDELLM_REQUIRED turns "guidellm not found" and "wrong
+      # version" from a skip into a failure: this job gates merges.
+      - name: Restore guidellm venv
+        id: guidellm-venv
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/guidellm-venv
+          key: guidellm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('e2e/guidellm_requirements.txt') }}
+
+      - name: Install guidellm
+        run: |
+          set -euxo pipefail
+          if [ "${{ steps.guidellm-venv.outputs.cache-hit }}" != "true" ]; then
+            rm -rf ~/guidellm-venv
+            python3 -m venv ~/guidellm-venv
+            ~/guidellm-venv/bin/pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+              -r e2e/guidellm_requirements.txt
+          fi
+          ~/guidellm-venv/bin/guidellm --version
+          echo "GUIDELLM_BIN=$HOME/guidellm-venv/bin/guidellm" >> "$GITHUB_ENV"
+          echo "GUIDELLM_REQUIRED=1" >> "$GITHUB_ENV"
+
       # The vLLM live-oracle modules (e2e/tests/test_vllm_cpu_*.py) skip in
       # this invocation: no server is up yet. They run against every table
       # version in the next step.
@@ -110,23 +137,39 @@ jobs:
         run: |
           set -uo pipefail
           failed=""
+          ran=0
           for v in $VLLM_VERSIONS; do
             if e2e/vllm_cpu_server.sh start "$v"; then
               # A red release must name what it resolved to; latest
-              # points at a different release over time.
+              # points at a different release over time. The venv python
+              # directly, not via nix develop: the dev shell's hook runs a
+              # pdm sync whose stdout would land in the captured value.
+              resolved="$(.venv/bin/python e2e/known_bad.py version http://127.0.0.1:8000 || echo unknown)"
               {
                 echo "### $v resolved to"
                 echo '```'
-                curl -sf http://127.0.0.1:8000/version || true
-                echo
+                echo "$resolved"
                 docker inspect --format '{{index .RepoDigests 0}}' \
                   "docker.io/vllm/vllm-openai-cpu:$v" || true
                 echo '```'
               } >> "$GITHUB_STEP_SUMMARY"
 
-              E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION="$v" \
-                nix develop -c pdm run test:e2e:live -o log_cli_level=DEBUG \
-                |& tee "test_vllm_e2e-$v.out" || failed="$failed $v"
+              # A release listed in e2e/vllm_known_bad.txt is skipped, not
+              # failed, and loudly: the annotation names it on every run
+              # until the tag floats past it. A helper that cannot decide fails
+              # the release rather than running it against what may be broken.
+              if ! reason="$(.venv/bin/python e2e/known_bad.py skip-reason "$v" "$resolved")"; then
+                echo "::error::$v: e2e/known_bad.py skip-reason failed, see the log"
+                failed="$failed $v"
+              elif [ -n "$reason" ]; then
+                echo "::warning::$v resolved to $resolved, skipped: $reason"
+                echo "skipped: $reason" >> "$GITHUB_STEP_SUMMARY"
+              else
+                ran=$((ran + 1))
+                E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION="$v" \
+                  nix develop -c pdm run test:e2e:live -o log_cli_level=DEBUG \
+                  |& tee "test_vllm_e2e-$v.out" || failed="$failed $v"
+              fi
             else
               failed="$failed $v"
             fi
@@ -137,6 +180,11 @@ jobs:
 
           if [ -n "$failed" ]; then
             echo "::error::live-oracle slice failed for:$failed"
+            exit 1
+          fi
+          # Every release skipped tests nothing, so it fails like an empty table.
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::every release in e2e/vllm_releases.txt was skipped as known-bad"
             exit 1
           fi
 
@@ -262,6 +310,7 @@ jobs:
         run: |
           set -uo pipefail
           failed=""
+          ran=0
 
           # run_pass <version> <model> <modalities> <pytest -k expression>
           run_pass() {
@@ -269,25 +318,36 @@ jobs:
             local tag="${model##*/}-$v"
             local out="test_multimodal_e2e-$tag.out"
             if VLLM_MODEL="$model" e2e/vllm_cpu_server.sh start "$v"; then
+              local resolved reason
+              resolved="$(.venv/bin/python e2e/known_bad.py version http://127.0.0.1:8000 || echo unknown)"
               {
                 echo "### $model on $v resolved to"
                 echo '```'
-                curl -sf http://127.0.0.1:8000/version || true
-                echo
+                echo "$resolved"
                 docker inspect --format '{{index .RepoDigests 0}}' \
                   "docker.io/vllm/vllm-openai-cpu:$v" || true
                 echo '```'
               } >> "$GITHUB_STEP_SUMMARY"
 
-              if E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_MODALITIES="$modalities" \
-                nix develop -c pdm run test:e2e:multimodal -k "$select" -rs -o log_cli_level=DEBUG \
-                |& tee "$out"; then
-                if grep -qE '[0-9]+ skipped' "$out"; then
-                  echo "::error::$tag: pass selected '$select' but skipped cases (see $out)"
+              # Known-bad releases are skipped the way the job above does it.
+              if ! reason="$(.venv/bin/python e2e/known_bad.py skip-reason "$v" "$resolved")"; then
+                echo "::error::$tag: e2e/known_bad.py skip-reason failed, see the log"
+                failed="$failed $tag"
+              elif [ -n "$reason" ]; then
+                echo "::warning::$tag resolved to $resolved, skipped: $reason"
+                echo "skipped: $reason" >> "$GITHUB_STEP_SUMMARY"
+              else
+                ran=$((ran + 1))
+                if E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_MODALITIES="$modalities" \
+                  nix develop -c pdm run test:e2e:multimodal -k "$select" -rs -o log_cli_level=DEBUG \
+                  |& tee "$out"; then
+                  if grep -qE '[0-9]+ skipped' "$out"; then
+                    echo "::error::$tag: pass selected '$select' but skipped cases (see $out)"
+                    failed="$failed $tag"
+                  fi
+                else
                   failed="$failed $tag"
                 fi
-              else
-                failed="$failed $tag"
               fi
             else
               failed="$failed $tag"
@@ -303,6 +363,11 @@ jobs:
 
           if [ -n "$failed" ]; then
             echo "::error::multimodal slice failed for:$failed"
+            exit 1
+          fi
+          # Same rule as the job above: every pass skipped tests nothing.
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::every pass in e2e/vllm_multimodal_releases.txt was skipped as known-bad"
             exit 1
           fi
 

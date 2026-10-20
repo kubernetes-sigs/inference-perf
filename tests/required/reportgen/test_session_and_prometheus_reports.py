@@ -46,7 +46,7 @@ from inference_perf.config.reportgen.config import (
     ReportConfig,
     SessionLifecycleReportConfig,
 )
-from inference_perf.reportgen.base import ReportGenerator
+from inference_perf.reportgen.base import ReportGenerator, summarize_prometheus_metrics
 
 PERCENTILES = [50.0, 90.0]
 
@@ -302,9 +302,24 @@ class TestGenerateSessionReports:
             "actual_duration": 6.0,
             "teardown_duration": None,
             "dropped_requests": None,
+            "dropped_requests_exact": None,
             "concurrent_sessions": 4,
             "session_rate": 2.0,
         }
+
+    def test_a_dropped_count_that_could_not_be_completed_is_marked_inexact(self) -> None:
+        info = _stage_info(0).model_copy(update={"dropped_requests": 12, "dropped_requests_exact": False})
+
+        reports = _make_generator().generate_session_reports(
+            [_sess(stage_id=0)],
+            SessionLifecycleReportConfig(summary=False, per_stage=True, per_session=False),
+            PERCENTILES,
+            _runtime({0: info}),
+            100,
+        )
+
+        metadata = reports[0].contents["stage_metadata"]
+        assert (metadata["dropped_requests"], metadata["dropped_requests_exact"]) == (12, False)
 
     def test_a_stage_with_no_runtime_info_reports_measurements_without_metadata(self) -> None:
         gen = _make_generator()
@@ -574,3 +589,42 @@ class TestGeneratePrometheusMetricsReport:
 
         assert reports == []
         assert "no metrics collected by metrics client" in caplog.text
+
+
+class TestSummarizePrometheusMetricsMissing:
+    def test_missing_fields_are_reported_as_null_not_zero(self) -> None:
+        """Regression for #822: a failed query must be missing in the report, not a real-looking 0."""
+        summary = summarize_prometheus_metrics(
+            ModelServerMetrics(
+                requests=CounterResult(total=None, avg=None, per_second=None),
+                queue_length=GaugeResult(avg=None, median=None, p90=None, p99=None),
+                request_latency=HistogramResult(avg=0.5, median=0.4, p90=0.9, p99=1.1),
+            )
+        ).model_dump()["successes"]
+
+        assert summary["count"] is None
+        assert summary["rate"] is None
+        assert summary["queue_len"] == {"mean": None}
+        # Healthy fields keep their values.
+        assert summary["request_latency"] == {"mean": 0.5, "median": 0.4, "p90": 0.9, "p99": 1.1}
+
+    def test_missing_cache_counts_yield_null_hit_percent(self) -> None:
+        """A missing hit/query count must not render as 0%."""
+        summary = summarize_prometheus_metrics(
+            ModelServerMetrics(
+                prefix_cache_hits=CounterResult(total=None, avg=None, per_second=None),
+                prefix_cache_queries=CounterResult(total=100.0),
+            )
+        ).model_dump()["successes"]
+
+        assert summary["prefix_cache_hit_percent"] == {"mean": None}
+
+    def test_partially_missing_quantile_reports_null_value(self) -> None:
+        """One failed quantile reports that value as null while the rest of the metric stays."""
+        summary = summarize_prometheus_metrics(
+            ModelServerMetrics(
+                request_latency=HistogramResult(avg=0.5, median=None, p90=0.9, p99=1.1),
+            )
+        ).model_dump()["successes"]
+
+        assert summary["request_latency"] == {"mean": 0.5, "median": None, "p90": 0.9, "p99": 1.1}

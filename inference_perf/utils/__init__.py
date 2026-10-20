@@ -11,8 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from .cpu_count import default_cpu_count
 from .custom_tokenizer import CustomTokenizer
 from .report_file import ReportFile
 from .cli_parser import add_global_args, add_pydantic_args, unflatten_dict
 
-__all__ = ["CustomTokenizer", "ReportFile", "add_global_args", "add_pydantic_args", "unflatten_dict"]
+__all__ = ["CustomTokenizer", "ReportFile", "add_global_args", "add_pydantic_args", "default_cpu_count", "unflatten_dict"]

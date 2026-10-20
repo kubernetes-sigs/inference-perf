@@ -17,11 +17,15 @@ from __future__ import annotations
 
 from typing import List
 
+import pytest
+
+from inference_perf.payloads import Audio, Audios, Image, Images, Video, Videos
+
 from inference_perf.reportgen.br.v0_2.validation import BrPartialValidator
 from inference_perf.reportgen.validation import Finding, ValidationReport, run_validators
 from inference_perf.utils import ReportFile
 
-from .helpers import make_report_set, tampered
+from .helpers import make_report_set, make_stage_metrics, tampered
 
 PARTIAL_0_FILE = "inference-perf.partial.stage_0.yaml"
 
@@ -127,3 +131,52 @@ def test_agreement_is_skipped_without_the_stage_lifecycle_report() -> None:
 
     result = _validate(reports)
     assert not _errors_for_check(result, "br_partial.lifecycle_agreement")
+
+
+@pytest.fixture
+def media_reports() -> List[ReportFile]:
+    stages = make_stage_metrics()
+    media = stages[0][0].info.request_metrics
+    media.image = Images(count=1, instances=[Image(pixels=100, bytes=10, aspect_ratio=1)])
+    media.video = Videos(count=1, instances=[Video(pixels=200, bytes=20, aspect_ratio=2, frames=4)])
+    media.audio = Audios(count=1, instances=[Audio(bytes=30, seconds=2)])
+    stages[1][0].request_data = "a different request size"
+    return make_report_set(stages)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("requests", "request_size", "mean"),
+        *[("throughput", f"{modality}_rate", "mean") for modality in ("image", "video", "audio")],
+        *[
+            ("requests", "multimodal", modality, field, "mean")
+            for modality, fields in (
+                ("image", ("count", "filesize", "pixels", "aspect_ratio")),
+                ("video", ("count", "filesize", "aspect_ratio", "frames")),
+                ("audio", ("count", "filesize", "duration")),
+            )
+            for field in fields
+        ],
+    ],
+)
+def test_new_measurement_disagreement_is_detected(media_reports: List[ReportFile], path: tuple[str, ...]) -> None:
+    reports, contents = tampered(media_reports, PARTIAL_0_FILE)
+    value = contents["results"]["request_performance"]["aggregate"]
+    for key in path[:-1]:
+        value = value[key]
+    value[path[-1]] *= 1.5
+    errors = _errors_for_check(_validate(reports), "br_partial.lifecycle_agreement")
+    assert len(errors) == 1
+    assert ".".join(path) in errors[0].message
+    assert errors[0].report == PARTIAL_0_FILE
+
+
+def test_media_agreement_uses_each_stage_and_skips_absent_modalities(
+    media_reports: List[ReportFile],
+) -> None:
+    # Stage 1 is text-only, while stage 0 has media and a different request size.
+    # BR video pixels sum frames; native video pixels intentionally remain per-frame.
+    result = _validate(media_reports)
+    assert not result.all_errors(), [f.message for f in result.all_errors()]
+    assert not result.all_warnings()

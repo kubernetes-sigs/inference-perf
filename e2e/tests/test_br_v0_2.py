@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """End-to-end test that the per-stage BR0.2 partial inference-perf emits
-validates against the vendored schema after a real run against
+validates against the llmd-benchmark-report schema after a real run against
 llm-d-inference-sim, and merges cleanly with a downstream-supplied partial
 into a full BR0.2 document.
 

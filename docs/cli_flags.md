@@ -8,7 +8,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `-a`, `--analyze` | list of str | Path to a report directories to analyze |
 | `-u`, `--unified_analysis_dir` | str | Unified analysis directory path |
 | `--log-level` | Enum (DEBUG, INFO, WARNING, ERROR, CRITICAL) | Logging level (default: INFO) |
-| `--api.type` | Enum (completion, chat, anthropic_messages) | API endpoint to benchmark: text completion or chat completion. |
+| `--api.type` | Enum (completion, chat, anthropic_messages, embeddings, rerank) | API endpoint to benchmark: text completion, chat completion, Anthropic messages, embeddings or rerank. |
 | `--api.streaming` | boolean | Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics. |
 | `--api.headers` | JSON | Additional HTTP headers to send with every request. |
 | `--api.slo_unit` | str | Time unit for SLO header values: 's', 'ms' or 'us'. Defaults to 'ms'. |
@@ -17,10 +17,19 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.response_format.type` | Enum (json_schema, json_object) | Structured output mode: a full JSON schema or any JSON object. |
 | `--api.response_format.name` | str | Name given to the JSON schema in the request payload. |
 | `--api.response_format.json_schema` | JSON | JSON schema the model output must conform to when type is 'json_schema'. |
+| `--api.embeddings.batch_size` | int | Number of input strings sent in each embeddings request. |
+| `--api.embeddings.dimensions` | int | Embedding size requested from the server. Unset uses the model's default. |
+| `--api.embeddings.encoding_format` | Enum (float, base64) | Format of the returned embeddings: 'float' or 'base64'. Unset uses the server's default. |
+| `--api.rerank.document_count` | int | Number of documents scored against the query in each request. |
+| `--api.rerank.route` | str | Request path for the rerank endpoint. |
+| `--api.rerank.query_field` | str | Request field name carrying the query text. |
+| `--api.rerank.documents_field` | str | Request field name carrying the list of candidate documents. |
+| `--api.rerank.top_n` | int | Optional top_n sent to the server to limit the number of results returned. 0 means all results. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |
 | `--data.path` | str | Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type. |
+| `--data.load_timeout` | float | Deadline in seconds for Hub dataset initialization, including startup row reads. Does not bound later streaming iteration. Null disables the deadline. |
 | `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |
 | `--data.input_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.input_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
@@ -43,6 +52,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.system_prompt_len` | string | Length of the shared system prompt in tokens: a fixed value or a distribution. |
 | `--data.shared_prefix.question_len` | string | Length of the question part in tokens: a fixed value or a distribution. |
 | `--data.shared_prefix.output_len` | string | Requested output length in tokens: a fixed value or a distribution. |
+| `--data.shared_prefix.max_model_len` | int | Maximum model context length in tokens for multi-turn sessions. Defaults to 225000 when omitted, matching conversation_replay. |
 | `--data.shared_prefix.seed` | int | Random seed for reproducible prompt generation. |
 | `--data.shared_prefix.question_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.question_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
@@ -60,7 +70,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.output_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.shared_prefix.output_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.output_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.shared_prefix.enable_multi_turn_chat` | boolean | Send each group's prompts as consecutive turns of one chat conversation. |
+| `--data.shared_prefix.enable_multi_turn_chat` | boolean | Send each group's prompts as consecutive turns of one chat conversation. Requires api.type completion. |
 | `--data.shared_prefix.multimodal.image.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.multimodal.image.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.shared_prefix.multimodal.image.count.mean` | float | Mean of the distribution. |
@@ -131,7 +141,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.otel_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.otel_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.otel_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
-| `--data.otel_trace_replay.override_tool_call_max_tokens` | boolean | Override tool call max_tokens to 4096 instead of using trace recorded length |
+| `--data.otel_trace_replay.override_tool_call_max_tokens` | boolean | Add tiered headroom to recorded tool-call max_tokens |
 | `--data.otel_trace_replay.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
 | `--data.otel_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
 | `--data.otel_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
@@ -156,7 +166,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.weka_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.weka_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.weka_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
-| `--data.weka_trace_replay.override_tool_call_max_tokens` | boolean | Override tool call max_tokens to 4096 instead of using trace recorded length |
+| `--data.weka_trace_replay.override_tool_call_max_tokens` | boolean | Add tiered headroom to recorded tool-call max_tokens |
 | `--data.weka_trace_replay.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
 | `--data.weka_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
 | `--data.weka_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
@@ -165,6 +175,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.weka_trace_replay.include_errors` | boolean | Include spans with error status |
 | `--data.weka_trace_replay.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
 | `--data.weka_trace_replay.bad_tool_call_handling` | Enum (none, use_recorded) | How to handle tool_calls whose function.arguments is not valid JSON. none (default): no mitigation, bytes propagate and vLLM may return HTTP 400 on the next turn. use_recorded: discard the live response and substitute the recorded assistant message at the affected slot; the recorded tool_call_id flows into the recorded role:tool successor unchanged. |
+| `--data.weka_trace_replay.separate_subagent_session_ids` | boolean | Give each subagent stream its own request session ID, shaped as <parent_id>::sa:<agent_id>:s<stream_index>. Parent IDs stay unchanged. Defaults to False so all requests in a trace share the parent ID. |
 | `--data.weka_trace_replay.trace_directory` | str | Directory containing Weka JSON trace files |
 | `--data.weka_trace_replay.trace_files` | JSON | List of paths to specific Weka JSON trace files |
 | `--data.weka_trace_replay.hf_dataset_path` | JSON | HuggingFace dataset path. Can be:
@@ -237,7 +248,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.synthetic_agentic.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.synthetic_agentic.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.synthetic_agentic.default_max_tokens` | int | Default max_tokens if not specified in trace |
-| `--data.synthetic_agentic.override_tool_call_max_tokens` | boolean | Override tool-call max_tokens to 4096 instead of using the generated call's own length. Defaults False here (unlike trace replay) because the generator sizes each tool call itself, so the generated length is already correct for this model. |
+| `--data.synthetic_agentic.override_tool_call_max_tokens` | boolean | Add tiered headroom to the generated tool call's own max_tokens. Defaults False here (unlike trace replay) because the generator sizes each tool call itself, so the generated length is already correct for this model. |
 | `--data.synthetic_agentic.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
 | `--data.synthetic_agentic.inject_random_session_id` | boolean | Not applicable to synthetic generation (pinned False): sessions are already generated with distinct content per session index, so there is no recorded session ID to randomize. |
 | `--data.synthetic_agentic.duplicate_sessions_target` | int | Not applicable to synthetic generation (pinned None): raise num_sessions to generate more sessions instead of duplicating existing ones. |
@@ -352,7 +363,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--load.sweep.num_stages` | int | Number of load stages to generate. |
 | `--load.sweep.stage_duration` | int | Duration of each generated stage in seconds. |
 | `--load.sweep.saturation_percentile` | float | Percentile of observed request rates taken as the saturation point. |
-| `--load.num_workers` | int | Number of worker processes sending requests. Defaults to the CPU count. |
+| `--load.num_workers` | int | Number of worker processes sending requests. Defaults to the cgroup-aware CPU count. |
 | `--load.worker_max_concurrency` | int | Maximum concurrent in-flight requests per worker. |
 | `--load.worker_max_tcp_connections` | int | Maximum TCP connections per worker. |
 | `--load.trace.file` | str | Path to the trace file to replay. |
@@ -369,13 +380,16 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--metrics.prometheus.url` | string | URL of the Prometheus server to query. |
 | `--metrics.prometheus.filters` | JSON | PromQL label matchers (e.g. 'namespace="default"') applied to every metric query. |
 | `--metrics.prometheus.google_managed` | boolean | Query Google Cloud Managed Service for Prometheus instead of a self-hosted server. |
+| `--metrics.prometheus.bearer_token` | str | Bearer token sent as an Authorization header with every Prometheus query. Redacted in the logged and saved config. |
+| `--metrics.prometheus.verify_ssl` | boolean | Verify the Prometheus server's TLS certificate. Disable for self-signed certificates. |
+| `--metrics.prometheus.headers` | JSON | Additional HTTP headers to send with every Prometheus query. |
 | `--report.request_lifecycle.summary` | boolean | Generate a summary report across the whole run. |
 | `--report.request_lifecycle.per_stage` | boolean | Generate a report for each load stage. |
 | `--report.request_lifecycle.per_request` | boolean | Generate a report with per-request details. |
 | `--report.request_lifecycle.per_request_fields.request` | boolean | Include the raw request payload in per-request report entries. |
 | `--report.request_lifecycle.per_request_fields.response` | boolean | Include the raw response payload in per-request report entries. |
 | `--report.request_lifecycle.per_request_fields.info` | boolean | Include response metadata in per-request report entries. |
-| `--report.request_lifecycle.per_request_fields.response_chunks` | boolean | Include streamed response chunks in per-request metadata. |
+| `--report.request_lifecycle.per_request_fields.response_chunks` | boolean | Include raw streamed chunks, content and reasoning, in per-request metadata. |
 | `--report.request_lifecycle.per_request_fields.computed_metrics` | boolean | Include computed per-request latency and token metrics in report entries. |
 | `--report.request_lifecycle.per_adapter` | boolean | Generate a report for each LoRA adapter. |
 | `--report.request_lifecycle.per_adapter_stage` | boolean | Generate a report for each LoRA adapter within each load stage. |
@@ -411,3 +425,6 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--tokenizer.token` | str | HuggingFace access token used to download the tokenizer. Redacted in the logged and saved config. |
 | `--tokenizer.load_timeout` | float | Deadline in seconds for loading the tokenizer, including any download from Hugging Face Hub. Null disables the deadline. |
 | `--circuit_breakers` | JSON | Circuit breakers that stop the run when observed metrics cross configured thresholds. |
+| `--observability.metrics.enabled` | boolean | Serve inference-perf's own runtime metrics (stage state, request counts, latencies) over an HTTP /metrics endpoint for Prometheus to scrape. Metrics are always collected in-process; this only controls whether the HTTP endpoint is started. On by default, so a run is observable without being configured for it; set false to keep the port free. |
+| `--observability.metrics.host` | str | Address the runtime metrics endpoint binds to. Loopback by default, so a run on a laptop or shared host is not reachable from the network; set 0.0.0.0 where a scraper reaches the run by its pod or host IP, as the Helm chart and deploy/ config do. |
+| `--observability.metrics.port` | int | Port the runtime metrics endpoint listens on. 0 picks an ephemeral port, logged at startup. |

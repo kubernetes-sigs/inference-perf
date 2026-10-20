@@ -14,6 +14,9 @@
 from inference_perf.config.apis.config import (
     APIConfig,
     APIType,
+    EmbeddingsConfig,
+    EmbeddingsEncodingFormat,
+    RerankConfig,
     ResponseFormat,
     ResponseFormatType,
 )
@@ -21,6 +24,9 @@ from inference_perf.config.apis.config import (
 __all__ = [
     "APIConfig",
     "APIType",
+    "EmbeddingsConfig",
+    "EmbeddingsEncodingFormat",
+    "RerankConfig",
     "ResponseFormat",
     "ResponseFormatType",
 ]

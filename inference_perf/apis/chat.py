@@ -66,6 +66,24 @@ _multimodal_materialized_video_frames: int = 0
 _last_multimodal_progress_log_time: Optional[float] = None
 
 
+def reasoning_field(fields: dict[str, Any]) -> Optional[str]:
+    """Reasoning text from a chat delta or message.
+
+    vLLM renamed reasoning_content to reasoning. The new name wins when a server
+    sends both, the same rule the replay path and the OpenAI client follow.
+    """
+    reasoning = fields.get("reasoning") or fields.get("reasoning_content")
+    return str(reasoning) if reasoning else None
+
+
+def _count_generated_tokens(tokenizer: CustomTokenizer, output_text: str, reasoning_text: str) -> int:
+    """Client-side output token count: content plus reasoning, as the server's completion_tokens counts both (#559)."""
+    total = tokenizer.count_tokens(output_text, add_special_tokens=False)
+    if reasoning_text:
+        total += tokenizer.count_tokens(reasoning_text, add_special_tokens=False)
+    return total
+
+
 def _log_multimodal_progress(images: int, videos: int, audios: int, video_frames: int) -> None:
     """Update per-process counters and emit a heartbeat at most every interval."""
     global _multimodal_materialized_requests
@@ -423,10 +441,21 @@ class ChatCompletionAPIData(InferenceAPIData):
         if prefix_content and payload_content:
             if prefix_content[-1].get("type") == "text" and payload_content[0].get("type") == "text":
                 merged = dict(prefix_content[-1])
-                merged["text"] = merged["text"] + " " + payload_content[0]["text"]
+                prefix_text = merged["text"]
+                payload_text = payload_content[0]["text"]
+                separator = (
+                    " "
+                    if prefix_text and payload_text and not prefix_text[-1].isspace() and not payload_text[0].isspace()
+                    else ""
+                )
+                merged["text"] = prefix_text + separator + payload_text
                 combined = list(prefix_content[:-1]) + [merged] + list(payload_content[1:])
             else:
-                combined = list(prefix_content) + [{"type": "text", "text": " "}] + list(payload_content)
+                payload_starts_with_whitespace = (
+                    payload_content[0].get("type") == "text" and payload_content[0].get("text", "")[:1].isspace()
+                )
+                separator_content = [] if payload_starts_with_whitespace else [{"type": "text", "text": " "}]
+                combined = list(prefix_content) + separator_content + list(payload_content)
         else:
             combined = list(prefix_content) + list(payload_content)
 
@@ -561,25 +590,32 @@ class ChatCompletionAPIData(InferenceAPIData):
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
     ) -> InferenceInfo:
         if config.streaming:
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-                response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
+            parsed = await parse_sse_stream(
+                response,
+                extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content"),
+                # Reasoning models stream thinking on a separate delta field
+                # before any content. Captured apart from content so time to
+                # first output token can skip it (#559).
+                extract_reasoning=lambda data: reasoning_field(data.get("choices", [{}])[0].get("delta", {})),
             )
-            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
+            prompt_len = self._resolve_prompt_tokens(parsed.server_usage, tokenizer)
             # Generated text is a continuation, not a sequence start: counting it
             # with special tokens would add a BOS the server's completion_tokens
-            # never contains.
-            output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
+            # never contains. Reasoning counts too, as it does in completion_tokens.
+            output_len = _count_generated_tokens(tokenizer, parsed.output_text, parsed.reasoning_text)
             return InferenceInfo(
                 request_metrics=self._build_request_metrics(prompt_len, output_len),
                 response_metrics=StreamedResponseMetrics(
-                    response_chunks=response_chunks,
-                    chunk_times=chunk_times,
+                    response_chunks=parsed.response_chunks,
+                    chunk_times=parsed.chunk_times,
                     output_tokens=output_len,
-                    output_token_times=chunk_times,
-                    server_usage=server_usage,
+                    output_token_times=parsed.generated_chunk_times,
+                    server_usage=parsed.server_usage,
+                    reasoning_chunks=parsed.reasoning_chunks,
+                    reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
                 lora_adapter=lora_adapter,
-                extra_info={"raw_response": raw_content},
+                extra_info={"raw_response": parsed.raw_content},
             )
 
         data = await response.json()
@@ -592,7 +628,8 @@ class ChatCompletionAPIData(InferenceAPIData):
                 lora_adapter=lora_adapter,
             )
         output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
-        output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
+        reasoning_text = "".join(reasoning_field(choice.get("message", {})) or "" for choice in choices)
+        output_len = _count_generated_tokens(tokenizer, output_text, reasoning_text)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
             response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),

@@ -18,6 +18,7 @@ tokenizer:
 data:
   type: weka_trace_replay
   weka_trace_replay:
+    # separate_subagent_session_ids: true # Requires api.session_id_header_key to send IDs in headers.
     hf_dataset_path: "semianalysisai/cc-traces-weka-with-subagents-060826-256k"
     num_dataset_entries: 5
     use_static_model: true
@@ -29,6 +30,15 @@ report:
     summary: true
     per_stage: true
     per_request: true
+    # Weka trace requests carry very large prompts; storing raw payloads can
+    # grow the per-request report to multiple GB per run. Keep metadata and
+    # computed metrics only.
+    per_request_fields:
+      request: false
+      response: false
+      response_chunks: false
+      info: true            # timestamps, token counts, server usage (cached_tokens)
+      computed_metrics: true # TTFT/TPOT/ITL per request
   goodput:
     constraints:
       ttft: 0.3

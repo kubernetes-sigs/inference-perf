@@ -1,8 +1,26 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 from typing import Any
 from typing import cast
 
 import pytest
-from inference_perf.reportgen.base import summarize_requests, summarize_prompt_token_usage, ReportGenerator
+from inference_perf.reportgen.base import (
+    ReportGenerator,
+    compute_request_latency_metrics,
+    summarize_prompt_token_usage,
+    summarize_requests,
+)
 from inference_perf.apis.base import (
     RequestLifecycleMetric,
     InferenceInfo,
@@ -651,6 +669,42 @@ def test_summarize_sessions_kv_cache_hit_rate_none_when_no_cache_info() -> None:
     assert summary["sessions_with_cache_info"] == 0
 
 
+def test_summarize_sessions_kv_cache_hit_rate_zero_when_all_zero() -> None:
+    """All-zero cached readings keep the reported 0% (see #818).
+
+    Explicit zeros are ambiguous (genuinely cold cache, or usage counters
+    normalized by a gateway/sidecar), but the number itself is kept as the
+    server sent it; the ambiguity is surfaced by the session validator as a
+    validation.json warning instead.
+    """
+    s1 = _cache_session("s1")
+    s1.total_cached_tokens = 0
+    s1.total_cacheable_input_tokens = 100
+    s2 = _cache_session("s2")
+    s2.total_cached_tokens = 0
+    s2.total_cacheable_input_tokens = 200
+
+    summary = ReportGenerator.summarize_sessions(None, [s1, s2], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["kv_cache_hit_percent"] == pytest.approx(0.0)
+    assert summary["kv_cache_hit_per_session_percent"]["mean"] == pytest.approx(0.0)
+    assert summary["sessions_with_cache_info"] == 2
+
+
+def test_summarize_sessions_kv_cache_hit_rate_kept_when_partially_zero() -> None:
+    """A mix of zero and nonzero sessions still reports a real rate."""
+    cold = _cache_session("cold")
+    cold.total_cached_tokens, cold.total_cacheable_input_tokens = 0, 100
+    warm = _cache_session("warm")
+    warm.total_cached_tokens, warm.total_cacheable_input_tokens = 50, 100
+
+    summary = ReportGenerator.summarize_sessions(None, [cold, warm], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["kv_cache_hit_percent"] == pytest.approx(100.0 * 50 / 200)
+    assert summary["kv_cache_hit_per_session_percent"]["mean"] == pytest.approx(25.0)
+    assert summary["sessions_with_cache_info"] == 2
+
+
 def test_summarize_sessions_kv_cache_aggregate_is_token_weighted() -> None:
     """The aggregate rate weights sessions by tokens; the percentile mean does not.
 
@@ -732,3 +786,199 @@ def test_summarize_requests_handles_null_prompt_tokens_details() -> None:
     assert prompt_tokens["total"] == pytest.approx(10.0)
     assert prompt_tokens["cached"] == pytest.approx(0.0)
     assert prompt_tokens["uncached"] == pytest.approx(10.0)
+
+
+def test_extract_chunk_text_variations() -> None:
+    from inference_perf.reportgen.base import _extract_chunk_text
+
+    # 1. Compact chat completion delta content (vLLM / SGLang style)
+    c1 = '{"choices":[{"index":0,"delta":{"content":"Hello world"}}]}'
+    assert _extract_chunk_text(c1) == "Hello world"
+
+    # 2. Spaced chat completion delta content
+    c2 = '{"id": "chat-1", "choices": [{"index": 0, "delta": {"content": "Hello spaced"}}]}'
+    assert _extract_chunk_text(c2) == "Hello spaced"
+
+    # 3. Text completion delta text
+    c3 = '{"choices": [{"text": "completion text"}]}'
+    assert _extract_chunk_text(c3) == "completion text"
+
+    # 4. Escaped content with newlines/quotes
+    c4 = '{"choices": [{"delta": {"content": "line1\\nline2"}}]}'
+    assert _extract_chunk_text(c4) == "line1\nline2"
+
+    # 5. Anthropic style text_delta
+    c5 = '{"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Anthropic chunk"}}'
+    assert _extract_chunk_text(c5) == "Anthropic chunk"
+
+    # 6. Non-content / role-only / usage chunk
+    c6 = '{"choices": [{"delta": {"role": "assistant"}}]}'
+    assert _extract_chunk_text(c6) is None
+
+    # 7. Malformed JSON
+    c7 = '{"choices": [{"delta": '
+    assert _extract_chunk_text(c7) is None
+
+
+def test_correct_streamed_response_metrics_caching_and_vectorization() -> None:
+    from unittest.mock import MagicMock
+    from inference_perf.reportgen.base import correct_streamed_response_metrics
+
+    # Setup 4 chunks: 2 identical tokens, 1 multi-token, 1 empty
+    chunks = [
+        '{"choices": [{"delta": {"content": "token"}}]}',
+        '{"choices": [{"delta": {"content": "token"}}]}',
+        '{"choices": [{"delta": {"content": "multi token"}}]}',
+        '{"choices": [{"delta": {"role": "assistant"}}]}',
+    ]
+    chunk_times = [1.0, 2.0, 3.0, 4.0]
+
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=10)),
+        response_metrics=StreamedResponseMetrics(
+            output_tokens=4,
+            output_token_times=[],
+            response_chunks=chunks,
+            chunk_times=chunk_times,
+            server_usage={"completion_tokens": 4},
+        ),
+    )
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="req", info=info, error=None
+    )
+
+    tokenizer = MagicMock()
+
+    # "token" -> 1 token, "multi token" -> 2 tokens
+    def mock_count(text: str, **kwargs: Any) -> int:
+        return 2 if "multi" in text else 1
+
+    tokenizer.count_tokens = MagicMock(side_effect=mock_count)
+
+    # Discrepancy returns False because accumulated (1 + 1 + 2 = 4) == server completion_tokens (4)
+    has_discrepancy = correct_streamed_response_metrics(metric, tokenizer)
+    assert not has_discrepancy
+
+    # Verify timestamps: 1 at t=1.0, 1 at t=2.0, 2 at t=3.0
+    assert isinstance(info.response_metrics, StreamedResponseMetrics)
+    assert info.response_metrics.output_token_times == [1.0, 2.0, 3.0, 3.0]
+
+    # Verify token cache on tokenizer was populated and reused for the duplicate "token" chunk
+    token_cache = getattr(tokenizer, "_count_tokens_cache", None)
+    assert token_cache is not None
+    assert token_cache["token"] == 1
+    assert token_cache["multi token"] == 2
+    # count_tokens should have been called only twice despite 3 content chunks
+    assert tokenizer.count_tokens.call_count == 2
+
+
+def test_correct_streamed_response_metrics_anthropic_calculates_ttft_tpot_itl() -> None:
+    from unittest.mock import MagicMock
+    from inference_perf.reportgen.base import compute_request_latency_metrics, correct_streamed_response_metrics
+
+    # Anthropic SSE content_block_delta chunks (no "choices" key)
+    chunks = [
+        '{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}',
+        '{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " world"}}',
+        '{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "!"}}',
+    ]
+    chunk_times = [1.0, 2.0, 3.5]
+
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+        response_metrics=StreamedResponseMetrics(
+            output_tokens=3,
+            output_token_times=[],
+            response_chunks=chunks,
+            chunk_times=chunk_times,
+            server_usage={"completion_tokens": 3},
+        ),
+    )
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.5, end_time=4.0, request_data="req", info=info, error=None
+    )
+
+    tokenizer = MagicMock()
+    tokenizer.count_tokens = MagicMock(return_value=1)
+
+    correct_streamed_response_metrics(metric, tokenizer)
+
+    assert isinstance(info.response_metrics, StreamedResponseMetrics)
+    assert info.response_metrics.output_token_times == [1.0, 2.0, 3.5]
+
+    metrics = compute_request_latency_metrics(metric)
+    assert metrics["time_to_first_token"] == pytest.approx(0.5)  # 1.0 - 0.5
+    assert metrics["time_per_output_token"] == pytest.approx(1.25)  # (3.5 - 1.0) / (3 - 1)
+    assert metrics["inter_token_latency"] == pytest.approx(1.25)  # mean([1.0, 1.5])
+    assert metrics["inter_token_latency_deltas"] == [pytest.approx(1.0), pytest.approx(1.5)]
+
+
+def test_ntpot_is_unset_for_requests_without_output_tokens() -> None:
+    """NTPOT divides latency by output tokens, so it does not apply to a request
+    that generated none (e.g. embeddings). Such a request must be left out of the
+    NTPOT summary instead of adding a fabricated 0.0 that drags the mean down."""
+
+    def make_metric(output_tokens: int, latency: float) -> RequestLifecycleMetric:
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=UnaryResponseMetrics(output_tokens=output_tokens),
+        )
+        return RequestLifecycleMetric(
+            scheduled_time=0.0, start_time=0.0, end_time=latency, request_data="r", info=info, error=None
+        )
+
+    no_output = make_metric(output_tokens=0, latency=4.0)
+    assert compute_request_latency_metrics(no_output)["normalized_time_per_output_token"] is None
+
+    mixed = summarize_requests([make_metric(output_tokens=10, latency=10.0), no_output], [50])
+    assert mixed.successes["latency"]["normalized_time_per_output_token"]["mean"] == pytest.approx(1.0)
+
+    only_no_output = summarize_requests([no_output], [50])
+    assert only_no_output.successes["latency"]["normalized_time_per_output_token"] is None
+
+
+def test_extract_chunk_text_reads_content_block_start_text() -> None:
+    """A compatible server may put text in content_block_start; it must count (#885)."""
+    from inference_perf.reportgen.base import _extract_chunk_text
+
+    chunk = '{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": "Hello start"}}'
+    assert _extract_chunk_text(chunk) == "Hello start"
+
+    # Empty text there carries nothing, matching the live Anthropic parser.
+    empty = '{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}'
+    assert _extract_chunk_text(empty) is None
+
+
+def test_correct_streamed_response_metrics_reads_anthropic_output_tokens() -> None:
+    """Mismatch detection must read output_tokens, not just completion_tokens (#885)."""
+    from unittest.mock import MagicMock
+    from inference_perf.reportgen.base import correct_streamed_response_metrics
+
+    chunks = [
+        '{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}',
+        '{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " world"}}',
+    ]
+    chunk_times = [1.0, 2.0]
+
+    def make_metric(server_usage: dict[str, Any]) -> RequestLifecycleMetric:
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=StreamedResponseMetrics(
+                output_tokens=2,
+                output_token_times=[],
+                response_chunks=chunks,
+                chunk_times=chunk_times,
+                server_usage=server_usage,
+            ),
+        )
+        return RequestLifecycleMetric(
+            scheduled_time=0.0, start_time=0.0, end_time=3.0, request_data="req", info=info, error=None
+        )
+
+    tokenizer = MagicMock()
+    tokenizer.count_tokens = MagicMock(return_value=1)
+
+    # Server says 2, client re-tokenized 2 -> no mismatch.
+    assert correct_streamed_response_metrics(make_metric({"output_tokens": 2}), tokenizer) is False
+    # Server says 5, client re-tokenized 2 -> mismatch must be reported.
+    assert correct_streamed_response_metrics(make_metric({"output_tokens": 5}), tokenizer) is True

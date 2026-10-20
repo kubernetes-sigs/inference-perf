@@ -71,6 +71,14 @@ class SharedPrefix(StrictBaseModel):
     output_len: Union[int, Distribution] = Field(
         default=50, description="Requested output length in tokens: a fixed value or a distribution."
     )
+    max_model_len: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Maximum model context length in tokens for multi-turn sessions. "
+            "Defaults to 225000 when omitted, matching conversation_replay."
+        ),
+    )
     seed: Optional[int] = Field(default=None, description="Random seed for reproducible prompt generation.")
 
     # Legacy distribution fields — kept for backward compatibility.
@@ -83,7 +91,8 @@ class SharedPrefix(StrictBaseModel):
     )
 
     enable_multi_turn_chat: bool = Field(
-        default=False, description="Send each group's prompts as consecutive turns of one chat conversation."
+        default=False,
+        description="Send each group's prompts as consecutive turns of one chat conversation. Requires api.type completion.",
     )
     multimodal: Optional[SyntheticMultimodalDatagenConfig] = Field(
         default=None, description="Attach synthetic multimodal content (images, video, audio) to generated prompts."
@@ -109,6 +118,13 @@ class DataConfig(StrictBaseModel):
 
     path: Optional[str] = Field(
         default=None, description="Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type."
+    )
+    load_timeout: Optional[float] = Field(
+        default=300.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Deadline in seconds for Hub dataset initialization, including startup row reads."
+        " Does not bound later streaming iteration. Null disables the deadline.",
     )
     corpus_file_path: Optional[str] = Field(
         None,

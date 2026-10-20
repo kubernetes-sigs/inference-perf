@@ -72,6 +72,51 @@ def test_per_request_fields_can_omit_response_chunks_without_mutating_metric() -
     assert metric.info.response_metrics.response_chunks == ['{"choices": [{"text": "hello"}]}']
 
 
+_CONTENT_CHUNKS = ['{"choices": [{"delta": {"content": "hi"}}]}']
+_REASONING_CHUNKS = [
+    '{"choices": [{"delta": {"reasoning_content": "let"}}]}',
+    '{"choices": [{"delta": {"reasoning_content": " me think"}}]}',
+]
+
+
+# A reasoning model's stream: reasoning chunks at 1.2s and 1.4s, then one content chunk at 1.6s.
+def _reasoning_metric() -> RequestLifecycleMetric:
+    metric = _metric()
+    metric.info.response_metrics = StreamedResponseMetrics(
+        output_tokens=4,
+        response_chunks=list(_CONTENT_CHUNKS),
+        chunk_times=[1.6],
+        reasoning_chunks=list(_REASONING_CHUNKS),
+        reasoning_chunk_times=[1.2, 1.4],
+        output_token_times=[1.2, 1.4, 1.4, 1.6],
+    )
+    return metric
+
+
+# response_chunks=False on that stream writes no chunk list from either channel.
+# Both channels' arrival times stay, and the in-memory metric keeps its chunks.
+def test_per_request_fields_omit_response_chunks_drops_both_channels() -> None:
+    metric = _reasoning_metric()
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(response_chunks=False))
+
+    response_metrics = entry["info"]["response_metrics"]
+    assert [key for key in response_metrics if key.endswith("_chunks")] == []
+    assert response_metrics["chunk_times"] == [1.6]
+    assert response_metrics["reasoning_chunk_times"] == [1.2, 1.4]
+    assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
+    assert metric.info.response_metrics.response_chunks == _CONTENT_CHUNKS
+    assert metric.info.response_metrics.reasoning_chunks == _REASONING_CHUNKS
+
+
+# response_chunks=True on the same stream writes both chunk lists exactly as received.
+def test_per_request_fields_include_response_chunks_keeps_both_channels() -> None:
+    entry = build_per_request_lifecycle_entry(_reasoning_metric(), PerRequestFieldsConfig(response_chunks=True))
+
+    response_metrics = entry["info"]["response_metrics"]
+    assert response_metrics["response_chunks"] == _CONTENT_CHUNKS
+    assert response_metrics["reasoning_chunks"] == _REASONING_CHUNKS
+
+
 def test_per_request_fields_computed_metrics_disabled_by_default() -> None:
     entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig())
 
@@ -85,6 +130,7 @@ def test_per_request_fields_computed_metrics_can_be_enabled() -> None:
         "request_latency": 1.0,
         "normalized_time_per_output_token": 0.5,
         "time_to_first_token": None,
+        "time_to_first_output_token": None,
         "time_per_output_token": None,
         "inter_token_latency": None,
         "inter_token_latencies": [],
@@ -152,3 +198,60 @@ def test_per_request_fields_computed_metrics_uses_tokenizer_corrected_chunks() -
     # The correction sets output_token_times only; output_tokens keeps the API layer's
     # whole-message count (see #564).
     assert entry["computed_metrics"]["output_tokens"] == 4
+
+
+def test_per_request_fields_include_session_ids_when_set() -> None:
+    metric = _metric()
+    metric.session_id = "wekatrace5_05658118df5d398eec4703ce4fafe679ab30"
+    metric.request_session_id = "wekatrace5_05658118df5d398eec4703ce4fafe679ab30::sa:agent-1:s0"
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(request=False, response=False, info=False))
+
+    assert entry["session_id"] == "wekatrace5_05658118df5d398eec4703ce4fafe679ab30"
+    assert entry["request_session_id"] == "wekatrace5_05658118df5d398eec4703ce4fafe679ab30::sa:agent-1:s0"
+
+
+def test_per_request_fields_keep_parent_session_id_without_request_session_id() -> None:
+    metric = _metric()
+    metric.session_id = "wekatrace5_05658118df5d398eec4703ce4fafe679ab30"
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig())
+
+    assert entry["session_id"] == "wekatrace5_05658118df5d398eec4703ce4fafe679ab30"
+    assert "request_session_id" not in entry
+
+
+def test_per_request_fields_omit_session_ids_when_absent() -> None:
+    entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig())
+
+    assert "session_id" not in entry
+    assert "request_session_id" not in entry
+
+
+@pytest.mark.parametrize("include_raw", [True, False])
+@pytest.mark.parametrize("failed", [True, False])
+def test_per_request_entries_preserve_stage_and_schedule(include_raw: bool, failed: bool) -> None:
+    fields = PerRequestFieldsConfig(request=include_raw, response=include_raw, info=include_raw)
+    entries = []
+    for stage_id, scheduled_time in [(0, 0.0), (2, 0.125)]:
+        metric = _metric()
+        metric.stage_id = stage_id
+        metric.scheduled_time = scheduled_time
+        if failed:
+            metric.error = ErrorResponseInfo(error_type="test", error_msg="request failed")
+        entries.append(build_per_request_lifecycle_entry(metric, fields))
+
+    # Identical send times cannot identify the stage or recover its scheduled time.
+    assert [entry["start_time"] for entry in entries] == [1.0, 1.0]
+    assert [entry["stage_id"] for entry in entries] == [0, 2]
+    assert [entry["scheduled_time"] for entry in entries] == [0.0, 0.125]
+
+
+def test_per_request_fields_omit_stage_id_when_absent() -> None:
+    metric = _metric()
+    metric.stage_id = None
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig())
+
+    assert "stage_id" not in entry
+    assert entry["scheduled_time"] == metric.scheduled_time

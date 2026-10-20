@@ -43,4 +43,6 @@ class GoogleManagedPrometheusMetricsClient(PrometheusMetricsClient):
         self.credentials.refresh(auth_req)  # type: ignore[no-untyped-call,unused-ignore]
         if not self.credentials.token:
             raise Exception("Failed to get credentials token")
-        return {"Authorization": "Bearer " + self.credentials.token}
+        headers: dict[str, Any] = dict(self.extra_headers)
+        headers["Authorization"] = "Bearer " + self.credentials.token
+        return headers

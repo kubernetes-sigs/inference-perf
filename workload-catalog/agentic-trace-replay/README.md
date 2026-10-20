@@ -45,9 +45,11 @@ context window your server actually serves, not the model's advertised maximum:
 32k, and the 128k figure on the model card requires enabling YaRN explicitly. Check
 `GET /v1/models` and read `max_model_len` to confirm what your endpoint serves.
 
-Leave headroom for the completion on top of the input: tool-call events are replayed with
-`max_tokens: 4096` (see `override_tool_call_max_tokens`), so a call with only ~30.5k input
-tokens still overflows a 32k window. Hence the `< 28000` default below.
+Leave headroom for tool-call expansion on top of the recorded input+output total. With
+`override_tool_call_max_tokens`, outputs up to 1,024 tokens get a 4,096-token allowance,
+outputs up to 8,192 get `max(1.5x, 8192)`, and larger outputs get 4,096 extra tokens.
+The largest added allowance is 7,167 tokens (at a 1,025-token recorded output), so the
+`< 25000` default below keeps the worst case below a 32k context window.
 
 Each record also carries top-level scalar fields that act as cheap proxies for "how long/large
 is this trace" — useful for dropping oversized sessions without inspecting the full `spans`
@@ -63,8 +65,9 @@ data:
   otel_trace_replay:
     hf_dataset_path: Exgentic/agent-llm-traces-v2
     # Keep only sessions whose largest call fits the served context window.
-    # 28000 suits a 32k window; raise to 120000 only if you serve 128k (YaRN enabled).
-    filter: "lambda x: x.get('max_tokens', 0) < 28000"
+    # 25000 plus at most 7167 tokens of tool-call expansion fits a 32k window.
+    # Raise to 120000 only if you serve 128k (YaRN enabled).
+    filter: "lambda x: x.get('max_tokens', 0) < 25000"
     # Or drop long/large traces using top-level scalar proxies:
     # filter: "lambda x: x.get('steps', 0) < 50"
     # filter: "lambda x: x.get('total_tokens', 0) < 500000"
@@ -73,9 +76,9 @@ data:
     # filter: "lambda x: x['benchmark'] == 'tau2_retail'"
 ```
 
-Coverage depends on this cap: `< 28000` keeps 5,632 of 10,056 sessions (56%), `< 120000`
-keeps 9,176 (91%). Raising the cap past what the server serves does not buy coverage — it
-turns those sessions into HTTP 400s, and since later calls depend on earlier ones, one
-rejected call cancels the rest of its session.
+Coverage depends on this cap: `< 120000` keeps 9,176 of 10,056 sessions (91%), while the
+safer 32k threshold necessarily keeps fewer. Raising the cap past what the server serves
+does not buy usable coverage — it turns those sessions into HTTP 400s, and since later
+calls depend on earlier ones, one rejected call cancels the rest of its session.
 
 To stress-test beyond the 10,056 available sessions, set `duplicate_sessions_target` to inflate the corpus. Duplicates are KV-cache-isolated automatically. See [OTel Trace Replay](../../docs/otel_trace_replay.md) for the full configuration reference.

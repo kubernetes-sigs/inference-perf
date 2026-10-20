@@ -21,7 +21,7 @@ from aiohttp.client_reqrep import ConnectionKey
 import pytest
 import asyncio
 import aiohttp
-from typing import Any, cast
+from typing import Any, Optional, cast
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import (
     is_retryable_transport_error,
@@ -32,8 +32,10 @@ from inference_perf.client.modelserver.metrics import Metric, CounterResult
 from inference_perf.apis import (
     AnthropicMessagesAPIData,
     ChatMessage,
+    EmbeddingsAPIData,
     ErrorResponseInfo,
     InferenceInfo,
+    RerankAPIData,
     SessionLifecycleMetric,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
@@ -63,6 +65,7 @@ def mock_client() -> MagicMock:
 @pytest.fixture
 def mock_data() -> MagicMock:
     data = MagicMock()
+    data.request_session_id = None
     data.get_route.return_value = "/test"
     data.process_failure = AsyncMock(return_value=InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0))))
     data.process_response = AsyncMock(return_value=InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0))))
@@ -308,6 +311,156 @@ async def test_anthropic_messages_request_uses_messages_route_and_headers(mock_c
 
 
 @pytest.mark.asyncio
+async def test_embeddings_request_round_trip(mock_client: MagicMock) -> None:
+    mock_client.api_config.type = APIType.Embeddings
+    mock_client.api_config.streaming = False
+    mock_client.api_config.session_id_header_key = None
+    mock_client.api_key = "test-key"
+    mock_client.model_name = "embed-model"
+    mock_client.max_completion_tokens = 128
+    mock_client.ignore_eos = True
+
+    body = {
+        "object": "list",
+        "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+        "model": "embed-model",
+        "usage": {"prompt_tokens": 4, "total_tokens": 4},
+    }
+    resp = MagicMock()
+    resp.status = 200
+    resp.headers = {}
+    resp.text = AsyncMock(return_value=json.dumps(body))
+    resp.json = AsyncMock(return_value=body)
+
+    data = EmbeddingsAPIData(input=["hello world"])
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=resp)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(data, stage_id=1, scheduled_time=0.0)
+
+    assert session.session.post.call_args.args[0] == "http://test-uri/v1/embeddings"
+    assert json.loads(session.session.post.call_args.kwargs["data"]) == {"model": "embed-model", "input": ["hello world"]}
+    assert session.session.post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert mock_client.otel.trace_llm_request.call_args.kwargs["operation_name"] == "embeddings"
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is None
+    assert metric.info.request_metrics.text.input_tokens == 4
+    assert metric.info.response_metrics.output_tokens == 0
+    # The vectors are dropped from the stored body; model and usage are kept.
+    assert json.loads(metric.response_data) == {
+        "model": "embed-model",
+        "usage": {"prompt_tokens": 4, "total_tokens": 4},
+    }
+
+
+@pytest.mark.asyncio
+async def test_embeddings_error_body_kept_whole(mock_client: MagicMock) -> None:
+    mock_client.api_config.type = APIType.Embeddings
+    mock_client.api_config.streaming = False
+    mock_client.api_config.session_id_header_key = None
+    mock_client.model_name = "embed-model"
+
+    error_body = json.dumps({"object": "error", "message": "input too long", "code": 400})
+    resp = MagicMock()
+    resp.status = 400
+    resp.headers = {}
+    resp.text = AsyncMock(return_value=error_body)
+
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=resp)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(EmbeddingsAPIData(input="hello"), stage_id=1, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is not None
+    assert metric.response_data == error_body
+
+
+@pytest.mark.asyncio
+async def test_embeddings_200_recorded_as_failure_keeps_body(mock_client: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_client.api_config.type = APIType.Embeddings
+    mock_client.api_config.streaming = False
+    mock_client.api_config.session_id_header_key = None
+    mock_client.model_name = "embed-model"
+
+    # Stands in for an in-band error check: process_response rejects a 200 error payload.
+    monkeypatch.setattr(EmbeddingsAPIData, "process_response", AsyncMock(side_effect=ValueError("in-band error")))
+    error_body = json.dumps({"error": {"message": "input too long", "type": "invalid_request_error"}})
+    resp = MagicMock()
+    resp.status = 200
+    resp.headers = {}
+    resp.text = AsyncMock(return_value=error_body)
+
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=resp)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(EmbeddingsAPIData(input="hello"), stage_id=1, scheduled_time=0.0)
+
+    # A 200 recorded as a failure keeps its body, so the error message is not lost.
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is not None
+    assert metric.response_data == error_body
+
+
+@pytest.mark.asyncio
+async def test_rerank_request_round_trip(mock_client: MagicMock) -> None:
+    mock_client.api_config.type = APIType.Rerank
+    mock_client.api_config.streaming = False
+    mock_client.api_config.session_id_header_key = None
+    mock_client.api_key = "test-key"
+    mock_client.model_name = "rerank-model"
+    mock_client.max_completion_tokens = 128
+    mock_client.ignore_eos = True
+
+    body = {
+        "results": [{"index": 0, "relevance_score": 0.9}],
+        "usage": {"prompt_tokens": 6, "total_tokens": 6},
+    }
+    resp = MagicMock()
+    resp.status = 200
+    resp.headers = {}
+    resp.text = AsyncMock(return_value=json.dumps(body))
+    resp.json = AsyncMock(return_value=body)
+
+    data = RerankAPIData(query="what is a cat", documents=["a cat is a mammal"])
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=resp)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(data, stage_id=1, scheduled_time=0.0)
+
+    assert session.session.post.call_args.args[0] == "http://test-uri/v1/rerank"
+    assert json.loads(session.session.post.call_args.kwargs["data"]) == {
+        "model": "rerank-model",
+        "query": "what is a cat",
+        "documents": ["a cat is a mammal"],
+    }
+    assert session.session.post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert mock_client.otel.trace_llm_request.call_args.kwargs["operation_name"] == "rerank"
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is None
+    assert metric.info.request_metrics.text.input_tokens == 6
+    assert metric.info.response_metrics.output_tokens == 0
+
+
+@pytest.mark.asyncio
 async def test_session_id_header_injected_when_both_set(mock_client: MagicMock, mock_data: MagicMock) -> None:
     mock_data.session_id = "trace0_test_session"
     mock_client.api_config.session_id_header_key = "x-session-id"
@@ -325,6 +478,35 @@ async def test_session_id_header_injected_when_both_set(mock_client: MagicMock, 
     headers_passed = session.session.post.call_args.kwargs["headers"]
     assert "x-session-id" in headers_passed
     assert headers_passed["x-session-id"] == "trace0_test_session"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header_key", [None, "x-session-id"])
+async def test_child_request_identity_keeps_parent_metrics(
+    mock_client: MagicMock, mock_data: MagicMock, header_key: Optional[str]
+) -> None:
+    mock_data.session_id = "trace0_parent"
+    mock_data.request_session_id = "trace0_parent::sa:alpha:s0"
+    mock_data.headers = None
+    mock_client.api_config.session_id_header_key = header_key
+
+    session = openAIModelServerClientSession(mock_client)
+    await session.session.close()
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    headers = session.session.post.call_args.kwargs["headers"]
+    if header_key:
+        assert headers[header_key] == "trace0_parent::sa:alpha:s0"
+    else:
+        assert "x-session-id" not in headers
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.session_id == "trace0_parent"
+    assert metric.request_session_id == "trace0_parent::sa:alpha:s0"
 
 
 @pytest.mark.asyncio
@@ -418,7 +600,7 @@ def test_openai_metrics_iteration_yields_each_field_once() -> None:
         def get_queries(self, duration: float, filters: str) -> list[str]:
             return []
 
-        def parse(self, results: list[float]) -> CounterResult:
+        def parse(self, results: list[Optional[float]]) -> CounterResult:
             return CounterResult()
 
     metrics = OpenAIMetrics(
@@ -545,6 +727,26 @@ async def test_session_token_not_shared_across_sessions(mock_client: MagicMock, 
     await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
     headers_passed = mock_http_session.post.call_args.kwargs["headers"]
     assert "x-session-token" not in headers_passed
+
+
+@pytest.mark.asyncio
+async def test_session_tokens_isolated_between_parent_and_child_streams(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    session, http_session = _session_token_test_setup(mock_client, mock_data, response_token="encoded-pod-a")
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    parent_id = mock_data.session_id
+
+    # New child streams cannot reuse the parent's token, or each other's.
+    for suffix in ["::sa:alpha:s0", "::sa:alpha:s1", "::sa:beta:s0"]:
+        mock_data.request_session_id = parent_id + suffix
+        await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+        assert "x-session-token" not in http_session.post.call_args.kwargs["headers"]
+        await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+        assert http_session.post.call_args.kwargs["headers"]["x-session-token"] == "encoded-pod-a"
+
+    mock_data.request_session_id = None
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    assert http_session.post.call_args.kwargs["headers"]["x-session-token"] == "encoded-pod-a"
+    assert mock_data.session_id == parent_id
 
 
 @pytest.mark.asyncio

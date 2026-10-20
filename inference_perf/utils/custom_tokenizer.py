@@ -11,12 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import logging
 import threading
+from typing import TYPE_CHECKING
 
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from transformers.tokenization_utils_base import VERY_LARGE_INTEGER
-from inference_perf.config import CustomTokenizerConfig
+
+if TYPE_CHECKING:
+    # Avoid a circular import (inference_perf.config imports inference_perf.utils).
+    from inference_perf.config import CustomTokenizerConfig
 
 logger = logging.getLogger(__name__)
 

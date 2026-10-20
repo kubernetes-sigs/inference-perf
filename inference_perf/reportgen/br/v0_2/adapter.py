@@ -19,21 +19,29 @@ Everything else — stack configuration, run/scenario metadata — is supplied
 by the user via the partial report; see ``partial_report.py``.
 """
 
-import json
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from inference_perf.apis import RequestLifecycleMetric, StreamedResponseMetrics
-from inference_perf.reportgen.base import effective_output_tokens
+from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
+from inference_perf.reportgen.base import effective_output_tokens, retokenize_output_token_times
+from inference_perf.payloads import Audios, Images, Videos
 
 from .schema import (
     AggregateLatency,
     AggregateRequestPerformance,
     AggregateRequests,
     AggregateThroughput,
+    AudioPayloadStats,
+    ImagePayloadStats,
+    MultiModalRequests,
+    VideoPayloadStats,
     RequestPerformance,
     Results,
+    SessionPerformance,
+    SessionRequests,
     Statistics,
     Units,
 )
@@ -50,6 +58,9 @@ def build_results(
     request_metrics: List[RequestLifecycleMetric],
     tokenizer: Optional["CustomTokenizer"] = None,
     use_server_output_tokens: bool = False,
+    *,
+    session_metrics: Optional[List[SessionLifecycleMetric]] = None,
+    sessions_not_completed: int = 0,
 ) -> Results:
     """Build a BR0.2 ``Results`` from inference-perf request metrics.
 
@@ -59,9 +70,24 @@ def build_results(
 
     ``use_server_output_tokens`` must match the value used for the native
     lifecycle reports so both reports of the same run agree on token counts.
+
+    ``session_metrics`` carries the session lifecycle metrics of the same stage,
+    already enriched with per-session token totals. When empty or omitted —
+    every non-session workload — ``session_performance`` stays ``None`` so the
+    emitted partial is unchanged.
+
+    ``sessions_not_completed`` is the stage's count of sessions that were still
+    active or never dispatched when the stage ended (the
+    ``sessions_not_completed_active + sessions_not_completed_pending`` of the
+    stage's ``StageRuntimeInfo``). Those sessions leave no lifecycle metric
+    behind, so they are counted here rather than through ``session_metrics``:
+    without them a stage cut short by ``max_stage_duration`` would report only
+    the sessions that happened to finish, which reads as a clean run. Like the
+    native session report, they count towards ``total`` and nothing else.
     """
     return Results(
         request_performance=_build_request_performance(request_metrics, tokenizer, use_server_output_tokens),
+        session_performance=_build_session_performance(session_metrics or [], sessions_not_completed),
     )
 
 
@@ -78,6 +104,77 @@ def _build_request_performance(
     if not metrics:
         return None
     return RequestPerformance(aggregate=_build_aggregate(metrics, tokenizer, use_server_output_tokens))
+
+
+# ---------------------------------------------------------------------------
+# Session performance aggregation
+# ---------------------------------------------------------------------------
+
+
+def _build_session_performance(
+    metrics: List[SessionLifecycleMetric], sessions_not_completed: int = 0
+) -> Optional[SessionPerformance]:
+    sessions = _build_session_requests(metrics, sessions_not_completed)
+    if sessions is None:
+        return None
+    return SessionPerformance(sessions=sessions)
+
+
+def _build_session_requests(
+    metrics: List[SessionLifecycleMetric], sessions_not_completed: int = 0
+) -> Optional[SessionRequests]:
+    """Aggregate per-session metrics into BR0.2 ``SessionRequests``.
+
+    Mirrors ``reportgen/base.py:summarize_sessions``, which renders the same
+    figures in the native session lifecycle report, so both reports of a run
+    agree on session counts, rates and per-session distributions.
+
+    The metrics are expected to be enriched (see
+    ``SessionMetricsCollector.enrich_metrics``) by the time they reach here:
+    per-session token totals come from that step, not from the session metrics
+    themselves.
+
+    ``sessions_not_completed`` counts the stage's sessions that produced no
+    metric, so ``total`` matches the native ``num_sessions``. The rest of the
+    block describes the sessions that did report: ``succeeded`` and ``failed``
+    mirror ``num_sessions_succeeded`` / ``num_sessions_failed``, and the
+    distributions are computed over recorded sessions only — an unrecorded
+    session has no duration or event data to contribute. Returns ``None`` when
+    the stage ran no sessions at all, so the block is omitted rather than
+    emitted as zeros.
+    """
+    total = len(metrics) + sessions_not_completed
+    if total == 0:
+        return None
+
+    # Same span convention as the native summary: first session start to last
+    # session end, over the sessions that reported. A zero-length span omits the
+    # rate rather than dividing by it.
+    session_rate: Optional[Statistics] = None
+    total_span = max(m.end_time for m in metrics) - min(m.start_time for m in metrics) if metrics else 0.0
+    if total_span > 0:
+        session_rate = _scalar_statistics(len(metrics) / total_span, Units.QUERY_PER_S)
+
+    return SessionRequests(
+        total=total,
+        succeeded=sum(1 for m in metrics if m.success is True),
+        failed=sum(1 for m in metrics if m.success is False),
+        total_events=sum(m.num_events for m in metrics),
+        total_events_completed=sum(m.num_events_completed for m in metrics),
+        total_events_cancelled=sum(m.num_events_cancelled for m in metrics if m.num_events_cancelled is not None),
+        session_rate=session_rate,
+        session_duration=_statistics((m.duration_sec for m in metrics), Units.S),
+        events_per_session=_statistics((m.num_events for m in metrics), Units.COUNT),
+        events_cancelled_per_session=_statistics(
+            (m.num_events_cancelled for m in metrics if m.num_events_cancelled is not None), Units.COUNT
+        ),
+        input_tokens_per_session=_statistics(
+            (m.total_input_tokens for m in metrics if m.total_input_tokens is not None), Units.COUNT
+        ),
+        output_tokens_per_session=_statistics(
+            (m.total_output_tokens for m in metrics if m.total_output_tokens is not None), Units.COUNT
+        ),
+    )
 
 
 def _build_aggregate(
@@ -103,6 +200,11 @@ def _build_aggregate(
         failures=len(failed),
         input_length=_statistics(input_lengths, Units.COUNT),
         output_length=_statistics(output_lengths, Units.COUNT),
+        request_size=_statistics(
+            (len(m.request_data.encode("utf-8")) for m in successful),
+            Units.BYTES,
+        ),
+        multimodal=_build_multimodal(successful),
     )
 
     request_latencies, ttft, tpot, itl, ntpot = _per_request_latencies(successful, tokenizer, use_server_output_tokens)
@@ -138,17 +240,88 @@ def _build_throughput(
         output_token_rate=_scalar_statistics(output_tokens / total_time, Units.TOKEN_PER_S),
         total_token_rate=_scalar_statistics((input_tokens + output_tokens) / total_time, Units.TOKEN_PER_S),
         request_rate=_scalar_statistics(len(successful) / total_time, Units.QUERY_PER_S),
+        image_rate=_media_rate(
+            (m.info.request_metrics.image for m in successful),
+            total_time,
+            Units.IMAGE_PER_S,
+        ),
+        video_rate=_media_rate(
+            (m.info.request_metrics.video for m in successful),
+            total_time,
+            Units.VIDEO_PER_S,
+        ),
+        audio_rate=_media_rate(
+            (m.info.request_metrics.audio for m in successful),
+            total_time,
+            Units.AUDIO_PER_S,
+        ),
     )
+
+
+def _media_rate(
+    payloads: Iterable[Images | Videos | Audios | None],
+    total_time: float,
+    units: Units,
+) -> Optional[Statistics]:
+    recorded = [payload for payload in payloads if payload is not None]
+    if not recorded:
+        return None
+    return _scalar_statistics(sum(payload.count for payload in recorded) / total_time, units)
+
+
+def _build_multimodal(successful: List[RequestLifecycleMetric]) -> Optional[MultiModalRequests]:
+    images = [m.info.request_metrics.image for m in successful]
+    videos = [m.info.request_metrics.video for m in successful]
+    audios = [m.info.request_metrics.audio for m in successful]
+    if not any(images) and not any(videos) and not any(audios):
+        return None
+
+    all_images = [instance for group in images if group is not None for instance in group.instances]
+    all_videos = [instance for group in videos if group is not None for instance in group.instances]
+    all_audios = [instance for group in audios if group is not None for instance in group.instances]
+    # Counts describe requests, including text-only requests in a mixed workload.
+    # Other distributions describe individual media instances, not request averages.
+    image = None
+    if any(images):
+        image = ImagePayloadStats(
+            count=_statistics((group.count if group else 0 for group in images), Units.COUNT),
+            filesize=_statistics((instance.bytes for instance in all_images), Units.BYTES),
+            pixels=_statistics((instance.pixels for instance in all_images), Units.PIXELS),
+            aspect_ratio=_statistics(
+                (instance.aspect_ratio for instance in all_images),
+                Units.RATIO,
+            ),
+        )
+    video = None
+    if any(videos):
+        video = VideoPayloadStats(
+            count=_statistics((group.count if group else 0 for group in videos), Units.COUNT),
+            filesize=_statistics((instance.bytes for instance in all_videos), Units.BYTES),
+            # BR counts pixels across frames; native Video.pixels is per-frame.
+            pixels=_statistics((instance.pixels * instance.frames for instance in all_videos), Units.PIXELS),
+            aspect_ratio=_statistics(
+                (instance.aspect_ratio for instance in all_videos),
+                Units.RATIO,
+            ),
+            frames=_statistics((instance.frames for instance in all_videos), Units.COUNT),
+        )
+    audio = None
+    if any(audios):
+        audio = AudioPayloadStats(
+            count=_statistics((group.count if group else 0 for group in audios), Units.COUNT),
+            filesize=_statistics((instance.bytes for instance in all_audios), Units.BYTES),
+            duration=_statistics((instance.seconds for instance in all_audios), Units.S),
+        )
+    return MultiModalRequests(image=image, video=video, audio=audio)
 
 
 # ---------------------------------------------------------------------------
 # Per-request latency derivation.
-# Mirrors the chunk-parsing + latency math in
-# reportgen/base.py:summarize_requests without mutating the input metrics:
-# timestamps come from output_token_times (or a chunk re-tokenization
-# fallback), token counts from effective_output_tokens, matching the native
-# lifecycle reports. TODO: extract into a single shared helper once both
-# paths are stable.
+# Mirrors the latency math in reportgen/base.py:summarize_requests without
+# mutating the input metrics: timestamps come from output_token_times (or the
+# same chunk re-tokenization the native reports use), token counts from
+# effective_output_tokens. TODO: share the latency math too once both paths
+# are stable.
 # ---------------------------------------------------------------------------
 
 
@@ -197,34 +370,10 @@ def _resolve_token_times(
     if info.output_token_times:
         return list(info.output_token_times)
 
-    if not info.response_chunks or tokenizer is None:
+    if not (info.response_chunks or info.reasoning_chunks) or tokenizer is None:
         return []
 
-    token_times: List[float] = []
-    for chunk_str, chunk_time in zip(info.response_chunks, info.chunk_times, strict=False):
-        try:
-            data = json.loads(chunk_str)
-        except json.JSONDecodeError:
-            continue
-        choices = data.get("choices") or []
-        if not choices:
-            continue
-        delta = choices[0]
-        text = delta.get("text") or delta.get("delta", {}).get("content")
-        if not text:
-            continue
-        # Count each chunk as a sequence fragment (add_special_tokens=False):
-        # re-tokenizing with special tokens prepends a BOS per chunk, which
-        # inflates counts and deflates ITL. See #564.
-        n = tokenizer.count_tokens(text, add_special_tokens=False)
-        if n <= 0:
-            continue
-        # Every token in a chunk gets the chunk's arrival time, matching
-        # summarize_requests: intra-chunk ITL is 0, inter-chunk ITL absorbs
-        # the full gap.
-        token_times.extend([chunk_time] * n)
-
-    return token_times
+    return retokenize_output_token_times(info, tokenizer)
 
 
 # ---------------------------------------------------------------------------

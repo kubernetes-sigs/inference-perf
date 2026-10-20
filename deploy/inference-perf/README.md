@@ -18,15 +18,15 @@ Make sure you have the following tools installed and configured:
 Before deployment, navigate to the **`deploy/inference-perf`** directory and edit the **`values.yaml`** file to customize your deployment and the benchmark parameters.
 
 #### Optional Token Parameters
-Hugging Face token can be provided either by providing a value (`hfToken`) or by referencing an existing Kubernetes Secret (`hfSecret.Name` and `hfSecret.Key`).
+Hugging Face token can be provided either by providing a value (`token.hfToken`) or by referencing an existing Kubernetes Secret (`token.hfSecret.name` and `token.hfSecret.key`).
 
-> If both `hfToken` and the `hfSecret` parameters are provided, the chart logic is configured to prioritize the `hfSecret` reference.
+> If both `token.hfToken` and the `token.hfSecret` parameters are provided, the chart logic is configured to prioritize the `token.hfSecret` reference.
 
 | Key | Description | Default |
 | :--- | :--- | :--- |
-| `hfToken` | Hugging Face API token. If provided, a Kubernetes `Secret` named `hf-token-secret` will be created for authentication. | `""` |
-| `hfSecret.name` | The name of a pre-existing Kubernetes Secret that contains a Hugging Face API token. | `""` |
-| `hfSecret.key` | The key within the pre-existing Kubernetes Secret that holds the token value. | `""` |
+| `token.hfToken` | Hugging Face API token. If provided, a Kubernetes `Secret` whose name ends in `-hf-secret` will be created for authentication. | `""` |
+| `token.hfSecret.name` | The name of a pre-existing Kubernetes Secret that contains a Hugging Face API token. | `""` |
+| `token.hfSecret.key` | The key within the pre-existing Kubernetes Secret that holds the token value. | `""` |
 ---
 
 #### Optional Job Parameters
@@ -98,9 +98,9 @@ Use the **`helm install`** command from the **`deploy/inference-perf`** director
     helm install test .
     ```
 
-* **Set `hfToken` Override:** Pass the Hugging Face token directly.
+* **Set `token.hfToken` Override:** Pass the Hugging Face token directly.
     ```bash
-    helm install test . --set hfToken="<TOKEN>"
+    helm install test . --set token.hfToken="<TOKEN>"
     ```
 
 * **Custom Config Override:** Make changes to the values file for custom settings.

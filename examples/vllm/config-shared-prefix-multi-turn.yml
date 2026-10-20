@@ -22,6 +22,7 @@ data:
     system_prompt_len: 100            # Length of the first prefix (in tokens), simulate initialization of a system prompt
     question_len: 50              # Length of the unique question part (in tokens)
     output_len: 50                # Target length for the model's generated output (in tokens)
+    max_model_len: 32768          # Context ceiling for multi-turn history; omit to use the 225000 default
     enable_multi_turn_chat: true  # enable multi-turn chat, it will create user session to keep the conversation. The chat context will be appended for the each request.
 metrics:
   type: prometheus

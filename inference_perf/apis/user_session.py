@@ -44,6 +44,8 @@ class LocalUserSession:
         system_prompt: str = "",
         tokenizer: Optional[CustomTokenizer] = None,
         max_model_len: Optional[int] = None,
+        accumulate_history: Optional[bool] = None,
+        preserve_initial_prompt_boundary: bool = False,
     ):
         self.user_session_id = user_session_id
         self.context = context if context else ""
@@ -51,7 +53,14 @@ class LocalUserSession:
         # Whether update_context accumulates response history, fixed at construction.
         # system_prompt cannot remain the control flag because request-time truncation
         # may empty its text and otherwise switch behavior for subsequent turns.
-        self._accumulates_history: bool = bool(system_prompt)
+        # Keep the legacy non-empty-system-prompt behavior for existing callers, while
+        # allowing intentionally empty-prefix sessions to opt into history accumulation.
+        self._accumulates_history: bool = bool(system_prompt) if accumulate_history is None else accumulate_history
+        # Shared-prefix generation decodes prefix + question jointly. In that
+        # workload the question stores the exact decoded remainder, so adding a
+        # separator would change the generated prompt. Other session workloads
+        # provide independently decoded pieces and retain the legacy separator.
+        self._preserves_initial_prompt_boundary = preserve_initial_prompt_boundary
         self.tokenizer = tokenizer
         self.max_model_len = max_model_len
         self.history = []
@@ -93,33 +102,38 @@ class LocalUserSession:
 
     def update_context(self, response: str) -> None:
         if self._accumulates_history and self.tokenizer and self.max_model_len:
-            history_context = " ".join(self.history) if self.history else ""
+            history_context = "".join(self.history) if self._preserves_initial_prompt_boundary else " ".join(self.history)
             base_len = len(self.system_prompt)
             if history_context:
-                base_len += len(history_context) + 1
-            turn_content = response[base_len:].strip()
+                base_len += len(history_context) if self._preserves_initial_prompt_boundary else len(history_context) + 1
+            turn_content = response[base_len:]
+            if not self._preserves_initial_prompt_boundary:
+                turn_content = turn_content.strip()
             if turn_content:
                 self.history.append(turn_content)
 
-            history_str = " ".join(self.history)
+            history_str = "".join(self.history) if self._preserves_initial_prompt_boundary else " ".join(self.history)
             system_tokens = self.tokenizer.count_tokens(self.system_prompt)
             history_tokens = self.tokenizer.count_tokens(history_str)
 
             if system_tokens + history_tokens > self.max_model_len:
                 while self.history:
-                    history_str = " ".join(self.history)
+                    history_str = "".join(self.history) if self._preserves_initial_prompt_boundary else " ".join(self.history)
                     history_tokens = self.tokenizer.count_tokens(history_str)
                     if system_tokens + history_tokens <= self.max_model_len:
                         break
                     self.history.pop(0)
 
-            self.context = (
-                self.system_prompt + " " + " ".join(self.history)
-                if self.history and self.system_prompt
-                else " ".join(self.history)
-                if self.history
-                else self.system_prompt
-            )
+            if self._preserves_initial_prompt_boundary:
+                self.context = self.system_prompt + "".join(self.history)
+            else:
+                self.context = (
+                    self.system_prompt + " " + " ".join(self.history)
+                    if self.history and self.system_prompt
+                    else " ".join(self.history)
+                    if self.history
+                    else self.system_prompt
+                )
         else:
             self.context = response
 
@@ -183,14 +197,28 @@ class UserSessionCompletionAPIData(CompletionAPIData):
             current_prompt = self.prompt
 
             def get_text(sys: str, hist: list[str], curr: str) -> str:
-                parts = []
-                if sys:
-                    parts.append(sys)
-                if hist:
-                    parts.append(" ".join(hist))
+                if not self.user_session._preserves_initial_prompt_boundary:
+                    parts = []
+                    if sys:
+                        parts.append(sys)
+                    if hist:
+                        parts.append(" ".join(hist))
+                    if curr:
+                        parts.append(curr)
+                    return " ".join(parts)
+
+                # Shared-prefix questions are decoded from prefix + question
+                # token IDs. Keep that exact first boundary in history so every
+                # later request starts with the prior prompt and response.
+                history_text = "".join(hist)
+                result = sys + history_text
                 if curr:
-                    parts.append(curr)
-                return " ".join(parts)
+                    if not history_text:
+                        return result + curr
+                    if result and not result[-1].isspace() and not curr[0].isspace():
+                        result += " "
+                    result += curr
+                return result
 
             combined_text = get_text(system_prompt, history, current_prompt)
             token_ids = hf_tokenizer.encode(combined_text)

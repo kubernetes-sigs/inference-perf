@@ -21,6 +21,8 @@ dependencies = [
     "av>=13.0.0",
     "pillow>=10.0.0",
     "prometheus-client>=0.20.0",
+    "llmd-benchmark-report<0.3,>=0.2.1",
+    "sympy>=1.13.0,<1.15",
 ]
 requires-python = ">=3.12"
 readme = "README.md"
@@ -87,14 +89,15 @@ distribution = true
 # Every script must set `help` so `pdm run --list` doubles as the dev-command
 # reference; tests/test_pdm_scripts.py enforces this.
 format = {cmd = "ruff format", help = "Format code with ruff"}
+"check:format" = {cmd = "ruff format --check", help = "Verify code is formatted, without changing any file"}
 lint = {cmd = "ruff check", help = "Lint code with ruff"}
-type-check = {cmd = "mypy --strict ./inference_perf ./tests", help = "Strict mypy over inference_perf and tests"}
+type-check = {cmd = "mypy --strict ./inference_perf ./tests ./e2e/known_bad.py", help = "Strict mypy over inference_perf, tests, and the e2e known-bad helper"}
 "check:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py --check", help = "Verify docs/cli_flags.md is in sync with the CLI"}
 "update:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py", help = "Regenerate docs/cli_flags.md from the CLI"}
-"check:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py --check", help = "Verify the runtime metrics doc is in sync with the registry"}
+"check:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py --check", help = "Verify every exported runtime metric is documented and the doc is in sync with the registry"}
 "update:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py", help = "Regenerate the runtime metrics doc from the registry"}
-check = {composite = ["format", "lint"], help = "Fast check: format + lint"}
-validate = {composite = ["format", "lint", "type-check", "check:cli-flags", "check:runtime-metrics"], help = "Full check: format, lint, type-check, cli-flags and runtime-metrics doc sync"}
+check = {composite = ["check:format", "lint"], help = "Fast check: format (verify only) + lint"}
+validate = {composite = ["check:format", "lint", "type-check", "check:cli-flags", "check:runtime-metrics"], help = "Full check: format (verify only), lint, type-check, cli-flags and runtime-metrics doc sync"}
 setup = {shell = "pdm install && pre-commit install --config .pre-push-config.yaml && pre-commit install --config .pre-push-config.yaml --hook-type pre-push", help = "Install dependencies and git hooks"}
 
 "test" = {cmd = "pytest tests", help = "Run unit tests"}
@@ -132,12 +135,36 @@ indent-width = 4
 # On top of the defaults (`E4`, E7`, `E9`, and `F`), enable flake8-bugbear (`B`)
 # Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
 # McCabe complexity (`C901`) by default.
-select = ["E4", "E7", "E9", "F", "B"]
+select = ["E4", "E7", "E9", "F", "B", "TID251"]
 ignore = []
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
 unfixable = []
+
+# Progress bars must be built from exported metrics, not from local counts, so
+# that the bar and the metric can never disagree. observability/progress.py is
+# the one module that renders them; everywhere else asks it for a declared
+# BarSpec. Banning the module here is what keeps that true without relying on
+# a reviewer noticing a second import.
+#
+# Every metric the /metrics endpoint exposes has to be declared as a MetricSpec,
+# because docs/runtime_metrics.md is generated from those specs and
+# `pdm run check:runtime-metrics` compares it against the real exposition. A
+# metric constructed straight from prometheus_client would be exported with no
+# row in that doc, so the constructors are banned. The places that legitimately
+# name them mark the import with an inline `# noqa: TID251`: registry.py, which
+# instantiates specs, the sets/ modules, which declare a spec's metric_type,
+# and the tests that build throwaway metrics to exercise the registry itself.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"rich.progress".msg = "Import ProgressBars from inference_perf.observability.progress instead: every bar must read exported metrics (see that module's docstring)."
+"prometheus_client.Counter".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.Gauge".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.Histogram".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.Summary".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.Info".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.Enum".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.REGISTRY".msg = "Serve the CollectorRegistry from build_metrics instead: metrics on the global default registry belong to no run and appear in no doc."
 
 [tool.ruff.format]
 # Like Black, use double quotes for strings.
@@ -195,19 +222,9 @@ module = [
     "opentelemetry.*",
     "google.cloud.*",
     "PIL.*",
+    "sympy.*",
 ]
 ignore_missing_imports = true
-
-# Vendored from llm-d/llm-d-benchmark — upstream owns the types and we resync
-# files unmodified, so we don't run --strict against them.
-[[tool.mypy.overrides]]
-module = [
-    "inference_perf.reportgen.br.v0_2.base",
-    "inference_perf.reportgen.br.v0_2.schema_v0_2",
-    "inference_perf.reportgen.br.v0_2.schema_v0_2_1",
-    "inference_perf.reportgen.br.v0_2.schema_v0_2_components",
-]
-ignore_errors = true
 
 [tool.coverage.run]
 source = ["inference_perf"]

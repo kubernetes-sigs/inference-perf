@@ -20,24 +20,18 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from rich.console import Console
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    TaskProgressColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
 
 from inference_perf.apis import InferenceAPIData
-from inference_perf.config import LoadConfig, LoadType, StandardLoadStage
+from inference_perf.config import Config, LoadConfig, LoadType, StandardLoadStage
 from inference_perf.datagen import DataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
+from inference_perf.observability.metrics.registry import build_metrics
+from inference_perf.observability.progress import ProgressBars
 
 
 def _make_load_generator() -> LoadGenerator:
     mock_datagen = MagicMock(spec=DataGenerator)
+    mock_datagen.is_preferred_worker_requested.return_value = False
     mock_datagen.trace = None
     mock_data = MagicMock(spec=InferenceAPIData)
     mock_data.preferred_worker_id = -1
@@ -57,7 +51,9 @@ def _make_load_generator() -> LoadGenerator:
 class TestRunStageProgressLogs(unittest.IsolatedAsyncioTestCase):
     @patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock)
     async def test_run_stage_logs_start_and_end_at_info(self, mock_sleep: AsyncMock) -> None:
-        """Stage start and end log at INFO so non-TTY runs see progress."""
+        # Runs stage 7 with no progress display and one request finishing.
+        # Expects "Stage 7 - run started" and "Stage 7 - run completed" at INFO,
+        # so a non-TTY run still shows progress in the log.
         load_generator = _make_load_generator()
 
         finished_counter = mp.Value("i", 0)
@@ -80,6 +76,7 @@ class TestRunStageProgressLogs(unittest.IsolatedAsyncioTestCase):
                 request_queue=request_queue,
                 active_requests_counter=mp.Value("i", 0),
                 finished_requests_counter=finished_counter,
+                skipped_requests_counter=mp.Value("i", 0),
                 request_phase=mp.Event(),
                 cancel_signal=None,
                 progress_ctx=None,
@@ -91,8 +88,15 @@ class TestRunStageProgressLogs(unittest.IsolatedAsyncioTestCase):
 
     @patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock)
     async def test_run_stage_emits_logs_and_progress_bar(self, mock_sleep: AsyncMock) -> None:
-        """With a Progress context, both the bar renders and INFO logs are emitted."""
+        # Runs stage 7 with a real metrics registry behind the bars and one
+        # request finishing. Expects the INFO start/end logs, the bar labelled
+        # "Stage 7 Requests" on screen, and "1/1" in the rendered frame: the
+        # bar is showing the exported metrics, not a count of its own.
         load_generator = _make_load_generator()
+
+        hub = build_metrics(Config())
+        hub.on_run_start()
+        load_generator.stage_observer = hub
 
         finished_counter = mp.Value("i", 0)
 
@@ -107,17 +111,7 @@ class TestRunStageProgressLogs(unittest.IsolatedAsyncioTestCase):
 
         # force_terminal makes Progress render under pytest; record buffers frames.
         console = Console(file=io.StringIO(), force_terminal=True, width=120, record=True)
-        progress = Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TimeRemainingColumn(),
-            TimeElapsedColumn(),
-            console=console,
-            redirect_stdout=True,
-            redirect_stderr=True,
-        )
+        progress = ProgressBars(hub.registry, console=console, refresh_hz=0)
 
         with self.assertLogs("inference_perf.loadgen.load_generator", level="INFO") as cm:
             with progress:
@@ -128,6 +122,7 @@ class TestRunStageProgressLogs(unittest.IsolatedAsyncioTestCase):
                     request_queue=request_queue,
                     active_requests_counter=mp.Value("i", 0),
                     finished_requests_counter=finished_counter,
+                    skipped_requests_counter=mp.Value("i", 0),
                     request_phase=mp.Event(),
                     cancel_signal=None,
                     progress_ctx=progress,
@@ -143,6 +138,12 @@ class TestRunStageProgressLogs(unittest.IsolatedAsyncioTestCase):
             rendered,
             "progress bar task description must appear in rendered output",
         )
+
+        # The numbers the bar reads have to be in the registry, since that is
+        # now its only source. Rendering of those values is covered by
+        # tests/required/observability/test_progress.py.
+        self.assertEqual(hub.registry.get_sample_value("inference_perf_stage_requests_planned", {"stage": "7"}), 1.0)
+        self.assertEqual(hub.registry.get_sample_value("inference_perf_stage_requests_finished", {"stage": "7"}), 1.0)
 
 
 if __name__ == "__main__":

@@ -11,19 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List
-from pydantic import BaseModel
+from typing import List, Optional
 
-from ..base import Metric
+from ..base import Metric, MetricResult
 
 
-class CounterResult(BaseModel):
+class CounterResult(MetricResult):
     """Result of a counter query: the windowed total (increase), the average per-second rate
-    over the window, and the overall per-second rate."""
+    over the window, and the overall per-second rate.
 
-    total: float = 0.0
-    avg: float = 0.0
-    per_second: float = 0.0
+    Fields are Optional so a failed query is reported as missing (None) instead
+    of a real-looking zero (#822); the 0.0 defaults are kept.
+    """
+
+    total: Optional[float] = 0.0
+    avg: Optional[float] = 0.0
+    per_second: Optional[float] = 0.0
 
 
 class CounterMetric(Metric[CounterResult]):
@@ -62,5 +65,5 @@ class CounterMetric(Metric[CounterResult]):
             f"sum({self._spanning('rate', duration, filters)})",
         ]
 
-    def parse(self, results: List[float]) -> CounterResult:
+    def parse(self, results: List[Optional[float]]) -> CounterResult:
         return CounterResult(total=results[0], avg=results[1], per_second=results[2])

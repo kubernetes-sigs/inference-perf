@@ -1,0 +1,13 @@
+# The guidellm release the cross-tool parity tests run against
+# (e2e/tests/test_reasoning_metric_parity.py). Edit this file, then regenerate
+# the lock next to it:
+#
+#   uv pip compile --universal --python-version 3.12 --torch-backend cpu \
+#     e2e/guidellm_requirements.in -o e2e/guidellm_requirements.txt
+#
+# --torch-backend cpu keeps the CUDA libraries (several GB) out of the install;
+# guidellm only uses torch for its data loader. The CPU builds of torch live on
+# PyTorch's own index, so installing from the lock needs it:
+#
+#   pip install --extra-index-url https://download.pytorch.org/whl/cpu -r e2e/guidellm_requirements.txt
+guidellm==0.8.0

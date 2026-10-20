@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -28,7 +28,7 @@ from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession
 from .metrics import Metric, BaseMetrics
-from .otel_instrumentation import get_otel_instrumentation
+from .otel_instrumentation import get_otel_instrumentation, summarize_media
 from typing import Iterator, List, Optional, Any, Dict, Tuple
 import aiohttp
 import asyncio
@@ -218,6 +218,22 @@ def _build_request_headers(api_config: APIConfig, api_key: Optional[str]) -> dic
     return headers
 
 
+def _strip_embeddings_vectors(response_content: str) -> str:
+    """Keep only `model` and `usage` from a successful embeddings response body.
+
+    The body is stored on every request's metric, and for embeddings it is mostly
+    the vectors, which nothing reads. Keeping them grows memory with every request.
+    A body that is not a JSON object is returned unchanged.
+    """
+    try:
+        body = json.loads(response_content)
+    except ValueError:
+        return response_content
+    if not isinstance(body, dict):
+        return response_content
+    return json.dumps({key: body[key] for key in ("model", "usage") if key in body})
+
+
 def is_retryable_transport_error(exc: BaseException) -> bool:
     """True for a connection fault raised before response headers were obtained.
 
@@ -342,8 +358,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
             try:
                 # Extract input based on request type
                 if hasattr(data, "messages") and data.messages:
-                    # Serialize each message, preserving tool_calls when present.
-                    input_messages = [msg.to_dict() for msg in data.messages]
+                    # Serialize each message, preserving tool_calls when present, with inline
+                    # media summarized so a span never carries the full bytes.
+                    input_messages = summarize_media([msg.to_dict() for msg in data.messages])
                     otel_response_info["input_messages"] = json.dumps(input_messages)
 
                     # Record tool definitions so they appear in Jaeger alongside the request.
@@ -483,7 +500,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         # Trace replay carries session identity as session_id (stamped by the loadgen);
         # conversation_replay and shared_prefix carry it as user_session_id.
-        session_id = getattr(data, "session_id", None) or getattr(data, "user_session_id", None)
+        # Child conversations can use a separate wire identity while metrics
+        # remain associated with the enclosing scheduler session.
+        session_id = data.request_session_id or getattr(data, "session_id", None) or getattr(data, "user_session_id", None)
 
         if self.client.api_config.session_id_header_key and session_id:
             headers[self.client.api_config.session_id_header_key] = session_id
@@ -501,6 +520,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
             operation_name = "chat.completions"
         elif self.client.api_config.type == APIType.AnthropicMessages:
             operation_name = "messages"
+        elif self.client.api_config.type == APIType.Embeddings:
+            operation_name = "embeddings"
+        elif self.client.api_config.type == APIType.Rerank:
+            operation_name = "rerank"
         else:
             operation_name = "completions"
 
@@ -738,9 +761,15 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if data.graph_event_id:
             info.graph_event_id = data.graph_event_id
 
+        # Only a successful body is stripped. A failed one is kept whole because it
+        # carries the server's error message, including a 200 recorded as a failure.
+        if self.client.api_config.type == APIType.Embeddings and error is None:
+            response_content = _strip_embeddings_vectors(response_content)
+
         metric = RequestLifecycleMetric(
             stage_id=stage_id,
             session_id=data.session_id if isinstance(data.session_id, str) else None,
+            request_session_id=data.request_session_id if isinstance(data.request_session_id, str) else None,
             request_data=request_data,
             response_data=response_content,
             info=info,

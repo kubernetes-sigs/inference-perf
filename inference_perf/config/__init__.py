@@ -14,6 +14,9 @@
 from inference_perf.config.apis import (
     APIConfig,
     APIType,
+    EmbeddingsConfig,
+    EmbeddingsEncodingFormat,
+    RerankConfig,
     ResponseFormat,
     ResponseFormatType,
 )
@@ -76,6 +79,10 @@ from inference_perf.config.metrics import (
     MetricsClientConfig,
     MetricsClientType,
 )
+from inference_perf.config.observability import (
+    ObservabilityConfig,
+    RuntimeMetricsConfig,
+)
 from inference_perf.config.reportgen import (
     GoodputConfig,
     PerRequestFieldsConfig,
@@ -100,6 +107,8 @@ __all__ = [
     "DataGenType",
     "Distribution",
     "DistributionType",
+    "EmbeddingsConfig",
+    "EmbeddingsEncodingFormat",
     "GoodputConfig",
     "GoogleCloudStorageConfig",
     "ImageDatagenConfig",
@@ -112,6 +121,7 @@ __all__ = [
     "MetricsSpec",
     "ModelServerClientConfig",
     "ModelServerType",
+    "ObservabilityConfig",
     "MultiLoRAConfig",
     "OTelTraceReplayConfig",
     "PerRequestFieldsConfig",
@@ -119,10 +129,12 @@ __all__ = [
     "PrometheusMetricsReportConfig",
     "ReportConfig",
     "RequestLifecycleMetricsReportConfig",
+    "RerankConfig",
     "Resolution",
     "ResolutionPreset",
     "ResponseFormat",
     "ResponseFormatType",
+    "RuntimeMetricsConfig",
     "SessionLifecycleReportConfig",
     "SessionReplayConfig",
     "SharedPrefix",

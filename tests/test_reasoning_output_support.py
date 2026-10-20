@@ -31,8 +31,10 @@ import pytest
 from aiohttp import ClientResponse
 
 from inference_perf.apis.chat import ChatMessage
+from inference_perf.apis.base import StreamedResponseMetrics, UnaryResponseMetrics
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventOutputRegistry,
+    SessionAnthropicMessagesAPIData,
     SessionChatCompletionAPIData,
     SessionInferenceInfo,
     WorkerSessionTracker,
@@ -500,6 +502,145 @@ class TestReasoningFieldFallback:
         msg = registry.get_message_by_event_id("session_1:event_0")
         assert msg is not None
         assert msg["reasoning_content"] == "New field wins."
+
+    # Streamed delta with reasoning "New field wins." and reasoning_content "Old
+    # field ignored.", then content "Answer.". Same rule as the non-streamed path:
+    # the stored reasoning_content is "New field wins.".
+    @pytest.mark.asyncio
+    async def test_streaming_reasoning_preferred_over_reasoning_content(self) -> None:
+        registry = EventOutputRegistry()
+        api_data = _make_session_api_data(registry=registry)
+        deltas = [
+            {"reasoning": "New field wins.", "reasoning_content": "Old field ignored."},
+            {"content": "Answer."},
+        ]
+        response = _make_streaming_response(deltas, completion_tokens=4)
+
+        info = await api_data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+        assert info.output_text == "New field wins.Answer."
+        msg = registry.get_message_by_event_id("session_1:event_0")
+        assert msg is not None
+        assert msg["reasoning_content"] == "New field wins."
+
+    # One delta carrying reasoning "Think. " and content "Done.". The reasoning
+    # still lands in output_text, "Think. Done.", and in the stored message.
+    @pytest.mark.asyncio
+    async def test_streaming_chunk_with_both_channels_keeps_reasoning(self) -> None:
+        registry = EventOutputRegistry()
+        api_data = _make_session_api_data(registry=registry)
+        response = _make_streaming_response([{"reasoning": "Think. ", "content": "Done."}], completion_tokens=2)
+
+        info = await api_data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+        assert info.output_text == "Think. Done."
+        msg = registry.get_message_by_event_id("session_1:event_0")
+        assert msg is not None
+        assert msg["reasoning_content"] == "Think. "
+
+
+# ---------------------------------------------------------------------------
+# Reasoning on the token timeline (#559)
+# ---------------------------------------------------------------------------
+
+
+# A replay Anthropic APIData for one event with a fresh registry and tracker.
+def _make_session_anthropic_api_data() -> SessionAnthropicMessagesAPIData:
+    return SessionAnthropicMessagesAPIData(
+        messages=[ChatMessage(role="user", content="Hello")],
+        max_tokens=500,
+        event_id="session_1:event_0",
+        registry=EventOutputRegistry(),
+        worker_tracker=WorkerSessionTracker(),
+        completion_queue=None,
+        total_events_in_session=1,
+        predecessor_event_ids=[],
+    )
+
+
+class TestReasoningTimeline:
+    """The replay paths record reasoning on the token timeline like the plain API paths."""
+
+    # Chat stream: reasoning-only chunk "a b", content chunk "c", server says 3.
+    # One reasoning chunk and one content chunk recorded, a 2-entry timeline,
+    # the server usage kept and the raw SSE kept in extra_info.
+    @pytest.mark.asyncio
+    async def test_streaming_chat_records_reasoning_chunks(self) -> None:
+        api_data = _make_session_api_data()
+        response = _make_streaming_response([{"reasoning": "a b"}, {"content": "c"}], completion_tokens=3)
+
+        info = await api_data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+        metrics = info.response_metrics
+        assert isinstance(metrics, StreamedResponseMetrics)
+        assert len(metrics.reasoning_chunks) == 1
+        assert len(metrics.reasoning_chunk_times) == 1
+        assert len(metrics.response_chunks) == 1
+        assert len(metrics.output_token_times) == 2
+        assert metrics.server_usage == {"completion_tokens": 3}
+        assert info.extra_info["raw_response"].startswith("data: ")
+
+    # Anthropic stream, no usage: thinking_delta "a b", text_delta "c d".
+    # output_tokens = 4 from the client fallback, thinking and text on the
+    # timeline (2 entries), and the raw SSE, message and text kept in extra_info.
+    @pytest.mark.asyncio
+    async def test_streaming_anthropic_counts_thinking_without_usage(self) -> None:
+        events = [
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "a b"}},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "c d"}},
+        ]
+        sse = b"".join(f"data: {json.dumps(e)}\n\n".encode() for e in events)
+        response = cast(ClientResponse, FakeStreamingResponse([sse]))
+
+        info = await _make_session_anthropic_api_data().process_response(
+            response, _make_config(streaming=True), _make_tokenizer()
+        )
+
+        metrics = info.response_metrics
+        assert isinstance(metrics, StreamedResponseMetrics)
+        assert metrics.output_tokens == 4
+        assert len(metrics.reasoning_chunks) == 1
+        assert len(metrics.reasoning_chunk_times) == 1
+        assert len(metrics.response_chunks) == 1
+        assert len(metrics.chunk_times) == 1
+        assert len(metrics.output_token_times) == 2
+        assert info.extra_info["raw_response"].startswith("data: ")
+        assert info.extra_info["output_text"] == "c d"
+        assert info.extra_info["output_message"]["content"] == "c d"
+
+    # Non-streamed Anthropic, no usage: a thinking block "a b" and a text block
+    # "c d". The client fallback gives output_tokens = 4.
+    @pytest.mark.asyncio
+    async def test_non_streaming_anthropic_counts_thinking_without_usage(self) -> None:
+        response = MagicMock()
+        response.json = AsyncMock(
+            return_value={"content": [{"type": "thinking", "thinking": "a b"}, {"type": "text", "text": "c d"}]}
+        )
+
+        info = await _make_session_anthropic_api_data().process_response(response, _make_config(), _make_tokenizer())
+
+        assert isinstance(info.response_metrics, UnaryResponseMetrics)
+        assert info.response_metrics.output_tokens == 4
+
+    # Chat stream with a finish chunk that has no delta and a keep-alive chunk
+    # with no choices key between reasoning "a b" and content "c". Both are
+    # skipped: output_text = "a bc".
+    @pytest.mark.asyncio
+    async def test_streaming_chat_skips_chunks_without_choices_or_delta(self) -> None:
+        events = [
+            {"choices": [{"delta": {"reasoning": "a b"}}]},
+            {"choices": [{"index": 0, "finish_reason": "stop"}]},
+            {"usage": {"completion_tokens": 3}},
+            {"choices": [{"delta": {"content": "c"}}]},
+        ]
+        sse = b"".join(f"data: {json.dumps(e)}\n\n".encode() for e in events) + b"data: [DONE]\n\n"
+        response = cast(ClientResponse, FakeStreamingResponse([sse]))
+
+        info = await _make_session_api_data().process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+        assert info.output_text == "a bc"
 
 
 if __name__ == "__main__":

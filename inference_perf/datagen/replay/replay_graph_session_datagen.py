@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,6 +23,8 @@ affinity, lazy request materialization, and session completion tracking.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import re
@@ -35,6 +37,7 @@ from multiprocessing.managers import SyncManager
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from aiohttp import ClientResponse
+from PIL import Image as PILImage
 
 from inference_perf.apis import (
     ChatCompletionAPIData,
@@ -48,12 +51,15 @@ from inference_perf.apis import (
 )
 from inference_perf.apis.anthropic_messages import (
     build_anthropic_request_body,
+    count_anthropic_output_tokens,
     count_anthropic_prompt_tokens,
     parse_anthropic_content,
     parse_anthropic_stream_response,
+    parse_anthropic_thinking,
 )
-from inference_perf.apis.chat import ChatMessage
-from inference_perf.payloads import RequestMetrics, Text
+from inference_perf.apis.chat import ChatMessage, reasoning_field
+from inference_perf.apis.image_parts import base64_size, image_bytes, is_image_part, to_otel_part
+from inference_perf.payloads import Image, Images, RequestMetrics, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
 from inference_perf.config.datagen.replay import BadToolCallHandling, ToolChoiceMode
@@ -62,6 +68,57 @@ from inference_perf.datagen.replay.replay_graph_types import InputSegment, Repla
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 logger = logging.getLogger(__name__)
+
+
+def replayed_images(messages: List[ChatMessage]) -> Optional[Images]:
+    """Per-image metrics for the images in a replayed request's messages.
+
+    Every image is counted; only those whose size is known (inline bytes with a readable
+    header) are listed as instances, so an image sent by URL does not skew the pixel and
+    byte distributions. Returns None for a request without images, matching how synthetic
+    requests leave it unset.
+    """
+    count = 0
+    instances: List[Image] = []
+    for message in messages:
+        for part in message.content if isinstance(message.content, list) else []:
+            if not is_image_part(part):
+                continue
+            image = to_otel_part(part)
+            data = image_bytes(image)
+            if data is None and not image.get("uri"):
+                continue
+            count += 1
+            width, height = _image_dimensions(data) if data is not None else (0, 0)
+            if width and height and data is not None:
+                instances.append(Image(pixels=width * height, bytes=base64_size(data), aspect_ratio=width / height))
+    return Images(count=count, instances=instances) if count else None
+
+
+def _image_dimensions(data: str) -> Tuple[int, int]:
+    """Width and height from the image header: the first 48 KiB usually hold it, else the whole image."""
+    for chunk in dict.fromkeys((data[: 64 * 1024], data)):
+        try:
+            with PILImage.open(io.BytesIO(base64.b64decode(chunk))) as img:
+                return img.size
+        except (OSError, ValueError, PILImage.DecompressionBombError):
+            continue
+    return 0, 0
+
+
+def _expand_tool_call_max_tokens(recorded_tokens: int) -> int:
+    """Add bounded headroom for replaying a recorded tool call.
+
+    Small structured outputs need a generous floor because tool-call wrappers and
+    tokenizer differences can dominate their size.  Applying the same 4x factor
+    to already-large calls needlessly consumes the model's context window, so the
+    expansion becomes progressively less aggressive as the recording grows.
+    """
+    if recorded_tokens <= 1_024:
+        return max(recorded_tokens * 4, 4_096)
+    if recorded_tokens <= 8_192:
+        return max((recorded_tokens * 3 + 1) // 2, 8_192)
+    return recorded_tokens + 4_096
 
 
 class SessionReplayLazyLoadData(LazyLoadInferenceAPIData):
@@ -437,10 +494,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             payload["ignore_eos"] = False
             if self.override_tool_call_max_tokens:
                 # The recorded output_tokens might come from a different model/tokenizer.
-                # The replay model may need significantly more tokens to express the
-                # same tool call (different tokenizer, different tool-call preamble).
-                # Use a generous cap and let ignore_eos=False stop generation naturally.
-                payload["max_tokens"] = max(payload.get("max_tokens", 0) * 4, 4096)
+                # Add tiered headroom for a different tool-call preamble or encoding,
+                # without multiplying already-large calls beyond the context window.
+                payload["max_tokens"] = _expand_tool_call_max_tokens(payload.get("max_tokens", 0))
 
             if self.tool_choice_mode == ToolChoiceMode.AS_RECORDED:
                 # Send no tool_choice: the model chooses, and "required" is never
@@ -532,6 +588,24 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         # session is evicted once its last event drains.
         self._mark_drained_and_maybe_evict(session_id)
 
+    def skip_if_session_failed(self, context: str) -> bool:
+        """Fail and retire this event if another event failed its session.
+
+        This is a lifecycle operation, not only a predicate: when the session
+        has failed it records this event's failure, sends any required session
+        notification, and marks the event drained.
+        """
+        session_id = self._extract_session_id()
+        if not self.worker_tracker.is_session_failed(session_id):
+            return False
+
+        self._fail_and_notify(
+            session_id,
+            SessionFailureCause.SESSION_ALREADY_FAILED,
+            f"session already failed ({context})",
+        )
+        return True
+
     def _mark_drained_and_maybe_evict(self, session_id: str) -> None:
         """Record this event as drained on the worker; evict the session once all drain.
 
@@ -561,10 +635,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     async def wait_for_predecessors_and_substitute(self) -> None:
         session_id = self._extract_session_id()
 
-        if self.worker_tracker.is_session_failed(session_id):
-            self._fail_and_notify(
-                session_id, SessionFailureCause.SESSION_ALREADY_FAILED, "session already failed (pre-wait check)"
-            )
+        if self.skip_if_session_failed("pre-wait check"):
             return
 
         if self.predecessor_event_ids:
@@ -872,8 +943,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                         msg_copy = dict(msg)
                         original_content = msg_copy.get("content", "")
 
-                        # Prepend random session identifier to content
-                        msg_copy["content"] = f"[SESS:{self.session_random_string}] {original_content}"
+                        # Prepend random session identifier to content; a parts list
+                        # (a message carrying an image) gets it as a leading text part.
+                        marker = f"[SESS:{self.session_random_string}] "
+                        if isinstance(original_content, list):
+                            msg_copy["content"] = [{"type": "text", "text": marker}, *original_content]
+                        else:
+                            msg_copy["content"] = f"{marker}{original_content}"
                         result.append(msg_copy)
                         reason = "flag enabled" if self.inject_random_session_id else "duplicate session"
                         logger.debug(f"Event {self.event_id}: injected random session string ({reason})")
@@ -1004,11 +1080,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
         actual_tool_names: List[str] = []
         if config.streaming:
-            # Accumulate tool_call chunks and reasoning_content alongside text content.
+            # Accumulate tool_call chunks alongside text content.
             # delta.tool_calls is a list of partial objects; each chunk carries an
             # index that identifies which tool call it belongs to.
             tool_call_chunks = {}
-            reasoning_content_chunks: list[str] = []
 
             def _extract_streaming_content(data: Dict[str, Any]) -> Optional[str]:
                 delta = data.get("choices", [{}])[0].get("delta", {})
@@ -1028,20 +1103,24 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     if chunk.get("id"):
                         tool_call_chunks[idx]["id"] = chunk["id"]
 
-                # Accumulate reasoning chunks (prefer "reasoning", fall back to "reasoning_content")
-                reasoning_chunk = delta.get("reasoning") or delta.get("reasoning_content")
-                if reasoning_chunk is not None:
-                    reasoning_content_chunks.append(str(reasoning_chunk))
-
                 content = delta.get("content")
                 return str(content) if content is not None else None
 
-            text_content, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-                response, extract_content=_extract_streaming_content
+            parsed = await parse_sse_stream(
+                response,
+                extract_content=_extract_streaming_content,
+                extract_reasoning=lambda data: reasoning_field(data.get("choices", [{}])[0].get("delta", {})),
             )
+            text_content, chunk_times, response_chunks, server_usage = (
+                parsed.output_text,
+                parsed.chunk_times,
+                parsed.response_chunks,
+                parsed.server_usage,
+            )
+            raw_content = parsed.raw_content
 
             # Combine reasoning_content with text_content in output_text (used for token count)
-            reasoning_text = "".join(reasoning_content_chunks) if reasoning_content_chunks else ""
+            reasoning_text = parsed.reasoning_text
             if reasoning_text:
                 output_text = reasoning_text + text_content
             else:
@@ -1069,13 +1148,15 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     tc_text = json.dumps([tool_call_chunks[i] for i in sorted(tool_call_chunks)], ensure_ascii=False)
                 output_len = tokenizer.count_tokens(output_text + tc_text)
             info = SessionInferenceInfo(
-                request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
+                request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len), image=replayed_images(self.messages)),
                 response_metrics=StreamedResponseMetrics(
                     response_chunks=response_chunks,
                     chunk_times=chunk_times,
                     output_tokens=output_len,
-                    output_token_times=chunk_times,
+                    output_token_times=parsed.generated_chunk_times,
                     server_usage=server_usage,
+                    reasoning_chunks=parsed.reasoning_chunks,
+                    reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
@@ -1120,7 +1201,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     tc_text = json.dumps(tool_calls, ensure_ascii=False)
                 output_len = tokenizer.count_tokens(output_text + tc_text)
             info = SessionInferenceInfo(
-                request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
+                request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len), image=replayed_images(self.messages)),
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
@@ -1223,7 +1304,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
 
         if self.expected_output_is_tool_call and self.tool_definitions:
             if self.override_tool_call_max_tokens:
-                payload["max_tokens"] = max(payload.get("max_tokens", 0) * 4, 4096)
+                payload["max_tokens"] = _expand_tool_call_max_tokens(payload.get("max_tokens", 0))
 
             if self.tool_choice_mode == ToolChoiceMode.AS_RECORDED:
                 # Inject nothing, as above.
@@ -1251,51 +1332,47 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
         # parse_anthropic_content when the response carries no content blocks.
         output_message: Optional[Dict[str, Any]]
         if config.streaming:
-            (
-                output_text,
-                output_message,
-                chunk_times,
-                raw_content,
-                response_chunks,
-                server_usage,
-            ) = await parse_anthropic_stream_response(response)
+            parsed, output_message = await parse_anthropic_stream_response(response)
+            output_text, server_usage = parsed.output_text, parsed.server_usage
             input_tokens = (server_usage or {}).get("input_tokens")
-            output_tokens = (server_usage or {}).get("output_tokens")
-            output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
+            output_len = count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
             base_info = InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
                         input_tokens=int(input_tokens)
                         if input_tokens is not None
                         else count_anthropic_prompt_tokens(self.messages, tokenizer, self.tool_definitions)
-                    )
+                    ),
+                    image=replayed_images(self.messages),
                 ),
                 response_metrics=StreamedResponseMetrics(
-                    response_chunks=response_chunks,
-                    chunk_times=chunk_times,
+                    response_chunks=parsed.response_chunks,
+                    chunk_times=parsed.chunk_times,
                     output_tokens=output_len,
-                    output_token_times=chunk_times,
+                    output_token_times=parsed.generated_chunk_times,
                     server_usage=server_usage,
+                    reasoning_chunks=parsed.reasoning_chunks,
+                    reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
                 lora_adapter=lora_adapter,
-                extra_info={"raw_response": raw_content, "output_message": output_message, "output_text": output_text},
+                extra_info={"raw_response": parsed.raw_content, "output_message": output_message, "output_text": output_text},
             )
         else:
             data = await response.json()
             usage = data.get("usage") or {}
             output_text, output_message = parse_anthropic_content(data.get("content"))
             input_tokens = usage.get("input_tokens")
-            output_tokens = usage.get("output_tokens")
-            output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
+            output_len = count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
             base_info = InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
                         input_tokens=int(input_tokens)
                         if input_tokens is not None
                         else count_anthropic_prompt_tokens(self.messages, tokenizer, self.tool_definitions)
-                    )
+                    ),
+                    image=replayed_images(self.messages),
                 ),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=usage or None),
                 lora_adapter=lora_adapter,
                 extra_info={
                     "stop_reason": data.get("stop_reason"),
@@ -1880,7 +1957,8 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 # Preserve any assistant preamble content alongside the tool calls
                 # so chat_messages (which becomes the wire payload when no
                 # substitution/injection runs) is not lossy.
-                tc_content = content if isinstance(content, str) and content else None
+                has_image = isinstance(content, list) and any(is_image_part(b) for b in content)
+                tc_content = content if (isinstance(content, str) or has_image) and content else None
                 chat_messages.append(
                     ChatMessage(role=role, content=tc_content, tool_calls=tool_calls, reasoning_content=reasoning_content)
                 )
@@ -1892,7 +1970,9 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 original_messages.append(tc_msg)
                 continue
 
-            if isinstance(content, list):
+            # A parts list carrying a recorded image is sent as is; any other list is
+            # flattened to text.
+            if isinstance(content, list) and not any(is_image_part(block) for block in content):
                 content_parts = []
                 for block in content:
                     if isinstance(block, dict):
@@ -1904,7 +1984,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                         content_parts.append(str(block))
                 content = " ".join(content_parts)
 
-            content_str = str(content)
+            content_out: Any = content if isinstance(content, list) else str(content)
             # Carry tool_call_id onto the ChatMessage too (not just original_messages),
             # so role:tool linkage survives on the wire when substitution is disabled.
             # tool_call_id belongs on a role:tool message only — don't leak it onto
@@ -1912,10 +1992,10 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             wire_tool_call_id = tool_call_id if role == "tool" else None
             chat_messages.append(
                 ChatMessage(
-                    role=role, content=content_str, tool_call_id=wire_tool_call_id, reasoning_content=reasoning_content
+                    role=role, content=content_out, tool_call_id=wire_tool_call_id, reasoning_content=reasoning_content
                 )
             )
-            orig_msg: Dict[str, Any] = {"role": role, "content": content_str}
+            orig_msg: Dict[str, Any] = {"role": role, "content": content_out}
             if wire_tool_call_id is not None:
                 orig_msg["tool_call_id"] = wire_tool_call_id
             if reasoning_content:
@@ -1930,6 +2010,12 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         total_events = len(self._session_events.get(session_index, [])) if state else 0
 
         gc = state.graph.events[raw_event_id].call if state and raw_event_id in state.graph.events else None
+
+        # Request identity can differ from the enclosing scheduler session.
+        # Keep event IDs and lifecycle tracking scoped to that enclosing session.
+        request_session_id = None
+        if data.session_id and gc and gc.session_id_suffix:
+            request_session_id = data.session_id + gc.session_id_suffix
 
         api_data_class: type[SessionChatCompletionAPIData] = SessionChatCompletionAPIData
         api_config = getattr(self, "api_config", None)
@@ -1954,6 +2040,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             expected_output_tool_names=gc.expected_output_tool_names if gc else None,
             otel_context=data.otel_context,
             session_id=data.session_id,
+            request_session_id=request_session_id,
             preferred_worker_id=data.preferred_worker_id,
             # Pass KV-cache invalidation configuration and session random string
             inject_random_session_id=self.replay_config.inject_random_session_id if self.replay_config else False,

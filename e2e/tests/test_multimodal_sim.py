@@ -106,7 +106,11 @@ async def test_multimodal_synthetic_against_sim(case_id: str, multimodal: Dict[s
                 },
                 "load": {
                     "type": "constant",
-                    "stages": [{"rate": rate, "duration": duration}],
+                    # Different rates make the stage reports distinct from the run summary.
+                    "stages": [
+                        {"rate": rate, "duration": duration},
+                        {"rate": 3 * rate, "duration": duration},
+                    ],
                     "num_workers": 1,
                 },
                 "api": {
@@ -172,3 +176,32 @@ async def test_multimodal_synthetic_against_sim(case_id: str, multimodal: Dict[s
     if "audio" in expected_modalities:
         for field in ("seconds", "bytes"):
             assert successes["audio"].get(field), f"audio.{field} missing for case {case_id}"
+
+    for stage_id in (0, 1):
+        stage = result.reports[f"stage_{stage_id}_lifecycle_metrics.json"]
+        stage_successes = stage["successes"]
+        assert stage_successes["count"] > 0
+        assert stage_successes["count"] < successes["count"]
+        partial = result.reports[f"inference-perf.partial.stage_{stage_id}.yaml"]
+        aggregate = partial["results"]["request_performance"]["aggregate"]
+        requests = aggregate["requests"]
+        assert requests["total"] == stage["load_summary"]["count"]
+        assert requests["request_size"]["mean"] == pytest.approx(stage_successes["request_size_bytes"]["mean"])
+        for modality in expected_modalities:
+            rate = aggregate["throughput"][f"{modality}_rate"]["mean"]
+            assert rate == pytest.approx(stage_successes["throughput"][f"{modality}s_per_sec"])
+            media = requests["multimodal"][modality]
+            fields = {"count": "count", "filesize": "bytes"}
+            if modality in ("image", "video"):
+                fields["aspect_ratio"] = "aspect_ratio"
+            if modality == "image":
+                fields["pixels"] = "pixels"
+            if modality == "video":
+                fields["frames"] = "frames"
+                # This fixture uses one fixed video profile: 64 x 64, four frames.
+                assert media["pixels"]["mean"] == pytest.approx(64 * 64 * 4)
+            if modality == "audio":
+                fields["duration"] = "seconds"
+            for br_field, native_field in fields.items():
+                expected = stage_successes[modality][native_field]["mean"]
+                assert media[br_field]["mean"] == pytest.approx(expected)

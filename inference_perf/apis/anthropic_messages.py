@@ -20,7 +20,8 @@ from aiohttp import ClientResponse
 
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, StreamedResponseMetrics, UnaryResponseMetrics
 from inference_perf.apis.chat import ChatMessage, _clean_parameters
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.image_parts import is_image_part, openai_image_to_part
+from inference_perf.apis.streaming_parser import ParsedSSEStream, parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -57,6 +58,16 @@ def _tool_arguments(tool_input: Any) -> str:
     return json.dumps(tool_input if isinstance(tool_input, dict) else {}, ensure_ascii=False)
 
 
+def _anthropic_image(part: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert an OpenAI ``image_url`` part to an Anthropic ``image`` block."""
+    image = openai_image_to_part(part)
+    if image["type"] == "blob":
+        return {"type": "image", "source": {"type": "base64", "media_type": image["mime_type"], "data": image["content"]}}
+    if image["type"] == "uri":
+        return {"type": "image", "source": {"type": "url", "url": image["uri"]}}
+    return None
+
+
 def _anthropic_content(content: str | list[dict[str, Any]] | None) -> str | list[dict[str, Any]]:
     if content is None:
         return ""
@@ -68,10 +79,12 @@ def _anthropic_content(content: str | list[dict[str, Any]] | None) -> str | list
         if not isinstance(block, dict):
             continue
         block_type = block.get("type")
-        if block_type in ("text", "tool_use", "tool_result"):
+        if block_type in ("text", "tool_use", "tool_result", "image"):
             blocks.append(block)
         elif block_type == "input_text":
             blocks.append({"type": "text", "text": block.get("text", "")})
+        elif block_type == "image_url" and (image := _anthropic_image(block)) is not None:
+            blocks.append(image)
     return blocks
 
 
@@ -80,13 +93,15 @@ def _anthropic_message(message: ChatMessage) -> dict[str, Any] | None:
         return None
 
     if message.role == "tool":
+        # A tool result holding an image (a screenshot) keeps it as an image block.
+        has_image = isinstance(message.content, list) and any(is_image_part(part) for part in message.content)
         return {
             "role": "user",
             "content": [
                 {
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id or "",
-                    "content": _content_text(message.content),
+                    "content": _anthropic_content(message.content) if has_image else _content_text(message.content),
                 }
             ],
         }
@@ -123,6 +138,27 @@ def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
     if function.get("description") is not None:
         result["description"] = function["description"]
     return result
+
+
+def parse_anthropic_thinking(content: Any) -> str:
+    """Concatenated text of a non-streamed response's `thinking` blocks.
+
+    Redacted thinking carries no text, so it has nothing to count here.
+    """
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        str(block.get("thinking", "")) for block in content if isinstance(block, dict) and block.get("type") == "thinking"
+    )
+
+
+def count_anthropic_output_tokens(tokenizer: CustomTokenizer, output_text: str, thinking_text: str) -> int:
+    """Client-side output-token count; usage.output_tokens is kept separately in server_usage (#559)."""
+    # Generated text is a continuation, so no BOS, matching _count_generated_tokens in chat.py.
+    total = tokenizer.count_tokens(output_text, add_special_tokens=False)
+    if thinking_text:
+        total += tokenizer.count_tokens(thinking_text, add_special_tokens=False)
+    return total
 
 
 def parse_anthropic_content(content: Any) -> tuple[str, dict[str, Any] | None]:
@@ -195,6 +231,20 @@ def _event_index(data: dict[str, Any], fallback: int) -> int:
     return index if isinstance(index, int) else fallback
 
 
+def _extract_anthropic_thinking(data: dict[str, Any]) -> str | None:
+    """Thinking text from a streamed event: a thinking_delta, or a thinking block that opens with text."""
+    event_type = data.get("type")
+    if event_type == "content_block_start":
+        block = data.get("content_block") or {}
+        if isinstance(block, dict) and block.get("type") == "thinking" and block.get("thinking"):
+            return str(block["thinking"])
+    elif event_type == "content_block_delta":
+        delta = data.get("delta") or {}
+        if isinstance(delta, dict) and delta.get("type") == "thinking_delta" and delta.get("thinking"):
+            return str(delta["thinking"])
+    return None
+
+
 def _build_anthropic_stream_handlers() -> tuple[Callable[[dict[str, Any]], str | None], Callable[[str], dict[str, Any]]]:
     tool_calls_by_index: dict[int, dict[str, Any]] = {}
     tool_argument_parts: dict[int, list[str]] = {}
@@ -262,15 +312,15 @@ def _build_anthropic_stream_handlers() -> tuple[Callable[[dict[str, Any]], str |
     return extract_content, output_message
 
 
-async def parse_anthropic_stream_response(
-    response: ClientResponse,
-) -> tuple[str, dict[str, Any], list[float], str, list[str], dict[str, Any] | None]:
+async def parse_anthropic_stream_response(response: ClientResponse) -> tuple[ParsedSSEStream, dict[str, Any]]:
+    """Parse a streamed Messages response into the parsed stream and the assistant message it built."""
     extract_content, build_output_message = _build_anthropic_stream_handlers()
-    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+    parsed = await parse_sse_stream(
         response,
         extract_content=extract_content,
+        extract_reasoning=_extract_anthropic_thinking,
     )
-    return output_text, build_output_message(output_text), chunk_times, raw_content, response_chunks, server_usage
+    return parsed, build_output_message(parsed.output_text)
 
 
 class AnthropicMessagesAPIData(InferenceAPIData):
@@ -307,17 +357,10 @@ class AnthropicMessagesAPIData(InferenceAPIData):
         # parse_anthropic_content when the response carries no content blocks.
         output_message: dict[str, Any] | None
         if config.streaming:
-            (
-                output_text,
-                output_message,
-                chunk_times,
-                raw_content,
-                response_chunks,
-                server_usage,
-            ) = await parse_anthropic_stream_response(response)
+            parsed, output_message = await parse_anthropic_stream_response(response)
+            output_text, server_usage = parsed.output_text, parsed.server_usage
             input_tokens = (server_usage or {}).get("input_tokens")
-            output_tokens = (server_usage or {}).get("output_tokens")
-            output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
+            output_len = count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
             return InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
@@ -325,22 +368,23 @@ class AnthropicMessagesAPIData(InferenceAPIData):
                     )
                 ),
                 response_metrics=StreamedResponseMetrics(
-                    response_chunks=response_chunks,
-                    chunk_times=chunk_times,
+                    response_chunks=parsed.response_chunks,
+                    chunk_times=parsed.chunk_times,
                     output_tokens=output_len,
-                    output_token_times=chunk_times,
+                    output_token_times=parsed.generated_chunk_times,
                     server_usage=server_usage,
+                    reasoning_chunks=parsed.reasoning_chunks,
+                    reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
                 lora_adapter=lora_adapter,
-                extra_info={"raw_response": raw_content, "output_message": output_message, "output_text": output_text},
+                extra_info={"raw_response": parsed.raw_content, "output_message": output_message, "output_text": output_text},
             )
 
         data = await response.json()
         usage = data.get("usage") or {}
         output_text, output_message = parse_anthropic_content(data.get("content"))
         input_tokens = usage.get("input_tokens")
-        output_tokens = usage.get("output_tokens")
-        output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
+        output_len = count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
         extra_info: dict[str, Any] = {
             "stop_reason": data.get("stop_reason"),
             "output_message": output_message,
@@ -350,7 +394,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             request_metrics=RequestMetrics(
                 text=Text(input_tokens=int(input_tokens) if input_tokens is not None else self._count_prompt_tokens(tokenizer))
             ),
-            response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+            response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=usage or None),
             lora_adapter=lora_adapter,
             extra_info=extra_info,
         )

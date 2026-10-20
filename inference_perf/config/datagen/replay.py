@@ -139,7 +139,7 @@ class SessionReplayConfig(StrictBaseModel):
     default_max_tokens: int = Field(1000, gt=0, description="Default max_tokens if not specified in trace")
     override_tool_call_max_tokens: bool = Field(
         True,
-        description="Override tool call max_tokens to 4096 instead of using trace recorded length",
+        description="Add tiered headroom to recorded tool-call max_tokens",
     )
     tool_choice_mode: ToolChoiceMode = Field(
         ToolChoiceMode.FORCE_RECORDED,
@@ -298,6 +298,14 @@ class OTelTraceReplayConfig(SessionReplayConfig):
 class WekaTraceReplayConfig(SessionReplayConfig):
     """Configuration for Weka trace replay data generator."""
 
+    separate_subagent_session_ids: bool = Field(
+        False,
+        description=(
+            "Give each subagent stream its own request session ID, shaped as "
+            "<parent_id>::sa:<agent_id>:s<stream_index>. Parent IDs stay unchanged. "
+            "Defaults to False so all requests in a trace share the parent ID."
+        ),
+    )
     trace_directory: Optional[str] = Field(None, description="Directory containing Weka JSON trace files")
     trace_files: Optional[List[str]] = Field(None, description="List of paths to specific Weka JSON trace files")
     hf_dataset_path: Optional[Union[str, Dict[str, Any]]] = Field(
@@ -533,9 +541,9 @@ class SyntheticAgenticConfig(SessionReplayConfig):
     override_tool_call_max_tokens: bool = Field(
         False,
         description=(
-            "Override tool-call max_tokens to 4096 instead of using the generated call's own "
-            "length. Defaults False here (unlike trace replay) because the generator sizes each "
-            "tool call itself, so the generated length is already correct for this model."
+            "Add tiered headroom to the generated tool call's own max_tokens. Defaults False "
+            "here (unlike trace replay) because the generator sizes each tool call itself, so "
+            "the generated length is already correct for this model."
         ),
     )
     skip_invalid_files: bool = Field(

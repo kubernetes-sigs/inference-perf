@@ -22,6 +22,7 @@ from inference_perf.datagen.replay.replay_graph_session_datagen import (
     SessionAnthropicMessagesAPIData,
     SessionChatCompletionAPIData,
     SessionInferenceInfo,
+    _expand_tool_call_max_tokens,
 )
 from inference_perf.datagen.replay.replay_graph_types import InputSegment
 from inference_perf.config.datagen.replay import ToolChoiceMode
@@ -34,6 +35,25 @@ _TOOL_CALLS = [
         "function": {"name": "get_weather", "arguments": '{"location":"Paris"}'},
     }
 ]
+
+
+@pytest.mark.parametrize(
+    ("recorded_tokens", "expanded_tokens"),
+    [
+        (0, 4_096),
+        (1, 4_096),
+        (1_024, 4_096),
+        (1_025, 8_192),
+        (2_000, 8_192),
+        (5_461, 8_192),
+        (5_462, 8_193),
+        (8_192, 12_288),
+        (8_193, 12_289),
+        (100_000, 104_096),
+    ],
+)
+def test_expand_tool_call_max_tokens(recorded_tokens: int, expanded_tokens: int) -> None:
+    assert _expand_tool_call_max_tokens(recorded_tokens) == expanded_tokens
 
 
 class TestEventOutputRegistryStructured:
@@ -371,9 +391,10 @@ class TestToolChoiceModeAsRecorded(ToolChoiceEventFactory):
         separate knob, and conflating them would silently alter token accounting.
         """
         api_data = self._make_api_data(self._SINGLE_TOOL, True, ["get_weather"], tool_choice_mode=ToolChoiceMode.AS_RECORDED)
+        api_data.max_tokens = 8_192
         api_data.override_tool_call_max_tokens = True
         payload = await api_data.to_request_body("model", 100, False, False)
-        assert payload["max_tokens"] == 4096
+        assert payload["max_tokens"] == 12_288
         assert payload["ignore_eos"] is False
         assert "tool_choice" not in payload
 
@@ -439,6 +460,14 @@ class TestToolChoiceModeAnthropicMessages:
         api_data = self._make_api_data(["get_weather"], ToolChoiceMode.AS_RECORDED)
         payload = await api_data.to_request_body("model", 100, False, False)
         assert [t["name"] for t in payload["tools"]] == ["get_weather"]
+
+    @pytest.mark.asyncio
+    async def test_tiered_max_tokens_override_reaches_anthropic_payload(self) -> None:
+        api_data = self._make_api_data(["get_weather"], ToolChoiceMode.AS_RECORDED)
+        api_data.max_tokens = 8_192
+        api_data.override_tool_call_max_tokens = True
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert payload["max_tokens"] == 12_288
 
 
 class TestToolCallIdRewriting:

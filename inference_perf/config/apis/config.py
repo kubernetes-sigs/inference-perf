@@ -15,13 +15,20 @@ from enum import Enum
 from typing import Any, Optional
 
 from inference_perf.config.common import StrictBaseModel
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 class APIType(Enum):
     Completion = "completion"
     Chat = "chat"
     AnthropicMessages = "anthropic_messages"
+    Embeddings = "embeddings"
+    Rerank = "rerank"
+
+
+class EmbeddingsEncodingFormat(Enum):
+    FLOAT = "float"
+    BASE64 = "base64"
 
 
 class ResponseFormatType(Enum):
@@ -57,9 +64,57 @@ class ResponseFormat(StrictBaseModel):
         }
 
 
+class EmbeddingsConfig(StrictBaseModel):
+    """Request options for the embeddings API (type 'embeddings')."""
+
+    batch_size: int = Field(default=1, ge=1, description="Number of input strings sent in each embeddings request.")
+    dimensions: Optional[int] = Field(
+        default=None, gt=0, description="Embedding size requested from the server. Unset uses the model's default."
+    )
+    encoding_format: Optional[EmbeddingsEncodingFormat] = Field(
+        default=None, description="Format of the returned embeddings: 'float' or 'base64'. Unset uses the server's default."
+    )
+
+
+class RerankConfig(StrictBaseModel):
+    """Request options for the rerank API (type 'rerank')."""
+
+    document_count: int = Field(default=10, ge=1, description="Number of documents scored against the query in each request.")
+    route: str = Field(default="/v1/rerank", description="Request path for the rerank endpoint.")
+    query_field: str = Field(default="query", description="Request field name carrying the query text.")
+    documents_field: str = Field(
+        default="documents", description="Request field name carrying the list of candidate documents."
+    )
+    top_n: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Optional top_n sent to the server to limit the number of results returned. 0 means all results.",
+    )
+
+    @model_validator(mode="after")
+    def validate_field_names(self) -> "RerankConfig":
+        if not self.route.startswith("/"):
+            raise ValueError("route must be non-empty and start with '/'")
+        if not self.query_field:
+            raise ValueError("query_field must not be empty")
+        if not self.documents_field:
+            raise ValueError("documents_field must not be empty")
+        if self.query_field == self.documents_field:
+            raise ValueError("query_field and documents_field must differ")
+        if self.query_field in ("model", "top_n") or self.documents_field in ("model", "top_n"):
+            raise ValueError("query_field and documents_field may not be 'model' or 'top_n'")
+        return self
+
+
+# API types that return a single JSON body with no generated text, and so can
+# neither stream nor constrain output to a schema.
+_NO_GENERATION_API_TYPES = (APIType.Embeddings, APIType.Rerank)
+
+
 class APIConfig(StrictBaseModel):
     type: APIType = Field(
-        default=APIType.Completion, description="API endpoint to benchmark: text completion or chat completion."
+        default=APIType.Completion,
+        description="API endpoint to benchmark: text completion, chat completion, Anthropic messages, embeddings or rerank.",
     )
     streaming: bool = Field(
         default=False, description="Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics."
@@ -79,6 +134,12 @@ class APIConfig(StrictBaseModel):
     response_format: Optional[ResponseFormat] = Field(
         default=None, description="Structured output settings sent as the 'response_format' request parameter."
     )
+    embeddings: Optional[EmbeddingsConfig] = Field(
+        default=None, description="Embeddings request options. Only valid when type is 'embeddings'."
+    )
+    rerank: Optional[RerankConfig] = Field(
+        default=None, description="Rerank request options. Only valid when type is 'rerank'."
+    )
     session_id_header_key: Optional[str] = Field(
         default=None, description="Header used to send the session ID with each request in multi-turn benchmarks."
     )
@@ -90,3 +151,16 @@ class APIConfig(StrictBaseModel):
         default=None,
         description="Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity.",
     )
+
+    @model_validator(mode="after")
+    def validate_no_generation_options(self) -> "APIConfig":
+        if self.type in _NO_GENERATION_API_TYPES:
+            if self.streaming:
+                raise ValueError(f"streaming is not supported for the {self.type.value} API")
+            if self.response_format is not None:
+                raise ValueError(f"response_format is not supported for the {self.type.value} API")
+        if self.type != APIType.Embeddings and self.embeddings is not None:
+            raise ValueError("embeddings options are only valid when type is 'embeddings'")
+        if self.type != APIType.Rerank and self.rerank is not None:
+            raise ValueError("rerank options are only valid when type is 'rerank'")
+        return self

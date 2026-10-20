@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import multiprocessing as mp
 import asyncio
 import typing
+import signal
 import sys
 import numpy as np
 from typing import Any
@@ -25,7 +26,7 @@ from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueDat
 from inference_perf.config import LoadConfig, LoadType, TraceConfig, TraceFormat, StandardLoadStage
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.apis import InferenceAPIData
-from inference_perf.utils.request_queue import RequestQueue
+from inference_perf.utils.request_queue import Drained, RequestQueue
 
 # Patch asyncio.TaskGroup for Python < 3.11
 if sys.version_info < (3, 11):
@@ -58,10 +59,55 @@ class MockWorker:
 class TestLoadGeneratorConcurrency(unittest.TestCase):
     def setUp(self) -> None:
         self.mock_datagen = MagicMock(spec=DataGenerator)
+        # No pinned routing unless a test says so: a bare MagicMock is truthy
+        # and would read as "every request is pinned".
+        self.mock_datagen.is_preferred_worker_requested.return_value = False
+        self.mock_datagen.preferred_worker_count.return_value = None
         self.load_config = LoadConfig(type=LoadType.CONCURRENT, num_workers=4, worker_max_concurrency=100)
         # Mocking get_circuit_breaker since LoadGenerator init calls it
         with unittest.mock.patch("inference_perf.loadgen.load_generator.get_circuit_breaker"):
             self.load_generator = LoadGenerator(self.mock_datagen, self.load_config)
+
+    def _add_workers(self, n: int) -> None:
+        self.load_generator.workers = []
+        for i in range(n):
+            self.load_generator.workers.append(MockWorker(i, mp.Value("i", 0)))  # type: ignore
+
+    def _worker_concurrencies(self) -> list[int]:
+        return [worker.shared_max_concurrency.value for worker in self.load_generator.workers]  # type: ignore
+
+    # 4 workers, concurrency_level 8, and the datagen pins every request to
+    # one worker. Pins the split [8, 0, 0, 0]: workers the pins never reach
+    # get no share of the budget, so worker 0 delivers the whole level.
+    def test_set_worker_concurrency_follows_pinned_worker_count(self) -> None:
+        self._add_workers(4)
+        self.mock_datagen.is_preferred_worker_requested.return_value = True
+        self.mock_datagen.preferred_worker_count.return_value = 1
+        self.load_generator._set_worker_concurrency(8)
+        self.assertEqual(self._worker_concurrencies(), [8, 0, 0, 0])
+
+    # 4 workers, concurrency_level 8, pins reach 3 workers. Pins [3, 3, 2, 0]:
+    # the usual remainder split, but over the 3 reachable workers.
+    def test_set_worker_concurrency_splits_remainder_over_pinned_workers(self) -> None:
+        self._add_workers(4)
+        self.mock_datagen.is_preferred_worker_requested.return_value = True
+        self.mock_datagen.preferred_worker_count.return_value = 3
+        self.load_generator._set_worker_concurrency(8)
+        self.assertEqual(self._worker_concurrencies(), [3, 3, 2, 0])
+
+    # 4 workers. Pins the worker count routing and the split both use:
+    # 4 with nothing limiting it, 3 under concurrency_level 3, 2 when pins
+    # reach 2 workers, and 4 again when the datagen pins but cannot say to how
+    # many workers (count None).
+    def test_active_worker_count_matches_the_split(self) -> None:
+        self.assertEqual(self.load_generator._active_worker_count(None), 4)
+        self.assertEqual(self.load_generator._active_worker_count(3), 3)
+        self.mock_datagen.is_preferred_worker_requested.return_value = True
+        self.mock_datagen.preferred_worker_count.return_value = 2
+        self.assertEqual(self.load_generator._active_worker_count(None), 2)
+        self.assertEqual(self.load_generator._active_worker_count(8), 2)
+        self.mock_datagen.preferred_worker_count.return_value = None
+        self.assertEqual(self.load_generator._active_worker_count(8), 4)
 
     def test_set_worker_concurrency_divisible(self) -> None:
         # Setup workers
@@ -115,6 +161,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.mock_datagen = MagicMock(spec=DataGenerator)
         self.mock_datagen.get_data.return_value = iter([MagicMock(preferred_worker_id=-1) for _ in range(100)])
+        self.mock_datagen.is_preferred_worker_requested.return_value = False
         self.mock_datagen.trace = None
 
         self.mock_client = AsyncMock(spec=ModelServerClient)
@@ -173,11 +220,13 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         mock_time.perf_counter.side_effect = count(0, 10)  # simulate time passing
 
         request_queue = MagicMock(spec=RequestQueue)
-        request_queue.drain = MagicMock(return_value=0)
+        request_queue.drain = MagicMock(return_value=Drained(0, True))
         active_counter = MagicMock()
         active_counter.value = 0
         finished_counter = MagicMock()
         finished_counter.value = 0
+        skipped_counter = MagicMock()
+        skipped_counter.value = 0
         request_phase = MagicMock()
         cancel_signal = MagicMock()
 
@@ -195,6 +244,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
                 request_queue=request_queue,
                 active_requests_counter=active_counter,
                 finished_requests_counter=finished_counter,
+                skipped_requests_counter=skipped_counter,
                 request_phase=request_phase,
                 cancel_signal=cancel_signal,
                 timeout=5.0,
@@ -249,19 +299,18 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         q.put(RequestQueueData(0, dummy_data, 0.0, None), 0)
         q.put(RequestQueueData(0, dummy_data, 0.0, None), 0)
 
-        # Small sleep to let queue populate
-        await asyncio.sleep(0.1)
-
         drained = q.drain(0)
-        self.assertEqual(drained, 2)
+        self.assertEqual(drained, (2, True))
         self.assertTrue(q.get_channel(0).empty())
 
-    def test_sigint_handler(self) -> None:
-        import signal
-
-        self.assertFalse(self.load_generator.interrupt_sig)
-        self.load_generator._sigint_handler(signal.SIGINT, None)
-        self.assertTrue(self.load_generator.interrupt_sig)
+    def test_sigint_and_sigterm_interrupt_the_run(self) -> None:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signum=signum):
+                self.load_generator.interrupt_sig = False
+                handler = signal.getsignal(signum)
+                assert callable(handler)
+                handler(signum, None)
+                self.assertTrue(self.load_generator.interrupt_sig)
 
     @patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock)
     async def test_sigint_without_timeout_is_interrupted(self, mock_sleep: AsyncMock) -> None:
@@ -281,6 +330,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
             request_queue=MagicMock(put=MagicMock(), join=MagicMock()),
             active_requests_counter=mp.Value("i", 0),
             finished_requests_counter=mp.Value("i", 0),
+            skipped_requests_counter=mp.Value("i", 0),
             request_phase=mp.Event(),
             cancel_signal=mp.Event(),
             timeout=None,
@@ -306,6 +356,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
             request_queue=MagicMock(put=MagicMock(), join=MagicMock()),
             active_requests_counter=mp.Value("i", 0),
             finished_requests_counter=finished_counter,
+            skipped_requests_counter=mp.Value("i", 0),
             request_phase=mp.Event(),
             cancel_signal=None,
         )
