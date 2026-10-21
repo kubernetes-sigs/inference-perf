@@ -39,10 +39,12 @@ of one run) to avoid context accumulating across concurrency levels.
 import asyncio
 import hashlib
 import logging
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Generator, List, Optional
+from typing import Callable, Generator, List, Optional
 
 import numpy as np
+from pydantic import PrivateAttr
 
 from aiohttp import ClientResponse
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, LazyLoadInferenceAPIData
@@ -84,6 +86,32 @@ class _ConversationReplayAPIData(UserSessionCompletionAPIData):
     """
 
     tool_call_latency_sec: float = 0.0
+    _request_finished_callback: Optional[Callable[[], None]] = PrivateAttr(default=None)
+
+    def bind_request_finished(self, callback: Callable[[], None]) -> None:
+        self._request_finished_callback = callback
+
+    def on_request_finished(self) -> None:
+        callback = self._request_finished_callback
+        if callback is None:
+            return
+        self._request_finished_callback = None
+        try:
+            # Resolve the session by id instead of through the user_session property.
+            # The property creates a new LocalUserSession when the id is missing, so a
+            # task that ends after _wind_down_stage clears the registry would resurrect
+            # its id. The next stage's re-prime check then sees the id present and skips
+            # the slot for the whole stage. A missing session needs no cleanup: it was
+            # already torn down.
+            session = LocalUserSession._instances.get(self.user_session_id)
+            if session is not None and session._in_flight is not None and session._in_flight.locked():
+                try:
+                    session.update_context(getattr(self, "_session_context", session.context))
+                finally:
+                    if session._in_flight.locked():
+                        session._in_flight.release()
+        finally:
+            callback()
 
     async def process_response(
         self,
@@ -136,6 +164,12 @@ class ConversationBlueprint:
     turn_prompts: List[str] = field(default_factory=list)
     turn_output_lens: List[int] = field(default_factory=list)
     turn_tool_call_latencies: List[float] = field(default_factory=list)
+
+
+@dataclass
+class _ConversationSlotState:
+    next_round: int = 0
+    busy: bool = False
 
 
 class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
@@ -212,6 +246,9 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.blueprints: List[ConversationBlueprint] = []
         self.user_sessions: List[LocalUserSession] = []
         self._build_conversations()
+        self._slot_states = [_ConversationSlotState() for _ in self.blueprints]
+        self._ready_slots: deque[int] = deque()
+        self._scheduler_stage_id: Optional[int] = None
 
         logger.info(
             "ConversationReplayDataGenerator: %d conversations, %d total turns",
@@ -240,51 +277,75 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
     # -- LazyLoadDataMixin interface --------------------------------------
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
-        conv_idx = data.data_index % len(self.blueprints)
+        if self._scheduler_stage_id != data.stage_id:
+            self._slot_states = [_ConversationSlotState() for _ in self.blueprints]
+            self._ready_slots.clear()
+            self._scheduler_stage_id = data.stage_id
+
+        candidate_idx = data.data_index % len(self.blueprints)
+        if self._ready_slots:
+            conv_idx = self._ready_slots.popleft()
+        elif not self._slot_states[candidate_idx].busy:
+            conv_idx = candidate_idx
+        else:
+            raise RuntimeError(
+                "Conversation replay has no ready conversation for an available request slot. "
+                "Ensure concurrency_level does not exceed num_conversations."
+            )
+
+        slot = self._slot_states[conv_idx]
+        slot.busy = True
         bp = self.blueprints[conv_idx]
-        round_num = data.data_index // len(self.blueprints)
+        round_num = slot.next_round
+        slot.next_round += 1
         turn_idx = round_num % bp.num_turns
         convo_num = round_num // bp.num_turns  # which conversation this slot is on
+        try:
+            # Re-prime if the session was cleared (e.g. LoadGenerator calls
+            # LocalUserSession.clear_instances() between load stages). Without this,
+            # subsequent stages would dispatch with empty session_context, losing the
+            # system_prompt the conversation was built around.
+            expected_session_id = self.user_sessions[conv_idx].user_session_id
+            if expected_session_id not in LocalUserSession._instances:
+                # Get or generate the shared system prompt for this stage.
+                shared_prompt = self._get_or_generate_shared_prompt(data.stage_id)
+                bp.system_prompt = self._build_system_prompt(shared_prompt, bp.dynamic_system_prompt)
 
-        # Re-prime if the session was cleared (e.g. LoadGenerator calls
-        # LocalUserSession.clear_instances() between load stages). Without this,
-        # subsequent stages would dispatch with empty session_context, losing the
-        # system_prompt the conversation was built around.
-        expected_session_id = self.user_sessions[conv_idx].user_session_id
-        if expected_session_id not in LocalUserSession._instances:
-            # Get or generate the shared system prompt for this stage.
-            shared_prompt = self._get_or_generate_shared_prompt(data.stage_id)
-            bp.system_prompt = self._build_system_prompt(shared_prompt, bp.dynamic_system_prompt)
+                self.user_sessions[conv_idx] = self._new_session(
+                    user_session_id=expected_session_id,
+                    context=bp.system_prompt,
+                    system_prompt=bp.system_prompt,
+                )
+                logger.debug("Slot %d: refreshed system prompt and re-primed session %s", conv_idx, expected_session_id)
 
-            self.user_sessions[conv_idx] = self._new_session(
-                user_session_id=expected_session_id,
-                context=bp.system_prompt,
-                system_prompt=bp.system_prompt,
+            # Rollover happens only after the slot's preceding request has
+            # completed and returned it to the ready pool. The id carries the stage
+            # because get_data() restarts data_index at 0 every stage while the slot
+            # keeps its previous id: without it, a stage-1 slot re-primed as
+            # slot_0_convo_1 would roll over onto slot_0_convo_1 again instead of
+            # starting a new conversation.
+            if turn_idx == 0 and round_num > 0:
+                self.user_sessions[conv_idx] = self._new_session(
+                    user_session_id=f"stage_{data.stage_id}_slot_{conv_idx}_convo_{convo_num}",
+                    context=bp.system_prompt,
+                    system_prompt=bp.system_prompt,
+                )
+                logger.debug("Slot %d starting conversation %d", conv_idx, convo_num)
+
+            latency = bp.turn_tool_call_latencies[turn_idx] if bp.turn_tool_call_latencies else 0.0
+            request = _ConversationReplayAPIData(
+                prompt=bp.turn_prompts[turn_idx],
+                max_tokens=bp.turn_output_lens[turn_idx],
+                user_session_id=self.user_sessions[conv_idx].user_session_id,
+                target_round=round_num,
+                tool_call_latency_sec=latency,
             )
-            logger.debug("Slot %d: refreshed system prompt and re-primed session %s", conv_idx, expected_session_id)
-
-        # Closed-loop replenishment: when a conversation finishes all its turns,
-        # reset the session so the slot immediately starts a fresh conversation.
-        # The id carries the stage because get_data() restarts data_index at 0 every
-        # stage while the slot keeps its previous id: without it, a stage-1 slot
-        # re-primed as slot_0_convo_1 would roll over onto slot_0_convo_1 again
-        # instead of starting a new conversation.
-        if turn_idx == 0 and round_num > 0:
-            self.user_sessions[conv_idx] = self._new_session(
-                user_session_id=f"stage_{data.stage_id}_slot_{conv_idx}_convo_{convo_num}",
-                context=bp.system_prompt,
-                system_prompt=bp.system_prompt,
-            )
-            logger.debug("Slot %d starting conversation %d", conv_idx, convo_num)
-
-        latency = bp.turn_tool_call_latencies[turn_idx] if bp.turn_tool_call_latencies else 0.0
-        return _ConversationReplayAPIData(
-            prompt=bp.turn_prompts[turn_idx],
-            max_tokens=bp.turn_output_lens[turn_idx],
-            user_session_id=self.user_sessions[conv_idx].user_session_id,
-            target_round=round_num,
-            tool_call_latency_sec=latency,
-        )
+            request.bind_request_finished(lambda: self._release_slot(conv_idx, data.stage_id))
+            return request
+        except Exception:
+            slot.next_round -= 1
+            self._release_slot(conv_idx, data.stage_id)
+            raise
 
     # -- DataGenerator interface ------------------------------------------
 
@@ -325,6 +386,15 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         )
         LocalUserSession._instances[user_session_id] = session
         return session
+
+    def _release_slot(self, conv_idx: int, stage_id: int) -> None:
+        if stage_id != self._scheduler_stage_id:
+            return
+        slot = self._slot_states[conv_idx]
+        if not slot.busy:
+            return
+        slot.busy = False
+        self._ready_slots.append(conv_idx)
 
     def _get_or_generate_shared_prompt(self, stage_id: int) -> str:
         """Get or generate the shared system prompt prefix for a specific stage using a derived stable seed."""
