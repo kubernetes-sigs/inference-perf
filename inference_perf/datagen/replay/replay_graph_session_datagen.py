@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from aiohttp import ClientResponse
 from PIL import Image as PILImage
 
-from inference_perf.apis.tool_output import count_tool_tokens, message_tool_arguments
+from inference_perf.apis.tool_output import chat_tool_calls, count_tool_tokens, message_tool_arguments
 from inference_perf.apis import (
     ChatCompletionAPIData,
     ErrorResponseInfo,
@@ -1088,29 +1088,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
         actual_tool_names: List[str] = []
         if config.streaming:
-            # Accumulate tool_call chunks alongside text content.
-            # delta.tool_calls is a list of partial objects; each chunk carries an
-            # index that identifies which tool call it belongs to.
-            tool_call_chunks = {}
 
             def _extract_streaming_content(data: Dict[str, Any]) -> Optional[str]:
                 delta = data.get("choices", [{}])[0].get("delta", {})
-                for chunk in delta.get("tool_calls") or []:
-                    idx = chunk.get("index", 0)
-                    if idx not in tool_call_chunks:
-                        tool_call_chunks[idx] = {
-                            "id": chunk.get("id", ""),
-                            "type": chunk.get("type", "function"),
-                            "function": {"name": "", "arguments": ""},
-                        }
-                    fn = chunk.get("function") or {}
-                    if fn.get("name"):
-                        tool_call_chunks[idx]["function"]["name"] += fn["name"]
-                    if fn.get("arguments"):
-                        tool_call_chunks[idx]["function"]["arguments"] += fn["arguments"]
-                    if chunk.get("id"):
-                        tool_call_chunks[idx]["id"] = chunk["id"]
-
                 content = delta.get("content")
                 return str(content) if content is not None else None
 
@@ -1135,8 +1115,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_text = text_content
 
             streaming_output_message: Optional[Dict[str, Any]] = None
-            if tool_call_chunks:
-                live_tool_calls = [tool_call_chunks[i] for i in sorted(tool_call_chunks)]
+            if parsed.tool_calls:
+                live_tool_calls = parsed.tool_calls
                 streaming_output_message = {"role": "assistant", "tool_calls": live_tool_calls}
                 if text_content:
                     streaming_output_message["content"] = text_content
@@ -1170,7 +1150,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_message=streaming_output_message,
                 extra_info={"raw_response": raw_content},
             )
-            actual_tool_names = [tool_call_chunks[i]["function"]["name"] for i in sorted(tool_call_chunks)]
+            actual_tool_names = [call["function"]["name"] for call in parsed.tool_calls]
         else:
             data = await response.json()
             # A 200 whose body is an error payload is that error, not a success.
@@ -1215,7 +1195,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_text=output_text or None,
                 output_message=output_message,
             )
-            actual_tool_names = [tc["function"]["name"] for tc in (tool_calls or [])]
+            actual_tool_names = [tc["function"]["name"] for tc in chat_tool_calls(output_message)]
 
         if self.expected_output_tool_names is not None:
             # Compare as multisets
