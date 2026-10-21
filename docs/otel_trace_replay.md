@@ -118,7 +118,7 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `trace_files` | list[string] | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | List of specific trace files. Supports glob patterns (e.g., `"path/*/*.json"`). All files are parsed into RAM at startup; graphs are built on demand. |
-| `trace_directory` | string | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | Directory containing trace files. All `.json` files will be loaded. All files are parsed into RAM at startup; graphs are built on demand. |
+| `trace_directory` | string | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | Directory containing trace files. All `.json` and `.jsonl` files, optionally `.zst`-compressed, will be loaded. All files are parsed into RAM at startup; graphs are built on demand. |
 | `hf_dataset_path` | string \| dict | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | HuggingFace dataset identifier. As a string: `"username/dataset-name"`. As a dict: `{path, revision, split, ...}` — extra keys are forwarded to `datasets.load_dataset()`. Downloaded and cached automatically. Raw span data stays memory-mapped on disk; graphs are built on demand. |
 | `use_static_model` | boolean | No (default: `false`) | Override all recorded model names with `static_model_name` |
 | `static_model_name` | string | Required if `use_static_model: true` | Model name to use for all requests |

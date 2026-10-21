@@ -32,10 +32,16 @@ that have nothing to do with aggregation.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
 import pytest
+
+if sys.version_info >= (3, 14):
+    from compression import zstd
+else:
+    from backports import zstd
 
 import inference_perf.datagen.replay.trace_source as trace_source_module
 from inference_perf.datagen.replay.otel_trace_replay_datagen import (
@@ -661,3 +667,27 @@ def test_wire_event_ids_are_stable_across_reloads(tmp_path: Path) -> None:
 
     assert parent_events == worker_events, "event ids diverged between builds"
     assert parent_user_facing == worker_user_facing, "user-facing event ids diverged between builds"
+
+
+@pytest.mark.parametrize(
+    "name, docs",
+    [
+        ("a.json", [otel_trace()]),
+        ("traces.jsonl", [otel_trace(f"t{i}") for i in range(3)]),
+        ("calls.jsonl", [chat_record("s-1"), chat_record("s-1")]),
+    ],
+)
+def test_zst_file_loads_the_same_records_as_the_file_it_compresses(
+    tmp_path: Path, name: str, docs: List[Dict[str, Any]]
+) -> None:
+    plain = write_jsonl(tmp_path / name, docs)
+    compressed = tmp_path / f"{name}.zst"
+    compressed.write_bytes(zstd.compress(plain.read_bytes()))
+    plain_source, zst_source = source_for([plain]), source_for([compressed])
+
+    assert [r.trace_format for r in zst_source.records] == [r.trace_format for r in plain_source.records]
+    for i in range(len(plain_source.records)):
+        assert {**scrub(zst_source.load_record(i)), "source_id": None} == {
+            **scrub(plain_source.load_record(i)),
+            "source_id": None,
+        }

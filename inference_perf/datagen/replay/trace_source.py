@@ -47,6 +47,8 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     derive_trace_id,
     detect_trace_format,
     iter_wire_spans,
+    open_trace,
+    open_trace_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -316,7 +318,8 @@ class LocalTraceSource:
 
         # Prefer session_id, then trace_id, then the filename stem.
         try:
-            document = json.loads(path.read_text(encoding="utf-8"))
+            with open_trace_text(path) as f:
+                document = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
             raise InvalidTraceError(f"{path}: unable to read OTel identity: {e}") from e
         if not isinstance(document, dict):
@@ -367,7 +370,7 @@ class LocalTraceSource:
             # Seek to the range recorded at indexing; scanning here would be O(N^2).
             assert record.byte_offset is not None and record.byte_length is not None
             try:
-                with path.open("rb") as stream:
+                with open_trace(path) as stream:
                     stream.seek(record.byte_offset)
                     line = stream.read(record.byte_length)
             except OSError as e:
@@ -396,7 +399,8 @@ class LocalTraceSource:
             return converted
 
         try:
-            return cast(Dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+            with open_trace_text(path) as f:
+                return cast(Dict[str, Any], json.load(f))
         except json.JSONDecodeError as e:
             raise InvalidTraceError(f"{path}: not valid JSON: {e}") from e
         except OSError as e:
@@ -429,7 +433,7 @@ def _scan_jsonl_records(path: Path, validate: bool) -> List[Tuple[int, int, Opti
     indexed_rows: List[Tuple[int, int, Optional[str]]] = []
     line_no = 0
     try:
-        with path.open("rb") as stream:
+        with open_trace(path) as stream:
             while True:
                 offset = stream.tell()
                 line = stream.readline()

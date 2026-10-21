@@ -34,12 +34,19 @@ docs/superpowers/notes/reasoning-content-dropped-in-wire-replay.md.
 """
 
 import hashlib
+import io
 import json
 import logging
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, TextIO, Tuple
+
+if sys.version_info >= (3, 14):
+    from compression import zstd
+else:
+    from backports import zstd
 
 from inference_perf.apis.image_parts import anthropic_image_to_part, is_image_part, openai_image_to_part
 
@@ -57,6 +64,19 @@ _STATUS_OK = 1
 _STATUS_ERROR = 2
 
 logger = logging.getLogger(__name__)
+
+
+def trace_suffix(path: Path) -> str:
+    """The suffix of the trace a file holds: ".jsonl" for both calls.jsonl and calls.jsonl.zst."""
+    return path.with_suffix("").suffix if path.suffix == ".zst" else path.suffix
+
+
+def open_trace(path: Path) -> io.BufferedIOBase:
+    return zstd.open(path) if path.suffix == ".zst" else path.open("rb")
+
+
+def open_trace_text(path: Path) -> TextIO:
+    return zstd.open(path, "rt", encoding="utf-8") if path.suffix == ".zst" else path.open(encoding="utf-8")
 
 
 def _span_id(trace_id: str, line_no: int) -> str:
@@ -90,7 +110,7 @@ def _first_json_line(path: Path) -> Optional[Dict[str, Any]]:
     Only meaningful for line-delimited files. Returns None for an empty/blank file.
     Raises ValueError naming the file if the first meaningful line is not a JSON object.
     """
-    with path.open(encoding="utf-8") as f:
+    with open_trace_text(path) as f:
         for line in f:
             if not line.strip():
                 continue
@@ -110,8 +130,9 @@ def _probe_file(path: Path) -> Optional[Dict[str, Any]]:
     A .json file is parsed whole, since it may be pretty-printed across many lines.
     Any other file is treated as line-delimited and probed with its first record.
     """
-    if path.suffix == ".json":
-        text = path.read_text(encoding="utf-8")
+    if trace_suffix(path) == ".json":
+        with open_trace_text(path) as f:
+            text = f.read()
         if not text.strip():
             return None
         try:
@@ -138,7 +159,7 @@ def detect_trace_format(path: Path) -> str:
 
     if "spans" in first:
         # A .json file holding a single OTel document, vs a .jsonl of OTel documents.
-        return FORMAT_OTEL_JSONL if path.suffix == ".jsonl" else FORMAT_OTEL_JSON
+        return FORMAT_OTEL_JSONL if trace_suffix(path) == ".jsonl" else FORMAT_OTEL_JSON
 
     api_path = first.get("path")
     if isinstance(api_path, str) and "request" in first:
@@ -1181,7 +1202,7 @@ def iter_wire_spans(path: Path, trace_id: str) -> Iterator[Dict[str, Any]]:
     Reads line by line and drops each parsed record after converting it, so the file's
     records and the resulting spans are never both fully resident.
     """
-    with path.open(encoding="utf-8") as f:
+    with open_trace_text(path) as f:
         for line_no, line in enumerate(f, start=1):
             if not line.strip():
                 continue
@@ -1214,7 +1235,7 @@ def convert_wire_file(path: Path, trace_id: Optional[str] = None) -> Dict[str, A
 
 def iter_otel_jsonl_traces(path: Path) -> Iterator[Dict[str, Any]]:
     """Stream OTel trace documents from a .jsonl file, one per line."""
-    with path.open(encoding="utf-8") as f:
+    with open_trace_text(path) as f:
         for line_no, line in enumerate(f, start=1):
             if not line.strip():
                 continue
