@@ -28,6 +28,7 @@ from inference_perf.config import (
     MultiLoRAConfig,
     StandardLoadStage,
     StageGenType,
+    StopConditionConfig,
     SweepConfig,
     TraceSessionReplayLoadStage,
 )
@@ -330,3 +331,66 @@ def test_trace_replay_rejects_stop_condition() -> None:
     with pytest.raises(ValidationError, match="Stage 0: stop_condition has no effect under TRACE_REPLAY"):
         LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, stop_condition="t >= 60")])
     LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, duration=30)])
+
+
+# --- StandardLoadStage.stop_condition over measured terms ------------------------
+
+
+# The object form {condition: '(t >= 300) | (avg_over_last(error, 20) > 0.5)', hold: 3} loads with that hold;
+# the stage's effective_duration is the 300s deadline and its predicate reads one term.
+def test_standard_load_stage_stop_condition_object_form() -> None:
+    stage = StandardLoadStage(
+        rate=10, stop_condition={"condition": "(t >= 300) | (avg_over_last(error, 20) > 0.5)", "hold": 3}
+    )
+    assert isinstance(stage.stop_condition, StopConditionConfig)
+    assert stage.stop_settings == StopConditionConfig(condition="(t >= 300) | (avg_over_last(error, 20) > 0.5)", hold=3)
+    assert stage.effective_duration == 300.0
+    assert [term.source for term in stage.predicate.terms.values()] == ["avg_over_last(error, 20)"]
+
+
+# A string stop_condition and the duration shorthand both normalise to the object form with hold 1.
+def test_stop_settings_defaults() -> None:
+    by_string = StandardLoadStage(rate=10, stop_condition="(t >= 300) | (errors >= 10)")
+    assert by_string.stop_settings == StopConditionConfig(condition="(t >= 300) | (errors >= 10)", hold=1)
+    assert StandardLoadStage(rate=10, duration=60).stop_settings == StopConditionConfig(condition="t >= 60")
+
+
+# hold=0 is rejected, as is a 'window' key: the window lives in the condition now.
+def test_stop_condition_object_form_bounds() -> None:
+    with pytest.raises(ValidationError):
+        StopConditionConfig(condition="t >= 60", hold=0)
+    with pytest.raises(ValidationError):
+        StandardLoadStage(rate=10, stop_condition={"condition": "t >= 60", "window": 5})
+
+
+# 'errors >= 10' alone cannot end the stage on time; rejected at config load with the form to use.
+def test_stop_condition_measured_only_rejected() -> None:
+    with pytest.raises(ValidationError, match="must also hold on time alone"):
+        StandardLoadStage(rate=10, stop_condition="errors >= 10")
+
+
+# At rate 2 a 60s stage sends 120 requests: 'avg_over_sent(ttft, 100, 120)' loads, 'avg_over_sent(ttft, 100, 121)'
+# is rejected because request 121 is never sent.
+def test_over_sent_must_fit_in_the_stage() -> None:
+    StandardLoadStage(rate=2, stop_condition="(t >= 60) | (avg_over_sent(ttft, 100, 120) > 1)")
+    with pytest.raises(ValidationError, match="reads requests up to 121, but the stage sends 120 by its 60s deadline"):
+        StandardLoadStage(rate=2, stop_condition="(t >= 60) | (avg_over_sent(ttft, 100, 121) > 1)")
+
+
+# Reassigning the object form rebuilds the predicate: 't >= 60' replaced by '(t >= 120) | (errors >= 1)' gives
+# effective_duration 120.0 and a predicate that reads errors.
+def test_predicate_rebuilt_when_object_form_changes() -> None:
+    stage = StandardLoadStage(rate=10, stop_condition=StopConditionConfig(condition="t >= 60"))
+    assert stage.effective_duration == 60.0
+    stage.stop_condition = StopConditionConfig(condition="(t >= 120) | (errors >= 1)")
+    assert stage.effective_duration == 120.0
+    assert stage.predicate.signals == {"errors"}
+
+
+# TRACE_REPLAY rejects the object form of stop_condition the way it rejects the string.
+def test_trace_replay_rejects_object_form() -> None:
+    with pytest.raises(ValidationError, match="Stage 0: stop_condition has no effect under TRACE_REPLAY"):
+        LoadConfig(
+            type=LoadType.TRACE_REPLAY,
+            stages=[StandardLoadStage(rate=1, stop_condition={"condition": "(t >= 60) | (errors >= 1)"})],
+        )
