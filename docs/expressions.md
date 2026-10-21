@@ -117,7 +117,25 @@ A condition can read what the stage measures, so a stage can stop on a latency o
 
 There is no inter-token latency series. The report re-derives each token's timestamp from the raw response chunks when it writes the report, so a value measured during the run would be a different number under the same name.
 
-A window function is `<aggregate>_over_<window>(...)`. The aggregates are `avg`, `min`, `max`, `sum`, `count`, `stddev` and `quantile`, which takes the quantile first, between 0 and 1. There is no median: use `quantile(0.5, ...)`. The `_over_time` window is PromQL's. `_over_last` and `_over_sent` are ours, for windows PromQL has no spelling for: a fixed number of results, and requests by the order they were sent.
+A window function is `<aggregate>_over_<window>(...)`, and any aggregate works with any window. Like the series table, the two tables below are checked against the code in both directions.
+
+| Aggregate | Reads |
+| --- | --- |
+| `avg` | Mean of the samples. |
+| `min` | Smallest sample. |
+| `max` | Largest sample. |
+| `sum` | Sum of the samples. |
+| `count` | Number of samples. |
+| `stddev` | Population standard deviation, as PromQL computes it. |
+| `quantile` | The q-quantile, with q first and between 0 and 1, interpolated linearly as PromQL does. |
+
+There is no median: use `quantile(0.5, ...)`.
+
+| Window | Selects |
+| --- | --- |
+| `_over_time` | PromQL's window: samples that finished inside a range such as ttft[30s], with optional offset and @. |
+| `_over_last` | Ours: the last n samples, written (series, n). |
+| `_over_sent` | Ours: requests a up to b in the order they were sent, counting from 0, written (series, a, b). |
 
 | Window function | Reads |
 | --- | --- |
@@ -128,7 +146,7 @@ A window function is `<aggregate>_over_<window>(...)`. The aggregates are `avg`,
 | `quantile_over_last(0.9, ttft, 50)` | p90 TTFT of the last 50 streamed requests. |
 | `avg_over_sent(ttft, 10, 30)` | Mean TTFT of the 11th to 30th request sent. |
 
-A range is a PromQL duration: `500ms`, `30s`, `5m`, `1m30s`. `offset` moves the range back. `@` ends the range at a stage second, the same clock as `t`. That differs from PromQL, where `@` takes a unix timestamp. Subqueries (`[30s:5s]`) are not supported.
+A range is a PromQL duration: `500ms`, `30s`, `5m`, `1h`, `1m30s`. `offset` moves the range back. `@` ends the range at a stage second, the same clock as `t`. That differs from PromQL, where `@` takes a unix timestamp. Subqueries (`[30s:5s]`) are not supported.
 
 A term has no value until its window is complete, and a comparison on a term with no value is false, so the rest of the condition decides. A time range is complete once it lies inside the stage, so `ttft[30s]` has no value before `t = 30`. `_over_last(series, n)` needs `n` samples. `_over_sent(series, a, b)` needs every request from `a` up to `b` to finish, and a failed request counts as finished even though it has no latency. A window with no samples has no value either.
 

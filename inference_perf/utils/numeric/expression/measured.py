@@ -76,8 +76,23 @@ SIGNALS: Dict[str, str] = {
     "since_last_completion": "Seconds since a request last finished, or since the stage started if none has.",
 }
 
-AGGREGATES = ("avg", "min", "max", "sum", "count", "stddev", "quantile")
-WINDOWS = ("time", "last", "sent")
+# Each description is its row in docs/expressions.md, and test_doc_examples.py
+# checks the doc against these tables in both directions.
+AGGREGATES: Dict[str, str] = {
+    "avg": "Mean of the samples.",
+    "min": "Smallest sample.",
+    "max": "Largest sample.",
+    "sum": "Sum of the samples.",
+    "count": "Number of samples.",
+    "stddev": "Population standard deviation, as PromQL computes it.",
+    "quantile": "The q-quantile, with q first and between 0 and 1, interpolated linearly as PromQL does.",
+}
+
+WINDOWS: Dict[str, str] = {
+    "time": "PromQL's window: samples that finished inside a range such as ttft[30s], with optional offset and @.",
+    "last": "Ours: the last n samples, written (series, n).",
+    "sent": "Ours: requests a up to b in the order they were sent, counting from 0, written (series, a, b).",
+}
 
 # Aggregates answered from a sorted copy of the window rather than running sums.
 _ORDERED = frozenset({"min", "max", "quantile"})
