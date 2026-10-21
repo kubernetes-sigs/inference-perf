@@ -41,6 +41,8 @@ from inference_perf.config import APIConfig, APIType, DataConfig, LoadConfig, Lo
 from inference_perf.datagen import SessionGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.metrics import SessionMetricsCollector
+from inference_perf.observability.context import StageContext
+from inference_perf.observability.progress import STAGE_ELAPSED_BAR, STAGE_SESSIONS_BAR
 
 
 class _IdTable:
@@ -543,6 +545,70 @@ async def test_a_count_bounded_stage_that_times_out_also_reports_its_open_sessio
     assert "s0" in metrics, "a session stranded by the timeout must still be reported"
     assert metrics["s0"].truncated is True
     assert metrics["s0"].success is None, "truncated sessions are neither a success nor a failure"
+
+
+# --- progress reporting ---------------------------------------------------
+#
+# A cycling stage plans no session count, so the sessions bar would read "18/0" for its
+# whole window. Its window is what it progresses towards, so it reports that instead.
+
+
+class _OpenedBars:
+    """Records which bars the stage opened, standing in for the progress display."""
+
+    def __init__(self) -> None:
+        self.opened: list[str] = []
+
+    def open(self, spec: Any, **labels: str) -> MagicMock:
+        self.opened.append(spec.name)
+        return MagicMock()
+
+    def refresh(self) -> None:
+        pass
+
+
+class _Observer:
+    def __init__(self) -> None:
+        self.started: list[StageContext] = []
+        self.ended: list[StageContext] = []
+
+    def on_stage_start(self, context: StageContext) -> None:
+        self.started.append(context)
+
+    def on_stage_end(self, context: StageContext) -> None:
+        self.ended.append(context)
+
+
+@pytest.mark.asyncio
+async def test_duration_bounded_stage_reports_progress_against_its_window() -> None:
+    datagen = ScriptedSessionGenerator(num_sessions=3, cycling=True)
+    loadgen, _ = _load_generator(datagen)
+    observer = _Observer()
+    loadgen.stage_observer = observer
+    bars = _OpenedBars()
+
+    await _run_stage(loadgen, TraceSessionReplayLoadStage(concurrent_sessions=2, duration=0.3), progress_ctx=bars)
+
+    assert bars.opened == [STAGE_ELAPSED_BAR.name]
+    context = observer.started[0]
+    assert context.planned_duration_seconds == 0.3
+    elapsed = context.elapsed_seconds()
+    # Read after the stage ended: capped at the window, never past it.
+    assert elapsed == pytest.approx(0.3)
+
+
+@pytest.mark.asyncio
+async def test_count_bounded_stage_still_reports_progress_by_session_count() -> None:
+    datagen = ScriptedSessionGenerator(num_sessions=4)
+    loadgen, _ = _load_generator(datagen)
+    observer = _Observer()
+    loadgen.stage_observer = observer
+    bars = _OpenedBars()
+
+    await _run_stage(loadgen, TraceSessionReplayLoadStage(concurrent_sessions=2, num_sessions=4), progress_ctx=bars)
+
+    assert bars.opened == [STAGE_SESSIONS_BAR.name]
+    assert observer.started[0].planned_duration_seconds is None
 
 
 class _CompletesDuringTeardown(ScriptedSessionGenerator):

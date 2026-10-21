@@ -78,6 +78,7 @@ from inference_perf.observability.context import StageContext
 from inference_perf.observability.logging import get_console
 from inference_perf.observability.progress import (
     OVERALL_BAR,
+    STAGE_ELAPSED_BAR,
     STAGE_REQUESTS_BAR,
     STAGE_SESSIONS_BAR,
     BarHandle,
@@ -950,6 +951,10 @@ class LoadGenerator:
         stage_context = StageContext(
             stage_id=stage_id,
             planned_sessions=effective_num_sessions,
+            planned_duration_seconds=duration,
+            # Capped at the window: dispatching stops at the deadline, and the bar
+            # should read full there rather than run on through teardown.
+            elapsed_seconds=lambda: min(time.perf_counter() - start_time, duration or 0.0),
             sessions_finished=lambda: len(completed_session_ids),
             sessions_skipped=lambda: skipped_session_count,
             workers_lost=lambda: tuple(f.cause_label() for f in self.worker_failures[failures_before_stage:]),
@@ -1103,7 +1108,9 @@ class LoadGenerator:
         # Main dispatch and wait loop
         stage_task: Optional[BarHandle] = None
         if progress_ctx:
-            stage_task = progress_ctx.open(STAGE_SESSIONS_BAR, stage=str(stage_id))
+            # A duration-bounded stage plans no session count, so it shows its window.
+            bar = STAGE_ELAPSED_BAR if duration is not None else STAGE_SESSIONS_BAR
+            stage_task = progress_ctx.open(bar, stage=str(stage_id))
 
         while True:
             # Check for interrupts
