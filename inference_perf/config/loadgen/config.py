@@ -40,27 +40,45 @@ class LoadStage(StrictBaseModel):
     pass
 
 
+class StopConditionConfig(StrictBaseModel):
+    """The object form of ``stop_condition``: the condition plus how long it must hold."""
+
+    condition: str = Field(..., description="The stop condition; see stop_condition for what it may contain.")
+    hold: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Consecutive evaluations on which the condition must hold before it ends the stage. It is evaluated "
+            "on every finished request, and once a second while none finish."
+        ),
+    )
+
+
 class StandardLoadStage(LoadStage):
     """Load stage for CONSTANT and POISSON load types.
 
     A stage's dispatch window is bounded by exactly one of ``duration`` (seconds)
-    or ``stop_condition`` (a condition over stage time ``t``, e.g. ``"t >= 60"``).
+    or ``stop_condition`` (a condition over stage time ``t`` and measured terms,
+    e.g. ``"t >= 60"`` or ``"(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)"``).
     ``duration: N`` is shorthand for ``stop_condition: "t >= N"``: both compile
-    to the same :class:`Predicate`, and the load generator only ever reads the
-    predicate. ``stop_condition`` is the form that will grow to reference
-    request counts and measured metrics.
+    to the same :class:`Predicate`. The load generator schedules against the
+    predicate's deadline and, when the condition reads measured terms, ends the
+    stage early on what it observes.
     """
 
     rate: float = Field(..., gt=0, description="Request rate (QPS)")
     duration: Optional[int] = Field(
         default=None, gt=0, description="Seconds to sustain the rate. Exactly one of duration or stop_condition is required."
     )
-    stop_condition: Optional[str] = Field(
+    stop_condition: Optional[Union[str, StopConditionConfig]] = Field(
         default=None,
         description=(
-            "Condition over stage time t (seconds) at which the stage stops admitting requests, e.g. 't >= 60'. "
-            "Must be false at t=0 and then hold from some time onward; a single instant such as Eq(t, 60) or a "
-            "window is rejected. Exactly one of duration or stop_condition is required."
+            "Condition at which the stage stops admitting requests, over stage time t (seconds) and measured "
+            "terms such as 'quantile_over_time(0.99, ttft[30s])' or 'avg_over_last(error, 100)', e.g. 't >= 60' "
+            "or '(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)'. Series use short names (ttft, not "
+            "time_to_first_token); see docs/expressions.md. It must end the stage on time alone, so a measured "
+            "term can only end it earlier. A string holds once, the object form sets hold. Exactly one of "
+            "duration or stop_condition is required."
         ),
     )
 
@@ -80,8 +98,23 @@ class StandardLoadStage(LoadStage):
             raise ValueError("Exactly one of duration or stop_condition must be set for CONSTANT/POISSON load types")
         # Built here so a bad stop_condition fails at config load; Predicate raises
         # ValueError with the precise reason and pydantic surfaces it as-is.
-        _ = self.predicate
+        predicate = self.predicate
+        sends = int(self.rate * predicate.boundary)
+        for term in predicate.terms.values():
+            if term.sent_stop is not None and term.sent_stop > sends:
+                raise ValueError(
+                    f"stop_condition term {term.source!r} reads requests up to {term.sent_stop}, but the stage sends "
+                    f"{sends} by its {predicate.boundary:g}s deadline, so the term would never have a value."
+                )
         return self
+
+    @property
+    def stop_settings(self) -> StopConditionConfig:
+        """``stop_condition`` in its object form: as given, a string with the default hold, or ``t >= duration``."""
+        if isinstance(self.stop_condition, StopConditionConfig):
+            return self.stop_condition
+        source = self.stop_condition if self.stop_condition is not None else f"t >= {self.duration}"
+        return StopConditionConfig(condition=source)
 
     @property
     def predicate(self) -> Predicate:
@@ -90,18 +123,18 @@ class StandardLoadStage(LoadStage):
         Rebuilt whenever its source string changes, because pydantic does not
         re-run validators when a field is assigned after construction.
         """
-        source = self.stop_condition if self.stop_condition is not None else f"t >= {self.duration}"
+        source = self.stop_settings.condition
         if self._predicate is None or self._predicate.raw != source:
             self._predicate = Predicate(source)
         return self._predicate
 
     @property
     def effective_duration(self) -> float:
-        """Length of the dispatch window in seconds: the predicate's proven boundary.
+        """Length of the dispatch window in seconds: the predicate's proven deadline.
 
-        The condition is false before the boundary and holds from it onward,
-        so the load generator can schedule against it exactly rather than
-        re-evaluating the condition at each dispatch.
+        On time alone the condition is false before the boundary and holds from
+        it onward, so the load generator schedules against it exactly. A
+        condition over measured terms can end the stage before it, never after.
         """
         return self.predicate.boundary
 
