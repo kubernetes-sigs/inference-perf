@@ -70,4 +70,4 @@ config:
       per_stage: false
   observability:
     metrics:
-      host: 0.0.0.0  # scraped by pod IP
+      port: 9464  # serves runtime metrics on the pod IP for scraping
