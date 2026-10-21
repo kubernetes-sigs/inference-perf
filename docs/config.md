@@ -201,7 +201,7 @@ load:
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
-      stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds (CONSTANT or POISSON LOADS)
+      stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds; may read measured terms, see Stop Conditions (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
   num_workers: 4                    # Concurrent worker threads (default: cgroup-aware CPU count: min(CPU affinity, cgroup CPU quota when present, host CPUs))
@@ -236,6 +236,27 @@ load:
   - rate: 40
     stop_condition: "(t >= 300) | (t >= 60)"  # whichever first: 60s
 ```
+
+A condition can also read what the stage measures: window functions over finished requests such as `quantile_over_time(0.99, ttft[30s])` or `avg_over_last(error, 100)`, and the signals `completed`, `errors`, `in_flight` and `since_last_completion`. **Series use short names:** `ttft`, not the report's `time_to_first_token`. See [Measured terms](./expressions.md#measured-terms) for the full list and the rules. A condition must still end on time alone, so a measured term only ever ends a stage before its deadline.
+
+The condition is evaluated on every finished request, and once a second while none finish, so a stalled server still ends the stage. The object form adds `hold`, the number of consecutive evaluations the condition must hold on before it ends the stage. A string holds once.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: constant
+  stages:
+  - rate: 20
+    stop_condition: "(t >= 300) | (errors >= 10)"   # the tenth failure ends it; 300s at the latest
+  - rate: 40
+    stop_condition:
+      condition: "((t >= 30) & (quantile_over_time(0.99, ttft[30s]) > 2)) | (t >= 600)"   # after 30s, once p99 TTFT over the last 30s exceeds 2s
+      hold: 3                                                                              # on 3 consecutive evaluations
+  - rate: 10
+    stop_condition: "(t >= 600) | ((in_flight > 0) & (since_last_completion > 30))"   # nothing has finished for 30s
+```
+
+A stage ended this way is COMPLETED. The load generator logs the stage second the condition held at and the value of each term it read, and the requests it had scheduled after that point are reported as dropped.
 
 Under `load.type: trace_replay` the trace sets when each request is sent, so `stop_condition` is rejected there.
 

@@ -442,7 +442,12 @@ def main_cli() -> None:
         session_metrics_collector,
         stage_observer=metrics_hub,
         metrics_registry=metrics_hub.registry,
+        use_server_output_tokens=config.report.request_lifecycle.use_server_output_tokens,
     )
+
+    # A stop condition over measured terms reads results the way the circuit
+    # breakers do: from the collector's observer path, in this process.
+    collector.add_observer(loadgen.observe_result)
 
     # Wire session metrics collector into reportgen if it exists
     if session_metrics_collector:
