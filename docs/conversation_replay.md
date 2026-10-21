@@ -24,7 +24,7 @@ The question this data generator is built to answer is:
 Use this when you want to benchmark tool-calling / agent-style LLM workloads and:
 
 - Conversations have many turns (tens per conversation) and accumulating context
-- You want concurrency-bound dispatch (N in flight, fill as slots free), not a fixed QPS
+- You want concurrency-bound dispatch (N active conversations, fill as slots free), not a fixed QPS
 - You want synthetic, parameterized input — no recorded traces
 - You want reproducibility (same seed → identical input)
 
@@ -92,6 +92,11 @@ data:
 The `concurrent` load type plus `preferred_worker_id` ensures each conversation is pinned to a
 worker so its turns run strictly in order.
 
+For conversation replay, `concurrency_level` counts active conversations rather than only HTTP
+requests currently on the wire. A conversation keeps its slot while simulated tool work runs, and
+its next turn is dispatched as soon as that delay finishes. Every stage's `concurrency_level` must
+be less than or equal to `num_conversations`.
+
 ## Configuration Guide
 
 All fields live under `data.conversation_replay`:
@@ -139,8 +144,9 @@ tool_call_latency_sec:
 
 After each assistant response, the conversation sleeps for the sampled number of seconds
 before releasing its session lock and starting the next turn. The sleep is async: the GPU
-remains free to serve other concurrent conversations during the wait, so this correctly
-models offline agentic workloads without artificially lowering throughput.
+remains free to serve other concurrent conversations during the wait. The sleeping conversation
+still occupies one configured conversation slot, so server-side HTTP concurrency can be lower
+than `concurrency_level` while tools are running.
 
 Omit `tool_call_latency_sec` (or set it to a `fixed` distribution with `mean: 0`) to measure
 pure back-to-back GPU throughput.
@@ -168,9 +174,9 @@ whole conversation on the same endpoint. See
 - **Data gen**: `ConversationReplayDataGenerator` pre-generates `num_conversations`
   blueprints at startup. Each blueprint owns a `LocalUserSession` (registered in the shared
   session registry) that enforces turn-by-turn ordering.
-- **Load type**: use `load.type: concurrent`. Conversations are dispatched round-robin and
-  pinned to workers via `preferred_worker_id`, so a given conversation's turns always run on
-  the same worker and in order.
+- **Load type**: use `load.type: concurrent`. Queue tokens are pinned to workers via
+  `preferred_worker_id`; each worker dispatches a ready conversation when capacity opens, so a
+  slow conversation cannot block another ready conversation's next turn.
 - **Recycling**: when a conversation exhausts its turns, the slot resets (fresh session,
   same blueprint) and replays from the beginning — letting a stage run as long as
   `num_requests` demands without running out of work.

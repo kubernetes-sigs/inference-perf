@@ -172,17 +172,167 @@ class TestConversationReplayDataGenerator:
         assert body["prompt"] == "SYSTEM  TURN"
 
     def test_turn_recycling(self) -> None:
-        """When data_index exceeds total turns, it wraps around."""
-        api_config, data_config = _make_config(num_conversations=2, turns_min=3, turns_max=3, turns_mean=3)
+        """A completed slot wraps to a fresh conversation after its final turn."""
+        api_config, data_config = _make_config(num_conversations=1, turns_min=3, turns_max=3, turns_mean=3)
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
 
-        # Conversation 0 has 3 turns. data_index=0 -> round 0, turn 0
-        # data_index=2 -> conv 0, round 1, turn 1
-        # data_index=6 -> conv 0, round 3, turn 0 (recycled)
-        lazy = LazyLoadInferenceAPIData(data_index=6, preferred_worker_id=0)
-        result = gen.load_lazy_data(lazy)
-        assert isinstance(result, _ConversationReplayAPIData)
-        assert result.target_round == 3  # 6 // 2 = 3
+        requests = []
+        for data_index in range(4):
+            request = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=data_index, preferred_worker_id=0))
+            assert isinstance(request, _ConversationReplayAPIData)
+            requests.append(request)
+            request.on_request_finished()
+
+        assert [request.target_round for request in requests] == [0, 1, 2, 3]
+        assert [request.user_session_id for request in requests] == ["conv_0"] * 3 + ["stage_0_slot_0_convo_1"]
+
+    def test_completed_conversation_replenishes_a_busy_queue_slot(self) -> None:
+        """A ready conversation advances instead of waiting behind the fixed queue order."""
+        api_config, data_config = _make_config(num_conversations=3, turns_min=2, turns_max=2, turns_mean=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        first_round = [gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=i, preferred_worker_id=i)) for i in range(3)]
+        ready = first_round[2]
+        assert isinstance(ready, _ConversationReplayAPIData)
+        ready.on_request_finished()
+
+        # The next fixed token names slot 0, which is still busy. Slot 2 is ready
+        # and must advance immediately instead of consuming capacity waiting on 0.
+        replenished = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=3, preferred_worker_id=0))
+        assert isinstance(replenished, _ConversationReplayAPIData)
+        assert replenished.user_session_id == "conv_2"
+        assert replenished.target_round == 1
+
+    def test_ready_conversation_preserves_the_active_set(self) -> None:
+        """A ready slot wins over an unseen slot when concurrency is below the pool size."""
+        api_config, data_config = _make_config(num_conversations=3, turns_min=2, turns_max=2, turns_mean=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        first = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        second = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1))
+        assert isinstance(first, _ConversationReplayAPIData)
+        assert isinstance(second, _ConversationReplayAPIData)
+        first.on_request_finished()
+
+        third = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=2))
+        assert isinstance(third, _ConversationReplayAPIData)
+        assert third.user_session_id == "conv_0"
+        assert third.target_round == 1
+
+    def test_materialization_failure_does_not_skip_a_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        api_config, data_config = _make_config(num_conversations=1, turns_min=1, turns_max=1, turns_mean=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        first = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        first.on_request_finished()
+
+        original_new_session = gen._new_session
+        monkeypatch.setattr(gen, "_new_session", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+        with pytest.raises(RuntimeError, match="boom"):
+            gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=0))
+
+        monkeypatch.setattr(gen, "_new_session", original_new_session)
+        retried = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0))
+        assert isinstance(retried, _ConversationReplayAPIData)
+        assert retried.target_round == 1
+
+    def test_rollover_waits_for_the_previous_conversation_to_finish(self) -> None:
+        """A slot gets a fresh session only after its final old turn completes."""
+        api_config, data_config = _make_config(num_conversations=1, turns_min=2, turns_max=2, turns_mean=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        first = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(first, _ConversationReplayAPIData)
+        first.on_request_finished()
+        final = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=0))
+        assert isinstance(final, _ConversationReplayAPIData)
+        assert final.user_session_id == "conv_0"
+        final.on_request_finished()
+
+        rollover = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0))
+        assert isinstance(rollover, _ConversationReplayAPIData)
+        assert rollover.user_session_id == "stage_0_slot_0_convo_1"
+        assert rollover.target_round == 2
+
+    def test_request_finished_is_idempotent(self) -> None:
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        request = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(request, _ConversationReplayAPIData)
+
+        request.on_request_finished()
+        request.on_request_finished()
+
+        assert list(gen._ready_slots) == [0]
+
+    async def test_request_finished_releases_a_session_lock_after_early_failure(self) -> None:
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        request = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(request, _ConversationReplayAPIData)
+        session = request.user_session
+        await session.get_context(request.target_round)
+        assert session._in_flight is not None and session._in_flight.locked()
+
+        request.on_request_finished()
+
+        assert not session._in_flight.locked()
+        assert list(gen._ready_slots) == [0]
+
+    async def test_request_finished_releases_slot_when_session_cleanup_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        request = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(request, _ConversationReplayAPIData)
+        session = request.user_session
+        await session.get_context(request.target_round)
+
+        def fail_cleanup(context: str) -> None:
+            raise RuntimeError("cleanup failed")
+
+        monkeypatch.setattr(session, "update_context", fail_cleanup)
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            request.on_request_finished()
+
+        assert session._in_flight is not None and not session._in_flight.locked()
+        assert list(gen._ready_slots) == [0]
+
+    # Stage teardown clears the session registry while scheduled tasks may still finish.
+    # Resolving through the user_session property would recreate the cleared id, so the
+    # next stage would see the id as live and skip its re-prime; the id must stay absent.
+    def test_request_finished_does_not_resurrect_a_cleared_session(self) -> None:
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        request = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(request, _ConversationReplayAPIData)
+
+        LocalUserSession.clear_instances()
+        request.on_request_finished()
+
+        assert request.user_session_id not in LocalUserSession._instances
+        assert list(gen._ready_slots) == [0]
+
+    # A stage-0 request that ends after stage 1 has started must not mark the stage-1
+    # slot ready: its callback carries stage 0, while the scheduler now tracks stage 1.
+    def test_release_slot_ignores_a_callback_from_an_earlier_stage(self) -> None:
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        old_stage = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=0))
+        current_stage = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=1))
+        assert isinstance(old_stage, _ConversationReplayAPIData)
+        assert isinstance(current_stage, _ConversationReplayAPIData)
+
+        old_stage.on_request_finished()
+
+        assert gen._slot_states[0].busy is True
+        assert list(gen._ready_slots) == []
+
+    def test_no_ready_conversation_fails_instead_of_waiting_with_capacity(self) -> None:
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+
+        with pytest.raises(RuntimeError, match="no ready conversation"):
+            gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=0))
 
     def test_requires_tokenizer(self) -> None:
         api_config, data_config = _make_config()
@@ -668,11 +818,28 @@ class TestRolloverDoesNotOrphanWaiters:
     """
 
     @staticmethod
-    def _rollover_index(gen: ConversationReplayDataGenerator, conv_idx: int = 0) -> int:
-        """Smallest data_index for `conv_idx` hitting `turn_idx == 0 and round_num > 0`."""
-        n_conv = len(gen.blueprints)
-        # round_num = data_index // n_conv; turn_idx = round_num % num_turns
-        return gen.blueprints[conv_idx].num_turns * n_conv + conv_idx
+    def _load(gen: ConversationReplayDataGenerator, conv_idx: int, stage_id: int = 0) -> _ConversationReplayAPIData:
+        """Dispatch the next turn for one conversation slot."""
+        request = gen.load_lazy_data(
+            LazyLoadInferenceAPIData(data_index=conv_idx, preferred_worker_id=conv_idx, stage_id=stage_id)
+        )
+        assert isinstance(request, _ConversationReplayAPIData)
+        return request
+
+    @classmethod
+    def _complete(cls, request: _ConversationReplayAPIData, response: str = "done") -> None:
+        """Append a response to the session and return the slot to the ready queue."""
+        session = LocalUserSession.get_instance(request.user_session_id)
+        session.update_context(f"{session.context} {response}")
+        request.on_request_finished()
+
+    def _advance_to_rollover(
+        self, gen: ConversationReplayDataGenerator, conv_idx: int = 0, stage_id: int = 0
+    ) -> _ConversationReplayAPIData:
+        """Complete every turn of the slot's current conversation so the next dispatch rolls over."""
+        for _ in range(gen.blueprints[conv_idx].num_turns):
+            self._complete(self._load(gen, conv_idx, stage_id))
+        return self._load(gen, conv_idx, stage_id)
 
     def _fixed_turn_gen(self, num_conversations: int = 2, turns: int = 3) -> ConversationReplayDataGenerator:
         api_config, data_config = _make_config(
@@ -689,13 +856,12 @@ class TestRolloverDoesNotOrphanWaiters:
         B must not hang.
         """
         gen = self._fixed_turn_gen()
-        idx = self._rollover_index(gen)
 
-        # First dispatch performs the rollover onto a fresh session id.
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+        # Completing the blueprint's turns rolls the slot onto a fresh session id.
+        self._advance_to_rollover(gen)
         live = gen.user_sessions[0]
         sid = live.user_session_id
-        assert sid != "conv_0", "the rollover index did not start a new conversation"
+        assert sid != "conv_0", "the rollover did not start a new conversation"
 
         # Turn A acquires the session; turn B queues behind it.
         await live.get_context(0)
@@ -703,9 +869,10 @@ class TestRolloverDoesNotOrphanWaiters:
         await asyncio.sleep(0)
         assert live._waiting_rounds is not None and live._waiting_rounds.qsize() == 1
 
-        # A later dispatch for the same slot/conversation rebuilds the same id
-        # while A and B are still in flight.
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+        # A duplicate dispatch while the slot is busy is rejected before it can
+        # rebuild the id, so the request never splits across two session objects.
+        with pytest.raises(RuntimeError, match="no ready conversation"):
+            self._load(gen, 0)
 
         # Turn A completes and releases through the registered session, which is
         # how the client path resolves it (`data.user_session`).
@@ -729,21 +896,23 @@ class TestRolloverDoesNotOrphanWaiters:
         its session by id late, so two objects for one id split it in half.
         """
         gen = self._fixed_turn_gen()
-        idx = self._rollover_index(gen)
 
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+        rolled = self._advance_to_rollover(gen)
         live = gen.user_sessions[0]
         sid = live.user_session_id
 
-        await live.get_context(0)  # an in-flight turn holds the session
+        await live.get_context(rolled.target_round)  # an in-flight turn holds the session
 
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+        # Rebuilding the same id (the rollover/re-prime path) must return the live
+        # object rather than replacing it.
+        rebuilt = gen._new_session(sid, context="other", system_prompt="other")
 
-        assert gen.user_sessions[0] is live, (
-            f"repeated dispatch for data_index={idx} rebuilt session {sid!r}. A request "
-            "already holding the previous object would read its context from that object "
-            "and write its response to the new one."
+        assert rebuilt is live, (
+            f"rebuilding session {sid!r} replaced the live object. A request already "
+            "holding the previous object would read its context from that object and "
+            "write its response to the new one."
         )
+        assert gen.user_sessions[0] is live
         assert LocalUserSession.get_instance(sid) is live, (
             f"registry entry for {sid!r} no longer points at the live session, so "
             "update_context() would resolve to a different object than get_context() did."
@@ -758,9 +927,8 @@ class TestRolloverDoesNotOrphanWaiters:
         the prefix distribution this generator exists to control.
         """
         gen = self._fixed_turn_gen()
-        idx = self._rollover_index(gen)
 
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+        rolled = self._advance_to_rollover(gen)
         session = gen.user_sessions[0]
         sid = session.user_session_id
 
@@ -769,12 +937,14 @@ class TestRolloverDoesNotOrphanWaiters:
         session.context = f"{session.system_prompt} {' '.join(session.history)}"
 
         # One turn in flight, a straggler queued behind it.
-        await session.get_context(2)
-        straggler = asyncio.ensure_future(session.get_context(3))
+        await session.get_context(rolled.target_round)
+        straggler = asyncio.ensure_future(session.get_context(rolled.target_round + 1))
         await asyncio.sleep(0)
 
-        # Another dispatch for the same slot arrives mid-flight.
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+        # A rebuild for the live id returns that same object, so the straggler's
+        # context and its response stay on one session.
+        rebuilt = gen._new_session(sid, context="other", system_prompt="other")
+        assert rebuilt is session
 
         # The in-flight turn completes, resolving through the registry.
         registered = LocalUserSession.get_instance(sid)
@@ -821,18 +991,18 @@ class TestRolloverDoesNotOrphanWaiters:
         `max_model_len` sliding window until the slot's next rollover.
         """
         gen = self._fixed_turn_gen()
-        idx = self._rollover_index(gen)
 
         # Stage 0: roll slot 0 over onto a fresh conversation.
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0, stage_id=0))
-        rolled_over_id = gen.user_sessions[0].user_session_id
-        assert rolled_over_id != "conv_0", "the rollover index did not start a new conversation"
+        rolled = self._advance_to_rollover(gen, stage_id=0)
+        rolled_over_id = rolled.user_session_id
+        assert rolled_over_id != "conv_0", "the rollover did not start a new conversation"
 
         # LoadGenerator clears the registry between stages.
         LocalUserSession.clear_instances()
 
         # Stage 1 restarts data_index at 0, so the slot is re-primed under its rolled-over id.
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=1))
+        first = self._load(gen, 0, stage_id=1)
+        assert first.user_session_id == rolled_over_id
         session = LocalUserSession.get_instance(rolled_over_id)
 
         assert session.system_prompt, (
@@ -849,34 +1019,35 @@ class TestRolloverDoesNotOrphanWaiters:
     async def test_later_stage_rollover_does_not_orphan_queued_waiter(self) -> None:
         """The real-run trigger: a stage-1 rollover must not orphan the slot's in-flight turns.
 
-        Stage 1 re-primes the slot under its stage-0 rolled-over id. Its first
-        rollover must not rebind that id while a turn holds the session and
-        another is parked behind it.
+        Stage 1 re-primes the slot under its stage-0 rolled-over id. Because rollover
+        is serialized after the final turn, the live id is never rebound while a
+        waiter is parked behind it.
         """
         gen = self._fixed_turn_gen()
-        n_conv = len(gen.blueprints)
-        idx = self._rollover_index(gen)
+        num_turns = gen.blueprints[0].num_turns
 
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0, stage_id=0))
+        # Stage 0 rolls slot 0 over, then the registry is cleared between stages.
+        self._advance_to_rollover(gen, stage_id=0)
         LocalUserSession.clear_instances()
 
-        # Stage 1, turns 0 and 1 of slot 0: A holds the session, B is parked behind it.
-        first = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=1))
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=n_conv, preferred_worker_id=0, stage_id=1))
-        assert isinstance(first, _ConversationReplayAPIData)
+        # Walk stage 1 to its final turn, leaving a waiter parked behind it.
+        first = self._load(gen, 0, stage_id=1)
         sid = first.user_session_id
         held = LocalUserSession.get_instance(sid)
-        await held.get_context(0)
-        waiter = asyncio.ensure_future(held.get_context(1))
+        for _ in range(num_turns - 1):
+            self._complete(first)
+            first = self._load(gen, 0, stage_id=1)
+        await held.get_context(first.target_round)
+        waiter = asyncio.ensure_future(held.get_context(first.target_round + 1))
         await asyncio.sleep(0)
 
-        # Slot 0 rolls over while A and B are still in flight.
-        rolled = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0, stage_id=1))
-        assert isinstance(rolled, _ConversationReplayAPIData)
-        assert rolled.user_session_id != sid, f"stage-1 rollover reused the in-flight id {sid!r}"
+        # Rollover cannot happen while the slot is busy; the id stays bound to `held`.
+        with pytest.raises(RuntimeError, match="no ready conversation"):
+            self._load(gen, 0, stage_id=1)
 
         # A completes through the registry, as the client path resolves it.
         LocalUserSession.get_instance(sid).update_context(f"{held.system_prompt} A done")
+        first.on_request_finished()
 
         try:
             await asyncio.wait_for(waiter, timeout=0.5)
@@ -888,6 +1059,10 @@ class TestRolloverDoesNotOrphanWaiters:
             )
         assert LocalUserSession.get_instance(sid) is held
 
+        rolled = self._load(gen, 0, stage_id=1)
+        assert rolled.user_session_id != sid, f"stage-1 rollover reused the in-flight id {sid!r}"
+        assert LocalUserSession.get_instance(sid) is held
+
     def test_later_stage_rollover_starts_a_fresh_conversation(self) -> None:
         """Every rollover, in every stage, must start the slot on an empty history.
 
@@ -897,31 +1072,26 @@ class TestRolloverDoesNotOrphanWaiters:
         """
         gen = self._fixed_turn_gen()
         n_conv = len(gen.blueprints)
-        num_turns = gen.blueprints[0].num_turns
-        requests_per_stage = 3 * num_turns * n_conv  # three conversations per slot
 
         for stage_id in range(3):
             LocalUserSession.clear_instances()
             seen_ids: set[str] = set()
-            for data_index in range(requests_per_stage):
-                data = gen.load_lazy_data(
-                    LazyLoadInferenceAPIData(data_index=data_index, preferred_worker_id=data_index % n_conv, stage_id=stage_id)
-                )
-                assert isinstance(data, _ConversationReplayAPIData)
-                conv_idx = data_index % n_conv
-                turn_idx = (data_index // n_conv) % gen.blueprints[conv_idx].num_turns
-                session = LocalUserSession.get_instance(data.user_session_id)
-                assert len(session.history) == turn_idx, (
-                    f"stage {stage_id} data_index {data_index}: turn {turn_idx} of {data.user_session_id!r} "
-                    f"would be sent with {len(session.history)} prior turns"
-                )
-                if turn_idx == 0:
-                    assert data.user_session_id not in seen_ids, (
-                        f"stage {stage_id}: rollover reused {data.user_session_id!r} instead of a fresh id"
+            # Three complete conversations per slot.
+            for _ in range(3 * gen.blueprints[0].num_turns):
+                for conv_idx in range(n_conv):
+                    request = self._load(gen, conv_idx, stage_id)
+                    turn_idx = request.target_round % gen.blueprints[conv_idx].num_turns
+                    session = LocalUserSession.get_instance(request.user_session_id)
+                    assert len(session.history) == turn_idx, (
+                        f"stage {stage_id} turn {request.target_round} of {request.user_session_id!r} "
+                        f"would be sent with {len(session.history)} prior turns"
                     )
-                seen_ids.add(data.user_session_id)
-                # Complete the turn so the next one sees its history.
-                session.update_context(f"{session.context} reply {data_index}")
+                    if turn_idx == 0:
+                        assert request.user_session_id not in seen_ids, (
+                            f"stage {stage_id}: rollover reused {request.user_session_id!r} instead of a fresh id"
+                        )
+                    seen_ids.add(request.user_session_id)
+                    self._complete(request)
 
     async def test_successive_generators_do_not_adopt_each_others_sessions(self) -> None:
         """A second generator in the same process must build its own sessions.
