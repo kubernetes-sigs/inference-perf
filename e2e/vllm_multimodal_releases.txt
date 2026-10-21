@@ -15,7 +15,9 @@
 # engine (multi-image requests, or two image requests scheduled together),
 # so 0.26.x can never appear here. Add a release when it matters to a
 # deployment we care about; latest floats so upstream regressions in
-# multimodal ingest surface before, not at, the next pin bump.
+# multimodal ingest surface before, not at, the next pin bump. A release
+# that is broken upstream goes in e2e/vllm_known_bad.txt, and latest routes
+# around it until it moves on.
 
 v0.27.1
 latest

@@ -1,0 +1,9 @@
+# vLLM releases that are broken upstream, which the floating tags (latest) in
+# e2e/vllm_releases.txt and e2e/vllm_multimodal_releases.txt must not be
+# tested as. One per line: <version as /version reports it> <reason>, with
+# the upstream issue in the reason. e2e/known_bad.py reads this: a tag
+# that resolves to a listed version is skipped with a warning annotation,
+# unless the tag itself names that version (a pin), which stays red. An
+# entry goes inert once the floating tag moves past it; prune when noticed.
+
+0.32.0 vllm-project/vllm#61131: the CPU image dies on its first request, fixed upstream after the release was cut

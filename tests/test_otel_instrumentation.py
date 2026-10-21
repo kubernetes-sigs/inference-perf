@@ -1,4 +1,4 @@
-# Copyright 2025 The Kubernetes Authors.
+# Copyright 2026 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,14 @@
 
 """Tests for OpenTelemetry instrumentation."""
 
-from inference_perf.client.modelserver.otel_instrumentation import OTelInstrumentation, get_otel_instrumentation
+import base64
+from typing import Any
+
+from inference_perf.client.modelserver.otel_instrumentation import (
+    OTelInstrumentation,
+    get_otel_instrumentation,
+    summarize_media,
+)
 
 
 def test_otel_instrumentation_init() -> None:
@@ -128,3 +135,28 @@ def test_record_response_metrics_with_error() -> None:
             response_info=None,
             error="Connection timeout",
         )
+
+
+def test_summarize_media_replaces_inline_payloads_and_keeps_everything_else() -> None:
+    """Spans carry a size and hash summary of each inline image or audio clip, never its bytes."""
+    png = base64.b64encode(b"\x89PNG fake image bytes").decode()
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png}"}},
+            ],
+        },
+        {"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}}]},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}]},
+    ]
+    summary = summarize_media(messages)
+
+    assert summary[0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,[21 bytes, sha256:")
+    assert png not in str(summary)
+    assert summary[0]["content"][0] == {"type": "text", "text": "hi"}
+    assert summary[1]["content"][0]["input_audio"]["format"] == "wav"
+    assert summary[1]["content"][0]["input_audio"]["data"].startswith("[3 bytes, sha256:")
+    assert summary[2] == messages[2]
+    assert messages[0]["content"][1]["image_url"]["url"].endswith(png)  # the request itself is untouched
