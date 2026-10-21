@@ -30,10 +30,10 @@ site that would rather truncate random draws, e.g. so a request-rate expression
 can never go negative, opts in with ``clip=True``.
 
 A :class:`Predicate` is the boolean counterpart: a condition over ``t`` such as
-``"t >= 60"``, meant for stop conditions. It shares the grammar and parser but
-is validated differently: it must be false at ``t = 0`` and then hold from some
-time onward, which is proved statically so the condition compiles to an exact
-boundary instead of being polled. A predicate may also read measured terms
+``"t >= 60"``, for a field that waits for something to become true. It shares
+the grammar and parser but is validated differently: it must be false at
+``t = 0`` and then hold from some time onward, which is proved statically so
+the condition compiles to an exact boundary instead of being polled. A predicate may also read measured terms
 (``quantile_over_time(0.99, ttft[30s])``, see :mod:`.measured`), which are the
 system under test and cannot be solved: they are evaluated as results arrive,
 and the proof is made with their comparisons all true and all false,
@@ -568,15 +568,16 @@ _TIME_DOMAIN = Interval(0, oo)
 class Predicate:
     """A boolean condition over stage time ``t`` and measured terms, e.g. ``"t >= 60"``.
 
-    The string-grammar counterpart of :class:`Expression` for stop conditions.
-    It is parsed and validated once at construction and evaluated with
-    :meth:`holds`. Construction raises :class:`ValueError` unless the condition
-    is false at ``t = 0`` and then holds for every later ``t`` from some time
-    onward. That shape is what makes a stop condition meaningful when it is
-    checked at discrete instants: a condition that holds only at a single time
-    (``Eq(t, 60)``) or over a window (``(t >= 60) & (t < 120)``) can be skipped
-    over by the check, and one that already holds at ``t = 0`` (``t < 60``,
-    ``t >= 0``) would stop a stage before it starts.
+    The string-grammar counterpart of :class:`Expression` for a trigger: a
+    field that waits for the condition to become true and checks it at
+    discrete instants. It is parsed and validated once at construction and
+    evaluated with :meth:`holds`. Construction raises :class:`ValueError`
+    unless the condition is false at ``t = 0`` and then holds for every later
+    ``t`` from some time onward. That shape is what makes a trigger meaningful
+    when it is checked at discrete instants: a condition that holds only at a
+    single time (``Eq(t, 60)``) or over a window (``(t >= 60) & (t < 120)``)
+    can be skipped over by the check, and one that already holds at ``t = 0``
+    (``t < 60``, ``t >= 0``) would fire before anything has run.
 
     The shape is proved statically by solving the condition over ``t >= 0``,
     which is why :attr:`boundary` is always known: the condition compiles to
@@ -587,8 +588,8 @@ class Predicate:
     ``sqrt``, ``exp``, ``log``, ``Min``/``Max``, the inequalities ``>``,
     ``>=``, ``<``, ``<=`` and their ``&``/``|`` combinations. Anything else,
     e.g. ``sin`` or ``Abs``, is rejected by name rather than evaluated on an
-    unproven shape. Random variables are never permitted: a stop condition
-    must be reproducible.
+    unproven shape. Random variables are never permitted: a condition must be
+    the same on every run.
 
     Besides ``t`` a condition may read what the stage measures: window
     functions over finished requests (``quantile_over_time(0.99, ttft[30s])``,
@@ -596,13 +597,13 @@ class Predicate:
     :mod:`.measured`) and the signals ``completed``, ``errors``, ``in_flight``
     and ``since_last_completion``. Those are the system under test and cannot
     be solved, so a comparison on one is evaluated as results arrive. The time
-    part is still proved, twice: with every measured comparison false the
-    condition must hold from some time onward on its own, and that time is
-    :attr:`boundary`, the deadline the stage is scheduled against; with every
-    measured comparison true it must again hold from some time onward, and
-    that time is :attr:`earliest`, before which no result can end the stage.
-    So a measured term can only end a stage before its deadline, and
-    ``quantile_over_time(0.99, ttft[30s]) > 2`` alone is rejected.
+    part is still proved, twice. With every measured comparison false the
+    condition must hold from some time onward on its own. That time is
+    :attr:`boundary`, the latest the condition can start holding. With every
+    measured comparison true it must again hold from some time onward. That
+    time is :attr:`earliest`, before which no result can make it hold. So a
+    measured term can only make the condition hold sooner, never keep it from
+    holding, and ``quantile_over_time(0.99, ttft[30s]) > 2`` alone is rejected.
 
     Equality in any spelling (``t = 60``, ``t == 60``, ``Eq(t, 60)``) and its
     negation are rejected up front: equality holds at a single instant, which
@@ -632,14 +633,14 @@ class Predicate:
             raise
 
         if isinstance(expr, bool) or expr in (sympy.true, sympy.false):
-            raise ValueError(f"Predicate {raw!r} is constant ({expr!r}); a stop condition must vary with t, e.g. 't >= 60'.")
+            raise ValueError(f"Predicate {raw!r} is constant ({expr!r}); a condition must vary with t, e.g. 't >= 60'.")
         if not _is_condition(expr):
             raise ValueError(f"Predicate {raw!r} is not a condition; use a comparison such as 't >= 60'.")
         _reject_unknown_functions("Predicate", raw, expr)
 
         free = expr.free_symbols
         if any(_is_random_symbol(s) for s in free):
-            raise ValueError(f"Predicate {raw!r} contains a random variable; a stop condition must be reproducible.")
+            raise ValueError(f"Predicate {raw!r} contains a random variable; a condition must be the same on every run.")
         names = {str(s) for s in free}
         disallowed = names - {"t"} - set(SIGNALS) - set(self._terms)
         if disallowed:
@@ -648,10 +649,10 @@ class Predicate:
         if "t" not in names:
             if self._measured:
                 raise ValueError(
-                    f"Predicate {raw!r} can only end the stage on measured values; it must also end on time alone, "
+                    f"Predicate {raw!r} can only hold on measured values; it must also hold on time alone, "
                     f"e.g. '(t >= 600) | ({raw})'."
                 )
-            raise ValueError(f"Predicate {raw!r} does not depend on t; a stop condition must vary with t.")
+            raise ValueError(f"Predicate {raw!r} does not depend on t; a condition must vary with t.")
         _reject_unprovable_nodes(raw, expr)
 
         self._expr = expr
@@ -659,9 +660,9 @@ class Predicate:
         self._holds = sympy.lambdify(self._symbols, expr, "numpy")
 
         # A comparison that reads a measured value is unknown until the run.
-        # With them all false the condition must still hold from some time on,
-        # which is the deadline; with them all true it holds from the earliest
-        # time a result could end the stage. Both are plain conditions over t.
+        # With them all false the condition must still hold from some time on:
+        # that is the boundary. With them all true it holds from the earliest
+        # time a result could make it hold. Both are plain conditions over t.
         measured_atoms = [atom for atom in expr.atoms(Relational) if {str(s) for s in atom.free_symbols} & self._measured]
         on_time_alone = expr.xreplace({atom: sympy.false for atom in measured_atoms})
         self._boundary = self._prove_boundary(on_time_alone)
@@ -678,19 +679,19 @@ class Predicate:
         if holding == sympy.S.EmptySet:
             if self._measured:
                 raise ValueError(
-                    f"Predicate {self.raw!r} never holds on time alone; add a time bound so the stage always ends, "
+                    f"Predicate {self.raw!r} never holds on time alone; add a time bound so it always holds eventually, "
                     f"e.g. '({self.raw}) | (t >= 600)'."
                 )
             raise ValueError(f"Predicate {self.raw!r} never holds for t >= 0.")
         if not isinstance(holding, Interval) or holding.sup != oo:
             raise ValueError(
-                f"Predicate {self.raw!r} holds only on {_format_time_set(holding)}; a stop condition must hold from some time onward "
+                f"Predicate {self.raw!r} holds only on {_format_time_set(holding)}; a condition must hold from some time onward "
                 f"without lapsing, e.g. 't >= 60'."
             )
         if holding.inf == 0:
             raise ValueError(
                 f"Predicate {self.raw!r} already holds at (or immediately after) t=0; "
-                f"a stop condition must be false at t=0, e.g. 't >= 60'."
+                f"a condition must be false at t=0, e.g. 't >= 60'."
             )
         boundary = float(holding.inf)
         self._check_against_solver(sympy.lambdify([_T], on_time_alone, "numpy"), boundary)
@@ -704,7 +705,7 @@ class Predicate:
         if not isinstance(holding, Interval) or holding.sup != oo:
             raise ValueError(
                 f"Predicate {self.raw!r} holds only on {_format_time_set(holding)} once its measured values hold; "
-                f"a stop condition must hold from some time onward without lapsing."
+                f"a condition must hold from some time onward without lapsing."
             )
         earliest = float(holding.inf)
         self._check_against_solver(sympy.lambdify([_T], at_the_earliest, "numpy"), earliest)
@@ -715,7 +716,7 @@ class Predicate:
 
         Defence in depth for the node allowlist: if sympy's solver ever answers
         wrongly for an allowed node, the direct evaluation disagrees here and the
-        condition is rejected instead of compiling to a wrong deadline.
+        condition is rejected instead of compiling to a wrong boundary.
         """
         below = [boundary * f for f in (0.0, 0.5, 0.999)] if boundary > 0 else []
         above = [boundary * f + d for f, d in ((1.001, 0.0), (2.0, 0.0), (10.0, 100.0), (1000.0, 1e6))]
@@ -731,7 +732,7 @@ class Predicate:
 
     @property
     def boundary(self) -> float:
-        """The time from which the condition holds on time alone, whatever the measured values read: the deadline."""
+        """The time from which the condition holds on time alone, whatever the measured values read."""
         return self._boundary
 
     @property
@@ -764,7 +765,7 @@ class Predicate:
 
         A measured symbol missing from ``values``, or NaN, has no value yet:
         every comparison that reads it is false, so the rest of the condition
-        decides. :class:`~.measured.PredicateState` supplies ``values``.
+        decides. :meth:`~.measured.MeasuredState.values` supplies ``values``.
         """
         args = [np.float64(t)] + [np.float64((values or {}).get(name, math.nan)) for name in sorted(self._measured)]
         with np.errstate(all="ignore"):
@@ -841,7 +842,7 @@ def _disallowed_message(raw: str, disallowed: set[str]) -> str:
 
 def _equality_message(raw: str) -> str:
     return (
-        f"Predicate {raw!r} uses equality; a stop condition must be an inequality such as 't >= 60'. "
+        f"Predicate {raw!r} uses equality; a condition must be an inequality such as 't >= 60'. "
         f"Equality holds at a single instant, which a check at discrete instants can miss."
     )
 
@@ -862,7 +863,7 @@ def _reject_unprovable_nodes(raw: str, expr: Any) -> None:
         if not isinstance(node, _PREDICATE_NODES):
             name = node.func.__name__
             raise ValueError(
-                f"Predicate {raw!r} uses {name!r}, which is not allowed in a stop condition; "
+                f"Predicate {raw!r} uses {name!r}, which is not allowed in a condition; "
                 f"permitted: + - * / **, sqrt, exp, log, Min, Max, and > >= < <= combined with & and |."
             )
 

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for measured terms: the window functions a stop condition reads.
+"""Tests for measured terms: the window functions a condition reads.
 
 Parsing pins each accepted spelling to the window it selects and each
 rejected one to its message. Evaluation pins every window kind's membership
@@ -28,7 +28,7 @@ import pytest
 from inference_perf.apis import InferenceInfo, RequestLifecycleMetric, StreamedResponseMetrics
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.reportgen.base import compute_request_latency_metrics, summarize_requests
-from inference_perf.utils.numeric.expression import SERIES, SIGNALS, Observation, Predicate, PredicateState, Term
+from inference_perf.utils.numeric.expression import SERIES, SIGNALS, MeasuredState, Observation, Predicate, Term
 from inference_perf.utils.numeric.expression.measured import AGGREGATES, _TimeEvaluator, _Window, extract_terms
 
 
@@ -39,13 +39,18 @@ def _term(text: str) -> Term:
     return terms[0]
 
 
-# A PredicateState over '(t >= 600) | (<term> > 0)', so its one term can be read back.
-def _state(text: str) -> PredicateState:
-    return PredicateState(Predicate(f"(t >= 600) | ({text} > 0)"))
+# The state for one predicate: its terms and its signals.
+def _state_of(p: Predicate) -> MeasuredState:
+    return MeasuredState(p.terms, p.signals)
+
+
+# The state for '(t >= 600) | (<term> > 0)', so its one term can be read back.
+def _state(text: str) -> MeasuredState:
+    return _state_of(Predicate(f"(t >= 600) | ({text} > 0)"))
 
 
 # The single term's value in a state built by _state.
-def _value(state: PredicateState, now: float) -> float:
+def _value(state: MeasuredState, now: float) -> float:
     (value,) = state.values(now).values()
     return value
 
@@ -159,31 +164,31 @@ class TestParsing:
 
 
 class TestProof:
-    # '(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)' ends by 600 and can end from 0.
+    # '(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)' holds by 600 and can hold from 0.
     def test_or_with_a_term(self) -> None:
         p = Predicate("(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)")
         assert (p.boundary, p.earliest) == (600.0, 0.0)
 
-    # '((t >= 60) & (avg_over_last(latency, 50) > 1)) | (t >= 600)' ends by 600 and can end from 60.
+    # '((t >= 60) & (avg_over_last(latency, 50) > 1)) | (t >= 600)' holds by 600 and can hold from 60.
     def test_term_gated_by_time(self) -> None:
         p = Predicate("((t >= 60) & (avg_over_last(latency, 50) > 1)) | (t >= 600)")
         assert (p.boundary, p.earliest) == (600.0, 60.0)
 
-    # Signals are measured too: '(t >= 300) | (errors >= 10)' ends by 300 and from 0.
+    # Signals are measured too: '(t >= 300) | (errors >= 10)' holds by 300 and can hold from 0.
     def test_signal(self) -> None:
         p = Predicate("(t >= 300) | (errors >= 10)")
         assert (p.boundary, p.earliest) == (300.0, 0.0)
         assert p.signals == frozenset({"errors"})
 
-    # A condition that cannot end on time alone is rejected: a term alone, and a term ANDed with time.
+    # A condition that cannot hold on time alone is rejected: a term alone, and a term ANDed with time.
     @pytest.mark.parametrize(
         "condition, message",
         [
-            ("avg_over_last(ttft, 5) > 2", "must also end on time alone"),
+            ("avg_over_last(ttft, 5) > 2", "must also hold on time alone"),
             ("(t >= 60) & (avg_over_last(ttft, 5) > 2)", "never holds on time alone"),
         ],
     )
-    def test_must_end_on_time_alone(self, condition: str, message: str) -> None:
+    def test_must_hold_on_time_alone(self, condition: str, message: str) -> None:
         with pytest.raises(ValueError, match=message):
             Predicate(condition)
 
@@ -391,7 +396,7 @@ class TestSentWindow:
 class TestSignals:
     # completed and errors count every finished request: 3 finished, 1 failed.
     def test_counters(self) -> None:
-        state = PredicateState(Predicate("(t >= 600) | (errors > completed)"))
+        state = _state_of(Predicate("(t >= 600) | (errors > completed)"))
         state.observe(_ok(1.0), 1.0)
         state.observe(Observation(t=2.0, failed=True), 2.0)
         state.observe(_ok(3.0), 3.0)
@@ -399,39 +404,41 @@ class TestSignals:
 
     # since_last_completion counts from the stage start before any request finishes, and from the latest finish after.
     def test_since_last_completion(self) -> None:
-        state = PredicateState(Predicate("(t >= 600) | (since_last_completion > 30)"))
+        state = _state_of(Predicate("(t >= 600) | (since_last_completion > 30)"))
         assert state.values(31.0) == {"since_last_completion": 31.0}
         state.observe(_ok(40.0), 41.0)
         assert state.values(50.0) == {"since_last_completion": 10.0}
 
     # in_flight comes from the caller; without it the comparison is unknown and false.
     def test_in_flight_from_caller(self) -> None:
-        state = PredicateState(Predicate("(t >= 600) | (in_flight > 5)"))
+        p = Predicate("(t >= 600) | (in_flight > 5)")
+        state = _state_of(p)
         assert math.isnan(state.values(1.0)["in_flight"])
-        assert not state.holds(1.0)
-        assert state.holds(1.0, in_flight=6)
+        assert not p.holds(1.0, state.values(1.0))
+        assert p.holds(1.0, state.values(1.0, in_flight=6))
 
     # Only the signals a condition reads are computed: a condition on errors gets no completed entry.
     def test_only_read_signals(self) -> None:
-        state = PredicateState(Predicate("(t >= 600) | (errors > 1)"))
+        state = _state_of(Predicate("(t >= 600) | (errors > 1)"))
         assert set(state.values(1.0)) == {"errors"}
 
 
-class TestPredicateState:
+class TestMeasuredState:
     # '(t >= 600) | (avg_over_last(error, 4) > 0.5)' holds on exactly the result that pushes the rate past 0.5.
     def test_holds_on_the_flipping_result(self) -> None:
-        state = PredicateState(Predicate("(t >= 600) | (avg_over_last(error, 4) > 0.5)"))
+        p = Predicate("(t >= 600) | (avg_over_last(error, 4) > 0.5)")
+        state = _state_of(p)
         results = [False, True, True, False, True]
         held = []
         for i, failed in enumerate(results):
             state.observe(Observation(t=float(i), failed=failed), float(i))
-            held.append(state.holds(float(i)))
+            held.append(p.holds(float(i), state.values(float(i))))
         # Window [F, T, T, F] = 0.5 does not hold; [T, T, F, T] = 0.75 does.
         assert held == [False, False, False, False, True]
 
     # readings key each value by the term as written, for logs.
     def test_readings_use_source_text(self) -> None:
-        state = PredicateState(Predicate("(t >= 600) | (avg_over_last(latency, 1) > 2) | (errors > 3)"))
+        state = _state_of(Predicate("(t >= 600) | (avg_over_last(latency, 1) > 2) | (errors > 3)"))
         state.observe(_ok(1.0, latency=5.0), 1.0)
         assert state.readings(1.0) == {"avg_over_last(latency, 1)": 5.0, "errors": 0.0}
 
@@ -443,12 +450,25 @@ class TestPredicateState:
         assert _value(state, 20.0) == 1.0
         assert _value(state, 5.0) == 1.0
 
-    # A condition over t alone has no terms and no signals, and its state only answers the deadline.
+    # A condition over t alone has no terms and no signals: its state is empty and t alone decides.
     def test_time_only_condition(self) -> None:
-        state = PredicateState(Predicate("t >= 60"))
+        p = Predicate("t >= 60")
+        state = _state_of(p)
         assert state.values(1.0) == {}
-        assert not state.holds(59.0)
-        assert state.holds(60.0)
+        assert not p.holds(59.0, state.values(59.0))
+        assert p.holds(60.0, state.values(60.0))
+
+    # A state needs no predicate: 'mean_ttft' = avg_over_last(ttft, 2) over ttft 1 and 3 reads 2, completed reads 2.
+    def test_state_without_a_predicate(self) -> None:
+        state = MeasuredState({"mean_ttft": _term("avg_over_last(ttft, 2)")}, frozenset({"completed"}))
+        state.observe(_ok(1.0, ttft=1.0), 1.0)
+        state.observe(_ok(2.0, ttft=3.0), 2.0)
+        assert state.values(2.0) == {"mean_ttft": 2.0, "completed": 2.0}
+
+    # A signal the code does not compute is rejected, not left out of values: 'error' is a series, not a signal.
+    def test_unknown_signal_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"Unknown signal\(s\) \['error'\]"):
+            MeasuredState({}, frozenset({"error"}))
 
 
 # Every series that names a report field names one the report computes: request-level fields

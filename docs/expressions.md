@@ -70,9 +70,9 @@ Not supported yet:
 
 ## Conditions
 
-A condition is a comparison over `t`, used where a field needs something to become true, such as a stage's stop condition. It must be false at `t = 0` and then true from some time onward, and this is proved when the config loads, so a condition reduces to the exact time it becomes true. A condition can also read what the stage measures, see [Measured terms](#measured-terms).
+A condition is a comparison over `t`, used where a field waits for something to become true. It must be false at `t = 0` and then true from some time onward, and this is proved when the config loads, so a condition reduces to the exact time it becomes true. A condition can also read what the stage measures, see [Measured terms](#measured-terms).
 
-| Condition | Ends at (s) |
+| Condition | Holds from (s) |
 | --- | --- |
 | `t >= 60` | 60 |
 | `t > 90.5` | 90.5 |
@@ -102,7 +102,7 @@ A condition may use `+ * /`, powers, `sqrt`, `exp`, `log`, `Min`, `Max`, the fou
 
 ## Measured terms
 
-A condition can read what the stage measures, so a stage can stop on a latency or error threshold as well as on time. A measured term is a window function over finished requests, written in PromQL's range syntax: `quantile_over_time(0.99, ttft[30s])` is the p99 time to first token of the requests that finished in the last 30 seconds. Terms are evaluated in-process on every finished request, from the same per-request values the report is computed from, so a quantile is the exact quantile of those requests rather than a histogram estimate.
+A condition can read what the stage measures, so it can become true on a latency or error threshold as well as on time. A measured term is a window function over finished requests, written in PromQL's range syntax: `quantile_over_time(0.99, ttft[30s])` is the p99 time to first token of the requests that finished in the last 30 seconds. Terms are evaluated in-process on every finished request, from the same per-request values the report is computed from, so a quantile is the exact quantile of those requests rather than a histogram estimate.
 
 > **Series names are short, not the report's field names.** A condition says `ttft` where the report says `time_to_first_token`, and `latency` where it says `request_latency`. Writing the report's name is rejected with the short name in the error. The table below is the full list. It is checked against the code in both directions, so a series cannot be added, renamed or dropped without this table changing too.
 
@@ -159,9 +159,9 @@ A condition can also read these signals directly, with no window.
 | `in_flight` | Requests sent and not yet finished. |
 | `since_last_completion` | Seconds since a request last finished, or since the stage started if none has. |
 
-A measured term is the system under test, so it cannot be solved like `t`. The time part of the condition is still proved when the config loads, twice. With every measured comparison false the condition must still become true on time alone: that is the time the stage ends by. With every measured comparison true it must again become true from some time onward: that is the earliest a measured term can end the stage. So a measured term can only end a stage early, never leave it without an end.
+A measured term is the system under test, so it cannot be solved like `t`. The time part of the condition is still proved when the config loads, twice. With every measured comparison false the condition must still become true on time alone: that is the time it holds by. With every measured comparison true it must again become true from some time onward: that is the earliest a measured term can make it hold. So a measured term can only make a condition hold sooner, never keep it from holding.
 
-| Condition | Ends by (s) | Can end from (s) |
+| Condition | Holds by (s) | Can hold from (s) |
 | --- | --- | --- |
 | `(t >= 600) \| (quantile_over_time(0.99, ttft[30s]) > 2)` | 600 | 0 |
 | `((t >= 60) & (avg_over_last(latency, 100) > 1)) \| (t >= 600)` | 600 | 60 |
@@ -173,7 +173,7 @@ A measured term is the system under test, so it cannot be solved like `t`. The t
 
 | Rejected condition | Why |
 | --- | --- |
-| `quantile_over_time(0.99, ttft[30s]) > 2` | Cannot end on time alone. Write `(t >= 600) \| (...)`. |
+| `quantile_over_time(0.99, ttft[30s]) > 2` | Never holds on time alone. Write `(t >= 600) \| (...)`. |
 | `(t >= 60) & (avg_over_last(ttft, 50) > 2)` | Same: with the term false it never becomes true. |
 | `(t >= 600) \| (ttft > 2)` | A series is not a value. Read it through a window function, such as `avg_over_last(ttft, 100)`. |
 | `(t >= 600) \| (avg_over_time(time_to_first_token[30s]) > 2)` | The report's field name. The series is `ttft`. |

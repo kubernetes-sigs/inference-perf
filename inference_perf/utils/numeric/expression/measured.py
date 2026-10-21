@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Measured terms a stop condition reads: aggregates of finished requests over a window.
+"""Measured terms: aggregates of finished requests over a window.
 
 A term is written in PromQL's range-vector syntax, ``quantile_over_time(0.99,
 ttft[30s])``, or with one of two window functions PromQL has no spelling for:
@@ -23,8 +23,8 @@ quantile here is the exact quantile rather than a histogram estimate.
 
 :class:`~inference_perf.utils.numeric.expression.Predicate` lifts each term out
 of the condition string before SymPy parses the rest, so SymPy sees one symbol
-per term. :class:`PredicateState` feeds finished requests to every term and
-answers whether the condition holds.
+per term. :class:`MeasuredState` feeds finished requests to terms and signals
+and reports their values, which ``Predicate.holds`` reads.
 """
 
 from __future__ import annotations
@@ -35,10 +35,7 @@ import re
 from bisect import bisect_left, insort
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Deque, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Union
-
-if TYPE_CHECKING:
-    from .expression import Predicate
+from typing import AbstractSet, Deque, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
 
 @dataclass(frozen=True)
@@ -136,7 +133,7 @@ class Term:
 
 @dataclass(frozen=True)
 class Observation:
-    """One finished request, as a stop condition sees it.
+    """One finished request, as a measured term sees it.
 
     ``t`` is the stage time it finished. ``values`` holds the request's value
     for each series it has one for. ``error`` is not passed: it is 1 when
@@ -482,23 +479,28 @@ def _evaluator(term: Term) -> _Evaluator:
     return _SentEvaluator(term)
 
 
-class PredicateState:
-    """The running value of every measured term and signal one predicate reads, over one stage.
+class MeasuredState:
+    """The running value of a set of measured terms and signals over one stage.
 
     Call :meth:`observe` with each finished request of the stage and
-    :meth:`holds` to ask whether the condition holds now. ``now`` is stage
-    time and must not go backwards. Each sample enters and leaves a term's
-    window once, and reading a term never rescans its window, so a large
-    window costs memory but not time per result.
+    :meth:`values` for every symbol's value now. ``now`` is stage time and
+    must not go backwards. Each sample enters and leaves a term's window once,
+    and reading a term never rescans its window, so a large window costs
+    memory but not time per result. A predicate reads a state built from its
+    own ``terms`` and ``signals``: ``predicate.holds(now, state.values(now))``.
     """
 
-    def __init__(self, predicate: Predicate) -> None:
-        self.predicate = predicate
+    def __init__(self, terms: Mapping[str, Term], signals: AbstractSet[str] = frozenset()) -> None:
+        unknown = set(signals) - set(SIGNALS)
+        if unknown:
+            raise ValueError(f"Unknown signal(s) {sorted(unknown)}; known: {sorted(SIGNALS)}.")
+        self.terms: Dict[str, Term] = dict(terms)
+        self.signals = frozenset(signals)
         self.completed = 0
         self.errors = 0
         self._last_finish: Optional[float] = None
         self._now = 0.0
-        self._evaluators: Dict[str, _Evaluator] = {symbol: _evaluator(term) for symbol, term in predicate.terms.items()}
+        self._evaluators: Dict[str, _Evaluator] = {symbol: _evaluator(term) for symbol, term in self.terms.items()}
 
     def _clock(self, now: float) -> float:
         self._now = max(self._now, now)
@@ -518,7 +520,7 @@ class PredicateState:
         """Each measured symbol's value at stage time ``now``, NaN while unknown."""
         now = self._clock(now)
         out = {symbol: evaluator.value(now) for symbol, evaluator in self._evaluators.items()}
-        signals = self.predicate.signals
+        signals = self.signals
         if "completed" in signals:
             out["completed"] = float(self.completed)
         if "errors" in signals:
@@ -531,9 +533,5 @@ class PredicateState:
 
     def readings(self, now: float, in_flight: Optional[int] = None) -> Dict[str, float]:
         """:meth:`values` keyed by each term as written, for logs."""
-        terms = self.predicate.terms
+        terms = self.terms
         return {terms[k].source if k in terms else k: v for k, v in self.values(now, in_flight).items()}
-
-    def holds(self, now: float, in_flight: Optional[int] = None) -> bool:
-        """Whether the condition holds at stage time ``now``; an unknown term makes its comparisons false."""
-        return self.predicate.holds(now, self.values(now, in_flight))
