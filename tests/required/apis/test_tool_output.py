@@ -27,6 +27,7 @@ from inference_perf.apis.base import InferenceInfo, RequestLifecycleMetric, Stre
 from inference_perf.config import APIConfig, APIType
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventOutputRegistry,
+    SessionInferenceInfo,
     WorkerSessionTracker,
     SessionChatCompletionAPIData,
     SessionAnthropicMessagesAPIData,
@@ -197,14 +198,15 @@ def metric_for_chunks(
 
 
 @pytest.mark.parametrize("times", [[2.0], [2.0, 2.0]])
-def test_one_arrival_has_ttft_but_no_decode_intervals(times: list[float]) -> None:
+@pytest.mark.parametrize("tool", [True, False])
+def test_one_arrival_has_ttft_but_no_decode_intervals(times: list[float], tool: bool) -> None:
     from inference_perf.reportgen.base import correct_streamed_response_metrics
 
-    metric = metric_for_chunks(times, ["{}"] * len(times), 20)
+    metric = metric_for_chunks(times, ["x"] * len(times), 20, tool=tool)
     correct_streamed_response_metrics(metric, cast(CustomTokenizer, CharacterTokenizer()))
     latency = compute_request_latency_metrics(metric)
     assert latency["time_to_first_token"] == 2
-    assert latency["time_to_first_output_token"] is None
+    assert latency["time_to_first_output_token"] == (None if tool else 2)
     assert latency["time_per_output_token"] is None
     assert latency["inter_token_latency"] is None
     assert latency["inter_token_latency_deltas"] == []
@@ -329,10 +331,11 @@ async def test_tool_only_http_benchmark(path: str) -> None:
 
 
 @pytest.mark.parametrize("times, expected_tpot", [([2.0], None), ([2.0, 2.0], None), ([2.0, 3.0], 1 / 3)])
-def test_benchmark_report_matches_native_tool_timing(times: list[float], expected_tpot: float | None) -> None:
+@pytest.mark.parametrize("tool", [True, False])
+def test_benchmark_report_matches_native_tool_timing(times: list[float], expected_tpot: float | None, tool: bool) -> None:
     from inference_perf.reportgen.br.v0_2.adapter import _per_request_latencies
 
-    metric = metric_for_chunks(times, ["{}"] * len(times), 20)
+    metric = metric_for_chunks(times, ["{}"] * len(times), 20, tool=tool)
     _, ttft, tpot, itl, _ = _per_request_latencies([metric], cast(CustomTokenizer, CharacterTokenizer()), False)
     assert ttft == [2.0]
     assert tpot == [expected_tpot]
@@ -359,3 +362,74 @@ async def test_assemble_fragments_but_keep_calls_separate(path: str) -> None:
     assert isinstance(info.response_metrics, StreamedResponseMetrics)
     assert info.response_metrics.output_tokens == 2
     assert len(retokenize_output_token_times(info.response_metrics, cast(CustomTokenizer, JoiningTokenizer()))) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["chat", "chat_replay"])
+@pytest.mark.parametrize("streaming", [True, False])
+@pytest.mark.parametrize("bad_call", [None, {"function": "x"}, {"index": [], "function": {}}, {"function": {"arguments": 42}}])
+async def test_malformed_tool_entries_preserve_valid_sibling_output(path: str, streaming: bool, bad_call: Any) -> None:
+    message = {
+        "content": "answer",
+        "reasoning_content": "think",
+        "tool_calls": [bad_call, {"index": 1, "function": {"name": "ok", "arguments": "{}"}}],
+    }
+    wire = Response({"choices": [{"message": message}]}, [{"choices": [{"delta": message}]}])
+    tokenizer = cast(CustomTokenizer, CharacterTokenizer())
+    info = await api(path).process_response(
+        cast(ClientResponse, wire), APIConfig(type=APIType.Chat, streaming=streaming), tokenizer
+    )
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == len("answerthink{}")
+    if streaming:
+        assert isinstance(info.response_metrics, StreamedResponseMetrics)
+        assert len(retokenize_output_token_times(info.response_metrics, tokenizer)) == len("answerthink{}")
+    if path == "chat_replay":
+        assert isinstance(info, SessionInferenceInfo)
+        assert info.output_message is not None
+        assert info.output_message["tool_calls"][-1]["function"]["arguments"] == "{}"
+
+
+@pytest.mark.asyncio
+async def test_replay_message_and_count_share_missing_index_fallback() -> None:
+    fragments = [("a", "c"), ("b", "d")]
+    events = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [{"id": f"call-{i}", "function": {"arguments": part}} for i, part in enumerate(parts)]
+                    }
+                }
+            ]
+        }
+        for parts in fragments
+    ]
+    info = await api("chat_replay").process_response(
+        cast(ClientResponse, Response({}, events)),
+        APIConfig(type=APIType.Chat, streaming=True),
+        cast(CustomTokenizer, JoiningTokenizer()),
+    )
+    assert isinstance(info, SessionInferenceInfo)
+    assert info.output_message is not None
+    calls = info.output_message["tool_calls"]
+    assert [call["function"]["arguments"] for call in calls] == ["ab", "cd"]
+    assert [call["id"] for call in calls] == ["call-0", "call-1"]
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == 2
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"choices": [None]},
+        {"choices": [{"delta": {"tool_calls": "bad"}}]},
+        {"type": "content_block_start", "content_block": "bad"},
+        {"type": "content_block_delta", "delta": "bad"},
+        {"type": "content_block_delta", "index": [], "delta": {"type": "input_json_delta"}},
+    ],
+)
+def test_malformed_tool_envelopes_have_no_argument_fragments(data: dict[str, Any]) -> None:
+    from inference_perf.apis.tool_output import tool_argument_deltas
+
+    assert tool_argument_deltas(data) == []

@@ -45,6 +45,8 @@ from inference_perf.config.redaction import redact
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.utils import ReportFile
 
+TOOL_TOKEN_AGREEMENT_REL_TOL = 0.25
+
 logger = logging.getLogger(__name__)
 
 # Report label for each terminal StageStatus; anything not listed (FAILED, RUNNING,
@@ -672,7 +674,7 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     if expected_output_tokens is None:
         return False
     if m.info.response_metrics.has_tool_calls:
-        return abs(len(output_token_times) - expected_output_tokens) > 0.25 * max(
+        return abs(len(output_token_times) - expected_output_tokens) > TOOL_TOKEN_AGREEMENT_REL_TOL * max(
             len(output_token_times), expected_output_tokens
         )
     return len(output_token_times) != expected_output_tokens

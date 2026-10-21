@@ -22,27 +22,66 @@ if TYPE_CHECKING:
     from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
+def chat_tool_calls(message: Any) -> list[dict[str, Any]]:
+    """Normalize valid calls, using their position when a server omits the index.
+
+    Ignore malformed entries and fields without discarding sibling text or calls.
+    Both streamed accounting and replay reconstruction consume this representation.
+    """
+    if not isinstance(message, dict) or not isinstance(message.get("tool_calls"), list):
+        return []
+    calls = []
+    for position, call in enumerate(message["tool_calls"]):
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function", {})
+        index = call.get("index", position)
+        if not isinstance(function, dict) or type(index) is not int or index < 0:
+            continue
+        calls.append(
+            {
+                "index": index,
+                "id": call.get("id") if isinstance(call.get("id"), str) else "",
+                "type": "function",
+                "function": {
+                    key: function.get(key) if isinstance(function.get(key), str) else "" for key in ("name", "arguments")
+                },
+            }
+        )
+    return calls
+
+
+def chat_tool_call_deltas(data: dict[str, Any]) -> list[dict[str, Any]]:
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        return chat_tool_calls(choices[0].get("delta"))
+    return []
+
+
 def tool_argument_deltas(data: dict[str, Any]) -> list[tuple[int, str]]:
     """Argument fragments keyed by call/block index; empty strings mark tool turns."""
-    if choices := data.get("choices"):
-        calls = (choices[0].get("delta") or {}).get("tool_calls") or []
-        return [(call.get("index", i), (call.get("function") or {}).get("arguments") or "") for i, call in enumerate(calls)]
+    if data.get("choices"):
+        return [(call["index"], call["function"]["arguments"]) for call in chat_tool_call_deltas(data)]
+    index = data.get("index", 0)
+    if type(index) is not int or index < 0:
+        return []
     if data.get("type") == "content_block_start":
-        block = data.get("content_block") or {}
-        if block.get("type") == "tool_use":
+        block = data.get("content_block")
+        if isinstance(block, dict) and block.get("type") == "tool_use":
             # The empty input object starts a streamed block; it is not a generated fragment.
             value = block.get("input")
-            return [(data.get("index", 0), json.dumps(value, ensure_ascii=False) if value else "")]
+            return [(index, json.dumps(value, ensure_ascii=False) if isinstance(value, dict) and value else "")]
     if data.get("type") == "content_block_delta":
-        delta = data.get("delta") or {}
-        if delta.get("type") == "input_json_delta":
-            return [(data.get("index", 0), delta.get("partial_json") or "")]
+        delta = data.get("delta")
+        if isinstance(delta, dict) and delta.get("type") == "input_json_delta":
+            fragment = delta.get("partial_json")
+            return [(index, fragment if isinstance(fragment, str) else "")]
     return []
 
 
 def message_tool_arguments(message: dict[str, Any] | None) -> list[str]:
     """Arguments from an OpenAI-shaped assistant message, including converted Messages."""
-    return [(call.get("function") or {}).get("arguments") or "" for call in (message or {}).get("tool_calls") or []]
+    return [call["function"]["arguments"] for call in chat_tool_calls(message)]
 
 
 def count_tool_tokens(tokenizer: CustomTokenizer, arguments: Iterable[str]) -> int:

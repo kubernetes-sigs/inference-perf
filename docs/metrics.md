@@ -143,7 +143,15 @@ without tool calls. `tool_token_count_mismatches` counts tool turns only when
 `abs(client - server) > 0.25 * max(client, server)`, using the re-tokenized timeline
 count and server output usage (`completion_tokens` or `output_tokens`). Missing usage
 produces neither mismatch. The separate counter and tolerance keep template-token
-and fragment-tokenization differences from drowning the text-turn signal.
+and fragment-tokenization differences from drowning the text-turn signal. Expected
+template overhead can still exceed this threshold on short or empty calls; a
+nonzero count is a diagnostic, not proof of an accounting bug.
 
 Compared with earlier reports, agentic runs now include tool-only turns in TTFT,
 TPOT, ITL, and output throughput (subject to the timing requirements above).
+The single-arrival timing correction also affects plain-text workloads: a one-token
+response now has TTFT, and a buffered response delivered at one arrival time has
+no TPOT or ITL instead of zero. Chat replay's client `output_len` no longer switches
+to server usage when present. With client-based metrics, this changes throughput
+and TPOT denominators; `use_server_output_tokens` still selects server counts when
+available. See [release notes](release_notes.md) for compatibility changes.

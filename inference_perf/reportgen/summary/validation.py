@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Sequence
 
+from inference_perf.reportgen.base import TOOL_TOKEN_AGREEMENT_REL_TOL
 from inference_perf.reportgen.validation import (
     SUMMARY_LIFECYCLE_FILENAME,
     Check,
@@ -215,7 +216,10 @@ def token_mismatch_findings(filename: str, contents: Any, check: str) -> List[Fi
     findings: List[Finding] = []
     for key, label in (
         ("token_count_mismatches", "request(s)"),
-        ("tool_token_count_mismatches", "tool request(s), outside the 25% relative tolerance,"),
+        (
+            "tool_token_count_mismatches",
+            f"tool request(s), outside the {TOOL_TOKEN_AGREEMENT_REL_TOL:.0%} relative tolerance,",
+        ),
     ):
         mismatches = _get(contents, "successes", key)
         if is_number(mismatches) and mismatches > 0:

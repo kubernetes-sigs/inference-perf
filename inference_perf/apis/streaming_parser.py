@@ -27,7 +27,7 @@ from typing import Any, Callable, List, NamedTuple, Optional
 
 from aiohttp import ClientResponse
 
-from inference_perf.apis.tool_output import tool_argument_deltas
+from inference_perf.apis.tool_output import chat_tool_call_deltas, tool_argument_deltas
 
 
 class ParsedSSEStream(NamedTuple):
@@ -67,6 +67,7 @@ class ParsedSSEStream(NamedTuple):
     tool_chunks: List[str]
     tool_chunk_times: List[float]
     tool_arguments: List[str]
+    tool_calls: List[dict[str, Any]]
     has_tool_calls: bool
 
     @property
@@ -118,6 +119,7 @@ class _SSEStreamParser:
         self.tool_chunks: List[str] = []
         self.tool_chunk_times: List[float] = []
         self.tool_argument_parts: dict[int, List[str]] = {}
+        self.tool_calls: dict[int, dict[str, Any]] = {}
         self.buffer = bytearray()
         self.data_lines: List[bytes] = []
         self.skip_lf = False
@@ -139,6 +141,12 @@ class _SSEStreamParser:
                         self.server_usage = dict(usage)
                     else:
                         self.server_usage.update(usage)
+            for call in chat_tool_call_deltas(data):
+                index = call["index"]
+                target = self.tool_calls.setdefault(index, {"id": "", "type": "function", "function": {"name": ""}})
+                target["function"]["name"] += call["function"]["name"]
+                if call["id"]:
+                    target["id"] = call["id"]
             arguments = tool_argument_deltas(data)
             for index, fragment in arguments:
                 self.tool_argument_parts.setdefault(index, []).append(fragment)
@@ -248,6 +256,10 @@ class _SSEStreamParser:
             tool_chunks=self.tool_chunks,
             tool_chunk_times=self.tool_chunk_times,
             tool_arguments=["".join(parts) for parts in self.tool_argument_parts.values()],
+            tool_calls=[
+                {**call, "function": {**call["function"], "arguments": "".join(self.tool_argument_parts[index])}}
+                for index, call in sorted(self.tool_calls.items())
+            ],
             has_tool_calls=bool(self.tool_argument_parts),
         )
 
