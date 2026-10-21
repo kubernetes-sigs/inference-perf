@@ -37,7 +37,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from inference_perf.config import DataConfig, LoadConfig
-from inference_perf.utils.numeric.expression import Expression, Predicate
+from inference_perf.utils.numeric.expression import SERIES, SIGNALS, Expression, Predicate
 
 DOCS = sorted((Path(__file__).resolve().parents[3] / "docs").glob("*.md"))
 
@@ -106,6 +106,30 @@ def _check_condition(row: Row) -> None:
     assert round(Predicate(condition).boundary, 2) == ends_at, condition
 
 
+# A condition over measured terms must end by the claimed second on time alone and be able to end from the other.
+def _check_measured_condition(row: Row) -> None:
+    condition, ends_by, can_end_from = _code(row[0]), float(row[1]), float(row[2])
+    predicate = Predicate(condition)
+    assert (round(predicate.boundary, 2), round(predicate.earliest, 2)) == (ends_by, can_end_from), condition
+
+
+# A window function example must parse as exactly one term. Input: '`avg_over_last(latency, 100)`'.
+def _check_window_function(row: Row) -> None:
+    term = _code(row[0])
+    assert len(Predicate(f"(t >= 600) | ({term} > 0)").terms) == 1, term
+
+
+# A series row must match the code's SERIES entry: name, report field ('none' for no field), unit and samples.
+def _check_series(row: Row) -> None:
+    series = SERIES[_code(row[0])]
+    assert (series.report_field or "none", series.unit, series.samples) == (_code(row[1]), row[2], row[3]), row
+
+
+# A signal row must name a signal the code computes, with the code's description.
+def _check_signal(row: Row) -> None:
+    assert SIGNALS[_code(row[0])] == row[1], row
+
+
 # Each example in a rejected table must raise when built the way its table says.
 def _rejects(build: Callable[[str], object]) -> Callable[[Row], None]:
     def check(row: Row) -> None:
@@ -119,6 +143,10 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Expression", "Mean"): _check_mean,
     ("Expression", "Lower", "Upper"): _check_bounds,
     ("Condition", "Ends at (s)"): _check_condition,
+    ("Condition", "Ends by (s)", "Can end from (s)"): _check_measured_condition,
+    ("Window function", "Reads"): _check_window_function,
+    ("Series", "Report field", "Unit", "Samples"): _check_series,
+    ("Signal", "Reads"): _check_signal,
     ("Rejected expression", "Why"): _rejects(Expression),
     ("Rejected condition", "Why"): _rejects(Predicate),
 }
@@ -165,3 +193,15 @@ def test_checked_yaml_example_loads(doc: str, block: str) -> None:
 def test_every_checked_table_is_present() -> None:
     present = {header for doc in DOCS for header, _rows in _tables(doc.read_text())}
     assert set(CHECKS) <= present, f"missing tables: {set(CHECKS) - present}"
+
+
+# The series and signal tables list every series and signal the code has, not just correct ones:
+# a row per name in SERIES and SIGNALS, so adding one to the code without the doc fails here.
+@pytest.mark.parametrize(
+    ("header", "names"),
+    [(("Series", "Report field", "Unit", "Samples"), set(SERIES)), (("Signal", "Reads"), set(SIGNALS))],
+    ids=["series", "signals"],
+)
+def test_measured_name_tables_are_complete(header: Tuple[str, ...], names: set[str]) -> None:
+    documented = {_code(row[0]) for doc in DOCS for h, rows in _tables(doc.read_text()) if h == header for row in rows}
+    assert documented == names, f"undocumented: {names - documented}, unknown: {documented - names}"
