@@ -103,10 +103,10 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 ### Token Counts
 
 `successes` carries both a client-side and a server-side token count, and they are not
-interchangeable: `output_len` is the client's re-tokenization of the response text,
+interchangeable: `output_len` is the client's re-tokenization of text, reasoning, and tool arguments,
 `output_tokens` is the server's own count, `prompt_tokens` is the server's count of the prompt
-with client tokenization as the fallback, and `token_count_mismatches` counts the requests
-where the two output counts disagree. Alongside it, `client_fallback_requests` says how many
+with client tokenization as the fallback, and `token_count_mismatches` counts non-tool requests
+where the per-chunk client timeline count disagrees with server output usage. Alongside it, `client_fallback_requests` says how many
 requests had no server number at all, per side. See
 [Token Accounting and Provenance](./metrics.md#token-accounting-and-provenance) for what each
 field is derived from and which one normalizes per-token latency.
@@ -164,3 +164,7 @@ from splitting into one bucket per failure.
 | `request_failed` | The request to the model server raised; `message` carries the exception type and text. |
 | `unknown` | The session failed without a more specific cause being recorded. |
 | `unreported` | The session was counted as failed but carried no error at all. Should not occur; treat as a bug. |
+
+Tool turns use a separate `tool_token_count_mismatches` counter with a 25% relative
+tolerance. See [tool-call output accounting](metrics.md#tool-call-output-accounting)
+for the counting, timing, and server-usage contract.

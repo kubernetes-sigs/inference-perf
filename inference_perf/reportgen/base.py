@@ -17,6 +17,7 @@ import json
 import re
 from collections import defaultdict
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union, TYPE_CHECKING
+from inference_perf.apis.tool_output import tool_argument_deltas
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 if TYPE_CHECKING:
@@ -636,6 +637,7 @@ def _extract_chunk_generated_texts(chunk_str: str) -> list[str]:
     try:
         data = json.loads(chunk_str)
         texts = [_extract_chunk_reasoning(data), _chunk_content(data)]
+        texts.extend(fragment for _, fragment in tool_argument_deltas(data))
     except (json.JSONDecodeError, IndexError, TypeError, AttributeError):
         return []
     return [text for text in texts if text]
@@ -651,7 +653,12 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     """
     if not (
         isinstance(m.info.response_metrics, StreamedResponseMetrics)
-        and (m.info.response_metrics.response_chunks or m.info.response_metrics.reasoning_chunks)
+        and (
+            m.info.response_metrics.response_chunks
+            or m.info.response_metrics.reasoning_chunks
+            or m.info.response_metrics.tool_chunks
+            or m.info.response_metrics.has_tool_calls
+        )
         and tokenizer
     ):
         return False
@@ -662,11 +669,17 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     # Do not overwrite output_tokens with the per-chunk sum. Keep the API layer's whole-message
     # count_tokens value, and surface the exact server count as `output_tokens`. See #564.
 
-    return expected_output_tokens is not None and len(output_token_times) != expected_output_tokens
+    if expected_output_tokens is None:
+        return False
+    if m.info.response_metrics.has_tool_calls:
+        return abs(len(output_token_times) - expected_output_tokens) > 0.25 * max(
+            len(output_token_times), expected_output_tokens
+        )
+    return len(output_token_times) != expected_output_tokens
 
 
 def retokenize_output_token_times(response_metrics: StreamedResponseMetrics, tokenizer: CustomTokenizer) -> list[float]:
-    """One timestamp per generated token, from re-tokenizing the raw content and reasoning chunks."""
+    """One timestamp per generated token, from re-tokenizing the raw text, reasoning and tool argument chunks."""
     output_token_times: list[float] = []
     token_cache = getattr(tokenizer, "_count_tokens_cache", None)
     if not isinstance(token_cache, dict):
@@ -682,6 +695,7 @@ def retokenize_output_token_times(response_metrics: StreamedResponseMetrics, tok
     chunks = heapq.merge(
         zip(response_metrics.chunk_times, response_metrics.response_chunks, strict=True),
         zip(response_metrics.reasoning_chunk_times, response_metrics.reasoning_chunks, strict=True),
+        zip(response_metrics.tool_chunk_times, response_metrics.tool_chunks, strict=True),
         key=lambda pair: pair[0],
     )
     for chunk_time, chunk_str in chunks:
@@ -712,14 +726,16 @@ def first_content_token_time(response_metrics: StreamedResponseMetrics) -> Optio
     """Arrival time of the first content chunk, skipping reasoning.
 
     chunk_times is the content channel alone. A record with no chunk_times
-    and no reasoning predates the split, so its output_token_times is content.
+    and no reasoning or tool calls predates the split, so its output_token_times is content.
     """
     if response_metrics.chunk_times:
         # Tokenizer correction drops chunks that re-tokenize to nothing from the
         # timeline. Skipping them here too keeps TTFO from landing before TTFT.
         token_times = set(response_metrics.output_token_times)
         return next((t for t in response_metrics.chunk_times if t in token_times), None)
-    if response_metrics.output_token_times and not response_metrics.reasoning_chunk_times:
+    if response_metrics.output_token_times and not (
+        response_metrics.reasoning_chunk_times or response_metrics.tool_chunk_times or response_metrics.has_tool_calls
+    ):
         return response_metrics.output_token_times[0]
     return None
 
@@ -748,8 +764,8 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
 
     # output_token_times holds every generated token, reasoning included
     # (#559): the server generates and counts reasoning tokens like any other,
-    # so TTFT, TPOT and ITL do too. Streamable means more than one timestamp.
-    if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
+    # so TTFT, TPOT and ITL do too. Decode intervals need distinct arrival times.
+    if isinstance(response_metrics, StreamedResponseMetrics) and response_metrics.output_token_times:
         # TTFT: First Token Time - Start Time
         ttft = response_metrics.output_token_times[0] - m.start_time
 
@@ -759,19 +775,19 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
         if (first_content := first_content_token_time(response_metrics)) is not None:
             ttfo = first_content - m.start_time
 
-        # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
-        duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
-        tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
-        if tpot_output_tokens > 1:
-            tpot = duration / (tpot_output_tokens - 1)
+        if any(t != response_metrics.output_token_times[0] for t in response_metrics.output_token_times):
+            # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
+            duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
+            tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
+            if tpot_output_tokens > 1:
+                tpot = duration / (tpot_output_tokens - 1)
 
-        itl_deltas = [
-            t2 - t1
-            for t1, t2 in zip(response_metrics.output_token_times, response_metrics.output_token_times[1:], strict=False)
-        ]
-        if itl_deltas:
-            itl = sum(itl_deltas) / len(itl_deltas)
-
+            itl_deltas = [
+                t2 - t1
+                for t1, t2 in zip(response_metrics.output_token_times, response_metrics.output_token_times[1:], strict=False)
+            ]
+            if itl_deltas:
+                itl = sum(itl_deltas) / len(itl_deltas)
     return {
         "request_latency": request_latency,
         "normalized_time_per_output_token": ntpot,
@@ -832,9 +848,13 @@ def summarize_requests(
     inter_token_latencies: List[float] = []
 
     mismatched_requests = 0
+    tool_mismatched_requests = 0
     for m in all_successful:
         if correct_streamed_response_metrics(m, tokenizer):
-            mismatched_requests += 1
+            if isinstance(m.info.response_metrics, StreamedResponseMetrics) and m.info.response_metrics.has_tool_calls:
+                tool_mismatched_requests += 1
+            else:
+                mismatched_requests += 1
 
         latency = compute_request_latency_metrics(m, use_server_output_tokens)
         request_latency_values.append(latency["request_latency"])
@@ -952,6 +972,7 @@ def summarize_requests(
         ),
         "output_tokens": summarize_output_token_usage(all_successful, percentiles),
         "token_count_mismatches": mismatched_requests,
+        "tool_token_count_mismatches": tool_mismatched_requests,
         # Keyed by side, not by the sibling field names: the values count requests,
         # and a prompt_tokens/output_tokens key here would read as a token count.
         "client_fallback_requests": {
@@ -1018,6 +1039,7 @@ def build_per_request_lifecycle_entry(
                 # Reasoning chunks are raw stream JSON too, and most of a reasoning model's stream.
                 response_metrics.pop("response_chunks", None)
                 response_metrics.pop("reasoning_chunks", None)
+                response_metrics.pop("tool_chunks", None)
         entry["info"] = info
 
     if fields.computed_metrics and metric.error is None:

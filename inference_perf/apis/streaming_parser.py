@@ -27,12 +27,14 @@ from typing import Any, Callable, List, NamedTuple, Optional
 
 from aiohttp import ClientResponse
 
+from inference_perf.apis.tool_output import tool_argument_deltas
+
 
 class ParsedSSEStream(NamedTuple):
     """Result of ``parse_sse_stream``, split by generation channel.
 
-    Content and reasoning are tracked separately. TTFT, TPOT, ITL and output
-    length count both channels, since the server generates and counts
+    Content, reasoning and tool arguments are tracked separately. TTFT, TPOT, ITL and output
+    length count all three channels, since the server generates and counts
     reasoning tokens like any other (#559). Time to first output token reads
     the content channel alone.
     """
@@ -61,14 +63,20 @@ class ParsedSSEStream(NamedTuple):
     # Timestamps for reasoning-only chunks.
     reasoning_chunk_times: List[float]
 
+    # Tool-only chunks. Mixed chunks are recorded once, in content or reasoning.
+    tool_chunks: List[str]
+    tool_chunk_times: List[float]
+    tool_arguments: List[str]
+    has_tool_calls: bool
+
     @property
     def generated_chunk_times(self) -> List[float]:
         """Arrival times of every chunk that carried generated text, in order.
 
-        Each chunk sits in exactly one of chunk_times and reasoning_chunk_times,
-        so merging the two sorted lists gives one timestamp per chunk.
+        Each chunk sits in exactly one channel list, so merging the sorted
+        lists gives one timestamp per chunk, including tool-only deltas.
         """
-        return list(heapq.merge(self.chunk_times, self.reasoning_chunk_times))
+        return list(heapq.merge(self.chunk_times, self.reasoning_chunk_times, self.tool_chunk_times))
 
 
 class StreamInterruptedError(Exception):
@@ -107,6 +115,9 @@ class _SSEStreamParser:
         self.reasoning_text_parts: List[str] = []
         self.reasoning_chunks: List[str] = []
         self.reasoning_chunk_times: List[float] = []
+        self.tool_chunks: List[str] = []
+        self.tool_chunk_times: List[float] = []
+        self.tool_argument_parts: dict[int, List[str]] = {}
         self.buffer = bytearray()
         self.data_lines: List[bytes] = []
         self.skip_lf = False
@@ -128,6 +139,9 @@ class _SSEStreamParser:
                         self.server_usage = dict(usage)
                     else:
                         self.server_usage.update(usage)
+            arguments = tool_argument_deltas(data)
+            for index, fragment in arguments:
+                self.tool_argument_parts.setdefault(index, []).append(fragment)
             reasoning = self.extract_reasoning(data) if self.extract_reasoning is not None else None
             if reasoning:
                 self.reasoning_text_parts.append(reasoning)
@@ -138,6 +152,9 @@ class _SSEStreamParser:
             elif reasoning:
                 self.reasoning_chunk_times.append(message_time)
                 self.reasoning_chunks.append(data_str)
+            elif any(fragment for _, fragment in arguments):
+                self.tool_chunks.append(data_str)
+                self.tool_chunk_times.append(message_time)
         except (json.JSONDecodeError, IndexError):
             pass
 
@@ -228,6 +245,10 @@ class _SSEStreamParser:
             reasoning_text="".join(self.reasoning_text_parts),
             reasoning_chunks=self.reasoning_chunks,
             reasoning_chunk_times=self.reasoning_chunk_times,
+            tool_chunks=self.tool_chunks,
+            tool_chunk_times=self.tool_chunk_times,
+            tool_arguments=["".join(parts) for parts in self.tool_argument_parts.values()],
+            has_tool_calls=bool(self.tool_argument_parts),
         )
 
 
