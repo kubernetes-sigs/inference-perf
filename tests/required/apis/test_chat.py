@@ -293,6 +293,78 @@ async def test_process_response_non_streaming_reasoning_only_null_content_is_a_c
     assert info.response_metrics.output_tokens == 2
 
 
+# Streaming: only tool-call deltas, no content and no usage. The tool call is the
+# generation, so this is a completion and not the empty body #744 rejects. The exact
+# token total is pinned in tests/required/apis/test_tool_output.py.
+@pytest.mark.asyncio
+async def test_process_response_streaming_tool_calls_only_no_usage_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = (
+        b'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", '
+        b'"function": {"name": "ping", "arguments": ""}}]}}]}\n\n'
+        b'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "a b"}}]}}]}\n\n'
+        b"data: [DONE]\n\n"
+    )
+
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
+    )
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens > 0
+
+
+# Unary: one tool call, content null, no usage. Same rule as the streaming case.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_tool_calls_only_null_content_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "ping", "arguments": "a b"}}],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    info = await data.process_response(response, _make_config(streaming=False), _word_tokenizer())
+
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
+    assert info.response_metrics.output_tokens > 0
+
+
+# Unary: a tool call whose arguments are empty, content null, no usage. The call is
+# still generated output, so the body is a completion even though it tokenizes to
+# nothing on this side.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_empty_argument_tool_call_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "ping", "arguments": ""}}],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    info = await data.process_response(response, _make_config(streaming=False), _word_tokenizer())
+
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
+
+
 def _reset_multimodal_progress_state() -> None:
     """Zero the module-level multimodal heartbeat counters between tests."""
     chat_module._multimodal_materialized_requests = 0

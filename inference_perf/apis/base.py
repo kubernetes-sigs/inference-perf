@@ -44,6 +44,10 @@ class StreamedResponseMetrics(ResponseMetrics):
     # which stay the content channel alone and give time to first output token.
     reasoning_chunks: List[str] = []
     reasoning_chunk_times: List[float] = []
+    # Tool-only deltas; content and reasoning mixtures stay in their original channel.
+    tool_chunks: List[str] = []
+    tool_chunk_times: List[float] = []
+    has_tool_calls: bool = False
 
 
 class InferenceInfo(BaseModel):
