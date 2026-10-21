@@ -28,7 +28,7 @@ from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession
 from .metrics import Metric, BaseMetrics
-from .otel_instrumentation import get_otel_instrumentation
+from .otel_instrumentation import get_otel_instrumentation, summarize_media
 from typing import Iterator, List, Optional, Any, Dict, Tuple
 import aiohttp
 import asyncio
@@ -358,8 +358,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
             try:
                 # Extract input based on request type
                 if hasattr(data, "messages") and data.messages:
-                    # Serialize each message, preserving tool_calls when present.
-                    input_messages = [msg.to_dict() for msg in data.messages]
+                    # Serialize each message, preserving tool_calls when present, with inline
+                    # media summarized so a span never carries the full bytes.
+                    input_messages = summarize_media([msg.to_dict() for msg in data.messages])
                     otel_response_info["input_messages"] = json.dumps(input_messages)
 
                     # Record tool definitions so they appear in Jaeger alongside the request.

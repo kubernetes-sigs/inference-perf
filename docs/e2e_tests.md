@@ -99,7 +99,10 @@ Server resolution, in order:
 
 1. `$E2E_VLLM_BASE_URL`, if set. CI sets this: the `E2E Test on change` job
    starts a `vllm/vllm-openai-cpu` container for each release listed in
-   `e2e/vllm_releases.txt` and runs the slice against each one.
+   `e2e/vllm_releases.txt` and runs the slice against each one. A release
+   that is broken upstream is listed in `e2e/vllm_known_bad.txt`, and a
+   floating tag that resolves to it is skipped with a warning annotation
+   instead of pinned around.
 2. A `vllm` executable on `PATH` (spawned by `e2e/utils/vllm_server.py`).
 3. Neither: the slice skips, and the run behaves as if it did not exist.
 
