@@ -218,6 +218,10 @@ class InferenceAPIData(BaseModel):
         """Called after every request completes (real or mock). Override to add post-completion side effects."""
         pass
 
+    def on_request_finished(self) -> None:
+        """Called by the worker exactly once when a scheduled request task ends."""
+        pass
+
     async def process_failure(
         self,
         response: Optional[ClientResponse],

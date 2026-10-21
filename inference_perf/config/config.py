@@ -94,6 +94,24 @@ class Config(StrictBaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def validate_conversation_replay_load(self) -> "Config":
+        if self.data.type != DataGenType.ConversationReplay:
+            return self
+        if self.load.type != LoadType.CONCURRENT:
+            raise ValueError("data.type 'conversation_replay' requires load.type 'concurrent'")
+
+        conversation_config = self.data.conversation_replay
+        if conversation_config is None:
+            raise ValueError("data.conversation_replay is required when data.type is 'conversation_replay'")
+        for stage_index, stage in enumerate(self.load.stages):
+            if isinstance(stage, ConcurrentLoadStage) and stage.concurrency_level > conversation_config.num_conversations:
+                raise ValueError(
+                    f"load.stages[{stage_index}].concurrency_level ({stage.concurrency_level}) cannot exceed "
+                    f"data.conversation_replay.num_conversations ({conversation_config.num_conversations})"
+                )
+        return self
+
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     result = base.copy()

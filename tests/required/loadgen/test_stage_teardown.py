@@ -165,6 +165,27 @@ class ChainedChatData(ChatCompletionAPIData):
             await asyncio.sleep(0.05)
 
 
+class FinalizingChatData(ChatCompletionAPIData):
+    finished_path: str
+
+    def on_request_finished(self) -> None:
+        with open(self.finished_path, "a") as f:
+            f.write("finished\n")
+
+
+class FinalizingDataGenerator(MockDataGenerator):
+    def __init__(self, api_config: APIConfig, config: DataConfig, finished_path: str) -> None:
+        super().__init__(api_config, config, None)
+        self.finished_path = finished_path
+
+    def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        while True:
+            yield FinalizingChatData(
+                messages=[ChatMessage(role="user", content="finalize me")],
+                finished_path=self.finished_path,
+            )
+
+
 class ChainDataGenerator(MockDataGenerator):
     """Yields alternating plain / predecessor-gated requests."""
 
@@ -351,6 +372,20 @@ async def test_grace_lets_inflight_requests_complete(tmp_path: object) -> None:
         assert harness.loadgen.stage_runtime_info[0].dropped_requests == 0
         assert harness.worker_pids() == pids_before, "worker should not be respawned"
         assert harness.loadgen.workers[0].is_alive()
+    finally:
+        harness.shutdown()
+
+
+async def test_worker_finalizes_each_scheduled_request(tmp_path: object) -> None:
+    finished_path = os.path.join(str(tmp_path), "finished.log")
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = FinalizingDataGenerator(api_config, DataConfig(type=DataGenType.Mock), finished_path)
+    harness = _Harness(QuickClient(), teardown_grace_seconds=1.0, datagen=datagen)
+    try:
+        await harness.run_stage(0, timeout=5.0)
+
+        assert harness.finished_counter.value == 2
+        assert _line_count(finished_path) == 2
     finally:
         harness.shutdown()
 
