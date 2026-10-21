@@ -156,14 +156,21 @@ Each graph event is one LLM call whose input is the accumulating transcript; the
 the event's output.
 
 - **Tool loop**: the agent's turn emits a tool call (forced via `tool_choice`), the result is fed
-  back, and the loop repeats `tool_loop_depth` times before a final plain-text answer.
+  back, and the loop repeats `tool_loop_depth` times before a final plain-text answer. Tools rotate
+  through the catalog from a seeded per-agent starting point, so successive rounds and sub-agents
+  open on different tools.
 - **Fan-out**: a spawning agent's reasoning turn emits N parallel `dispatch_agent` tool calls in one
   message (mirroring how real harnesses spawn sub-agents); each child runs its own loop and reports
   back, and a merge turn synthesizes the reports. Children recurse down to `max_depth`.
 - **Determinism**: all randomness derives from `seed` and the session index, so a given
   `(config, session_index)` produces a byte-identical graph across runs.
 - **Content themes** supply the domain flavor (an SRE latency incident, a RAG research task, a code
-  change, …); filler is sized to the token knobs so prompts hit the requested sizes.
+  change, …); filler is sized to the token knobs so prompts hit the requested sizes. Filler in
+  answers, user turns and compaction summaries is drawn from a seeded offset into the word pool so
+  turns don't repeat the same text; the system head's filler always starts at the pool's first
+  word. The root agent's system head opens with the theme's `system_prompt` when it declares one
+  (otherwise a generic orchestrator prompt); spawned sub-agents always use the generic worker
+  prompts.
 
 For the underlying replay mechanics (segment decomposition, output substitution, tool-call replay,
 session-level metrics, failure handling), see the [OTel Trace Replay](./otel_trace_replay.md)

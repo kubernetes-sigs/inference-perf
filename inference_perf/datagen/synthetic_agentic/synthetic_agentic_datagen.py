@@ -315,7 +315,9 @@ def fit_filler(
     Filler source: `word_pool` when supplied (a theme's own domain word pool,
     from `theme_filler_words`, so the padding reads like more pasted log/metric
     content), otherwise the shared Shakespeare corpus. Falling back to the
-    corpus keeps themes without `filler_templates` working unchanged.
+    corpus keeps themes without `filler_templates` working unchanged. `rng` picks
+    the (seeded) start offset into that word cycle, so differently-seeded calls emit
+    different filler; None starts at the pool's first word.
 
     Layout: the filler is wrapped in a <context>...</context> block emitted FIRST,
     then the real `fixed_content` LAST (see FILLER_OPEN/FILLER_CLOSE), so the
@@ -364,9 +366,14 @@ def fit_filler(
         # <context></context> block would signal nothing and just waste tokens).
         return fixed_content
 
+    # Seeded start offset into the word cycle, so each call site (seeded on its own
+    # path) pads with DIFFERENT words instead of every turn repeating the pool's
+    # opening. rng=None keeps the fixed start at 0.
+    start = int(rng.integers(0, len(words))) if rng is not None else 0
+
     def _emit(n_words: int) -> str:
         # Wrapped filler FIRST, real content LAST.
-        chunk = " ".join(_cycled_words(words, max(1, n_words)))
+        chunk = " ".join(_cycled_words(words, max(1, n_words), start=start))
         return f"{FILLER_OPEN}{chunk}{FILLER_CLOSE} {fixed_content}"
 
     return _fit_padded_text(tokenizer, filler_budget, fixed_cost, words, _emit)
@@ -388,19 +395,25 @@ def _render_system_head(
     is_root: bool,
     rng: np.random.Generator,
     word_pool: Optional[List[str]] = None,
+    theme_prompt: Optional[str] = None,
 ) -> str:
     """Render an agent's system head: a real, role-appropriate system prompt fitted
     to `target_tokens`.
 
     A prompt is drawn (seeded) from ROOT_SYSTEM_PROMPTS (orchestrator/assistant) or
-    SUBAGENT_SYSTEM_PROMPTS (spawned worker) by role. The REAL prompt is kept whole
+    SUBAGENT_SYSTEM_PROMPTS (spawned worker) by role. A root agent uses
+    `theme_prompt` (the theme's own `system_prompt`) instead when one is set; spawned
+    workers always draw from SUBAGENT_SYSTEM_PROMPTS. The REAL prompt is kept whole
     and FIRST; if it is shorter than the target, a labeled "## Operational context"
     block padded with filler makes up the remainder. If the prompt alone already
     meets or exceeds the target, it is truncated (token-wise) to the target -- no
     filler, no duplication. Deterministic given `rng`.
     """
-    pool = ROOT_SYSTEM_PROMPTS if is_root else SUBAGENT_SYSTEM_PROMPTS
-    prompt = str(_pick(rng, pool))
+    if is_root and theme_prompt:
+        prompt = theme_prompt
+    else:
+        pool = ROOT_SYSTEM_PROMPTS if is_root else SUBAGENT_SYSTEM_PROMPTS
+        prompt = str(_pick(rng, pool))
     prompt_tokens = tokenizer.count_tokens(prompt)
 
     if prompt_tokens >= target_tokens:
@@ -1361,6 +1374,7 @@ def build_graph_for_session(
     def _system_head(is_root: bool, agent_seed_path: Tuple[Any, ...]) -> Optional[Dict[str, Any]]:
         # Build this agent's system head: a real, role-appropriate system prompt
         # (root orchestrator vs spawned worker) fitted to shared_system_prompt_len.
+        # The root uses the theme's own system_prompt when it declares one.
         # None when the head length is 0 (head-less baseline). The pick is seeded
         # on the agent's own path (+ reserved sub-index 2, the former head path) so
         # it is deterministic per agent and byte-identical per (config, seed), while
@@ -1375,6 +1389,7 @@ def build_graph_for_session(
             is_root=is_root,
             rng=child_rng(seed, *agent_seed_path, 2),
             word_pool=filler_pool,
+            theme_prompt=theme.system_prompt,
         )
         return {"role": "system", "content": content}
 
@@ -1499,6 +1514,10 @@ def build_graph_for_session(
         # A catalog-less agent therefore emits ZERO tool-loop steps and just answers.
         if not tool_defs:
             k = 0
+        # Seeded per-agent starting index into the tool catalog (sub-seed 12), so each
+        # round's fresh root agent (and each sub-agent) begins its tool loop on a
+        # different tool instead of every agent restarting at tool_defs[0].
+        tool_offset = int(child_rng(seed, *agent_seed_path, 12).integers(0, len(tool_defs))) if tool_defs else 0
 
         # Will this agent spawn sub-agents? Decided up front so we know whether the
         # tool loop's last event is the agent terminal (plain answer output) or a
@@ -1517,8 +1536,8 @@ def build_graph_for_session(
                 # Advance the tool by TURN (t), so a multi-turn loop VARIES its tools
                 # (list_dir -> read_file -> grep -> run_tests) instead of repeating
                 # tool_defs[0] every turn; `+ j` keeps parallel calls within a turn
-                # distinct. Pure index math -> deterministic.
-                tool_def = tool_defs[(t + j) % len(tool_defs)]
+                # distinct; `tool_offset` shifts the start per agent. Deterministic.
+                tool_def = tool_defs[(tool_offset + t + j) % len(tool_defs)]
                 call_name = tool_def["name"]
                 names.append(call_name)
                 tc_id = f"call_{agent_prefix}_{t}_{j}"
