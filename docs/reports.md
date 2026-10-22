@@ -103,7 +103,7 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 ### Token Counts
 
 `successes` carries both a client-side and a server-side token count, and they are not
-interchangeable: `output_len` is the client's re-tokenization of text, reasoning, and tool arguments,
+interchangeable: `output_len` is the client's re-tokenization of text, reasoning, tool names, and tool arguments,
 `output_tokens` is the server's own count, `prompt_tokens` is the server's count of the prompt
 with client tokenization as the fallback, and `token_count_mismatches` counts non-tool requests
 where the per-chunk client timeline count disagrees with server output usage. Alongside it, `client_fallback_requests` says how many

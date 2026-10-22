@@ -213,8 +213,8 @@ async def test_session_anthropic_messages_records_tool_use_for_replay() -> None:
 
     assert info.output_text is None
     assert info.response_metrics is not None
-    # Tool-only response has no text: client count is 0, server count stays in server_usage (#885).
-    assert info.response_metrics.output_tokens == 2
+    # Count the tool name and arguments; keep the server count separately.
+    assert info.response_metrics.output_tokens == 3
     assert info.response_metrics.server_usage == {"input_tokens": 4, "output_tokens": 6}
     assert registry.get_output_by_event_id("session_1:event_1") == ""
     assert registry.get_message_by_event_id("session_1:event_1") == {
@@ -272,7 +272,7 @@ async def test_session_anthropic_messages_streaming_records_tool_use_for_replay(
     assert info.output_text is None
     assert info.request_metrics.text.input_tokens == 4
     assert info.response_metrics is not None
-    assert info.response_metrics.output_tokens == 1
+    assert info.response_metrics.output_tokens == 2
     assert info.response_metrics.server_usage == {"input_tokens": 4, "output_tokens": 6}
     assert registry.get_output_by_event_id("session_1:event_1") == ""
     assert registry.get_message_by_event_id("session_1:event_1") == {

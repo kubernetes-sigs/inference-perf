@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Sequence
 
-from inference_perf.reportgen.base import TOOL_TOKEN_AGREEMENT_REL_TOL
+from inference_perf.reportgen.base import TOOL_TOKEN_AGREEMENT_ABS_TOL, TOOL_TOKEN_AGREEMENT_REL_TOL
 from inference_perf.reportgen.validation import (
     SUMMARY_LIFECYCLE_FILENAME,
     Check,
@@ -218,7 +218,8 @@ def token_mismatch_findings(filename: str, contents: Any, check: str) -> List[Fi
         ("token_count_mismatches", "request(s)"),
         (
             "tool_token_count_mismatches",
-            f"tool request(s), outside the {TOOL_TOKEN_AGREEMENT_REL_TOL:.0%} relative tolerance,",
+            f"tool request(s), outside both the {TOOL_TOKEN_AGREEMENT_ABS_TOL}-token absolute "
+            f"and {TOOL_TOKEN_AGREEMENT_REL_TOL:.0%} relative tolerances,",
         ),
     ):
         mismatches = _get(contents, "successes", key)

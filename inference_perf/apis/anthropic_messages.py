@@ -18,7 +18,7 @@ from typing import Any
 
 from aiohttp import ClientResponse
 
-from inference_perf.apis.tool_output import count_tool_tokens, message_tool_arguments
+from inference_perf.apis.tool_output import count_tool_tokens, message_tool_texts
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, StreamedResponseMetrics, UnaryResponseMetrics
 from inference_perf.apis.chat import ChatMessage, _clean_parameters
 from inference_perf.apis.image_parts import is_image_part, openai_image_to_part
@@ -362,7 +362,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             output_text, server_usage = parsed.output_text, parsed.server_usage
             input_tokens = (server_usage or {}).get("input_tokens")
             output_len = count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
-            output_len += count_tool_tokens(tokenizer, parsed.tool_arguments)
+            output_len += count_tool_tokens(tokenizer, [*parsed.tool_names, *parsed.tool_arguments])
             return InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
@@ -390,7 +390,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
         output_text, output_message = parse_anthropic_content(data.get("content"))
         input_tokens = usage.get("input_tokens")
         output_len = count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
-        output_len += count_tool_tokens(tokenizer, message_tool_arguments(output_message))
+        output_len += count_tool_tokens(tokenizer, message_tool_texts(output_message))
         extra_info: dict[str, Any] = {
             "stop_reason": data.get("stop_reason"),
             "output_message": output_message,

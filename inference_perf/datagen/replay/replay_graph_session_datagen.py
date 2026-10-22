@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from aiohttp import ClientResponse
 from PIL import Image as PILImage
 
-from inference_perf.apis.tool_output import chat_tool_calls, count_tool_tokens, message_tool_arguments
+from inference_perf.apis.tool_output import chat_tool_calls, count_tool_tokens, message_tool_texts
 from inference_perf.apis import (
     ChatCompletionAPIData,
     ErrorResponseInfo,
@@ -1123,7 +1123,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             output_len = sum(
                 tokenizer.count_tokens(part, add_special_tokens=False) for part in (text_content, reasoning_text) if part
             )
-            output_len += count_tool_tokens(tokenizer, parsed.tool_arguments)
+            output_len += count_tool_tokens(tokenizer, [*parsed.tool_names, *parsed.tool_arguments])
             info = SessionInferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len), image=replayed_images(self.messages)),
                 response_metrics=StreamedResponseMetrics(
@@ -1177,7 +1177,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             output_len = sum(
                 tokenizer.count_tokens(part, add_special_tokens=False) for part in (text_content, reasoning_content) if part
             )
-            output_len += count_tool_tokens(tokenizer, message_tool_arguments(output_message))
+            output_len += count_tool_tokens(tokenizer, message_tool_texts(output_message))
             info = SessionInferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len), image=replayed_images(self.messages)),
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
@@ -1314,7 +1314,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             output_text, server_usage = parsed.output_text, parsed.server_usage
             input_tokens = (server_usage or {}).get("input_tokens")
             output_len = count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
-            output_len += count_tool_tokens(tokenizer, parsed.tool_arguments)
+            output_len += count_tool_tokens(tokenizer, [*parsed.tool_names, *parsed.tool_arguments])
             base_info = InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
@@ -1345,7 +1345,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             output_text, output_message = parse_anthropic_content(data.get("content"))
             input_tokens = usage.get("input_tokens")
             output_len = count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
-            output_len += count_tool_tokens(tokenizer, message_tool_arguments(output_message))
+            output_len += count_tool_tokens(tokenizer, message_tool_texts(output_message))
             base_info = InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(

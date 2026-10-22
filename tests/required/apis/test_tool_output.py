@@ -86,7 +86,7 @@ def response(path: str, mixed: bool, usage_present: bool) -> tuple[Response, int
         for i, arg in enumerate(args):
             block = {"type": "tool_use", "id": f"call-{i}", "name": "tool", "input": json.loads(arg)}
             blocks.append(block)
-            add({"type": "content_block_start", "index": i, "content_block": {**block, "input": {}}})
+            add({"type": "content_block_start", "index": i, "content_block": {**block, "input": {}}}, "tool")
         for part in range(2):
             for i, arg in enumerate(args):
                 fragment = arg[:5] if part == 0 else arg[5:]
@@ -117,7 +117,12 @@ def response(path: str, mixed: bool, usage_present: bool) -> tuple[Response, int
         payload = {"choices": [{"message": {"content": text or None, "reasoning_content": reasoning, "tool_calls": calls}}]}
         for i, call in enumerate(calls):
             add(
-                {"choices": [{"delta": {"tool_calls": [{**call, "index": i, "function": {"name": "tool", "arguments": ""}}]}}]}
+                {
+                    "choices": [
+                        {"delta": {"tool_calls": [{**call, "index": i, "function": {"name": "tool", "arguments": ""}}]}}
+                    ]
+                },
+                "tool",
             )
         for part in range(2):
             for i, arg in enumerate(args):
@@ -129,7 +134,7 @@ def response(path: str, mixed: bool, usage_present: bool) -> tuple[Response, int
             add({"choices": [], "usage": usage})
     if usage_present:
         payload["usage"] = usage
-    return Response(payload, events), sum(map(len, args)) + len(text) + len(reasoning), times
+    return Response(payload, events), sum(map(len, args)) + 2 * len("tool") + len(text) + len(reasoning), times
 
 
 @pytest.mark.asyncio
@@ -158,8 +163,8 @@ async def test_tool_accounting(
         info.response_metrics.output_token_times = times
         metric = RequestLifecycleMetric(scheduled_time=0, start_time=0, end_time=20, request_data="p", info=info, error=None)
         latency = compute_request_latency_metrics(metric)
-        assert latency["time_to_first_token"] == 3
-        expected_ttfo = (8 if path.startswith("messages") else 7) if mixed else None
+        assert latency["time_to_first_token"] == 1
+        expected_ttfo = 1
         assert latency["time_to_first_output_token"] == expected_ttfo
 
 
@@ -206,13 +211,13 @@ def test_one_arrival_has_ttft_but_no_decode_intervals(times: list[float], tool: 
     correct_streamed_response_metrics(metric, cast(CustomTokenizer, CharacterTokenizer()))
     latency = compute_request_latency_metrics(metric)
     assert latency["time_to_first_token"] == 2
-    assert latency["time_to_first_output_token"] == (None if tool else 2)
+    assert latency["time_to_first_output_token"] == 2
     assert latency["time_per_output_token"] is None
     assert latency["inter_token_latency"] is None
     assert latency["inter_token_latency_deltas"] == []
 
 
-@pytest.mark.parametrize("server_count, mismatch", [(3, 0), (4, 0), (5, 1), (0, 1)])
+@pytest.mark.parametrize("server_count, mismatch", [(3, 0), (4, 0), (19, 0), (20, 1), (0, 0)])
 def test_tool_mismatch_tolerance_is_separate(server_count: int, mismatch: int) -> None:
     tool = metric_for_chunks([2, 3], ["ab", "c"], server_count)
     text = metric_for_chunks([2, 3], ["ab", "c"], 4, tool=False)
@@ -266,7 +271,7 @@ async def test_anthropic_nonempty_start_input_counts_once(path: str, streaming: 
         cast(ClientResponse, wire), APIConfig(type=APIType.AnthropicMessages, streaming=streaming), tokenizer
     )
     assert info.response_metrics is not None
-    count = len(json.dumps(argument, ensure_ascii=False))
+    count = len("weather") + len(json.dumps(argument, ensure_ascii=False))
     assert info.response_metrics.output_tokens == count
     if streaming:
         assert isinstance(info.response_metrics, StreamedResponseMetrics)
@@ -320,8 +325,8 @@ async def test_tool_only_http_benchmark(path: str) -> None:
         assert info.response_metrics is not None
         assert info.response_metrics.output_tokens == count
         latency = compute_request_latency_metrics(metric)
-        assert sent[2] - start <= latency["time_to_first_token"] < sent[-1] - start
-        assert latency["time_to_first_output_token"] is None
+        assert sent[0] - start <= latency["time_to_first_token"] < sent[-1] - start
+        assert latency["time_to_first_output_token"] == latency["time_to_first_token"]
         assert latency["time_per_output_token"] > 0
         assert latency["inter_token_latency"] > 0
         assert summary.successes["token_count_mismatches"] == 0
@@ -380,10 +385,10 @@ async def test_malformed_tool_entries_preserve_valid_sibling_output(path: str, s
         cast(ClientResponse, wire), APIConfig(type=APIType.Chat, streaming=streaming), tokenizer
     )
     assert info.response_metrics is not None
-    assert info.response_metrics.output_tokens == len("answerthink{}")
+    assert info.response_metrics.output_tokens == len("answerthinkok{}")
     if streaming:
         assert isinstance(info.response_metrics, StreamedResponseMetrics)
-        assert len(retokenize_output_token_times(info.response_metrics, tokenizer)) == len("answerthink{}")
+        assert len(retokenize_output_token_times(info.response_metrics, tokenizer)) == len("answerthinkok{}")
     if path == "chat_replay":
         assert isinstance(info, SessionInferenceInfo)
         assert info.output_message is not None
@@ -433,3 +438,78 @@ def test_malformed_tool_envelopes_have_no_argument_fragments(data: dict[str, Any
     from inference_perf.apis.tool_output import tool_argument_deltas
 
     assert tool_argument_deltas(data) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["chat", "messages", "chat_replay", "messages_replay"])
+@pytest.mark.parametrize("mixed_reasoning", [False, True])
+async def test_tool_name_establishes_ttfo_before_arguments(
+    path: str, mixed_reasoning: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[dict[str, Any]]
+    if path.startswith("messages"):
+        events = [
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "think"}},
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "tool_use", "name": "ping", "id": "ignored", "input": {}},
+            },
+        ]
+    else:
+        events = [
+            {"choices": [{"delta": {"reasoning_content": "think"}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "ignored", "function": {"name": "ping"}}]}}]},
+        ]
+        if mixed_reasoning:
+            events[1]["choices"][0]["delta"]["reasoning_content"] = "more"
+    clock = iter(float(i) for i in range(1, 10))
+    monkeypatch.setattr(streaming_parser, "time", SimpleNamespace(perf_counter=lambda: next(clock)))
+    tokenizer = cast(CustomTokenizer, CharacterTokenizer())
+    info = await api(path).process_response(
+        cast(ClientResponse, Response({}, events)),
+        APIConfig(type=APIType.AnthropicMessages if path.startswith("messages") else APIType.Chat, streaming=True),
+        tokenizer,
+    )
+    assert isinstance(info.response_metrics, StreamedResponseMetrics)
+    count = 9 + (4 if mixed_reasoning and not path.startswith("messages") else 0)
+    assert info.response_metrics.output_tokens == count
+    info.response_metrics.output_token_times = retokenize_output_token_times(info.response_metrics, tokenizer)
+    metric = RequestLifecycleMetric(scheduled_time=0, start_time=0, end_time=3, request_data="p", info=info, error=None)
+    latency = compute_request_latency_metrics(metric)
+    assert latency["time_to_first_token"] == 1
+    assert latency["time_to_first_output_token"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["chat", "chat_replay"])
+async def test_fragmented_names_assemble_separately_from_arguments(path: str) -> None:
+    events = [
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "ignored"}]}}]},
+        *[
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {key: part}}]}}]}
+            for key, part in [("name", "a"), ("name", "b"), ("arguments", "c"), ("arguments", "d")]
+        ],
+    ]
+    info = await api(path).process_response(
+        cast(ClientResponse, Response({}, events)),
+        APIConfig(type=APIType.Chat, streaming=True),
+        cast(CustomTokenizer, JoiningTokenizer()),
+    )
+    assert isinstance(info.response_metrics, StreamedResponseMetrics)
+    assert info.response_metrics.output_tokens == 2
+    assert len(info.response_metrics.tool_chunks) == 4
+    if isinstance(info, SessionInferenceInfo):
+        assert info.output_message is not None
+        assert info.output_message["tool_calls"][0]["function"] == {"name": "ab", "arguments": "cd"}
+
+
+@pytest.mark.parametrize(
+    "client, server, mismatch",
+    [(0, 16, False), (0, 17, True), (100, 75, False), (100, 74, True), (75, 100, False), (74, 100, True)],
+)
+def test_tool_mismatch_absolute_and_relative_boundaries(client: int, server: int, mismatch: bool) -> None:
+    from inference_perf.reportgen.base import correct_streamed_response_metrics
+
+    metric = metric_for_chunks([2], ["x" * client], server)
+    assert correct_streamed_response_metrics(metric, cast(CustomTokenizer, CharacterTokenizer())) is mismatch

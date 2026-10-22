@@ -17,7 +17,7 @@ import json
 import re
 from collections import defaultdict
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union, TYPE_CHECKING
-from inference_perf.apis.tool_output import tool_argument_deltas
+from inference_perf.apis.tool_output import tool_argument_deltas, tool_name_deltas
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 if TYPE_CHECKING:
@@ -46,6 +46,8 @@ from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.utils import ReportFile
 
 TOOL_TOKEN_AGREEMENT_REL_TOL = 0.25
+# Single-call Hermes template gaps measured at 13–14 tokens; see docs/metrics.md.
+TOOL_TOKEN_AGREEMENT_ABS_TOL = 16
 
 logger = logging.getLogger(__name__)
 
@@ -639,7 +641,7 @@ def _extract_chunk_generated_texts(chunk_str: str) -> list[str]:
     try:
         data = json.loads(chunk_str)
         texts = [_extract_chunk_reasoning(data), _chunk_content(data)]
-        texts.extend(fragment for _, fragment in tool_argument_deltas(data))
+        texts.extend(fragment for _, fragment in [*tool_name_deltas(data), *tool_argument_deltas(data)])
     except (json.JSONDecodeError, IndexError, TypeError, AttributeError):
         return []
     return [text for text in texts if text]
@@ -674,8 +676,9 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     if expected_output_tokens is None:
         return False
     if m.info.response_metrics.has_tool_calls:
-        return abs(len(output_token_times) - expected_output_tokens) > TOOL_TOKEN_AGREEMENT_REL_TOL * max(
-            len(output_token_times), expected_output_tokens
+        return abs(len(output_token_times) - expected_output_tokens) > max(
+            TOOL_TOKEN_AGREEMENT_ABS_TOL,
+            TOOL_TOKEN_AGREEMENT_REL_TOL * max(len(output_token_times), expected_output_tokens),
         )
     return len(output_token_times) != expected_output_tokens
 
@@ -742,6 +745,23 @@ def first_content_token_time(response_metrics: StreamedResponseMetrics) -> Optio
     return None
 
 
+def first_output_token_time(response_metrics: StreamedResponseMetrics) -> Optional[float]:
+    """First non-reasoning output: answer text, tool name, or tool arguments."""
+    candidates = list(response_metrics.tool_chunk_times)
+    if (content_time := first_content_token_time(response_metrics)) is not None:
+        candidates.append(content_time)
+    # Mixed reasoning/tool chunks are stored in the reasoning channel once.
+    for timestamp, chunk in zip(response_metrics.reasoning_chunk_times, response_metrics.reasoning_chunks, strict=False):
+        try:
+            data = json.loads(chunk)
+            if any(fragment for _, fragment in [*tool_name_deltas(data), *tool_argument_deltas(data)]):
+                candidates.append(timestamp)
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            continue
+    token_times = set(response_metrics.output_token_times)
+    return min((t for t in candidates if t in token_times), default=None)
+
+
 def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output_tokens: bool = False) -> dict[str, Any]:
     """Compute per-request latency metrics for a single successful request.
 
@@ -771,10 +791,9 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
         # TTFT: First Token Time - Start Time
         ttft = response_metrics.output_token_times[0] - m.start_time
 
-        # Time to first output token: the first content token, after any
-        # reasoning. Equals TTFT when the model emits no reasoning; None when
-        # the output budget ran out before any content arrived.
-        if (first_content := first_content_token_time(response_metrics)) is not None:
+        # Time to first output token includes answer text and tool output,
+        # but excludes reasoning. A reasoning-only turn has no TTFO.
+        if (first_content := first_output_token_time(response_metrics)) is not None:
             ttfo = first_content - m.start_time
 
         if any(t != response_metrics.output_token_times[0] for t in response_metrics.output_token_times):

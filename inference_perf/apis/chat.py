@@ -23,7 +23,7 @@ import numpy as np
 from aiohttp import ClientResponse
 from pydantic import BaseModel, field_validator
 
-from inference_perf.apis.tool_output import count_tool_tokens, message_tool_arguments
+from inference_perf.apis.tool_output import count_tool_tokens, message_tool_texts
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
 from inference_perf.payloads import (
     ImageRepresentation,
@@ -604,7 +604,7 @@ class ChatCompletionAPIData(InferenceAPIData):
             # with special tokens would add a BOS the server's completion_tokens
             # never contains. Reasoning counts too, as it does in completion_tokens.
             output_len = _count_generated_tokens(tokenizer, parsed.output_text, parsed.reasoning_text)
-            output_len += count_tool_tokens(tokenizer, parsed.tool_arguments)
+            output_len += count_tool_tokens(tokenizer, [*parsed.tool_names, *parsed.tool_arguments])
             return InferenceInfo(
                 request_metrics=self._build_request_metrics(prompt_len, output_len),
                 response_metrics=StreamedResponseMetrics(
@@ -635,7 +635,7 @@ class ChatCompletionAPIData(InferenceAPIData):
         output_text = "".join([(choice.get("message", {}).get("content") or "") for choice in choices])
         reasoning_text = "".join(reasoning_field(choice.get("message", {})) or "" for choice in choices)
         output_len = _count_generated_tokens(tokenizer, output_text, reasoning_text)
-        output_len += sum(count_tool_tokens(tokenizer, message_tool_arguments(choice.get("message"))) for choice in choices)
+        output_len += sum(count_tool_tokens(tokenizer, message_tool_texts(choice.get("message"))) for choice in choices)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
             response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),

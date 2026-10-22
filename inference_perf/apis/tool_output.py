@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Generated tool arguments, excluding names, IDs and protocol/template wrappers."""
+"""Generated tool names and arguments, excluding IDs and protocol/template wrappers."""
 
 from __future__ import annotations
 
@@ -79,11 +79,29 @@ def tool_argument_deltas(data: dict[str, Any]) -> list[tuple[int, str]]:
     return []
 
 
-def message_tool_arguments(message: dict[str, Any] | None) -> list[str]:
-    """Arguments from an OpenAI-shaped assistant message, including converted Messages."""
-    return [call["function"]["arguments"] for call in chat_tool_calls(message)]
+def tool_name_deltas(data: dict[str, Any]) -> list[tuple[int, str]]:
+    """Generated name fragments, keyed independently from argument fragments."""
+    if data.get("choices"):
+        return [(call["index"], call["function"]["name"]) for call in chat_tool_call_deltas(data)]
+    index = data.get("index", 0)
+    block = data.get("content_block")
+    if (
+        data.get("type") == "content_block_start"
+        and type(index) is int
+        and index >= 0
+        and isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and isinstance(block.get("name"), str)
+    ):
+        return [(index, block["name"])]
+    return []
 
 
-def count_tool_tokens(tokenizer: CustomTokenizer, arguments: Iterable[str]) -> int:
-    """Tokenize each assembled call separately, without sequence-start special tokens."""
-    return sum(tokenizer.count_tokens(argument, add_special_tokens=False) for argument in arguments if argument)
+def message_tool_texts(message: dict[str, Any] | None) -> list[str]:
+    """Names and arguments counted separately, including converted Messages."""
+    return [call["function"][key] for call in chat_tool_calls(message) for key in ("name", "arguments")]
+
+
+def count_tool_tokens(tokenizer: CustomTokenizer, texts: Iterable[str]) -> int:
+    """Tokenize each assembled name and argument string separately, without special tokens."""
+    return sum(tokenizer.count_tokens(argument, add_special_tokens=False) for argument in texts if argument)
