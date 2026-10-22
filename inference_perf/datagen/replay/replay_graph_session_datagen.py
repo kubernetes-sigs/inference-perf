@@ -59,6 +59,7 @@ from inference_perf.apis.anthropic_messages import (
 )
 from inference_perf.apis.chat import ChatMessage, reasoning_field
 from inference_perf.apis.image_parts import base64_size, image_bytes, is_image_part, to_otel_part
+from inference_perf.apis.response_errors import InBandError, in_band_error
 from inference_perf.payloads import Image, Images, RequestMetrics, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
@@ -1166,6 +1167,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             actual_tool_names = [tool_call_chunks[i]["function"]["name"] for i in sorted(tool_call_chunks)]
         else:
             data = await response.json()
+            # A 200 whose body is an error payload is that error, not a success.
+            if (error_payload := in_band_error(data)) is not None:
+                raise InBandError(error_payload)
             server_usage = data.get("usage")
             prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             choices = data.get("choices", [])
@@ -1359,6 +1363,9 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             )
         else:
             data = await response.json()
+            # A 200 whose body is an error payload is that error, not a success.
+            if (error_payload := in_band_error(data)) is not None:
+                raise InBandError(error_payload)
             usage = data.get("usage") or {}
             output_text, output_message = parse_anthropic_content(data.get("content"))
             input_tokens = usage.get("input_tokens")
