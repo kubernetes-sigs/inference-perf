@@ -2966,6 +2966,16 @@ class TestSingleToolResultUnchanged:
         assert all("tool_call_id" not in m for m in msgs)
 
 
+def _queue_of(*payloads: dict[str, Any]) -> Any:
+    """A completion queue that hands out payloads once, then reports empty, as the real one does."""
+    import queue
+
+    q: "queue.Queue[dict[str, Any]]" = queue.Queue()
+    for payload in payloads:
+        q.put(payload)
+    return q
+
+
 class TestTruncatedSessionReporting:
     """A session cut short at the stage boundary must still report what it got through.
 
@@ -3022,19 +3032,47 @@ class TestTruncatedSessionReporting:
 
         assert metric.file_path == "src_1"
 
-    def test_last_event_completion_is_the_latest_recorded_event(self) -> None:
+    def test_session_end_is_the_latest_recorded_event(self) -> None:
         """The real end of a session is when its last event landed, whatever order they ran."""
         state = self._state(completed={"event_0", "event_1", "event_2"})
         state.event_completion_times = {"event_0": 3.0, "event_1": 7.5, "event_2": 5.0}
         gen = self._generator(state)
 
-        assert gen.last_event_completion_perf_counter("session_1") == 7.5
-        assert gen.last_event_completion_perf_counter("unknown") is None
+        assert gen.session_end_perf_counter("session_1") == 7.5
+        assert gen.session_end_perf_counter("unknown") is None
 
-    def test_last_event_completion_is_none_before_any_event_lands(self) -> None:
+    def test_session_end_is_none_before_anything_lands(self) -> None:
         gen = self._generator(self._state(completed=set()))
 
-        assert gen.last_event_completion_perf_counter("session_1") is None
+        assert gen.session_end_perf_counter("session_1") is None
+
+    def test_a_session_whose_last_request_failed_ends_at_the_failure(self) -> None:
+        """A failure lands no event completion, so the terminal notification is what dates it.
+
+        Request A succeeds at t=1 and request B fails at t=5: the session ran until 5.
+        """
+        state = self._state(completed={"event_0"})
+        state.event_completion_times = {"event_0": 1.0}
+        gen = self._generator(state)
+        gen.session_completion_queue = _queue_of(
+            {"session_id": "session_1", "completion_time": 5.0, "failed": True, "event_completion_times": {"event_0": 1.0}}
+        )
+
+        assert gen.check_session_completed("session_1") is True
+        assert state.failed is True
+        assert gen.session_end_perf_counter("session_1") == 5.0
+
+    def test_a_partial_flush_does_not_set_the_session_end(self) -> None:
+        """A flush comes from a session still open, so its timestamp is not when it ended."""
+        state = self._state(completed={"event_0"})
+        state.event_completion_times = {"event_0": 1.0}
+        gen = self._generator(state)
+        gen.session_completion_queue = _queue_of(
+            {"session_id": "session_1", "completion_time": 9.0, "partial": True, "event_completion_times": {"event_0": 1.0}}
+        )
+
+        assert gen.check_session_completed("session_1") is False
+        assert gen.session_end_perf_counter("session_1") == 1.0
 
     def test_a_cut_short_session_reports_the_events_it_lost(self) -> None:
         """2 of 4 events done when the stage stopped means 2 completed and 2 cancelled.

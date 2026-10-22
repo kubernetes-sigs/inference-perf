@@ -1423,6 +1423,10 @@ class ReplaySessionState:
     failure_reason: Optional[str] = None
     failure_cause: Optional[str] = None
     cancelled_events: int = 0
+    # perf_counter of the latest terminal notification the worker sent for this session,
+    # success or failure. A failure lands no event completion, so without this a session
+    # whose last request failed would look as if it ended at its last success.
+    terminal_perf_counter: Optional[float] = None
     # Populated from completion_data when the worker finishes the
     # session. None means the worker did not push the keys (i.e.
     # bad_tool_call_handling=none); empty list means handling was
@@ -2012,6 +2016,12 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                         continue
 
                     completed_state.is_complete = True
+                    terminal_time = completion_data.get("completion_time")
+                    if terminal_time is not None:
+                        previous = completed_state.terminal_perf_counter
+                        completed_state.terminal_perf_counter = (
+                            terminal_time if previous is None else max(previous, terminal_time)
+                        )
                     # Failure is sticky in both directions. A session that any
                     # worker payload reported as failed stays failed, and the
                     # first recorded reason wins: a later payload for an
@@ -2035,13 +2045,18 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
     def get_session_state(self, session_id: str) -> Optional[ReplaySessionState]:
         return self.session_graph_state.get(session_id)
 
-    def last_event_completion_perf_counter(self, session_id: str) -> Optional[float]:
-        # Recorded by the worker on its own perf_counter, the same monotonic clock the
-        # dispatch anchor is read from, so the two can be subtracted (as TFUT does).
+    def session_end_perf_counter(self, session_id: str) -> Optional[float]:
+        # The later of its last event completion and its last terminal notification, so a
+        # session whose last request failed ends at the failure. All recorded by the worker
+        # on its own perf_counter, the same monotonic clock the dispatch anchor is read
+        # from, so they can be subtracted from it (as TFUT does).
         state = self.session_graph_state.get(session_id)
-        if state is None or not state.event_completion_times:
+        if state is None:
             return None
-        return max(state.event_completion_times.values())
+        times = list(state.event_completion_times.values())
+        if state.terminal_perf_counter is not None:
+            times.append(state.terminal_perf_counter)
+        return max(times) if times else None
 
     def check_session_completed(self, session_id: str) -> bool:
         self._process_completion_queue()

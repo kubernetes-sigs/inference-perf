@@ -30,6 +30,7 @@ makes these slower rather than flaky.
 import asyncio
 import multiprocessing as mp
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -628,7 +629,7 @@ class _CompletesDuringTeardown(ScriptedSessionGenerator):
     def check_session_completed(self, session_id: str) -> bool:
         return self.teardown_done
 
-    def last_event_completion_perf_counter(self, session_id: str) -> Optional[float]:
+    def session_end_perf_counter(self, session_id: str) -> Optional[float]:
         return self.finished_at
 
 
@@ -692,5 +693,84 @@ async def test_a_session_finishing_during_teardown_reports_its_real_duration() -
         assert m.truncated is False
         assert m.dispatch_perf_counter is not None
         assert m.end_time > stage_end, "a grace-period completion must not be capped at the boundary"
-        assert m.end_time == pytest.approx(m.start_time + (datagen.finished_at - m.dispatch_perf_counter))
-        assert m.duration_sec == pytest.approx(m.end_time - m.start_time)
+        # Compared as durations: pytest.approx is relative, and on an epoch timestamp its
+        # default tolerance is about half an hour, which would let any end time through.
+        assert m.duration_sec == pytest.approx(datagen.finished_at - m.dispatch_perf_counter, abs=1e-6)
+        assert m.end_time - m.start_time == pytest.approx(m.duration_sec, abs=1e-6)
+
+
+class _FailsDuringTeardown(_CompletesDuringTeardown):
+    """Each session's earlier request succeeded inside the stage; its last one fails in the grace.
+
+    A failed session is still a terminal one, so check_session_completed() reports it
+    finished. Its last successful event and its terminal time then differ: the session
+    ran until the failure, not until the last thing that went right.
+    """
+
+    def __init__(self, num_sessions: int) -> None:
+        super().__init__(num_sessions)
+        self.succeeded_at: Optional[float] = None
+        self.failed_at: Optional[float] = None
+
+    def session_end_perf_counter(self, session_id: str) -> Optional[float]:
+        # What the replay generator reports: the later of the last success and the failure.
+        times = [t for t in (self.succeeded_at, self.failed_at) if t is not None]
+        return max(times) if times else None
+
+    def get_session_state(self, session_id: str) -> Any:
+        return SimpleNamespace(failed=self.teardown_done)
+
+
+class _RecordingOtel:
+    """Stands in for the OTEL instrumentation and keeps each session span's end status."""
+
+    trace_per_stage = False
+
+    def __init__(self) -> None:
+        self.ended: Dict[str, Optional[str]] = {}
+
+    def start_session_span(self, session_id: str, session_info: Any, parent_ctx: Any) -> Any:
+        return (session_id, None)
+
+    def end_session_span(self, span: Any, error_msg: Optional[str]) -> None:
+        self.ended[span] = error_msg
+
+
+@pytest.mark.asyncio
+async def test_a_session_failing_during_teardown_ends_at_its_failure_and_reports_an_error() -> None:
+    """A request that fails in the grace ends its session there, and the span says it failed.
+
+    Taking the end from the last successful event would report the session as shorter
+    than it ran, and since it is not truncated that short duration would enter
+    session_duration_sec. Ending its span without an error would trace it as OK.
+    """
+    datagen = _FailsDuringTeardown(num_sessions=5000)
+    loadgen, collector = _load_generator(datagen)
+    otel = _RecordingOtel()
+
+    real_teardown = loadgen._teardown_stage
+
+    async def _teardown(*args: Any, **kwargs: Any) -> Any:
+        result = await real_teardown(*args, **kwargs)
+        datagen.succeeded_at = time.perf_counter()  # request A lands early in the grace
+        await asyncio.sleep(0.05)
+        datagen.failed_at = time.perf_counter()  # request B fails later in the grace
+        datagen.teardown_done = True
+        return result
+
+    loadgen._teardown_stage = _teardown  # type: ignore[method-assign]
+    with patch("inference_perf.loadgen.load_generator.get_otel_instrumentation", return_value=otel):
+        await _run_stage(loadgen, TraceSessionReplayLoadStage(concurrent_sessions=4, duration=0.2))
+
+    recorded = collector.get_metrics()
+    assert len(recorded) == 4
+    assert datagen.failed_at is not None and datagen.succeeded_at is not None
+    for m in recorded:
+        assert m.truncated is False
+        assert m.dispatch_perf_counter is not None
+        assert m.duration_sec == pytest.approx(datagen.failed_at - m.dispatch_perf_counter, abs=1e-6), (
+            "a failed session ends at its failure, not its last success"
+        )
+        assert m.end_time - m.start_time == pytest.approx(m.duration_sec, abs=1e-6)
+    assert set(otel.ended) == {m.session_id for m in recorded}
+    assert all(status is not None for status in otel.ended.values()), "a failed session must not be traced as OK"

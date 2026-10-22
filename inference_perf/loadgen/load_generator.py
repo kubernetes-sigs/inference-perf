@@ -1355,15 +1355,15 @@ class LoadGenerator:
             # Never the current time: teardown waits on every in-flight request, so reading
             # the clock here would charge this session for time spent draining others.
             # A session cut short ends at the boundary captured above. One that finished
-            # in the grace ends when its own last event did, so its duration is what it
-            # really took rather than capped at the boundary.
+            # in the grace, successfully or not, ends when its own last activity did, so
+            # its duration is what it really took rather than capped at the boundary.
             session_start = session_dispatch_times.get(session_id, start_time_epoch)
             dispatch_perf = session_dispatch_perf_counters.get(session_id)
             session_end = end_time_epoch
             if session_completed and dispatch_perf is not None:
-                last_event_perf = self.datagen.last_event_completion_perf_counter(session_id)
-                if last_event_perf is not None:
-                    session_end = session_start + (last_event_perf - dispatch_perf)
+                end_perf = self.datagen.session_end_perf_counter(session_id)
+                if end_perf is not None:
+                    session_end = session_start + (end_perf - dispatch_perf)
             session_metric = self.datagen.build_session_metric(
                 session_id=session_id,
                 stage_id=stage_id,
@@ -1377,10 +1377,14 @@ class LoadGenerator:
             if self.session_metrics_collector:
                 self.session_metrics_collector.record_metric(session_metric)
             if session_id in session_spans:
-                otel_instr.end_session_span(
-                    session_spans[session_id],
-                    None if session_completed else "Session cut short at stage boundary",
-                )
+                if not session_completed:
+                    span_error: Optional[str] = "Session cut short at stage boundary"
+                else:
+                    # Same check as the in-loop completion path: a session that failed
+                    # during the grace is terminal, but must not be traced as OK.
+                    session_state = self.datagen.get_session_state(session_id)
+                    span_error = "Session failed" if session_state is not None and session_state.failed else None
+                otel_instr.end_session_span(session_spans[session_id], span_error)
                 del session_spans[session_id]
             self.datagen.cleanup_session(session_id)
 
