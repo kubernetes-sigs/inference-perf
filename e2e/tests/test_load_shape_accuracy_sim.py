@@ -342,6 +342,67 @@ async def test_delivered_concurrency_holds_under_pinned_routing():
     assert_delivered_concurrency(entries, concurrency)
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
+async def test_conversation_replay_replenishes_ready_conversations():
+    """Conversation turns refill their slots without lock waits or rollover overlap."""
+    # A remainder split also proves preferred-worker routing keeps each slot
+    # owned by one worker when conversation count is not divisible by workers.
+    concurrency, num_workers = 5, 2
+    model_name = TEST_MODEL_NAME
+    model_path = extract_tarball(TEST_MODEL_TARBALL)
+    num_requests = concurrency * 8
+    data = {
+        "type": "conversation_replay",
+        "conversation_replay": {
+            "seed": 42,
+            "num_conversations": concurrency,
+            "shared_system_prompt_len": 16,
+            "turns_per_conversation": {"type": "fixed", "min": 4, "max": 4, "mean": 4},
+            "input_tokens_per_turn": {"type": "fixed", "min": 16, "max": 16, "mean": 16},
+            # Heterogeneous request durations force conversations to become ready
+            # out of the fixed queue order that triggered #906.
+            "output_tokens_per_turn": {"type": "uniform", "min": 4, "max": 32, "mean": 18},
+            "tool_call_latency_sec": {"type": "fixed", "min": 1, "max": 1, "mean": 1},
+            "max_model_len": 4096,
+        },
+    }
+
+    async with LLMDInferenceSimRunner(model_name, *_pinned_latency_sim_args(), port=get_free_port()) as sim:
+        result = await run_benchmark_minimal(
+            _concurrent_stage_config(sim, model_name, model_path, data, concurrency, num_workers, num_requests),
+            timeout_sec=180,
+        )
+
+    entries = assert_successful_run(result, num_requests)
+    assert_delivered_concurrency(entries, concurrency)
+
+    by_slot: dict[int, list[dict]] = {}
+    for entry in entries:
+        session_id = entry["info"]["extra_info"]["user_session"]
+        slot = (
+            int(session_id.removeprefix("conv_").split("_")[0])
+            if session_id.startswith("conv_")
+            else int(session_id.split("_")[1])
+        )
+        by_slot.setdefault(slot, []).append(entry)
+
+    assert set(by_slot) == set(range(concurrency))
+    assert any(len(slot_entries) > 4 for slot_entries in by_slot.values()), "expected at least one conversation rollover"
+
+    gaps = []
+    for slot_entries in by_slot.values():
+        ordered = sorted(slot_entries, key=lambda entry: entry["start_time"])
+        for previous, current in zip(ordered, ordered[1:], strict=False):
+            gap = current["start_time"] - previous["end_time"]
+            assert gap >= 0, f"conversation slot overlapped across rollover by {-gap:.3f}s"
+            gaps.append(gap)
+
+    assert gaps
+    assert max(gaps) < 1.0, f"slowest conversation handoff took {max(gaps):.3f}s"
+    assert sum(gaps) / len(gaps) < 0.2, f"conversation handoffs averaged {sum(gaps) / len(gaps):.3f}s"
+
+
 # --- Helper self-tests: prove the assertions can actually fail. -------------
 # Same guard as the golden accuracy suite: a load-shape assertion that cannot
 # go red is worse than no assertion, because it reads as coverage. These run
