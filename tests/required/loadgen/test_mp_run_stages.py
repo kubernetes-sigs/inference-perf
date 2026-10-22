@@ -11,14 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Multi-stage mp_run integration test with real worker processes.
+"""Multi-stage mp_run integration test with a real worker process.
 
-Locks the stage-boundary protocol invariant: every stage end publishes one
-main-side stage_boundary_seq that each worker acknowledges in its own
-stage_done_counter, so a multi-stage run completes without deadlock and every
-stage's requests are accounted. Any stage-driving code path that runs a stage outside the
-mp_run stage loop (as the sweep pre-pass does) breaks this pairing and
-hangs the run — asyncio.wait_for turns that hang into a test failure.
+Every stage end publishes one stage_boundary_seq that each worker acknowledges
+in its own stage_done_counter. A worker that misses the rendezvous does not hang
+the run. _teardown_stage forces it after the teardown grace and marks the stage
+FAILED, so the COMPLETED check below is what catches a broken rendezvous.
 """
 
 import asyncio
@@ -71,7 +69,9 @@ class _DummyCustomTokenizer(CustomTokenizer):
 
 
 class TestMpRunMultiStage(unittest.IsolatedAsyncioTestCase):
-    async def test_two_stages_complete_with_paired_barriers(self) -> None:
+    # 2 stages of 3 requests each through one real worker process.
+    # Expects 6 request metrics, 3 per stage id, and both stages COMPLETED.
+    async def test_two_stages_complete_with_acknowledged_boundaries(self) -> None:
         requests_per_stage = 3
         num_stages = 2
 
@@ -93,12 +93,15 @@ class TestMpRunMultiStage(unittest.IsolatedAsyncioTestCase):
             interval=0,
             stages=[StandardLoadStage(rate=requests_per_stage, duration=1) for _ in range(num_stages)],
             base_seed=42,
+            # A worker that misses the rendezvous is terminated at the grace plus
+            # 35 s, per stage. At the default 120 s grace that outlasts the
+            # wait_for below and would surface as a timeout, not a FAILED stage.
+            stage_teardown_grace_seconds=0,
         )
         load_gen = LoadGenerator(datagen, load_config)
 
         async with collector.start():
-            # A broken barrier pairing deadlocks instead of failing, so bound
-            # the whole run.
+            # Only a hang in teardown itself should reach this bound.
             await asyncio.wait_for(load_gen.mp_run(client), timeout=120)
         await load_gen.stop()
 

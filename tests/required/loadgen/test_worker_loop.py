@@ -14,11 +14,12 @@
 """In-process tests for the real Worker.loop dispatch path.
 
 The Worker is constructed directly with multiprocessing primitives and its
-async loop() is awaited on the test's event loop — never .start()ed — so the
+async loop() is awaited on the test's event loop. It is never .start()ed, so the
 dispatch loop that produces every latency metric runs under coverage and
 plain CI. Stage-boundary signals (request_phase plus the stage_done_counter /
-stage_boundary_seq rendezvous) are driven from a controller thread, mirroring
-the main process's side of the protocol in mp_run.
+stage_boundary_seq rendezvous) are driven from a controller thread in the
+order _teardown_stage uses, and stop_signal is set last, as mp_run does after
+its final stage.
 """
 
 import asyncio
@@ -125,47 +126,62 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
         self.fail("condition not met within timeout")
 
-    def _end_stage_and_stop(self, before: Optional[Any] = None) -> None:
-        """Drive the main-process side of the stage-end protocol from a thread.
-
-        `before` runs first on the same thread, for protocol steps that must
-        happen while the worker is parked at the boundary. It has to be a
-        thread and not the test coroutine: the worker's boundary wait is a
-        blocking mp.Event.wait(), so once the worker parks there it owns the
-        shared event loop and no coroutine can run to release it.
-
-        Mirrors _teardown_stage: publish the next stage_boundary_seq, clear
-        request_phase to end the stage, then wait for the worker to copy that
-        sequence into stage_done_counter. Publishing before signalling is what
-        makes the rendezvous race-free: a worker that reaches the boundary
-        reads a sequence that is already current, so it can never acknowledge
-        a stale one and run ahead of the main side.
-        """
+    # Ends one stage in _teardown_stage's order and fails unless the worker acks it. The first call publishes
+    # stage_boundary_seq=1 and expects stage_done_counter=1. With a task it then sets stop_signal last, as mp_run
+    # does, and waits for loop() to return. Without one the worker must carry on into the next stage within 15 s.
+    async def _end_stage(self, task: "Optional[asyncio.Task[None]]" = None, cancel: bool = False) -> None:
+        acked = threading.Event()
 
         def _run() -> None:
             try:
-                if before is not None:
-                    before()
-                self.stop_signal.set()
-                # Publish the boundary before signalling, as _teardown_stage does.
+                # Publish before signalling so a worker that reaches the
+                # boundary can only read the current sequence.
                 with self.stage_boundary_seq.get_lock():
                     self.stage_boundary_seq.value += 1
                     expected = self.stage_boundary_seq.value
+                if cancel:
+                    self.cancel_signal.set()
+                    # Stands in for an expired teardown grace, so in-flight work
+                    # is cancelled now instead of after teardown_grace_seconds.
+                    self.force_stop_signal.set()
                 self.request_phase.clear()
                 deadline = time.perf_counter() + 10
                 while time.perf_counter() < deadline:
                     if self.stage_done_counter.value >= expected:
+                        acked.set()
                         break
                     time.sleep(0.01)
             finally:
-                # Always release the worker from request_phase.wait(), even if
-                # the rendezvous timed out, so the test fails on assertions
-                # instead of hanging.
+                # Release the worker even without an ack, so the test fails on
+                # its assertions instead of hanging.
+                self.force_stop_signal.clear()
+                self.cancel_signal.clear()
                 self.request_phase.set()
+                # Stopping any earlier lets the worker leave before it acks.
+                if task is not None:
+                    self.stop_signal.set()
 
+        # A thread, not a coroutine: once the worker parks in its boundary
+        # wait it blocks the shared event loop in mp.Event.wait().
         self.controller = threading.Thread(target=_run, daemon=True)
+        # With no stop to follow, a worker that never leaves the boundary wait
+        # would hold the event loop for good. Stopping it lets the test fail.
+        watchdog = threading.Timer(15, self.stop_signal.set) if task is None else None
         self.controller.start()
+        if watchdog is not None:
+            watchdog.daemon = True
+            watchdog.start()
+        if task is not None:
+            await asyncio.wait_for(task, timeout=15)
+        await asyncio.to_thread(self.controller.join, 15)
+        if watchdog is not None:
+            watchdog.cancel()
+            self.assertFalse(self.stop_signal.is_set(), "worker never left the boundary wait for the next stage")
+        self.assertTrue(acked.is_set(), "worker never acknowledged the stage boundary")
+        self.assertEqual(self.stage_done_counter.value, self.stage_boundary_seq.value)
 
+    # 3 stage-7 requests on adapter-a. Expects 3 client calls carrying stage 7, scheduled time 0.0 and adapter-a,
+    # with finished=3 and active=0 after the stage end.
     async def test_processes_requests_and_updates_counters(self) -> None:
         client = _ProbeClient()
         worker = self._make_worker(client)
@@ -174,8 +190,7 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
 
         task = asyncio.get_event_loop().create_task(worker.loop())
         await self._wait_until(lambda: self.finished_counter.value == 3)
-        self._end_stage_and_stop()
-        await asyncio.wait_for(task, timeout=15)
+        await self._end_stage(task)
 
         self.assertEqual(len(client.calls), 3)
         for data, stage_id, scheduled_time, lora_adapter in client.calls:
@@ -186,10 +201,9 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.finished_counter.value, 3)
         self.assertEqual(self.active_counter.value, 0)
 
+    # A lazy item the datagen cannot materialize (it is not a LazyLoadDataMixin), then 1 normal request.
+    # Expects 1 client call and finished=2: the failed item still counts and the loop keeps serving.
     async def test_lazy_load_failure_is_counted_and_loop_continues(self) -> None:
-        # self.datagen is not a LazyLoadDataMixin, so a lazy item fails to
-        # materialize; the worker must count it finished, ack the queue item,
-        # and keep serving later requests.
         client = _ProbeClient()
         worker = self._make_worker(client)
         self.request_phase.set()
@@ -198,13 +212,13 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
 
         task = asyncio.get_event_loop().create_task(worker.loop())
         await self._wait_until(lambda: self.finished_counter.value == 2)
-        self._end_stage_and_stop()
-        await asyncio.wait_for(task, timeout=15)
+        await self._end_stage(task)
 
         self.assertEqual(len(client.calls), 1, "only the materializable request reaches the client")
         self.assertEqual(self.finished_counter.value, 2, "the failed request still counts as finished")
         self.assertEqual(self.active_counter.value, 0)
 
+    # 6 requests at 50 ms each with max_concurrency=2. Expects all 6 served and never more than 2 in flight.
     async def test_semaphore_bounds_in_flight_concurrency(self) -> None:
         client = _ProbeClient(latency=0.05)
         worker = self._make_worker(client, max_concurrency=2)
@@ -213,12 +227,13 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
 
         task = asyncio.get_event_loop().create_task(worker.loop())
         await self._wait_until(lambda: self.finished_counter.value == 6)
-        self._end_stage_and_stop()
-        await asyncio.wait_for(task, timeout=15)
+        await self._end_stage(task)
 
         self.assertEqual(len(client.calls), 6)
         self.assertLessEqual(client.max_active, 2)
 
+    # 2 requests that would each run 30 s, then a stage end with cancel and force set.
+    # Expects both cancelled right away (active=0, finished=2) and the boundary acked.
     async def test_cancel_signal_cancels_in_flight_requests(self) -> None:
         client = _ProbeClient(latency=30.0)
         worker = self._make_worker(client)
@@ -228,34 +243,14 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
         task = asyncio.get_event_loop().create_task(worker.loop())
         await self._wait_until(lambda: self.active_counter.value == 2)
 
-        # Mirror _teardown_stage's cancellation protocol: cancel_signal ends the
-        # stage, then force_stop_signal cuts the teardown grace short so the
-        # in-flight requests are cancelled instead of running their full 30s.
-        # Without the force signal the worker would wait out
-        # teardown_grace_seconds first, the behaviour #662 introduced.
-        self.cancel_signal.set()
-        self.force_stop_signal.set()
-
-        def _release_cancel() -> None:
-            # Wait for both requests to unwind, then drop the signals, exactly
-            # as _teardown_stage does once every worker reaches the boundary.
-            deadline = time.perf_counter() + 10
-            while time.perf_counter() < deadline:
-                if self.active_counter.value == 0 and self.finished_counter.value == 2:
-                    break
-                time.sleep(0.01)
-            self.force_stop_signal.clear()
-            self.cancel_signal.clear()
-
-        self._end_stage_and_stop(before=_release_cancel)
-        await asyncio.wait_for(task, timeout=15)
+        await self._end_stage(task, cancel=True)
 
         self.assertEqual(self.active_counter.value, 0, "cancelled requests are no longer in flight")
         self.assertEqual(self.finished_counter.value, 2, "cancelled requests still count as finished")
 
+    # CONCURRENT load, shared concurrency 0, 2 queued requests. Expects no calls after 0.3 s,
+    # then both served once the shared value is raised to 2.
     async def test_zero_shared_concurrency_skips_until_raised(self) -> None:
-        # CONCURRENT load type: shared value 0 means this worker sits out the
-        # stage; raising it mid-run must resume consumption.
         shared = mp.Value("i", 0)
         client = _ProbeClient()
         worker = self._make_worker(client, max_concurrency=4, shared_max_concurrency=shared)
@@ -270,13 +265,12 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
         with shared.get_lock():
             shared.value = 2
         await self._wait_until(lambda: self.finished_counter.value == 2)
-        self._end_stage_and_stop()
-        await asyncio.wait_for(task, timeout=15)
+        await self._end_stage(task)
         self.assertEqual(len(client.calls), 2)
 
+    # max_concurrency=4 but shared concurrency 1, 4 requests at 50 ms each.
+    # Expects all 4 served one at a time (max_active=1), so the old semaphore was drained and replaced.
     async def test_shared_concurrency_update_rebinds_semaphore(self) -> None:
-        # Worker starts with max_concurrency=4 but the shared value says 1:
-        # the loop must drain the old semaphore and enforce the new bound.
         shared = mp.Value("i", 1)
         client = _ProbeClient(latency=0.05)
         worker = self._make_worker(client, max_concurrency=4, shared_max_concurrency=shared)
@@ -285,19 +279,14 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
 
         task = asyncio.get_event_loop().create_task(worker.loop())
         await self._wait_until(lambda: self.finished_counter.value == 4)
-        self._end_stage_and_stop()
-        await asyncio.wait_for(task, timeout=15)
+        await self._end_stage(task)
 
         self.assertEqual(len(client.calls), 4)
         self.assertEqual(client.max_active, 1)
 
+    # One stage of 2 requests, then one stage end. Expects stage_boundary_seq=1 and stage_done_counter=1:
+    # the worker acks the published boundary once and never runs ahead of it.
     async def test_stage_rendezvous_acknowledges_published_boundary(self) -> None:
-        # Input: one stage serving 2 requests, then a single stage end.
-        # Expected: the worker acknowledges the boundary exactly once, so
-        # stage_done_counter ends equal to the published stage_boundary_seq
-        # (1 after one stage end) and never runs ahead of it. The sweep
-        # pre-pass historically violated this pairing; this locks the seam
-        # any stage-driving caller must respect.
         client = _ProbeClient()
         worker = self._make_worker(client)
         self.request_phase.set()
@@ -305,8 +294,7 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
 
         task = asyncio.get_event_loop().create_task(worker.loop())
         await self._wait_until(lambda: self.finished_counter.value == 2)
-        self._end_stage_and_stop()
-        await asyncio.wait_for(task, timeout=15)
+        await self._end_stage(task)
 
         self.assertEqual(len(client.calls), 2)
         self.assertEqual(self.stage_boundary_seq.value, 1, "main side must publish exactly one boundary")
@@ -315,6 +303,26 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
             self.stage_boundary_seq.value,
             "worker must acknowledge the published boundary, never run ahead of it",
         )
+
+    # Stage 0 serves 2 requests and ends with seq 1 acked. The same loop then serves 2 stage-1 requests.
+    # Expects calls tagged [0, 0, 1, 1] and stage_done_counter=2 after the second stage end.
+    async def test_worker_resumes_after_stage_boundary(self) -> None:
+        client = _ProbeClient()
+        worker = self._make_worker(client)
+        self.request_phase.set()
+        self._put(2, stage_id=0)
+
+        task = asyncio.get_event_loop().create_task(worker.loop())
+        await self._wait_until(lambda: self.finished_counter.value == 2)
+        await self._end_stage()
+        self.assertEqual(self.stage_done_counter.value, 1)
+
+        self._put(2, stage_id=1)
+        await self._wait_until(lambda: self.finished_counter.value == 4)
+        await self._end_stage(task)
+
+        self.assertEqual([stage_id for _, stage_id, _, _ in client.calls], [0, 0, 1, 1])
+        self.assertEqual(self.stage_done_counter.value, 2)
 
     async def test_stop_signal_exits_loop_without_work(self) -> None:
         client = AsyncMock(spec=ModelServerClient)
