@@ -19,6 +19,11 @@ from inference_perf.config.apis import (
     RerankConfig,
     ResponseFormat,
     ResponseFormatType,
+    TemplateConfig,
+    TemplateResponseConfig,
+    TemplateStreamChunks,
+    TemplateStreamConfig,
+    TemplateStreamFraming,
 )
 from inference_perf.config.circuit_breaker import (
     CircuitBreakerConfig,
@@ -146,6 +151,11 @@ __all__ = [
     "SweepConfig",
     "SyntheticAgenticConfig",
     "SyntheticMultimodalDatagenConfig",
+    "TemplateConfig",
+    "TemplateResponseConfig",
+    "TemplateStreamChunks",
+    "TemplateStreamConfig",
+    "TemplateStreamFraming",
     "TraceConfig",
     "TraceFormat",
     "TraceSessionReplayLoadStage",

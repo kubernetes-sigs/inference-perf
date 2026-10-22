@@ -11,8 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.apis import EmbeddingsAPIData, RerankAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType, EmbeddingsConfig, RerankConfig
+from inference_perf.apis import EmbeddingsAPIData, RerankAPIData, TemplateAPIData
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    DataConfig,
+    DataGenType,
+    EmbeddingsConfig,
+    RerankConfig,
+    TemplateConfig,
+    TemplateResponseConfig,
+)
 from inference_perf.datagen.synthetic.mock_datagen import MockDataGenerator
 
 
@@ -57,3 +66,14 @@ def test_mock_datagen_rerank_document_count_and_options() -> None:
     assert data.query == "mock query 1"
     assert data.documents == ["mock document 1-0", "mock document 1-1", "mock document 1-2"]
     assert data.top_n == 2
+
+
+def test_mock_datagen_template() -> None:
+    template = TemplateConfig(route="/generate", body={"text": "${prompt}"}, response=TemplateResponseConfig(text_path="text"))
+    generator = MockDataGenerator(APIConfig(type=APIType.Template, template=template), DataConfig(type=DataGenType.Mock), None)
+
+    data = next(generator.get_data())
+
+    assert isinstance(data, TemplateAPIData)
+    assert data.prompt == "1 2 3 1"
+    assert data.template == template

@@ -27,6 +27,7 @@ from .completion import CompletionAPIData
 from .anthropic_messages import AnthropicMessagesAPIData
 from .embeddings import EmbeddingsAPIData
 from .rerank import RerankAPIData
+from .template import TemplateAPIData
 
 __all__ = [
     "InferenceAPIData",
@@ -42,6 +43,7 @@ __all__ = [
     "AnthropicMessagesAPIData",
     "EmbeddingsAPIData",
     "RerankAPIData",
+    "TemplateAPIData",
     "UnaryResponseMetrics",
     "StreamedResponseMetrics",
 ]

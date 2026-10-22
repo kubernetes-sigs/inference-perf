@@ -13,7 +13,8 @@
 # limitations under the License.
 
 """
-Shared utilities for parsing Server-Sent Events (SSE) streaming responses.
+Shared utilities for parsing streaming responses: Server-Sent Events (SSE) and
+newline-delimited JSON.
 
 This module provides common functionality for parsing streaming responses from
 LLM APIs, reducing code duplication across different API types.
@@ -72,7 +73,7 @@ class ParsedSSEStream(NamedTuple):
 
 
 class StreamInterruptedError(Exception):
-    """Raised when an SSE stream fails partway through being read.
+    """Raised when an SSE or NDJSON stream fails partway through being read.
 
     Carries the raw bytes received before the failure (``raw_content``) so
     callers can still surface what the server actually sent, which is the whole
@@ -117,7 +118,8 @@ class _SSEStreamParser:
         try:
             data_str = data_bytes.decode("utf-8", errors="ignore")
             data = json.loads(data_str)
-            if b"usage" in data_bytes or b"message" in data_bytes:
+            # A template API chunk can be any JSON value, not only an object.
+            if isinstance(data, dict) and (b"usage" in data_bytes or b"message" in data_bytes):
                 usage = data.get("usage")
                 if not isinstance(usage, dict):
                     message_data = data.get("message")
@@ -231,6 +233,47 @@ class _SSEStreamParser:
         )
 
 
+class _NDJSONStreamParser(_SSEStreamParser):
+    """Parser for newline-delimited JSON streams. Only the framing differs from SSE."""
+
+    async def parse(self, response: ClientResponse) -> ParsedSSEStream:
+        buffer = self.buffer
+        message_time = time.perf_counter()
+        try:
+            async for chunk in response.content.iter_any():
+                self.raw_content_chunks.append(chunk)
+                message_time = time.perf_counter()
+                buffer.extend(chunk)
+                end = buffer.rfind(b"\n")
+                if end == -1:
+                    continue
+                # Lines that arrive together share the time they arrived.
+                for line in bytes(buffer[:end]).split(b"\n"):
+                    self._process_line(line, message_time)
+                del buffer[: end + 1]
+            # The last line does not always end with a newline.
+            self._process_line(bytes(buffer), message_time)
+        except Exception as e:
+            raw_str = b"".join(self.raw_content_chunks).decode("utf-8", errors="ignore")
+            raise StreamInterruptedError(e, raw_str) from e
+
+        return ParsedSSEStream(
+            output_text="".join(self.output_text_parts),
+            chunk_times=self.chunk_times,
+            raw_content=b"".join(self.raw_content_chunks).decode("utf-8", errors="ignore"),
+            response_chunks=self.response_chunks,
+            server_usage=self.server_usage,
+            reasoning_text="".join(self.reasoning_text_parts),
+            reasoning_chunks=self.reasoning_chunks,
+            reasoning_chunk_times=self.reasoning_chunk_times,
+        )
+
+    def _process_line(self, line: bytes, message_time: float) -> None:
+        line = line.strip()
+        if line:
+            self.process_data_payload(line, message_time)
+
+
 async def parse_sse_stream(
     response: ClientResponse,
     extract_content: Callable[[dict[str, Any]], Optional[str]],
@@ -260,3 +303,16 @@ async def parse_sse_stream(
         A ParsedSSEStream; see its field comments.
     """
     return await _SSEStreamParser(extract_content, extract_reasoning).parse(response)
+
+
+async def parse_ndjson_stream(
+    response: ClientResponse,
+    extract_content: Callable[[dict[str, Any]], Optional[str]],
+    extract_reasoning: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
+) -> ParsedSSEStream:
+    """Parse a stream of newline-delimited JSON, one chunk per line.
+
+    Works like parse_sse_stream and returns the same result. A blank line or a
+    line that is not JSON is skipped.
+    """
+    return await _NDJSONStreamParser(extract_content, extract_reasoning).parse(response)
