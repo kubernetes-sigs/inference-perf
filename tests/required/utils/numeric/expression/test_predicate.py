@@ -11,9 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for ``Predicate``, the boolean condition used for stop conditions.
+"""Tests for ``Predicate``, the boolean condition a field waits on.
 
-A stop condition is checked at discrete instants, so the only shape that is
+A condition is checked at discrete instants, so the only shape that is
 safe to accept is one that is false at t=0 and then holds forever from some
 boundary time on. These tests pin that acceptance rule, the exact boundary
 each accepted shape compiles to, and the message for each rejected shape.
@@ -167,7 +167,7 @@ class TestRejectedInputs:
         with pytest.raises(ValueError, match="is not a condition"):
             Predicate(raw)
 
-    # 'Normal(0, 1) >= t' draws a random variable; rejected because a stop condition must be reproducible.
+    # 'Normal(0, 1) >= t' draws a random variable; rejected because a condition must be the same on every run.
     def test_random_variable(self) -> None:
         with pytest.raises(ValueError, match="random variable"):
             Predicate("Normal(0, 1) >= t")

@@ -37,7 +37,9 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from inference_perf.config import DataConfig, LoadConfig
-from inference_perf.utils.numeric.expression import Expression, Predicate
+from inference_perf.utils.numeric.concurrency_schedule import ConcurrencySchedule
+from inference_perf.utils.numeric.expression import SERIES, SIGNALS, Expression, PiecewiseLinear, Predicate
+from inference_perf.utils.numeric.expression.measured import AGGREGATES, WINDOWS
 
 DOCS = sorted((Path(__file__).resolve().parents[3] / "docs").glob("*.md"))
 
@@ -106,6 +108,53 @@ def _check_condition(row: Row) -> None:
     assert round(Predicate(condition).boundary, 2) == ends_at, condition
 
 
+# A condition over measured terms must hold by the claimed second on time alone and be able to hold from the other.
+def _check_measured_condition(row: Row) -> None:
+    condition, ends_by, can_end_from = _code(row[0]), float(row[1]), float(row[2])
+    predicate = Predicate(condition)
+    assert (round(predicate.boundary, 2), round(predicate.earliest, 2)) == (ends_by, can_end_from), condition
+
+
+# A window function example must parse as exactly one term. Input: '`avg_over_last(latency, 100)`'.
+def _check_window_function(row: Row) -> None:
+    term = _code(row[0])
+    assert len(Predicate(f"(t >= 600) | ({term} > 0)").terms) == 1, term
+
+
+# A series row must match the code's SERIES entry: name, report field ('none' for no field), unit and samples.
+def _check_series(row: Row) -> None:
+    series = SERIES[_code(row[0])]
+    assert (series.report_field or "none", series.unit, series.samples) == (_code(row[1]), row[2], row[3]), row
+
+
+# A signal row must name a signal the code computes, with the code's description.
+def _check_signal(row: Row) -> None:
+    assert SIGNALS[_code(row[0])] == row[1], row
+
+
+# An aggregate row must match the code's AGGREGATES entry. Input: ['`count`', 'Number of samples.'].
+def _check_aggregate(row: Row) -> None:
+    assert AGGREGATES[_code(row[0])] == row[1], row
+
+
+# A window row names the window as written, '`_over_last`', and must match WINDOWS['last'].
+def _check_window(row: Row) -> None:
+    assert WINDOWS[_code(row[0]).removeprefix("_over_")] == row[1], row
+
+
+# Breakpoints must equal the claimed comma-separated times. Input: '`Min(1 + t/6, 64)`', '0, 378'.
+def _check_breakpoints(row: Row) -> None:
+    expr = _code(row[0])
+    starts = [round(s.start, 6) for s in PiecewiseLinear(expr).segments]
+    assert starts == [float(x) for x in row[1].split(",")], f"{expr}: breakpoints {starts}"
+
+
+# A concurrency level must start and peak at the claimed levels. Input: '`Min(1 + t/6, 64)`', '1', '64'.
+def _check_concurrency(row: Row) -> None:
+    schedule = ConcurrencySchedule(_code(row[0]))
+    assert (schedule.initial, schedule.peak) == (int(row[1]), int(row[2])), f"{row[0]}: {schedule.initial}, {schedule.peak}"
+
+
 # Each example in a rejected table must raise when built the way its table says.
 def _rejects(build: Callable[[str], object]) -> Callable[[Row], None]:
     def check(row: Row) -> None:
@@ -118,9 +167,19 @@ def _rejects(build: Callable[[str], object]) -> Callable[[Row], None]:
 CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Expression", "Mean"): _check_mean,
     ("Expression", "Lower", "Upper"): _check_bounds,
-    ("Condition", "Ends at (s)"): _check_condition,
+    ("Condition", "Holds from (s)"): _check_condition,
+    ("Condition", "Holds by (s)", "Can hold from (s)"): _check_measured_condition,
+    ("Window function", "Reads"): _check_window_function,
+    ("Series", "Report field", "Unit", "Samples"): _check_series,
+    ("Signal", "Reads"): _check_signal,
+    ("Aggregate", "Reads"): _check_aggregate,
+    ("Window", "Selects"): _check_window,
     ("Rejected expression", "Why"): _rejects(Expression),
     ("Rejected condition", "Why"): _rejects(Predicate),
+    ("Piecewise-linear expression", "Breakpoints"): _check_breakpoints,
+    ("Rejected piecewise-linear expression", "Why"): _rejects(PiecewiseLinear),
+    ("Concurrency level", "Start", "Peak"): _check_concurrency,
+    ("Rejected concurrency level", "Why"): _rejects(ConcurrencySchedule),
 }
 
 MODELS: Dict[str, Type[BaseModel]] = {"load": LoadConfig, "data": DataConfig}
@@ -165,3 +224,20 @@ def test_checked_yaml_example_loads(doc: str, block: str) -> None:
 def test_every_checked_table_is_present() -> None:
     present = {header for doc in DOCS for header, _rows in _tables(doc.read_text())}
     assert set(CHECKS) <= present, f"missing tables: {set(CHECKS) - present}"
+
+
+# The series, signal, aggregate and window tables list every name the code has, not just correct ones:
+# a row per key in SERIES, SIGNALS, AGGREGATES and WINDOWS, so adding one to the code without the doc fails here.
+@pytest.mark.parametrize(
+    ("header", "names"),
+    [
+        (("Series", "Report field", "Unit", "Samples"), set(SERIES)),
+        (("Signal", "Reads"), set(SIGNALS)),
+        (("Aggregate", "Reads"), set(AGGREGATES)),
+        (("Window", "Selects"), {f"_over_{window}" for window in WINDOWS}),
+    ],
+    ids=["series", "signals", "aggregates", "windows"],
+)
+def test_measured_name_tables_are_complete(header: Tuple[str, ...], names: set[str]) -> None:
+    documented = {_code(row[0]) for doc in DOCS for h, rows in _tables(doc.read_text()) if h == header for row in rows}
+    assert documented == names, f"undocumented: {names - documented}, unknown: {documented - names}"

@@ -8,10 +8,11 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 
 ## Where expressions are accepted
 
-No config field accepts an expression yet. Fields are listed here as they are added, each linking to its own docs.
+Fields are listed here as they are added, each linking to its own docs.
 
 | Field | `t` | Random | Rule |
 | --- | --- | --- | --- |
+| `concurrency_level` (concurrent stages) | Yes | No | [Piecewise linear](#piecewise-linear-expressions), rounded down, at least 1, bounded. See [Concurrency Expressions](config.md#concurrency-expressions). |
 
 ## Grammar
 
@@ -70,9 +71,9 @@ Not supported yet:
 
 ## Conditions
 
-A condition is a comparison over `t`, used where a field needs something to become true, such as a stage's stop condition. It must be false at `t = 0` and then true from some time onward, and this is proved when the config loads, so a condition reduces to the exact time it becomes true.
+A condition is a comparison over `t`, used where a field waits for something to become true. It must be false at `t = 0` and then true from some time onward, and this is proved when the config loads, so a condition reduces to the exact time it becomes true. A condition can also read what the stage measures, see [Measured terms](#measured-terms).
 
-| Condition | Ends at (s) |
+| Condition | Holds from (s) |
 | --- | --- |
 | `t >= 60` | 60 |
 | `t > 90.5` | 90.5 |
@@ -99,6 +100,115 @@ A condition may use `+ * /`, powers, `sqrt`, `exp`, `log`, `Min`, `Max`, the fou
 | `t` | A number, not a condition. |
 | `Normal(0, 1) >= t` | Random. A condition must be the same on every run. |
 | `requests >= 1000` | `requests` is not a known symbol. |
+
+## Measured terms
+
+A condition can read what the stage measures, so it can become true on a latency or error threshold as well as on time. A measured term is a window function over finished requests, written in PromQL's range syntax: `quantile_over_time(0.99, ttft[30s])` is the p99 time to first token of the requests that finished in the last 30 seconds. Terms are evaluated in-process on every finished request, from the same per-request values the report is computed from, so a quantile is the exact quantile of those requests rather than a histogram estimate.
+
+> **Series names are short, not the report's field names.** A condition says `ttft` where the report says `time_to_first_token`, and `latency` where it says `request_latency`. Writing the report's name is rejected with the short name in the error. The table below is the full list. It is checked against the code in both directions, so a series cannot be added, renamed or dropped without this table changing too.
+
+| Series | Report field | Unit | Samples |
+| --- | --- | --- | --- |
+| `latency` | `request_latency` | s | Every successful request: end minus start. |
+| `ttft` | `time_to_first_token` | s | Successful streamed requests. |
+| `tpot` | `time_per_output_token` | s | Successful streamed requests with more than one output token. |
+| `ntpot` | `normalized_time_per_output_token` | s | Successful requests with output tokens. |
+| `schedule_delay` | `schedule_delay` | s | Every request: how late it was sent against its schedule. |
+| `error` | none | 0 or 1 | Every request: 1 if it failed. |
+
+There is no inter-token latency series. The report re-derives each token's timestamp from the raw response chunks when it writes the report, so a value measured during the run would be a different number under the same name.
+
+A window function is `<aggregate>_over_<window>(...)`, and any aggregate works with any window. Like the series table, the two tables below are checked against the code in both directions.
+
+| Aggregate | Reads |
+| --- | --- |
+| `avg` | Mean of the samples. |
+| `min` | Smallest sample. |
+| `max` | Largest sample. |
+| `sum` | Sum of the samples. |
+| `count` | Number of samples. |
+| `stddev` | Population standard deviation, as PromQL computes it. |
+| `quantile` | The q-quantile, with q first and between 0 and 1, interpolated linearly as PromQL does. |
+
+There is no median: use `quantile(0.5, ...)`.
+
+| Window | Selects |
+| --- | --- |
+| `_over_time` | PromQL's window: samples that finished inside a range such as ttft[30s], with optional offset and @. |
+| `_over_last` | Ours: the last n samples, written (series, n). |
+| `_over_sent` | Ours: requests a up to b in the order they were sent, counting from 0, written (series, a, b). |
+
+| Window function | Reads |
+| --- | --- |
+| `quantile_over_time(0.99, ttft[30s])` | p99 TTFT of requests that finished in the last 30 s. |
+| `avg_over_time(latency[10s] offset 10s)` | Mean latency of requests that finished in the 10 s before the last 10 s. |
+| `sum_over_time(error[60s] @ 120)` | Failures that finished between stage seconds 60 and 120. |
+| `avg_over_last(latency, 100)` | Mean latency of the last 100 successful requests. |
+| `quantile_over_last(0.9, ttft, 50)` | p90 TTFT of the last 50 streamed requests. |
+| `avg_over_sent(ttft, 10, 30)` | Mean TTFT of the 11th to 30th request sent. |
+
+A range is a PromQL duration: `500ms`, `30s`, `5m`, `1h`, `1m30s`. `offset` moves the range back. `@` ends the range at a stage second, the same clock as `t`. That differs from PromQL, where `@` takes a unix timestamp. Subqueries (`[30s:5s]`) are not supported.
+
+A term has no value until its window is complete, and a comparison on a term with no value is false, so the rest of the condition decides. A time range is complete once it lies inside the stage, so `ttft[30s]` has no value before `t = 30`. `_over_last(series, n)` needs `n` samples. `_over_sent(series, a, b)` needs every request from `a` up to `b` to finish, and a failed request counts as finished even though it has no latency. A window with no samples has no value either.
+
+A condition can also read these signals directly, with no window.
+
+| Signal | Reads |
+| --- | --- |
+| `completed` | Requests finished so far in the stage, successes and failures. |
+| `errors` | Failed requests so far in the stage. |
+| `in_flight` | Requests sent and not yet finished. |
+| `since_last_completion` | Seconds since a request last finished, or since the stage started if none has. |
+
+A measured term is the system under test, so it cannot be solved like `t`. The time part of the condition is still proved when the config loads, twice. With every measured comparison false the condition must still become true on time alone: that is the time it holds by. With every measured comparison true it must again become true from some time onward: that is the earliest a measured term can make it hold. So a measured term can only make a condition hold sooner, never keep it from holding.
+
+| Condition | Holds by (s) | Can hold from (s) |
+| --- | --- | --- |
+| `(t >= 600) \| (quantile_over_time(0.99, ttft[30s]) > 2)` | 600 | 0 |
+| `((t >= 60) & (avg_over_last(latency, 100) > 1)) \| (t >= 600)` | 600 | 60 |
+| `(t >= 300) \| (errors >= 10)` | 300 | 0 |
+| `(t >= 300) \| (avg_over_last(error, 100) > 0.05)` | 300 | 0 |
+| `(t >= 900) \| (avg_over_time(latency[10s]) > 1.5*avg_over_time(latency[10s] offset 10s))` | 900 | 0 |
+| `(t >= 900) \| (avg_over_last(ttft, 20) > 2*avg_over_sent(ttft, 10, 30))` | 900 | 0 |
+| `(t >= 600) \| ((in_flight > 0) & (since_last_completion > 30))` | 600 | 0 |
+
+| Rejected condition | Why |
+| --- | --- |
+| `quantile_over_time(0.99, ttft[30s]) > 2` | Never holds on time alone. Write `(t >= 600) \| (...)`. |
+| `(t >= 60) & (avg_over_last(ttft, 50) > 2)` | Same: with the term false it never becomes true. |
+| `(t >= 600) \| (ttft > 2)` | A series is not a value. Read it through a window function, such as `avg_over_last(ttft, 100)`. |
+| `(t >= 600) \| (avg_over_time(time_to_first_token[30s]) > 2)` | The report's field name. The series is `ttft`. |
+| `(t >= 600) \| (median_over_time(ttft[30s]) > 2)` | No median. Use `quantile_over_time(0.5, ttft[30s])`. |
+| `(t >= 600) \| (avg_over_time(ttft[30s:5s]) > 2)` | Subqueries are not supported. |
+| `(t >= 600) \| (avg_over_time(ttft[10s] @ start()) > 2)` | `@` takes a stage second. |
+| `(t >= 600) or (avg_over_last(ttft, 50) > 2)` | Combine comparisons with `\|` and `&`, not `or` and `and`. |
+
+## Piecewise-linear expressions
+
+Some fields hold a set point that the load generator changes at exact times, such as a concurrency level. They accept only piecewise-linear expressions: a straight line in `t` between breakpoints. The expression is split into its lines when the config loads, so every breakpoint, and every time the value crosses a threshold, is exact.
+
+Allowed: numbers, `t`, `+ -`, multiplying or dividing by a constant, `Min`, `Max`, `Abs`, `Heaviside`, and `Piecewise` whose conditions compare lines in `t`. A product of two terms in `t` is allowed where one of them is constant, so `t*Heaviside(t - 30)` (0, then `t`) is fine. Functions of constants are fine anywhere: `sqrt(2)*t` is a line.
+
+| Piecewise-linear expression | Breakpoints |
+| --- | --- |
+| `12` | 0 |
+| `Min(1 + t/6, 64)` | 0, 378 |
+| `Piecewise((8, t < 60), (32, True))` | 0, 60 |
+| `Max(1, Min(t/2, 120 - t/2))` | 0, 2, 120, 238 |
+| `4 * (1 + Heaviside(t - 30) + Heaviside(t - 60))` | 0, 30, 60 |
+| `64 - Abs(t - 60)` | 0, 60 |
+| `t*Heaviside(t - 30)` | 0, 30 |
+
+At a breakpoint the new line applies. What an expression does at the single instant of a jump (`Heaviside(0)` is 1/2) is ignored.
+
+| Rejected piecewise-linear expression | Why |
+| --- | --- |
+| `t**2` | A power of `t` bends the line. |
+| `1/t` | So does dividing by `t`. |
+| `sin(t)` | `sin` is not allowed on `t`. |
+| `t*Min(t, 5)` | `t` times `t` before `t = 5`. |
+| `Normal(10, 2)` | Random. A set point must be the same on every run. |
+| `Piecewise((8, t < 60))` | No value from `t = 60` on. End with a `True` branch. |
 
 ## Value ranges
 
