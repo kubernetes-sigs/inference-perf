@@ -25,6 +25,8 @@ from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueDat
 from inference_perf.utils.request_queue import RequestQueue
 
 
+# A CONSTANT-load LoadGenerator with num_workers workers (4 by default) over a MagicMock datagen with no trace
+# and no pinned workers. No worker process is started.
 def _make_load_generator(num_workers: int = 4) -> LoadGenerator:
     datagen = MagicMock(spec=DataGenerator)
     datagen.trace = None
@@ -41,6 +43,7 @@ def _make_load_generator(num_workers: int = 4) -> LoadGenerator:
         return LoadGenerator(datagen, load_config)
 
 
+# One MagicMock request per id, in order. [0, 5, -1] yields three requests with preferred_worker_id 0, 5 and -1.
 def _mock_requests(preferred_worker_ids: List[int]) -> Any:
     return iter([MagicMock(preferred_worker_id=worker_id) for worker_id in preferred_worker_ids])
 
@@ -60,9 +63,12 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
         self.request_phase = MagicMock()
         self.cancel_signal = MagicMock()
 
+    # The (RequestQueueData, channel) pair from each request_queue.put call, in call order.
     def _put_calls(self) -> List[Tuple[RequestQueueData, int]]:
         return [(call.args[0], call.args[1]) for call in self.request_queue.put.call_args_list]
 
+    # Runs one run_stage. The patched sleep sets finished to num_requests on its first call, so the stage
+    # returns COMPLETED right after enqueueing. _run_stage(6, rate=6) enqueues 6 requests and returns at once.
     async def _run_stage(
         self,
         num_requests: int,
@@ -71,8 +77,6 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
         duration: int = 1,
         concurrency_level: Optional[int] = None,
     ) -> None:
-        """Run one stage, completing the wait loop by advancing the counter."""
-
         async def finish_all(*_args: Any, **_kwargs: Any) -> None:
             self.finished_counter.value = num_requests
 
@@ -91,6 +95,8 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
                 concurrency_level=concurrency_level,
             )
 
+    # Stage 5 at rate=5 for duration=2 over 10 unpinned requests. Expects 10 puts on channel -1, each tagged stage 5,
+    # with strictly increasing dispatch times, and the stage COMPLETED.
     async def test_enqueues_rate_times_duration_requests_with_increasing_times(self) -> None:
         self.load_generator.datagen.get_data.return_value = _mock_requests([-1] * 10)  # type: ignore[attr-defined]
         await self._run_stage(num_requests=10, stage_id=5, rate=5, duration=2)
@@ -106,6 +112,7 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.load_generator.stage_runtime_info[5].status.name, "COMPLETED")
 
+    # 6 requests preferring workers 0-5 with 4 workers. Expects channels [0, 1, 2, 3, 0, 1].
     async def test_affinity_remaps_preferred_worker_onto_num_workers(self) -> None:
         self.load_generator.datagen.get_data.return_value = _mock_requests([0, 1, 2, 3, 4, 5])  # type: ignore[attr-defined]
         await self._run_stage(num_requests=6, rate=6, duration=1)
@@ -113,15 +120,16 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
         channels = [channel for _, channel in self._put_calls()]
         self.assertEqual(channels, [0, 1, 2, 3, 0, 1], "preferred_worker_id must wrap modulo num_workers")
 
+    # The same 6 requests with 4 workers but concurrency_level=2, so only workers 0 and 1 hold permits.
+    # Expects channels [0, 1, 0, 1, 0, 1]: affinity wraps onto the active workers, not all 4.
     async def test_affinity_remaps_onto_active_workers_under_concurrency_level(self) -> None:
-        # concurrency_level=2 leaves only 2 workers with permits, so affinity
-        # must wrap onto the active workers, not all workers.
         self.load_generator.datagen.get_data.return_value = _mock_requests([0, 1, 2, 3, 4, 5])  # type: ignore[attr-defined]
         await self._run_stage(num_requests=6, rate=6, duration=1, concurrency_level=2)
 
         channels = [channel for _, channel in self._put_calls()]
         self.assertEqual(channels, [0, 1, 0, 1, 0, 1], "affinity must wrap modulo min(num_workers, concurrency_level)")
 
+    # A trace that reports 3 requests, with rate=100 and duration=100. Expects 3 puts, not 10000.
     async def test_trace_bound_request_count_overrides_rate(self) -> None:
         self.load_generator.datagen.trace = MagicMock()  # type: ignore[attr-defined]
         self.load_generator.datagen.get_request_count.return_value = 3  # type: ignore[attr-defined]

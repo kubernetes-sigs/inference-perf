@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tests for run_session_stage: session pool management, the cross-stage
-session cursor, rate limiting, timeout, and dispatch stamping — driven by a
-scripted SessionGenerator, no worker processes."""
+session cursor, rate limiting, timeout, and dispatch stamping. Driven by a
+scripted SessionGenerator, with no worker processes."""
 
 import multiprocessing as mp
 import unittest
@@ -127,6 +127,8 @@ class FakeSessionGenerator(SessionGenerator):
         return None
 
 
+# A TRACE_SESSION_REPLAY LoadGenerator over the fake corpus with num_workers workers (2 by default).
+# No worker process is started, so run_session_stage only fills the queue it is handed.
 def _make_load_generator(
     datagen: FakeSessionGenerator, stages: List[TraceSessionReplayLoadStage], num_workers: int = 2
 ) -> LoadGenerator:
@@ -148,6 +150,8 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         self.request_phase = mp.Event()
         self.cancel_signal = mp.Event()
 
+    # Runs run_session_stage once as stage_id (0 by default) with sleep patched to return at once, so the pool
+    # loop polls the fake without waiting. Uses a mock queue unless one is given.
     async def _run(
         self,
         load_generator: LoadGenerator,
@@ -156,10 +160,7 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         request_queue: Optional[Any] = None,
     ) -> None:
         if request_queue is None:
-            # No worker consumes the queue in these tests, so a real
-            # JoinableQueue would hang in the teardown join(): items put()
-            # reach the pipe through a feeder thread, and with sleep patched
-            # the drain can run before the feeder flushes them.
+            # Nothing consumes the queue here, so a mock stands in and records each put().
             request_queue = MagicMock(spec=RequestQueue)
         with patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock):
             await load_generator.run_session_stage(
@@ -172,6 +173,8 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
                 self.cancel_signal,
             )
 
+    # 4 sessions that each complete on their 2nd poll, with concurrent_sessions=2. Expects s0-s3 activated in order,
+    # never more than 2 live, 4 session metrics, all 4 cleaned up, and the stage COMPLETED at concurrency 2.
     async def test_pool_refills_up_to_concurrent_sessions(self) -> None:
         datagen = FakeSessionGenerator(num_sessions=4, completes_after_checks=2)
         stage = TraceSessionReplayLoadStage(concurrent_sessions=2)
@@ -188,6 +191,8 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info.status.name, "COMPLETED")
         self.assertEqual(info.concurrency_level, 2)
 
+    # 5 sessions and 4 stages of num_sessions=2. Expects stages 0-2 to activate s0-s1, then s2-s3, then only s4,
+    # the cursor to end at 5, and stage 3 to skip with no runtime info.
     async def test_session_cursor_slices_corpus_across_stages(self) -> None:
         datagen = FakeSessionGenerator(num_sessions=5)
         stages = [TraceSessionReplayLoadStage(concurrent_sessions=0, num_sessions=2) for _ in range(4)]
@@ -200,7 +205,7 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         await self._run(load_generator, stages[1], stage_id=1)
         self.assertEqual(datagen.activated, ["s0", "s1", "s2", "s3"])
 
-        # Only one session remains; num_sessions=2 must clamp to it.
+        # Only one session remains, so num_sessions=2 must clamp to it.
         await self._run(load_generator, stages[2], stage_id=2)
         self.assertEqual(datagen.activated, ["s0", "s1", "s2", "s3", "s4"])
         self.assertEqual(load_generator._session_cursor, 5)
@@ -210,10 +215,9 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(datagen.activated), 5)
         self.assertNotIn(3, load_generator.stage_runtime_info)
 
+    # 3 sessions at session_rate=0.001 (one per 1000 s) with max_stage_duration=0.3. Expects only s0 dispatched,
+    # 1 metric, and the stage TIMED_OUT with rate 0.001 and limit 0.3 instead of waiting on s1 and s2.
     async def test_stage_timeout_fails_stage_and_respects_rate_limit(self) -> None:
-        # A rate limit far below 1/max_stage_duration means only the first
-        # session is ever dispatched; the stage must exit TIMED_OUT at the
-        # limit instead of waiting on the remaining pending sessions.
         datagen = FakeSessionGenerator(num_sessions=3)
         stage = TraceSessionReplayLoadStage(concurrent_sessions=0, session_rate=0.001, max_stage_duration=0.3)
         load_generator = _make_load_generator(datagen, [stage])
@@ -240,7 +244,7 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         await self._run(load_generator, stage, stage_id=9, request_queue=request_queue)
 
         channels = [call.args[1] for call in request_queue.put.call_args_list]
-        self.assertEqual(channels, [0, 1, 2, -1], "preferred workers wrap modulo num_workers; unaffined stay broadcast")
+        self.assertEqual(channels, [0, 1, 2, -1], "preferred workers wrap modulo num_workers, unaffined stay broadcast")
         for event in datagen.events["s0"]:
             self.assertEqual(event.session_id, "s0")
             self.assertEqual(event.stage_id, 9)
@@ -248,10 +252,9 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         # queue join it used to call went away with the teardown rework.
         request_queue.drain.assert_called_once()
 
+    # 2 sessions with s0 unbuildable. Expects only s1 activated, its 2 events enqueued, 1 metric (for s1), and the
+    # stage COMPLETED: s0 counts as complete so the stage can finish, but it is never reported.
     async def test_unbuildable_session_counts_complete_but_goes_unreported(self) -> None:
-        # Pins the documented behavior: a session whose graph cannot be built
-        # is counted complete (so the stage can finish) but produces no
-        # session lifecycle metric and dispatches no events.
         datagen = FakeSessionGenerator(num_sessions=2, unbuildable_indices=[0])
         stage = TraceSessionReplayLoadStage(concurrent_sessions=0)
         load_generator = _make_load_generator(datagen, [stage])

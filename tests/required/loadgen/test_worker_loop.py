@@ -37,8 +37,9 @@ from inference_perf.loadgen.load_generator import RequestQueueData, Worker
 from inference_perf.utils.request_queue import RequestQueue
 
 
+# A real CompletionAPIData (prompt "hello", max_tokens 5). Queue items are pickled by the mp.Queue feeder thread,
+# so a MagicMock would not survive the trip.
 def _make_data() -> CompletionAPIData:
-    # A real, picklable InferenceAPIData: items cross a JoinableQueue feeder thread.
     return CompletionAPIData(prompt="hello", max_tokens=5)
 
 
@@ -71,8 +72,7 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
         self.stop_signal = mp.Event()
         self.cancel_signal = mp.Event()
         self.request_phase = mp.Event()
-        # Ends the teardown grace early; _teardown_stage sets this when the
-        # grace expires, and it is the only thing that cancels in-flight work.
+        # Lets a stage end cancel in-flight work now instead of after the worker's 120 s teardown grace.
         self.force_stop_signal = mp.Event()
         self.finished_counter = mp.Value("i", 0)
         self.active_counter = mp.Value("i", 0)
@@ -89,6 +89,8 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
         if self.controller is not None:
             self.controller.join(timeout=15)
 
+    # Worker 0 on this test's queue channel and signals, base_seed 42, max_concurrency 4 unless given.
+    # Passing shared_max_concurrency models the CONCURRENT load type, where main can resize it mid-stage.
     def _make_worker(
         self,
         client: Any,
@@ -114,10 +116,14 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
             stage_boundary_seq=self.stage_boundary_seq,
         )
 
+    # Queues n requests on channel 0, scheduled at time 0.0, so they dispatch at once.
+    # _put(3, stage_id=7) adds three stage-7 items. stage_id defaults to 3.
     def _put(self, n: int, stage_id: int = 3, lora_adapter: Optional[str] = None) -> None:
         for _ in range(n):
             self.request_queue.put(RequestQueueData(stage_id, _make_data(), 0.0, lora_adapter), 0)
 
+    # Polls predicate every 10 ms while yielding to the worker. Fails the test if it is still false after
+    # timeout seconds (10 by default).
     async def _wait_until(self, predicate: Any, timeout: float = 10.0) -> None:
         deadline = time.perf_counter() + timeout
         while time.perf_counter() < deadline:
@@ -324,6 +330,8 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([stage_id for _, stage_id, _, _ in client.calls], [0, 0, 1, 1])
         self.assertEqual(self.stage_done_counter.value, 2)
 
+    # stop_signal and request_phase both set before loop() starts, nothing queued.
+    # Expects loop() to return at once without calling the client.
     async def test_stop_signal_exits_loop_without_work(self) -> None:
         client = AsyncMock(spec=ModelServerClient)
         worker = self._make_worker(client)

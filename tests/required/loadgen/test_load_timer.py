@@ -26,19 +26,23 @@ from inference_perf.loadgen.load_timer import ConstantLoadTimer, PoissonLoadTime
 
 
 class TestConstantLoadTimer(unittest.TestCase):
+    # rate=10 for duration=5 from initial 100.0. Expects exactly 50 dispatch times.
     def test_emits_exactly_rate_times_duration_requests(self) -> None:
         timer = ConstantLoadTimer(rate=10, duration=5)
         times = list(timer.start_timer(initial=100.0))
         self.assertEqual(len(times), 50)
 
+    # rate=2.5 for duration=1. Expects int(2.5) = 2 dispatch times, not 3.
     def test_truncates_fractional_request_count(self) -> None:
         timer = ConstantLoadTimer(rate=2.5, duration=1)
         self.assertEqual(len(list(timer.start_timer(initial=0.0))), 2)
 
+    # rate=0.5 for duration=1 rounds down to 0 requests. Expects an empty schedule.
     def test_zero_requests_yields_nothing(self) -> None:
         timer = ConstantLoadTimer(rate=0.5, duration=1)
         self.assertEqual(list(timer.start_timer(initial=0.0)), [])
 
+    # rate=100 for duration=2 from initial 1000.0. Expects all 200 times after 1000.0 and strictly increasing.
     def test_times_are_strictly_increasing_after_initial(self) -> None:
         initial = 1000.0
         timer = ConstantLoadTimer(rate=100, duration=2)
@@ -46,8 +50,9 @@ class TestConstantLoadTimer(unittest.TestCase):
         self.assertTrue(all(t > initial for t in times))
         self.assertTrue(all(b > a for a, b in zip(times, times[1:], strict=False)))
 
+    # rate=20 for duration=3 from initial 50.0. Expects the last dispatch at 53.0 to 6 places, because the
+    # intervals are normalized to span the duration exactly.
     def test_schedule_spans_exactly_the_duration(self) -> None:
-        # Intervals are normalized so the last dispatch lands at initial + duration.
         initial, duration = 50.0, 3.0
         timer = ConstantLoadTimer(rate=20, duration=duration)
         times = list(timer.start_timer(initial=initial))
@@ -55,6 +60,8 @@ class TestConstantLoadTimer(unittest.TestCase):
 
 
 class TestPoissonLoadTimer(unittest.TestCase):
+    # rate=10 for duration=1 from initial 10.0, read 50 times. Expects all 50 to arrive, well past rate * duration,
+    # each after 10.0 and strictly increasing.
     def test_generator_is_unbounded_and_monotonic(self) -> None:
         initial = 10.0
         timer = PoissonLoadTimer(rate=10, duration=1)
@@ -65,6 +72,7 @@ class TestPoissonLoadTimer(unittest.TestCase):
 
 
 class TestTraceReplayLoadTimer(unittest.TestCase):
+    # Trace timestamps 0.0, 1.5 and 4.0 from initial 100.0. Expects [100.0, 101.5, 104.0] and one load of dummy.csv.
     def test_offsets_trace_timestamps_from_initial(self) -> None:
         trace_reader = MagicMock()
         trace_reader.load_traces.return_value = iter([(0.0, 1, 2), (1.5, 3, 4), (4.0, 5, 6)])
