@@ -22,6 +22,7 @@ from .dataset import (
 from .replay import (
     ConversationReplayDataGenerator,
     OTelTraceReplayDataGenerator,
+    TraceLabTraceReplayDataGenerator,
     WekaTraceReplayDataGenerator,
 )
 from .synthetic import (
@@ -48,6 +49,7 @@ __all__ = [
     "BillsumConversationsDataGenerator",
     "OTelTraceReplayDataGenerator",
     "SyntheticAgenticDataGenerator",
+    "TraceLabTraceReplayDataGenerator",
     "WekaTraceReplayDataGenerator",
     "ConversationReplayDataGenerator",
     "MultimodalDataGenerator",
