@@ -41,7 +41,7 @@ class StreamedResponseMetrics(ResponseMetrics):
     output_token_times: List[float] = []
     # Reasoning-only chunks (delta.reasoning_content / delta.reasoning, or
     # Anthropic thinking deltas). Kept apart from response_chunks/chunk_times,
-    # which stay the content channel alone and give time to first output token.
+    # which stay the content channel alone; TTFO also includes tool output.
     reasoning_chunks: List[str] = []
     reasoning_chunk_times: List[float] = []
     # Tool-only deltas; content and reasoning mixtures stay in their original channel.

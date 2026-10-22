@@ -28,16 +28,16 @@ from typing import Any, Callable, List, NamedTuple, Optional
 from aiohttp import ClientResponse
 
 from inference_perf.apis.response_errors import InBandError, in_band_error
-from inference_perf.apis.tool_output import chat_tool_call_deltas, tool_argument_deltas
+from inference_perf.apis.tool_output import chat_tool_call_deltas, tool_argument_deltas, tool_name_deltas
 
 
 class ParsedSSEStream(NamedTuple):
     """Result of ``parse_sse_stream``, split by generation channel.
 
-    Content, reasoning and tool arguments are tracked separately. TTFT, TPOT, ITL and output
+    Content, reasoning and tool output are tracked separately. TTFT, TPOT, ITL and output
     length count all three channels, since the server generates and counts
     reasoning tokens like any other (#559). Time to first output token reads
-    the content channel alone.
+    the non-reasoning channels.
     """
 
     # Concatenated delta.content text.
@@ -67,6 +67,7 @@ class ParsedSSEStream(NamedTuple):
     # Tool-only chunks. Mixed chunks are recorded once, in content or reasoning.
     tool_chunks: List[str]
     tool_chunk_times: List[float]
+    tool_names: List[str]
     tool_arguments: List[str]
     tool_calls: List[dict[str, Any]]
     has_tool_calls: bool
@@ -124,6 +125,7 @@ class _SSEStreamParser:
         self.error_payload: Optional[str] = None
         self.tool_chunks: List[str] = []
         self.tool_chunk_times: List[float] = []
+        self.tool_name_parts: dict[int, List[str]] = {}
         self.tool_argument_parts: dict[int, List[str]] = {}
         self.tool_calls: dict[int, dict[str, Any]] = {}
         self.buffer = bytearray()
@@ -152,9 +154,11 @@ class _SSEStreamParser:
             for call in chat_tool_call_deltas(data):
                 index = call["index"]
                 target = self.tool_calls.setdefault(index, {"id": "", "type": "function", "function": {"name": ""}})
-                target["function"]["name"] += call["function"]["name"]
                 if call["id"]:
                     target["id"] = call["id"]
+            names = tool_name_deltas(data)
+            for index, fragment in names:
+                self.tool_name_parts.setdefault(index, []).append(fragment)
             arguments = tool_argument_deltas(data)
             for index, fragment in arguments:
                 self.tool_argument_parts.setdefault(index, []).append(fragment)
@@ -168,7 +172,7 @@ class _SSEStreamParser:
             elif reasoning:
                 self.reasoning_chunk_times.append(message_time)
                 self.reasoning_chunks.append(data_str)
-            elif any(fragment for _, fragment in arguments):
+            elif any(fragment for _, fragment in [*names, *arguments]):
                 self.tool_chunks.append(data_str)
                 self.tool_chunk_times.append(message_time)
         except (json.JSONDecodeError, IndexError):
@@ -267,9 +271,16 @@ class _SSEStreamParser:
             reasoning_chunk_times=self.reasoning_chunk_times,
             tool_chunks=self.tool_chunks,
             tool_chunk_times=self.tool_chunk_times,
+            tool_names=["".join(parts) for parts in self.tool_name_parts.values()],
             tool_arguments=["".join(parts) for parts in self.tool_argument_parts.values()],
             tool_calls=[
-                {**call, "function": {**call["function"], "arguments": "".join(self.tool_argument_parts[index])}}
+                {
+                    **call,
+                    "function": {
+                        "name": "".join(self.tool_name_parts[index]),
+                        "arguments": "".join(self.tool_argument_parts[index]),
+                    },
+                }
                 for index, call in sorted(self.tool_calls.items())
             ],
             has_tool_calls=bool(self.tool_argument_parts),
@@ -299,7 +310,7 @@ async def parse_sse_stream(
                         Chunks bearing reasoning but no content are recorded in
                         the reasoning_* fields of the result, not in
                         chunk_times/response_chunks, so chunk_times stays the
-                        content channel alone.
+                        non-reasoning channels.
 
     Returns:
         A ParsedSSEStream; see its field comments.
