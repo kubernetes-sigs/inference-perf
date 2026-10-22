@@ -14,13 +14,15 @@
 import logging
 import time
 from enum import Enum
-from typing import List, Optional, Union
+from typing import Annotated, List, Optional, Union
 
 from inference_perf.config.common import StrictBaseModel
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, PrivateAttr, model_validator
 
 from inference_perf.config.datagen.replay import TraceConfig
 from inference_perf.utils.cpu_count import default_cpu_count
+from inference_perf.utils.numeric.expression import Expression, Predicate
+from inference_perf.utils.numeric.rate_schedule import RateSchedule
 
 logger = logging.getLogger(__name__)
 
@@ -39,15 +41,61 @@ class LoadStage(StrictBaseModel):
     pass
 
 
-class StandardLoadStage(LoadStage):
-    """Load stage for CONSTANT and POISSON load types."""
+class StopConditionConfig(StrictBaseModel):
+    """The object form of ``stop_condition``: the condition plus how long it must hold."""
 
-    rate: float = Field(..., gt=0, description="Request rate (QPS)")
-    duration: int = Field(..., gt=0, description="Duration in seconds")
+    condition: str = Field(..., description="The stop condition; see stop_condition for what it may contain.")
+    hold: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Consecutive evaluations on which the condition must hold before it ends the stage. It is evaluated "
+            "on every finished request, and once a second while none finish."
+        ),
+    )
+
+
+class StandardLoadStage(LoadStage):
+    """Load stage for CONSTANT and POISSON load types.
+
+    A stage's dispatch window is bounded by exactly one of ``duration`` (seconds)
+    or ``stop_condition`` (a condition over stage time ``t`` and measured terms,
+    e.g. ``"t >= 60"`` or ``"(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)"``).
+    ``duration: N`` is shorthand for ``stop_condition: "t >= N"``: both compile
+    to the same :class:`Predicate`. The load generator schedules against the
+    predicate's deadline and, when the condition reads measured terms, ends the
+    stage early on what it observes.
+    """
+
+    rate: Union[Annotated[float, Field(gt=0)], str] = Field(
+        ...,
+        description=(
+            "Request rate (QPS): a positive number, or an expression over stage time t (seconds) such as "
+            "'10 + 5*sin(2*pi*t/60)' or 'Min(5 + t/2, 40)'. An expression must be deterministic and "
+            "nonnegative over the stage."
+        ),
+    )
+    duration: Optional[int] = Field(
+        default=None, gt=0, description="Seconds to sustain the rate. Exactly one of duration or stop_condition is required."
+    )
+    stop_condition: Optional[Union[str, StopConditionConfig]] = Field(
+        default=None,
+        description=(
+            "Condition at which the stage stops admitting requests, over stage time t (seconds) and measured "
+            "terms such as 'quantile_over_time(0.99, ttft[30s])' or 'avg_over_last(error, 100)', e.g. 't >= 60' "
+            "or '(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)'. Series use short names (ttft, not "
+            "time_to_first_token); see docs/expressions.md. It must end the stage on time alone, so a measured "
+            "term can only end it earlier. A string holds once, the object form sets hold. Exactly one of "
+            "duration or stop_condition is required."
+        ),
+    )
 
     # These fields should not be set for standard load types
     num_requests: Optional[int] = Field(default=None, description="Not used for standard load types")
     concurrency_level: Optional[int] = Field(default=None, description="Not used for standard load types")
+
+    _predicate: Optional[Predicate] = PrivateAttr(default=None)
+    _rate_schedule: Optional[RateSchedule] = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def validate_standard_fields(self) -> "StandardLoadStage":
@@ -55,7 +103,79 @@ class StandardLoadStage(LoadStage):
             raise ValueError("num_requests should not be set for CONSTANT/POISSON load types")
         if self.concurrency_level is not None:
             raise ValueError("concurrency_level should not be set for CONSTANT/POISSON load types")
+        if (self.duration is None) == (self.stop_condition is None):
+            raise ValueError("Exactly one of duration or stop_condition must be set for CONSTANT/POISSON load types")
+        # Built here so a bad stop_condition fails at config load; Predicate raises
+        # ValueError with the precise reason and pydantic surfaces it as-is.
+        predicate = self.predicate
+        # Same for the rate, which is integrated over the window the predicate
+        # just fixed.
+        if self.rate_schedule.total <= 0:
+            raise ValueError(f"rate {self.rate!r} is zero over the whole stage, so the stage would send nothing")
+        sends = self.expected_requests
+        for term in predicate.terms.values():
+            if term.sent_stop is not None and term.sent_stop > sends:
+                raise ValueError(
+                    f"stop_condition term {term.source!r} reads requests up to {term.sent_stop}, but the stage sends "
+                    f"{sends} by its {predicate.boundary:g}s deadline, so the term would never have a value."
+                )
         return self
+
+    @property
+    def stop_settings(self) -> StopConditionConfig:
+        """``stop_condition`` in its object form: as given, a string with the default hold, or ``t >= duration``."""
+        if isinstance(self.stop_condition, StopConditionConfig):
+            return self.stop_condition
+        source = self.stop_condition if self.stop_condition is not None else f"t >= {self.duration}"
+        return StopConditionConfig(condition=source)
+
+    @property
+    def predicate(self) -> Predicate:
+        """The stage's stop condition: ``stop_condition`` as written, or ``t >= duration``.
+
+        Rebuilt whenever its source string changes, because pydantic does not
+        re-run validators when a field is assigned after construction.
+        """
+        source = self.stop_settings.condition
+        if self._predicate is None or self._predicate.raw != source:
+            self._predicate = Predicate(source)
+        return self._predicate
+
+    @property
+    def effective_duration(self) -> float:
+        """Length of the dispatch window in seconds: the predicate's proven deadline.
+
+        On time alone the condition is false before the boundary and holds from
+        it onward, so the load generator schedules against it exactly. A
+        condition over measured terms can end the stage before it, never after.
+        """
+        return self.predicate.boundary
+
+    @property
+    def rate_schedule(self) -> RateSchedule:
+        """The stage's rate integrated over its dispatch window.
+
+        A number compiles to a constant expression, so the load generator only
+        ever reads the schedule. Rebuilt whenever the rate or the window
+        changes, for the same reason as :attr:`predicate`.
+        """
+        duration = self.effective_duration
+        cached = self._rate_schedule
+        if cached is None or cached.rate.raw != self.rate or cached.duration != duration:
+            expression = Expression(self.rate, allow_random=False, minimum=0, duration=duration)
+            self._rate_schedule = RateSchedule(expression, duration)
+        assert self._rate_schedule is not None
+        return self._rate_schedule
+
+    @property
+    def expected_requests(self) -> int:
+        """Requests the stage dispatches: the rate integrated over the window, truncated."""
+        return self.rate_schedule.expected_requests
+
+    @property
+    def mean_rate(self) -> float:
+        """Average rate over the window; equals ``rate`` when the rate is a number."""
+        return self.rate_schedule.mean_rate
 
 
 class ConcurrentLoadStage(LoadStage):
@@ -276,6 +396,16 @@ class LoadConfig(StrictBaseModel):
                 if not isinstance(stage, StandardLoadStage):
                     raise ValueError(
                         f"Stage {i}: {self.type.value.upper()} load type requires StandardLoadStage, got {type(stage).__name__}"
+                    )
+                if self.type == LoadType.TRACE_REPLAY and stage.stop_condition is not None:
+                    raise ValueError(
+                        f"Stage {i}: stop_condition has no effect under TRACE_REPLAY, "
+                        "where the trace sets when each request is sent. Remove it."
+                    )
+                if self.type == LoadType.TRACE_REPLAY and isinstance(stage.rate, str):
+                    raise ValueError(
+                        f"Stage {i}: a rate expression has no effect under TRACE_REPLAY, "
+                        "where the trace sets when each request is sent. Use a number."
                     )
 
         # Validate multilora traffic split adds up to 1.0 if present
