@@ -35,7 +35,7 @@ What is faked and what is the oracle:
 
 Deliberately out of scope: coordinated-omission semantics, that is, whether reported
 latency should be corrected by `schedule_delay` under offered load. That is a
-metric-definition decision, it is tracked on #726, and it does not gate v0.7.0.
+metric-definition decision. It is tracked on #726.
 """
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -88,7 +88,12 @@ INJECTION_TOLERANCE = SCHEDULING_TOLERANCE + DELIVERY_TOLERANCE
 #
 # One chunk per token: the fake tokenizer counts whitespace-separated words, and every
 # chunk below carries exactly one, so the arithmetic is checkable by hand.
-FIRST_TOKEN_DELAY = 0.25
+#
+# Kept off mean(CHUNK_GAPS) = 0.25 so NTPOT, which includes this wait, clears TPOT, which
+# does not, by 70 ms: 1.60 / 5 against 1.00 / 4. Equal values would leave that ordering to
+# sleep jitter. The margin stays above 35 ms even if every gap overshoots by the full
+# scheduling tolerance.
+FIRST_TOKEN_DELAY = 0.60
 # Alternating slow and fast gaps, so ITL min/max/median describe the distribution rather
 # than collapsing onto the mean. An implementation that reported only the average gap
 # would pass on `mean` and fail on `min` and `max`.
@@ -113,14 +118,24 @@ class _ConcreteOpenAIClient(openAIModelServerClient):
         raise NotImplementedError("no server metrics are scraped in the integration tier")
 
 
+# "alpha beta" counts 3 by default (2 words plus a BOS) and 2 with
+# add_special_tokens=False.
 def make_tokenizer() -> MagicMock:
-    """Counts whitespace-separated words. Real enough for chunk accounting, and exact,
-    so no expected value below depends on a model vocabulary."""
+    """Counts whitespace-separated words, plus one BOS by default. Real enough for chunk
+    accounting, and exact, so no expected value below depends on a model vocabulary."""
     tokenizer = MagicMock()
-    tokenizer.count_tokens = MagicMock(side_effect=lambda text, **kwargs: len(text.split()))
+
+    def count_tokens(text: str, add_special_tokens: bool = True) -> int:
+        # Same default as CustomTokenizer.count_tokens, so a chunk counted without
+        # add_special_tokens=False over-counts here the way it did in #564.
+        return len(text.split()) + (1 if add_special_tokens else 0)
+
+    tokenizer.count_tokens = MagicMock(side_effect=count_tokens)
     return tokenizer
 
 
+# One run of the 5-chunk SCRIPT returns the summary report (output_len mean 5), the
+# server's record with 5 content send stamps, and the single collected metric.
 async def run_scripted_request(
     script: List[StreamEvent],
     *,
@@ -186,16 +201,20 @@ async def run_scripted_request(
     return summaries[0].contents, server.served[-1], metric
 
 
+# Send stamps [10.6, 11.0] against a request start of 10.0 give [0.6, 1.0].
 def offsets_from(send_times: Sequence[float], start: float) -> List[float]:
     """Server send stamps expressed against the client's request start, which is the
     zero point every reported latency is measured from."""
     return [t - start for t in send_times]
 
 
+# [0.6, 1.0, 1.1] gives [0.4, 0.1], one value fewer than it was given.
 def gaps(values: Sequence[float]) -> List[float]:
     return [b - a for a, b in zip(values, values[1:], strict=False)]
 
 
+# Against a send stamp of 0.60, reported values from 0.60 to 0.65 pass. 0.59 lands before
+# the stamp and 0.66 lands past the 50 ms delivery window, so both fail.
 def assert_matches_send_stamp(reported: float, expected: float, label: str) -> None:
     """A value the client derived from chunk arrivals, against the server's send stamp
     for the same chunk. The client cannot see a chunk early, so this is one-sided."""
@@ -205,6 +224,8 @@ def assert_matches_send_stamp(reported: float, expected: float, label: str) -> N
     )
 
 
+# Against a configured 0.60, reported values from 0.55 to 0.75 pass and 0.54 or 0.76 fail.
+# The upper side allows 100 ms of sleep overshoot plus 50 ms of delivery.
 def assert_matches_injection(reported: float, configured: float, label: str) -> None:
     """A reported value straight against the configured script. Looser, because
     `asyncio.sleep` only promises to sleep at least as long as asked."""
@@ -212,6 +233,8 @@ def assert_matches_injection(reported: float, configured: float, label: str) -> 
     assert reported <= configured + INJECTION_TOLERANCE, f"{label}: {reported} is above the injected {configured}"
 
 
+# 5 one-word chunks scripted at 0.60s, then 0.40, 0.10, 0.40, 0.10s apart. Expects the
+# first send and each send gap to be at least the scripted pause and at most 100 ms over.
 @pytest.mark.asyncio
 async def test_injected_pauses_actually_happen_on_the_wire() -> None:
     """Guards the oracle before anything is asserted against it.
@@ -233,12 +256,14 @@ async def test_injected_pauses_actually_happen_on_the_wire() -> None:
         assert observed <= configured + SCHEDULING_TOLERANCE, f"gap {observed} overshot the injected {configured}"
 
 
+# 5 one-word chunks, the first sent after 0.60s. Expects TTFT no earlier than that
+# chunk's send stamp and at most 50 ms after it.
 @pytest.mark.asyncio
 async def test_reported_ttft_matches_the_injected_first_token_delay() -> None:
     """TTFT must equal the time the first content chunk was put on the wire.
 
     Checked twice: against the server's send stamp for that chunk (tight) and against
-    the 0.25s the script asked for (loose). A TTFT anchored to the wrong event, for
+    the 0.60s the script asked for (loose). A TTFT anchored to the wrong event, for
     instance to response headers or to stream completion, fails both.
     """
     summary, served, metric = await run_scripted_request(SCRIPT, completion_tokens=EXPECTED_OUTPUT_TOKENS)
@@ -254,6 +279,8 @@ async def test_reported_ttft_matches_the_injected_first_token_delay() -> None:
     assert_matches_injection(ttft["mean"], FIRST_TOKEN_DELAY, "ttft")
 
 
+# Two 2-chunk runs with first-token pauses of 0.05s and 0.60s. Expects their reported
+# TTFTs to differ by 0.55s, within 0.15s.
 @pytest.mark.asyncio
 async def test_reported_ttft_tracks_a_change_in_the_injected_delay() -> None:
     """Two runs differing only in the first-token pause must differ by that pause.
@@ -278,6 +305,8 @@ async def test_reported_ttft_tracks_a_change_in_the_injected_delay() -> None:
     assert slow_ttft - fast_ttft == pytest.approx(slow_delay - fast_delay, abs=INJECTION_TOLERANCE)
 
 
+# 5 one-word chunks with gaps of 0.40, 0.10, 0.40, 0.10s. Expects ITL min near 0.10,
+# max near 0.40, and mean and median near 0.25.
 @pytest.mark.asyncio
 async def test_reported_itl_matches_the_injected_per_chunk_gaps() -> None:
     """ITL must reproduce the gap distribution, not just its average.
@@ -308,15 +337,18 @@ async def test_reported_itl_matches_the_injected_per_chunk_gaps() -> None:
     assert_matches_injection(itl["median"], 0.25, "itl median")
 
 
+# 5 one-word chunks at 0.60, 1.00, 1.10, 1.50 and 1.60s. Expects TPOT near 0.25
+# (1.00s / 4) and NTPOT above it, since NTPOT is 1.60s / 5 = 0.32.
 @pytest.mark.asyncio
 async def test_reported_tpot_matches_the_injected_decode_span() -> None:
     """TPOT is the decode span divided by output tokens minus one, and must exclude the
     prefill wait.
 
-    Injected: 5 tokens, first at 0.25s, last at 1.25s, so the span is 1.00s over 4
+    Injected: 5 tokens, first at 0.60s, last at 1.60s, so the span is 1.00s over 4
     intervals and TPOT is 0.25s. Note it is not `request_latency / tokens`: that is
     `normalized_time_per_output_token`, which the same report emits separately and which
-    is checked below to be strictly larger because it does include the 0.25s prefill.
+    is checked below to be strictly larger because it does include the 0.60s prefill:
+    1.60s / 5 = 0.32s.
     """
     summary, served, metric = await run_scripted_request(SCRIPT, completion_tokens=EXPECTED_OUTPUT_TOKENS)
 
@@ -335,12 +367,14 @@ async def test_reported_tpot_matches_the_injected_decode_span() -> None:
     assert ntpot["mean"] > tpot["mean"], "NTPOT must include the prefill wait that TPOT excludes"
 
 
+# 5 one-word chunks, the last sent at 1.60s. Expects request latency no earlier than
+# that send stamp and at most 50 ms after it.
 @pytest.mark.asyncio
 async def test_reported_request_latency_matches_the_injected_total() -> None:
     """Request latency must cover the whole injected profile and nothing beyond it.
 
-    The script spends 0.25s before the first token and 1.00s streaming the rest, so the
-    injected total is 1.25s. The reported value has to be at least that, at least as
+    The script spends 0.60s before the first token and 1.00s streaming the rest, so the
+    injected total is 1.60s. The reported value has to be at least that, at least as
     large as the last send stamp, and within one delivery window of it: anything much
     larger means the client is charging the request for teardown it did not spend.
     """
@@ -362,6 +396,8 @@ async def test_reported_request_latency_matches_the_injected_total() -> None:
     assert latency["mean"] > ttft["mean"]
 
 
+# 3 one-word chunks 0.35s apart, re-tokenized in reportgen. Expects ITL near 0.35 with no
+# zero sample. A per-chunk BOS reports about 0.14 with a minimum of 0.
 @pytest.mark.asyncio
 async def test_itl_is_not_deflated_when_reportgen_retokenizes_chunks() -> None:
     """The #564 shape, through the path that produced it.
@@ -370,10 +406,13 @@ async def test_itl_is_not_deflated_when_reportgen_retokenizes_chunks() -> None:
     the raw chunks rather than using the API layer's arrival times. #564 was a
     per-chunk BOS in that rebuild: every one-token chunk counted as two, which duplicated
     each timestamp, inserted a zero-length interval between the copies, and roughly
-    halved reported ITL while leaving the metric present and plausible.
+    halved reported ITL while leaving the metric present and plausible. The fake
+    tokenizer adds that BOS unless the caller passes `add_special_tokens=False`, as the
+    real one does, so dropping the argument from the rebuild fails here.
 
     Three chunks of one word each, 0.35s apart, must therefore report ITL near 0.35s.
-    Under the #564 behavior the same stream reports near 0.175s.
+    Under the #564 behavior the same stream reports near 0.14s: two real gaps spread
+    over five intervals.
     """
     gap = 0.35
     script = [
