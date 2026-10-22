@@ -20,7 +20,7 @@ To contribute to this project, please adhere to the following procedure:
   - `pdm run check`: Fast check (formatting and linting).
   - `pdm run validate`: Full check (formatting, linting, strict type checking, and CLI-flags doc sync).
   - Both only verify formatting and never rewrite files, so run `pdm run format` to fix any formatting they report.
-- Conduct **full test execution and code coverage analysis** using `pdm run test` and `pdm run check:cov`.
+- Conduct **full test execution and code coverage analysis** using `pdm run test`, `pdm run check:cov` and `pdm run check:mutation` (see [docs/mutation_testing.md](docs/mutation_testing.md)).
 - All development commands are defined as pdm scripts; run `pdm run --list` to see the full list with descriptions.
 - **Branch Up-to-Date Requirement**: Your branch must be based on the latest `origin/main` before you can push. A pre-push hook enforces this by running `git fetch origin main` automatically. If it fails, you will need to rebase or merge `origin/main`.
 - **Submit the Pull Request** utilizing the provided template.
