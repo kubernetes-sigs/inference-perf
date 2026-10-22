@@ -33,15 +33,20 @@ A :class:`Predicate` is the boolean counterpart: a condition over ``t`` such as
 ``"t >= 60"``, meant for stop conditions. It shares the grammar and parser but
 is validated differently: it must be false at ``t = 0`` and then hold from some
 time onward, which is proved statically so the condition compiles to an exact
-boundary instead of being polled.
+boundary instead of being polled. A predicate may also read measured terms
+(``quantile_over_time(0.99, ttft[30s])``, see :mod:`.measured`), which are the
+system under test and cannot be solved: they are evaluated as results arrive,
+and the proof is made with their comparisons all true and all false,
+bracketing when the condition can and must hold.
 """
 
 from __future__ import annotations
 
 import inspect
 import logging
+import math
 import re
-from typing import Any, Optional, Union
+from typing import Any, Callable, Mapping, Optional, Union
 
 import numpy as np
 import sympy
@@ -53,6 +58,8 @@ from sympy.core.function import AppliedUndef
 from sympy.core.relational import GreaterThan, LessThan, Relational, StrictGreaterThan, StrictLessThan
 from sympy.logic.boolalg import And, Boolean, Or
 from sympy.parsing.sympy_parser import parse_expr
+
+from .measured import SERIES, SIGNALS, Term, extract_terms
 
 logger = logging.getLogger(__name__)
 
@@ -559,7 +566,7 @@ _TIME_DOMAIN = Interval(0, oo)
 
 
 class Predicate:
-    """A boolean condition over stage time ``t``, e.g. ``"t >= 60"``.
+    """A boolean condition over stage time ``t`` and measured terms, e.g. ``"t >= 60"``.
 
     The string-grammar counterpart of :class:`Expression` for stop conditions.
     It is parsed and validated once at construction and evaluated with
@@ -583,6 +590,20 @@ class Predicate:
     unproven shape. Random variables are never permitted: a stop condition
     must be reproducible.
 
+    Besides ``t`` a condition may read what the stage measures: window
+    functions over finished requests (``quantile_over_time(0.99, ttft[30s])``,
+    ``avg_over_last(latency, 100)``, ``avg_over_sent(ttft, 10, 30)``, see
+    :mod:`.measured`) and the signals ``completed``, ``errors``, ``in_flight``
+    and ``since_last_completion``. Those are the system under test and cannot
+    be solved, so a comparison on one is evaluated as results arrive. The time
+    part is still proved, twice: with every measured comparison false the
+    condition must hold from some time onward on its own, and that time is
+    :attr:`boundary`, the deadline the stage is scheduled against; with every
+    measured comparison true it must again hold from some time onward, and
+    that time is :attr:`earliest`, before which no result can end the stage.
+    So a measured term can only end a stage before its deadline, and
+    ``quantile_over_time(0.99, ttft[30s]) > 2`` alone is rejected.
+
     Equality in any spelling (``t = 60``, ``t == 60``, ``Eq(t, 60)``) and its
     negation are rejected up front: equality holds at a single instant, which
     a check at discrete instants can step over.
@@ -600,8 +621,9 @@ class Predicate:
         self.raw = raw
         if _EQUALITY_SPELLING.search(raw):
             raise ValueError(_equality_message(raw))
+        rewritten, self._terms = extract_terms(raw)
         try:
-            expr = _parse_raw("Predicate", raw)
+            expr = _parse_raw("Predicate", rewritten)
         except ValueError as e:
             if "&" in raw or "|" in raw:
                 raise ValueError(
@@ -618,23 +640,47 @@ class Predicate:
         free = expr.free_symbols
         if any(_is_random_symbol(s) for s in free):
             raise ValueError(f"Predicate {raw!r} contains a random variable; a stop condition must be reproducible.")
-        disallowed = {str(s) for s in free} - {"t"}
+        names = {str(s) for s in free}
+        disallowed = names - {"t"} - set(SIGNALS) - set(self._terms)
         if disallowed:
-            raise ValueError(f"Predicate {raw!r} uses disallowed symbol(s) {sorted(disallowed)}; permitted: ['t'].")
-        if not free:
+            raise ValueError(_disallowed_message(raw, disallowed))
+        self._measured = frozenset(names - {"t"})
+        if "t" not in names:
+            if self._measured:
+                raise ValueError(
+                    f"Predicate {raw!r} can only end the stage on measured values; it must also end on time alone, "
+                    f"e.g. '(t >= 600) | ({raw})'."
+                )
             raise ValueError(f"Predicate {raw!r} does not depend on t; a stop condition must vary with t.")
         _reject_unprovable_nodes(raw, expr)
 
         self._expr = expr
-        self._holds = sympy.lambdify([_T], expr, "numpy")
-        self._boundary = self._prove_boundary()
+        self._symbols = [_T] + [Symbol(name) for name in sorted(self._measured)]
+        self._holds = sympy.lambdify(self._symbols, expr, "numpy")
 
-    def _prove_boundary(self) -> float:
-        """Solve the condition over ``t >= 0`` and require the shape ``[b, oo)`` with ``b > 0``."""
-        holding = _holding_set(self._expr)
+        # A comparison that reads a measured value is unknown until the run.
+        # With them all false the condition must still hold from some time on,
+        # which is the deadline; with them all true it holds from the earliest
+        # time a result could end the stage. Both are plain conditions over t.
+        measured_atoms = [atom for atom in expr.atoms(Relational) if {str(s) for s in atom.free_symbols} & self._measured]
+        on_time_alone = expr.xreplace({atom: sympy.false for atom in measured_atoms})
+        self._boundary = self._prove_boundary(on_time_alone)
+        if measured_atoms:
+            self._earliest = self._prove_earliest(expr.xreplace({atom: sympy.true for atom in measured_atoms}))
+        else:
+            self._earliest = self._boundary
+
+    def _prove_boundary(self, on_time_alone: Any) -> float:
+        """Solve the condition with its measured comparisons false and require the shape ``[b, oo)`` with ``b > 0``."""
+        holding = _holding_set(on_time_alone)
         if holding is None:
             raise ValueError(f"Predicate {self.raw!r} could not be proved to hold from some time onward.")
         if holding == sympy.S.EmptySet:
+            if self._measured:
+                raise ValueError(
+                    f"Predicate {self.raw!r} never holds on time alone; add a time bound so the stage always ends, "
+                    f"e.g. '({self.raw}) | (t >= 600)'."
+                )
             raise ValueError(f"Predicate {self.raw!r} never holds for t >= 0.")
         if not isinstance(holding, Interval) or holding.sup != oo:
             raise ValueError(
@@ -647,22 +693,36 @@ class Predicate:
                 f"a stop condition must be false at t=0, e.g. 't >= 60'."
             )
         boundary = float(holding.inf)
-        self._check_against_solver(boundary)
+        self._check_against_solver(sympy.lambdify([_T], on_time_alone, "numpy"), boundary)
         return boundary
 
-    def _check_against_solver(self, boundary: float) -> None:
+    def _prove_earliest(self, at_the_earliest: Any) -> float:
+        """Solve the condition with its measured comparisons true and require the shape ``[b, oo)``, ``b >= 0``."""
+        holding = _holding_set(at_the_earliest)
+        if holding is None:
+            raise ValueError(f"Predicate {self.raw!r} could not be proved to hold from some time onward.")
+        if not isinstance(holding, Interval) or holding.sup != oo:
+            raise ValueError(
+                f"Predicate {self.raw!r} holds only on {_format_time_set(holding)} once its measured values hold; "
+                f"a stop condition must hold from some time onward without lapsing."
+            )
+        earliest = float(holding.inf)
+        self._check_against_solver(sympy.lambdify([_T], at_the_earliest, "numpy"), earliest)
+        return earliest
+
+    def _check_against_solver(self, holds_at: Callable[[Any], Any], boundary: float) -> None:
         """Evaluate the condition either side of the proved boundary and far past it.
 
         Defence in depth for the node allowlist: if sympy's solver ever answers
         wrongly for an allowed node, the direct evaluation disagrees here and the
         condition is rejected instead of compiling to a wrong deadline.
         """
-        below = [boundary * f for f in (0.0, 0.5, 0.999)]
+        below = [boundary * f for f in (0.0, 0.5, 0.999)] if boundary > 0 else []
         above = [boundary * f + d for f, d in ((1.001, 0.0), (2.0, 0.0), (10.0, 100.0), (1000.0, 1e6))]
         # numpy floats so log(0) and 1/0 at t=0 evaluate to -inf/inf instead of raising.
         with np.errstate(all="ignore"):
-            below_holds = [bool(self._holds(np.float64(x))) for x in below]
-            above_holds = [bool(self._holds(np.float64(x))) for x in above]
+            below_holds = [bool(holds_at(np.float64(x))) for x in below]
+            above_holds = [bool(holds_at(np.float64(x))) for x in above]
         if any(below_holds) or not all(above_holds):
             raise ValueError(
                 f"Predicate {self.raw!r} could not be proved to hold from some time onward: "
@@ -671,17 +731,44 @@ class Predicate:
 
     @property
     def boundary(self) -> float:
-        """The time from which the condition holds (inclusive or exclusive per the comparison)."""
+        """The time from which the condition holds on time alone, whatever the measured values read: the deadline."""
         return self._boundary
 
     @property
+    def earliest(self) -> float:
+        """The time before which no result can make the condition hold; equal to :attr:`boundary` without measured values."""
+        return self._earliest
+
+    @property
+    def terms(self) -> Mapping[str, Term]:
+        """The window functions the condition reads, keyed by the symbol each stands for in :attr:`measured_symbols`."""
+        return self._terms
+
+    @property
+    def signals(self) -> frozenset[str]:
+        """The signals (``completed``, ``in_flight``, ...) the condition reads."""
+        return self._measured & frozenset(SIGNALS)
+
+    @property
+    def measured_symbols(self) -> frozenset[str]:
+        """Every symbol besides ``t``: one per term, plus the signals. Empty for a condition over ``t`` alone."""
+        return self._measured
+
+    @property
     def free_symbols(self) -> set[str]:
-        """Names of free symbols (currently always ``{"t"}``)."""
+        """Names of free symbols: ``t`` and :attr:`measured_symbols`."""
         return {str(s) for s in self._expr.free_symbols}
 
-    def holds(self, t: float) -> bool:
-        """Evaluate the condition at stage time ``t`` (seconds)."""
-        return bool(self._holds(float(t)))
+    def holds(self, t: float, values: Optional[Mapping[str, float]] = None) -> bool:
+        """Evaluate the condition at stage time ``t`` (seconds) with each measured symbol's current value.
+
+        A measured symbol missing from ``values``, or NaN, has no value yet:
+        every comparison that reads it is false, so the rest of the condition
+        decides. :class:`~.measured.PredicateState` supplies ``values``.
+        """
+        args = [np.float64(t)] + [np.float64((values or {}).get(name, math.nan)) for name in sorted(self._measured)]
+        with np.errstate(all="ignore"):
+            return bool(self._holds(*args))
 
     def __repr__(self) -> str:
         return f"Predicate({self.raw!r})"
@@ -736,6 +823,22 @@ def _format_time_set(s: Any) -> str:
     return str(s)
 
 
+def _disallowed_message(raw: str, disallowed: set[str]) -> str:
+    names = sorted(disallowed)
+    message = (
+        f"Predicate {raw!r} uses disallowed symbol(s) {names}; permitted: t, the signals {sorted(SIGNALS)}, "
+        f"and window functions such as 'quantile_over_time(0.99, ttft[30s])' or 'avg_over_last(latency, 100)'."
+    )
+    series = [name for name in names if name in SERIES]
+    if series:
+        message += f" {series[0]!r} is a series: read it through a window function, e.g. 'avg_over_last({series[0]}, 100)'."
+    report_names = {s.report_field: s.name for s in SERIES.values() if s.report_field}
+    renamed = [name for name in names if name in report_names]
+    if renamed:
+        message += f" Series use short names: {renamed[0]!r} is {report_names[renamed[0]]!r}."
+    return message
+
+
 def _equality_message(raw: str) -> str:
     return (
         f"Predicate {raw!r} uses equality; a stop condition must be an inequality such as 't >= 60'. "
@@ -769,8 +872,13 @@ def _holding_set(expr: Any) -> Any:
 
     Leaves are solved by sympy, and ``&``/``|`` are folded as set
     intersection/union of their solved leaves. A leaf the solver cannot
-    answer (a ``ConditionSet``) makes the whole condition unprovable.
+    answer (a ``ConditionSet``) makes the whole condition unprovable. The
+    constants arise when a measured comparison is replaced by true or false.
     """
+    if expr is sympy.true:
+        return _TIME_DOMAIN
+    if expr is sympy.false:
+        return sympy.S.EmptySet
     if isinstance(expr, And):
         sets = [_holding_set(arg) for arg in expr.args]
         if any(s is None for s in sets):
