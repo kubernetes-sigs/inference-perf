@@ -84,6 +84,7 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     convert_wire_file,
     detect_trace_format,
     iter_otel_jsonl_traces,
+    trace_stem,
     trace_suffix,
 )
 from inference_perf.datagen.replay.trace_source import (
@@ -206,7 +207,8 @@ def _normalize_file_trace(
     normalized = dict(data)
 
     if "session_id" not in normalized:
-        fallback = Path(source_name).stem if row_index is None else f"{Path(source_name).stem}_{row_index}"
+        stem = trace_stem(Path(source_name))
+        fallback = stem if row_index is None else f"{stem}_{row_index}"
         normalized["session_id"] = normalized.get("trace_id") or fallback
 
     normalized["source_id"] = source_path
