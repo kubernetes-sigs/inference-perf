@@ -46,8 +46,8 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     convert_wire_file,
     derive_trace_id,
     detect_trace_format,
+    TRACE_READ_ERRORS,
     iter_wire_spans,
-    open_trace,
     open_trace_text,
 )
 
@@ -271,9 +271,15 @@ class LocalTraceSource:
         return records
 
     def _index_one(self, path: Path) -> List[LocalTraceRecord]:
-        trace_format = detect_trace_format(path)
+        try:
+            trace_format = detect_trace_format(path)
+        except TRACE_READ_ERRORS as e:
+            raise TraceReadError(f"{path}: {e}") from e
 
         if trace_format == FORMAT_OTEL_JSONL:
+            if path.suffix == ".zst":
+                # Records are loaded by offset, and reaching one in a .zst decompresses all before it.
+                raise UnsupportedTraceFormatError(f"{path}: OTel .jsonl cannot be read compressed; decompress it first")
             indexed_rows = _scan_jsonl_records(path, validate=self._validate_at_startup)
             count = len(indexed_rows)
             if count == 0:
@@ -320,7 +326,7 @@ class LocalTraceSource:
         try:
             with open_trace_text(path) as f:
                 document = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
+        except (*TRACE_READ_ERRORS, json.JSONDecodeError) as e:
             raise InvalidTraceError(f"{path}: unable to read OTel identity: {e}") from e
         if not isinstance(document, dict):
             raise InvalidTraceError(f"{path}: expected a trace object, got {type(document).__name__}")
@@ -370,7 +376,7 @@ class LocalTraceSource:
             # Seek to the range recorded at indexing; scanning here would be O(N^2).
             assert record.byte_offset is not None and record.byte_length is not None
             try:
-                with open_trace(path) as stream:
+                with path.open("rb") as stream:
                     stream.seek(record.byte_offset)
                     line = stream.read(record.byte_length)
             except OSError as e:
@@ -390,7 +396,7 @@ class LocalTraceSource:
                 converted = convert_wire_file(path)
             except ValueError as e:
                 raise InvalidTraceError(str(e)) from e
-            except OSError as e:
+            except TRACE_READ_ERRORS as e:
                 raise TraceReadError(f"{path}: {e}") from e
             except Exception as e:
                 raise InvalidTraceError(f"{path}: wire conversion failed: {e}") from e
@@ -403,7 +409,7 @@ class LocalTraceSource:
                 return cast(Dict[str, Any], json.load(f))
         except json.JSONDecodeError as e:
             raise InvalidTraceError(f"{path}: not valid JSON: {e}") from e
-        except OSError as e:
+        except TRACE_READ_ERRORS as e:
             raise TraceReadError(f"{path}: {e}") from e
 
 
@@ -433,7 +439,7 @@ def _scan_jsonl_records(path: Path, validate: bool) -> List[Tuple[int, int, Opti
     indexed_rows: List[Tuple[int, int, Optional[str]]] = []
     line_no = 0
     try:
-        with open_trace(path) as stream:
+        with path.open("rb") as stream:
             while True:
                 offset = stream.tell()
                 line = stream.readline()
@@ -472,7 +478,7 @@ def _validate_wire_convertible(path: Path, trace_id: str) -> None:
             span_count += 1
     except ValueError as e:
         raise InvalidTraceError(str(e)) from e
-    except OSError as e:
+    except TRACE_READ_ERRORS as e:
         raise TraceReadError(f"{path}: {e}") from e
 
     if span_count == 0:

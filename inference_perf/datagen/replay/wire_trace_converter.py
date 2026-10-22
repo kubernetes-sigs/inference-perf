@@ -34,7 +34,6 @@ docs/superpowers/notes/reasoning-content-dropped-in-wire-replay.md.
 """
 
 import hashlib
-import io
 import json
 import logging
 import sys
@@ -71,8 +70,8 @@ def trace_suffix(path: Path) -> str:
     return path.with_suffix("").suffix if path.suffix == ".zst" else path.suffix
 
 
-def open_trace(path: Path) -> io.BufferedIOBase:
-    return zstd.open(path) if path.suffix == ".zst" else path.open("rb")
+# What reading a trace file can raise: I/O errors, and a truncated or corrupt .zst.
+TRACE_READ_ERRORS = (OSError, EOFError, zstd.ZstdError)
 
 
 def open_trace_text(path: Path) -> TextIO:
@@ -1235,7 +1234,7 @@ def convert_wire_file(path: Path, trace_id: Optional[str] = None) -> Dict[str, A
 
 def iter_otel_jsonl_traces(path: Path) -> Iterator[Dict[str, Any]]:
     """Stream OTel trace documents from a .jsonl file, one per line."""
-    with open_trace_text(path) as f:
+    with path.open(encoding="utf-8") as f:
         for line_no, line in enumerate(f, start=1):
             if not line.strip():
                 continue
