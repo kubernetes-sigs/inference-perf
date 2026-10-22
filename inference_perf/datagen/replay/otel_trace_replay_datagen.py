@@ -444,7 +444,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
             trace_files = sorted(p for p in trace_dir.glob("*.json*") if trace_suffix(p) in TRACE_FILE_SUFFIXES)
             if not trace_files:
-                raise ValueError(f"No .json or .jsonl files found in {trace_dir}")
+                raise ValueError(f"No .json or .jsonl files (optionally .zst) found in {trace_dir}")
 
             source_label = self.otel_config.trace_directory
             self._trace_source: TraceSource = LocalTraceSource(
@@ -470,7 +470,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 if not trace_file.is_file():
                     raise ValueError(f"Trace file path is not a file: {trace_file}")
                 if trace_suffix(trace_file) not in TRACE_FILE_SUFFIXES:
-                    raise ValueError(f"Trace file must be a .json or .jsonl file: {trace_file}")
+                    raise ValueError(f"Trace file must be a .json or .jsonl file, optionally .zst: {trace_file}")
 
             source_label = str(self.otel_config.trace_files)
             self._trace_source = LocalTraceSource(
