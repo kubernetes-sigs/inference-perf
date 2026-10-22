@@ -228,8 +228,10 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info.rate, 0.001)
         self.assertEqual(info.max_stage_duration, 0.3)
 
+    # One session of 4 events preferring workers [0, 4, 5, -1] with 3 workers, run as stage 9.
+    # Expects channels [0, 1, 2, -1] (4 and 5 wrap, -1 stays broadcast) and every event stamped s0 / stage 9.
     async def test_dispatch_stamps_events_and_remaps_affinity(self) -> None:
-        datagen = FakeSessionGenerator(num_sessions=1, events_per_session=4, preferred_worker_ids=[0, 1, 2, -1])
+        datagen = FakeSessionGenerator(num_sessions=1, events_per_session=4, preferred_worker_ids=[0, 4, 5, -1])
         stage = TraceSessionReplayLoadStage(concurrent_sessions=0)
         load_generator = _make_load_generator(datagen, [stage], num_workers=3)
         load_generator.session_metrics_collector = self.collector
@@ -242,8 +244,8 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         for event in datagen.events["s0"]:
             self.assertEqual(event.session_id, "s0")
             self.assertEqual(event.stage_id, 9)
-        # The stage-end path releases the queue with the bounded drain; the
-        # queue join it used to call was removed with the teardown rework.
+        # The stage-end path releases the queue with the bounded drain. The
+        # queue join it used to call went away with the teardown rework.
         request_queue.drain.assert_called_once()
 
     async def test_unbuildable_session_counts_complete_but_goes_unreported(self) -> None:

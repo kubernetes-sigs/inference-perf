@@ -21,9 +21,9 @@ import pytest
 
 # Match the multiprocessing start method used in production (main.py): on
 # macOS force "fork" so tokenizer and datagen objects are inherited by worker
-# processes instead of pickled. Linux already defaults to fork, so this is a
-# no-op there. Set once here, before any test module is imported, instead of
-# at import time in individual test modules.
+# processes instead of pickled. Linux keeps its default, as main.py does:
+# fork before Python 3.14, forkserver from 3.14 on. Set once here, before any
+# test module is imported, instead of at import time in individual test modules.
 def pytest_configure(config: pytest.Config) -> None:
     if sys.platform == "darwin":
         try:
