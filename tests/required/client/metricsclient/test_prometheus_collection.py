@@ -13,12 +13,12 @@
 # limitations under the License.
 """Unit tests for the Prometheus collection flows: `execute_query` and `collect_metrics_*`.
 
-`test_prometheus_query_goldens.py` pins the PromQL a metric renders (it drives
-`metric.get_queries` directly and never touches this client), `test_prometheus_client.py`
-pins how results are assembled into `ModelServerMetrics` with `execute_query` patched
-out, and the report-generator tests patch `collect_metrics_summary` /
-`collect_metrics_for_stage` out. That left the HTTP round trip and the two collection
-entry points with no coverage of their own.
+`test_prometheus_query_goldens.py` pins the PromQL a metric renders, and
+`test_prometheus_client.py` pins how results are assembled into `ModelServerMetrics` plus
+the auth headers and TLS flag a query sends. The report-generator tests patch
+`collect_metrics_summary` / `collect_metrics_for_stage` out. This file owns the rest of
+`base.py`: how `execute_query` reads a response, the bodies of both collection entry
+points, `wait()` and the constructor guards.
 
 Two behaviours make this mostly a silent-wrongness surface rather than a crash surface:
 
@@ -129,15 +129,18 @@ def _stage(
 
 
 class TestExecuteQueryHappyPath:
-    # A well-formed vector carrying "1.5" returns 1.5.
-    def test_parses_the_first_sample_value(self) -> None:
+    # A well-formed vector carrying "1.5" returns 1.5, and one carrying "0" returns 0.0.
+    # The zero has to stay a number: None means no series, and the collector retries
+    # None with the underscore-escaped name.
+    @pytest.mark.parametrize("value,expected", [("1.5", 1.5), ("0", 0.0)], ids=["nonzero", "zero"])
+    def test_parses_the_first_sample_value(self, value: str, expected: float) -> None:
         client = _client()
 
         with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
-            get.return_value = _response(_vector("1.5"))
+            get.return_value = _response(_vector(value))
             result = client.execute_query("up", "100")
 
-        assert result == 1.5
+        assert result == expected
 
     # Querying 'up' at eval time "100" issues GET http://localhost:9090/api/v1/query with
     # params {"query": "up", "time": "100"} and the client's headers (base returns {}).
@@ -231,11 +234,21 @@ class TestExecuteQueryReturnsNoneOnFailure:
 
         assert not [record for record in caplog.records if record.levelname == "ERROR"]
 
-    # A 500 from Prometheus makes raise_for_status raise, which is caught, logged, and
-    # yields None. json() must never be reached on this path.
-    def test_non_200_response(self, caplog: pytest.LogCaptureFixture) -> None:
+    # A 500 carrying a valid "1.5" vector and a 400 carrying Prometheus' own "bad_data"
+    # body both make raise_for_status raise, which is caught, logged, and yields None.
+    # json() is never reached, so neither body offers a second route to a result. A 401
+    # from a bad bearer_token takes the same branch (#822).
+    @pytest.mark.parametrize(
+        "payload,error",
+        [
+            (_vector("1.5"), "500 Server Error"),
+            ({"status": "error", "errorType": "bad_data", "error": "invalid parameter"}, "400 Client Error"),
+        ],
+        ids=["server-error", "bad-request-with-error-body"],
+    )
+    def test_http_error_response(self, payload: Dict[str, Any], error: str, caplog: pytest.LogCaptureFixture) -> None:
         client = _client()
-        response = _response(_vector("1.5"), error=requests.HTTPError("500 Server Error"))
+        response = _response(payload, error=requests.HTTPError(error))
 
         with caplog.at_level("ERROR"):
             with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
@@ -243,23 +256,7 @@ class TestExecuteQueryReturnsNoneOnFailure:
                 assert client.execute_query("up", "100") is None
 
         response.json.assert_not_called()
-        assert "error executing query: 500 Server Error" in caplog.text
-
-    # A 400 carrying Prometheus' own error body ("bad_data") is caught by raise_for_status
-    # before the body is inspected: json() is never called, same as the 500 path. The
-    # error body is here to pin that it offers no second route to a result.
-    def test_bad_request_with_error_body(self, caplog: pytest.LogCaptureFixture) -> None:
-        client = _client()
-        payload = {"status": "error", "errorType": "bad_data", "error": "invalid parameter"}
-        response = _response(payload, error=requests.HTTPError("400 Client Error"))
-
-        with caplog.at_level("ERROR"):
-            with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
-                get.return_value = response
-                assert client.execute_query("up", "100") is None
-
-        response.json.assert_not_called()
-        assert "error executing query: 400 Client Error" in caplog.text
+        assert f"error executing query: {error}" in caplog.text
 
     # A 200 whose body reports status "error" rather than "success" is logged and yields
     # None. The payload carries a well-formed result of "7.0" so this test fails loudly
