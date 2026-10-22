@@ -679,7 +679,14 @@ def zst(path: Path) -> Path:
     return compressed
 
 
-@pytest.mark.parametrize("name, docs", [("a.json", [otel_trace()]), ("calls.jsonl", [chat_record("s-1"), chat_record("s-1")])])
+@pytest.mark.parametrize(
+    "name, docs",
+    [
+        ("a.json", [otel_trace()]),
+        ("a.json", [otel_trace(trace_id=None)]),  # no ids: the session is named after the file
+        ("calls.jsonl", [chat_record("s-1"), chat_record("s-1")]),
+    ],
+)
 def test_zst_file_loads_the_same_records_as_the_file_it_compresses(
     tmp_path: Path, name: str, docs: List[Dict[str, Any]]
 ) -> None:
@@ -687,6 +694,7 @@ def test_zst_file_loads_the_same_records_as_the_file_it_compresses(
     plain_source, zst_source = source_for([plain]), source_for([zst(plain)])
 
     assert [r.trace_format for r in zst_source.records] == [r.trace_format for r in plain_source.records]
+    assert [r.session_id_suffix for r in zst_source.records] == [r.session_id_suffix for r in plain_source.records]
     for i in range(len(plain_source.records)):
         assert {**scrub(zst_source.load_record(i)), "source_id": None} == {
             **scrub(plain_source.load_record(i)),

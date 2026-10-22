@@ -70,6 +70,11 @@ def trace_suffix(path: Path) -> str:
     return path.with_suffix("").suffix if path.suffix == ".zst" else path.suffix
 
 
+def trace_stem(path: Path) -> str:
+    """The stem of the trace a file holds: "a" for both a.json and a.json.zst."""
+    return path.with_suffix("").stem if path.suffix == ".zst" else path.stem
+
+
 # What reading a trace file can raise: I/O errors, and a truncated or corrupt .zst.
 TRACE_READ_ERRORS = (OSError, EOFError, zstd.ZstdError)
 

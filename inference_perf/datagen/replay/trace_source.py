@@ -49,6 +49,7 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     TRACE_READ_ERRORS,
     iter_wire_spans,
     open_trace_text,
+    trace_stem,
 )
 
 logger = logging.getLogger(__name__)
@@ -336,7 +337,7 @@ class LocalTraceSource:
                 trace_format=LocalTraceFormat.OTEL_JSON,
                 row_index=None,
                 normalize_row_index=None,
-                session_id_suffix=_otel_session_id(document, path.stem),
+                session_id_suffix=_otel_session_id(document, trace_stem(path)),
                 source_id=str(path),
             )
         ]
