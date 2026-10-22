@@ -38,6 +38,10 @@ def _zero() -> int:
     return 0
 
 
+def _no_time_elapsed() -> float:
+    return 0.0
+
+
 def _no_workers_lost() -> tuple[str, ...]:
     return ()
 
@@ -77,6 +81,11 @@ class StageContext:
     it is cancelled after being sent, so it is finished but neither skipped
     nor an outcome, and it is absent from the report as well.
 
+    ``planned_duration_seconds`` is the window a duration-bounded stage runs for,
+    and ``elapsed_seconds`` reads how far into it the stage is. Such a stage
+    replays its corpus instead of working through a fixed count, so the window is
+    the denominator it progresses towards. ``None`` for any other stage.
+
     ``workers_lost`` reports one cause string per worker process that died
     during this stage, so it is only meaningful once the stage has ended. It
     stays empty for a run with no worker processes.
@@ -89,6 +98,8 @@ class StageContext:
     sessions_finished: Callable[[], int] = _zero
     requests_skipped: Callable[[], int] = _zero
     sessions_skipped: Callable[[], int] = _zero
+    planned_duration_seconds: Optional[float] = None
+    elapsed_seconds: Callable[[], float] = _no_time_elapsed
     workers_lost: Callable[[], "tuple[str, ...]"] = _no_workers_lost
 
     @property
