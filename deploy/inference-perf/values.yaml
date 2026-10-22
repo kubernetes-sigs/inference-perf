@@ -18,9 +18,9 @@ job:
 logLevel: INFO
 
 # Scraping of inference-perf's own runtime metrics (stage state, request
-# counts, latencies). Whether the endpoint runs and on which port come from
-# config.observability.metrics (enabled by default, port 9464); these values
-# only decide how Prometheus finds it. See docs/runtime_metrics.md.
+# counts, latencies). The endpoint runs when config.observability.metrics is
+# set, as it is below with port 9464. These values only decide how Prometheus
+# finds it, and render nothing while it is off. See docs/runtime_metrics.md.
 metrics:
   # Scrape interval for the PodMonitor and PodMonitoring below. A Job's pod
   # stops serving when the run ends, so keep this short relative to the run.

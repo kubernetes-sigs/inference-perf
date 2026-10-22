@@ -91,9 +91,9 @@ The identity executing the workload (e.g., the associated Kubernetes Service Acc
 
 #### Runtime Metrics Parameters
 
-inference-perf serves its own runtime metrics (stage state, request counts, latencies) on `/metrics` while the run is active; see [`docs/runtime_metrics.md`](../../docs/runtime_metrics.md) for the metric set. Whether the endpoint runs, and on which port, is set in the benchmark config under `config.observability.metrics` (`enabled`, default `true`; `port`, default `9464`). The chart reads the same fields, so the container port and scrape configs always match what the process serves. Port `0` (ephemeral) cannot be scraped and fails the install.
+inference-perf serves its own runtime metrics (stage state, request counts, latencies) on `/metrics` while the run is active. See [`docs/runtime_metrics.md`](../../docs/runtime_metrics.md) for the metric set. The endpoint runs when the benchmark config sets `config.observability.metrics`, which the default values do with `port: 9464`. Set it to `null` (`--set config.observability.metrics=null`) to turn the endpoint off. The chart reads the same block, so the container port and scrape configs always match what the process serves. Port `0` (ephemeral) cannot be scraped and fails the install.
 
-The keys below only decide how Prometheus finds the pod.
+The keys below only decide how Prometheus finds the pod. They render nothing while the endpoint is off.
 
 | Key | Description | Default |
 | :--- | :--- | :--- |

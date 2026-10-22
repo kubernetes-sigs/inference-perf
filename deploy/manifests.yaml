@@ -9,8 +9,7 @@ spec:
     metadata:
       labels:
         app: inference-perf
-      # inference-perf serves its runtime metrics on :9464/metrics by default
-      # (config.observability.metrics). Keep the port here in sync if you change it.
+      # 9464 matches --observability.metrics.port in the container args below. Change them together.
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9464"
