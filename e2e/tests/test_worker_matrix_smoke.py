@@ -24,12 +24,15 @@ is the cross-check on the two properties the fake is least able to vouch for,
 because both are about the worker processes rather than about the HTTP
 exchange:
 
-- worker teardown: the CLI must exit 0 with every worker joined, rather than
-  leaving a daemon child behind or hanging on the stage barrier at the end of a
-  multi-stage run (#469)
-- the liveness check: ``run_stage`` polls ``Worker.is_alive()`` and aborts the
+- worker teardown: the CLI must exit 0 within the timeout rather than hanging
+  on the stage barrier at the end of a multi-stage run (#469), and no stage
+  teardown may have to terminate a stuck worker
+- the liveness check: ``run_stage`` polls ``Worker.is_alive()`` and fails the
   stage if a worker died. It must never fire on a healthy run, or the matrix
   is measuring an aborted stage and calling it a pass (#593)
+
+Both failures surface as ``Stage N - run failed`` in place of ``Stage N - run
+completed`` in the CLI log, which is what the test checks per stage.
 
 Ground truth is the sim's own ``usage`` accounting: ``ignore_eos`` plus a
 degenerate output distribution pins exactly ``OUTPUT_TOKENS`` generated tokens
@@ -47,6 +50,8 @@ tokenizer, not the worker matrix.
 
 Retired once the Integration fake has proved out, per the #606 row.
 """
+
+from typing import Any
 
 import pytest
 
@@ -87,19 +92,19 @@ OUTPUT_TOKENS = 8
 # docstring). Loose on purpose: it is a sanity bound, not the token oracle.
 CLIENT_RETOKENIZATION_SLACK = 3
 
-# The liveness check in run_stage. If this appears, a worker died and the stage
-# was cut short, so every count below would be measuring an aborted run.
-WORKER_DEATH_LOG = "A worker process died unexpectedly!"
 
-
-def _exact_length_distribution(tokens: int) -> dict:
+# _exact_length_distribution(8) gives min 8, max 8, mean 8, std_dev 0 over 100 samples,
+# so every request gets exactly 8 tokens.
+def _exact_length_distribution(tokens: int) -> dict[str, Any]:
     """A degenerate length distribution: every request gets exactly `tokens`."""
     return {"min": tokens, "max": tokens, "mean": tokens, "std_dev": 0, "total_count": 100}
 
 
+# Two 3s stages at rate 4 on 4 workers against the sim. Expects 24 requests of 8
+# tokens each, TTFT >= 0.2s, and "Stage N - run completed" logged for both stages.
 @pytest.mark.asyncio
 @pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
-async def test_multi_stage_run_at_pinned_worker_count():
+async def test_multi_stage_run_at_pinned_worker_count() -> None:
     model_path = extract_tarball(TEST_MODEL_TARBALL)
 
     async with LLMDInferenceSimRunner(
@@ -146,18 +151,21 @@ async def test_multi_stage_run_at_pinned_worker_count():
             timeout_sec=240,
         )
 
-    # Clean teardown: a run that leaves a worker wedged on the stage barrier
-    # times out here rather than returning a non-zero code, and either way the
-    # helper refuses the report.
+    # A hung run times out and fails here. Stage teardown is bounded, so a worker
+    # wedged on the stage barrier is terminated instead and the CLI still exits 0.
     entries = assert_successful_run(result, EXPECTED_REQUESTS)
-    assert WORKER_DEATH_LOG not in result.stdout, (
-        f"the worker liveness check fired, so at least one stage was aborted:\n{result.stdout}"
-    )
+    # assert_successful_run already refused a run with no reports, this narrows the type.
+    assert result.reports is not None
 
     # Both stages ran and both carried their own load. A stage-barrier
     # regression shows up here as a missing stage report or an empty one, well
     # before it shows up as a wrong aggregate.
     for stage_id in range(NUM_STAGES):
+        # A forced teardown can still report full counts below, so the status line is
+        # the only place it shows. The liveness check fails the stage the same way.
+        assert f"Stage {stage_id} - run completed" in result.stdout, (
+            f"stage {stage_id} did not complete (liveness check or forced teardown):\n{result.stdout}"
+        )
         stage_report_name = f"stage_{stage_id}_lifecycle_metrics.json"
         assert stage_report_name in result.reports, f"missing {stage_report_name} in {sorted(result.reports)}"
         stage_report = result.reports[stage_report_name]

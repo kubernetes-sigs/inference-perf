@@ -39,10 +39,9 @@ Everything driving real processes is wrapped in ``asyncio.wait_for``: a
 barrier-quorum regression (#469) hangs rather than fails, and a bounded wait
 turns that hang into a test failure instead of a stuck CI job.
 
-Standing finding: the ``num_workers = 0`` cell is marked xfail because it
-currently crashes about half the time. See IN_PROCESS_ZIP_BUG below for the
-mechanism. The cell is kept rather than dropped, because a matrix that omits
-the failing cell is exactly how #590 stayed open.
+Standing finding: the ``num_workers = 0`` cell usually sends one request
+fewer per stage than the mp cells. The per-stage count in the matrix test says
+why.
 """
 
 import asyncio
@@ -100,21 +99,6 @@ EXPECTED_OUTPUT_TOKENS = 4
 # How many requests the collector-equivalence comparison drives. Small: the
 # comparison is exact, so more requests buy nothing but wall time.
 EQUIVALENCE_REQUESTS = 8
-
-# Found by this test. The in-process (num_workers = 0) dispatch loop walks
-# zip(datagen.get_data(), time_generator, strict=True) and relies on breaking
-# out at the stage deadline before the finite timer runs out. ConstantLoadTimer
-# normalizes its intervals to sum to exactly the stage duration, so the last
-# scheduled time lands on the deadline and whether the loop breaks first is
-# decided by float rounding. When it does not, the timer is exhausted and
-# strict=True raises "zip() argument 2 is shorter than argument 1" out of the
-# TaskGroup, failing the stage. Reproduced 4 and 5 times out of 10 runs, across
-# two rate/duration settings. Introduced in #388, and exactly the #590 shape: a
-# crash that exists only in the num_workers = 0 cell, which nothing in CI runs.
-# The marker below comes off (and turns strict) once that is fixed.
-IN_PROCESS_ZIP_BUG = (
-    "num_workers=0 stage dispatch raises ValueError from zip(strict=True) when the timer is fully consumed (#590 family)"
-)
 
 
 class WhitespaceTokenizer(CustomTokenizer):
@@ -179,6 +163,8 @@ class FakeServerClient(openAIModelServerClient):
         )
 
 
+# make_load_config(4) gives two constant stages at rate 8 for 1s on 4 workers,
+# up to 16 requests in flight per worker, no pause between stages, base_seed 42.
 def make_load_config(num_workers: int) -> LoadConfig:
     return LoadConfig(
         type=LoadType.CONSTANT,
@@ -190,10 +176,15 @@ def make_load_config(num_workers: int) -> LoadConfig:
     )
 
 
+# For a chat api_config it yields user messages "mock prompt 1", "mock prompt 2" and so
+# on, forever, with no tokenizer.
 def make_datagen(api_config: APIConfig) -> MockDataGenerator:
     return MockDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
 
 
+# run_cell(4) runs both stages on 4 worker processes into the multiprocess collector and
+# returns (metrics, served), 16 and 16 when healthy. run_cell(0) runs in-process into
+# LocalRequestMetricCollector and returns 14 to 16 of each.
 async def run_cell(num_workers: int) -> tuple[List[RequestLifecycleMetric], int]:
     """Run the configured multi-stage load in one matrix cell.
 
@@ -221,15 +212,16 @@ async def run_cell(num_workers: int) -> tuple[List[RequestLifecycleMetric], int]
     return collector.get_metrics(), served
 
 
+# count=8 sends 8 concurrent requests through the real client with no load
+# generator in between. Returns how many the fake server served, 8 when healthy.
 async def drive_requests(collector: RequestMetricCollector, count: int) -> int:
     """Send ``count`` real requests through the real client, concurrently.
 
     Deliberately bypasses the load generator. The collector comparison below
     needs one fixed body of load, and the stage dispatch loops add scheduling
-    variance (and, on the in-process path, the defect described in
-    IN_PROCESS_ZIP_BUG) that has nothing to do with the collectors. The
-    request path, the wire format and the metric construction are still the
-    real ones. Returns what the server served.
+    variance that has nothing to do with the collectors. The request path, the
+    wire format and the metric construction are still the real ones. Returns
+    what the server served.
     """
     api_config = APIConfig(type=APIType.Chat, streaming=True)
     async with FakeOpenAIServer(RESPONSE_SCRIPT, completion_tokens=EXPECTED_OUTPUT_TOKENS) as server:
@@ -244,10 +236,14 @@ async def drive_requests(collector: RequestMetricCollector, count: int) -> int:
         return len(server.served)
 
 
+# 8 metrics of 4 output tokens give successes count 8 and output_tokens total 32.
+# Each latency field that is set carries mean, min, max, median and p90.
 def summarize(metrics: List[RequestLifecycleMetric]) -> ResponsesSummary:
     return summarize_requests(metrics, PERCENTILES, tokenizer=WhitespaceTokenizer())
 
 
+# Metrics with output_tokens 4, 2 and 3 give [2, 3, 4]. A metric with no
+# response_metrics or no output_tokens fails the assertion.
 def output_token_values(metrics: List[RequestLifecycleMetric]) -> List[int]:
     """Per-request output token counts, sorted, so two collectors can be
     compared without depending on the order they reassembled the metrics in."""
@@ -260,15 +256,13 @@ def output_token_values(metrics: List[RequestLifecycleMetric]) -> List[int]:
     return sorted(values)
 
 
+# Two 1s stages at rate 8 with 0, 1 and 4 workers. Every served request comes back
+# with 4 output tokens. The mp cells send 8 per stage, the in-process cell 7 or 8.
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "num_workers",
     [
-        pytest.param(
-            0,
-            marks=pytest.mark.xfail(strict=False, reason=IN_PROCESS_ZIP_BUG),
-            id="workers-0",
-        ),
+        pytest.param(0, id="workers-0"),
         pytest.param(1, id="workers-1"),
         pytest.param(PINNED_N, id=f"workers-{PINNED_N}"),
     ],
@@ -278,8 +272,9 @@ async def test_worker_matrix_accounts_every_served_request(num_workers: int) -> 
 
     This is the invariant that survives the architectural difference between
     the cells. It fails if a worker result is lost crossing the queue, counted
-    twice, or produced by a worker that died silently (#593), and it fails on
-    the in-process path too (#590), which no CI run exercises today.
+    twice, or produced by a worker that died silently (#593). The in-process
+    cell is held to it too, since that path once crashed with nothing in CI
+    running it (#590).
     """
     metrics, served = await run_cell(num_workers)
 
@@ -297,12 +292,13 @@ async def test_worker_matrix_accounts_every_served_request(num_workers: int) -> 
     assert sorted(by_stage) == list(range(NUM_STAGES)), f"expected one bucket per stage, got {sorted(by_stage)}"
     for stage_id in range(NUM_STAGES):
         if num_workers == 0:
-            # The in-process dispatch loop stops at the stage deadline instead
-            # of enqueueing a fixed count, so how many of the scheduled
-            # requests it gets out depends on how loaded the machine is. Only
-            # the mp path has an exact expected count.
-            assert 0 < by_stage[stage_id] <= REQUESTS_PER_STAGE, (
-                f"stage {stage_id} delivered {by_stage[stage_id]} requests, expected 1 to {REQUESTS_PER_STAGE}"
+            # ConstantLoadTimer scales its gaps to sum to the stage duration, so the last
+            # request is scheduled at end_time up to float rounding and the in-process
+            # `time_index < end_time` check sends it only when the rounding falls below,
+            # while the mp path enqueues every scheduled request.
+            assert by_stage[stage_id] in (REQUESTS_PER_STAGE - 1, REQUESTS_PER_STAGE), (
+                f"stage {stage_id} delivered {by_stage[stage_id]} requests, "
+                f"expected {REQUESTS_PER_STAGE - 1} or {REQUESTS_PER_STAGE}"
             )
         else:
             assert by_stage[stage_id] == REQUESTS_PER_STAGE, (
@@ -328,6 +324,9 @@ async def test_worker_matrix_accounts_every_served_request(num_workers: int) -> 
     assert summary.successes["latency"]["inter_token_latency"] is not None
 
 
+# 8 real requests recorded locally, then the same 8 metrics replayed from a child process
+# into the multiprocess collector. Counts and token values match exactly, latency
+# summaries to within 1e-9.
 @pytest.mark.asyncio
 async def test_collectors_agree_on_identical_load() -> None:
     """``LocalRequestMetricCollector`` and ``MultiprocessRequestMetricCollector``
@@ -400,6 +399,7 @@ async def test_collectors_agree_on_identical_load() -> None:
             assert mp_field[key] == pytest.approx(value, abs=1e-9), f"{field}.{key} differs between collectors"
 
 
+# Given 8 metrics in a child process, puts all 8 on the collector's queue in order.
 def _record_all(collector: MultiprocessRequestMetricCollector, metrics: List[RequestLifecycleMetric]) -> None:
     """Child-process entrypoint: replay metrics into the collector's queue.
 
@@ -410,6 +410,8 @@ def _record_all(collector: MultiprocessRequestMetricCollector, metrics: List[Req
         collector.record_metric(metric)
 
 
+# Runs _record_all in a daemon child process and waits for it off the event loop.
+# Fails if the child exits with anything but 0.
 async def _feed_from_child_process(
     collector: MultiprocessRequestMetricCollector, metrics: List[RequestLifecycleMetric]
 ) -> None:
@@ -422,6 +424,8 @@ async def _feed_from_child_process(
     assert process.exitcode == 0, f"metric-feeding child exited with {process.exitcode}"
 
 
+# Pickles and unpickles the mock datagen and the client stub. The datagen still yields a
+# request, the client keeps uri http://127.0.0.1:1 and counts "one two three" as 3 tokens.
 def test_worker_payload_survives_a_pickle_round_trip() -> None:
     """The datagen and client a worker receives must be picklable (#589).
 
