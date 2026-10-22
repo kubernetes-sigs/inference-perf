@@ -32,6 +32,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import ClientResponse
+from pydantic import ValidationError
 
 from inference_perf.apis.anthropic_messages import AnthropicMessagesAPIData, parse_anthropic_thinking
 from inference_perf.apis.base import InferenceInfo, RequestLifecycleMetric, StreamedResponseMetrics, UnaryResponseMetrics
@@ -307,7 +308,19 @@ async def test_chunk_with_both_channels_counts_both() -> None:
 async def test_unary_chat_counts_reasoning() -> None:
     """The non-streamed path counts message.reasoning_content like the
     streamed path does."""
-    body = {"choices": [{"message": {"content": "the answer", "reasoning_content": "x y z"}}]}
+    body = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "test-model",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "the answer", "reasoning_content": "x y z"},
+            }
+        ],
+    }
     config = APIConfig(type=APIType.Chat, streaming=False)
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="prompt")], max_tokens=100)
     info = await data.process_response(cast(ClientResponse, FakeStreamingResponse(json_body=body)), config, _word_tokenizer())
@@ -471,7 +484,19 @@ async def test_reasoning_field_wins_over_reasoning_content() -> None:
     assert len(streamed.response_metrics.output_token_times) == 2
     assert result.successes["token_count_mismatches"] == 0
 
-    body = {"choices": [{"message": {"content": "x", "reasoning": "new", "reasoning_content": "old old"}}]}
+    body = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "test-model",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "x", "reasoning": "new", "reasoning_content": "old old"},
+            }
+        ],
+    }
     unary = await data.process_response(
         cast(ClientResponse, FakeStreamingResponse(json_body=body)), APIConfig(type=APIType.Chat, streaming=False), tokenizer
     )
@@ -533,7 +558,7 @@ def test_parse_anthropic_thinking_reads_only_thinking_blocks() -> None:
 
 # Chat stream: reasoning "a b", a chunk with choices but no delta, a chunk with
 # no choices key, then content "c". The odd chunks are skipped: output_tokens = 3
-# streamed. Non-streamed, a choice with no message gives output_tokens = 0.
+# streamed. Non-streamed, a choice with no message fails schema validation.
 @pytest.mark.asyncio
 async def test_chat_skips_chunks_without_choices_or_delta() -> None:
     """Servers send finish and keep-alive chunks with no delta, or no choices
@@ -553,11 +578,16 @@ async def test_chat_skips_chunks_without_choices_or_delta() -> None:
     assert isinstance(streamed.response_metrics, StreamedResponseMetrics)
     assert streamed.response_metrics.output_tokens == 3
 
-    body = {"choices": [{"index": 0, "finish_reason": "length"}]}
-    unary = await data.process_response(
-        cast(ClientResponse, FakeStreamingResponse(json_body=body)),
-        APIConfig(type=APIType.Chat, streaming=False),
-        _word_tokenizer(),
-    )
-    assert isinstance(unary.response_metrics, UnaryResponseMetrics)
-    assert unary.response_metrics.output_tokens == 0
+    body = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "test-model",
+        "choices": [{"index": 0, "finish_reason": "length"}],
+    }
+    with pytest.raises(ValidationError, match="choices.0.message"):
+        await data.process_response(
+            cast(ClientResponse, FakeStreamingResponse(json_body=body)),
+            APIConfig(type=APIType.Chat, streaming=False),
+            _word_tokenizer(),
+        )
