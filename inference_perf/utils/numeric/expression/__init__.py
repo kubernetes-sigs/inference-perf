@@ -12,5 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .expression import Expression, Predicate
+from .measured import SERIES, SIGNALS, MeasuredState, Observation, Series, Term
 
-__all__ = ["Expression", "Predicate"]
+__all__ = ["Expression", "Predicate", "MeasuredState", "Observation", "Series", "SERIES", "SIGNALS", "Term"]
