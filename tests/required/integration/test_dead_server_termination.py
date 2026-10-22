@@ -36,10 +36,12 @@ deadline of its own: if a request never completes, the stage never ends. The
 client timeout is the only thing standing between an unresponsive server and a
 run that never returns, and that is what these tests pin down.
 
-Both tests configure a small explicit ``request_timeout`` so they run fast. The
-bound they assert (``RUN_BOUND_SEC``) sits far above the configured timeout and
-far below aiohttp's default total timeout, so a regression that drops the
-configured timeout on the floor fails the bound rather than passing slowly.
+Both tests build the client with a small explicit ``timeout`` so they run fast.
+The bound they assert (``RUN_BOUND_SEC``) sits far above that timeout and far
+below aiohttp's default total timeout, so a client that stops applying its
+``timeout`` argument fails the bound rather than passing slowly. The path from
+``load.request_timeout`` to that argument lives in main.py and is not
+exercised here.
 
 Note on scope: the hang in #469 is a barrier futex in the process machinery and
 is unrelated to the client-side timeout path exercised here.
@@ -135,7 +137,7 @@ class _StubTokenizer(CustomTokenizer):
 
 
 # A real vLLMModelServerClient at uri: non-streaming completion API, 2 TCP connections,
-# request_timeout=2.0s, with the stub tokenizer patched in for the constructor only.
+# timeout=2.0s, with the stub tokenizer patched in for the constructor only.
 def _build_client(uri: str, collector: MultiprocessRequestMetricCollector) -> vLLMModelServerClient:
     api_config = APIConfig(type=APIType.Completion, streaming=False)
     with patch.object(openai_client_module, "CustomTokenizer", return_value=_StubTokenizer()):
@@ -152,7 +154,7 @@ def _build_client(uri: str, collector: MultiprocessRequestMetricCollector) -> vL
 
 
 # The Config the ReportGenerator reads: one constant stage of 4 requests over 1s, 2 workers,
-# request_timeout=2.0s, all three request-lifecycle reports switched on.
+# all three request-lifecycle reports switched on.
 def _build_config() -> Config:
     """The config object the ReportGenerator reads. Its report section asks for
     all three request-lifecycle reports, which is what the run must still
@@ -165,7 +167,6 @@ def _build_config() -> Config:
             interval=0,
             num_workers=NUM_WORKERS,
             worker_max_concurrency=REQUESTS,
-            request_timeout=REQUEST_TIMEOUT_SEC,
             stages=[StandardLoadStage(rate=REQUESTS, duration=1)],
         ),
         report=ReportConfig(
@@ -310,18 +311,18 @@ async def test_run_terminates_when_nothing_is_listening() -> None:
     _assert_no_worker_wedged(worker_exitcodes)
 
 
-# No load, no server. A client built with request_timeout=2.0 must show
-# session.timeout.total == 2.0; one built with no request_timeout must show
+# No load, no server. A client built with timeout=2.0 must show
+# session.timeout.total == 2.0. One built with no timeout must show
 # aiohttp.client.DEFAULT_TIMEOUT (300s total).
 @pytest.mark.asyncio
 async def test_configured_request_timeout_reaches_the_aiohttp_session() -> None:
-    """The wiring the unresponsive-server case rests on: ``request_timeout``
-    from the load config has to arrive at the aiohttp session as a total
-    timeout, and with nothing configured the client applies none of its own.
+    """The wiring the unresponsive-server case rests on: the client's
+    ``timeout`` argument has to arrive at the aiohttp session as a total
+    timeout, and with none given the client applies none of its own.
 
     The second half is not a bug report, it is the documented default: with
-    ``request_timeout`` unset the only bound on a request to a server that
-    never answers is aiohttp's own default, which is two orders of magnitude
+    no ``timeout`` the only bound on a request to a server that never
+    answers is aiohttp's own default, which is two orders of magnitude
     longer than any timeout a benchmark would choose. Pinning it here means a
     change to that default is visible rather than silent.
     """
