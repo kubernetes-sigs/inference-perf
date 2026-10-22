@@ -52,3 +52,34 @@ def test_base_args_filter_separates_config_overrides() -> None:
     assert overrides == {"api.streaming": True}
     assert args.config_file == "cfg.yaml"
     assert args.log_level == "DEBUG"
+
+
+# A config field that is a Distribution OR an expression string keeps both CLI forms. Inputs: the real Config
+# parsed with '--data.input_distribution.mean 600' and, separately, '--data.input_distribution "Normal(512, 128)"'.
+# Expected: the nested flag exists and lands at data.input_distribution.mean as the float 600.0; the whole-value
+# flag lands as a string.
+def test_model_or_string_field_keeps_nested_flags() -> None:
+    from inference_perf.utils.cli_parser import unflatten_dict
+
+    parser = argparse.ArgumentParser()
+    add_pydantic_args(parser, Config)
+    nested = unflatten_dict(vars(parser.parse_args(["--data.input_distribution.mean", "600"])))
+    assert nested == {"data": {"input_distribution": {"mean": 600.0}}}
+    whole = unflatten_dict(vars(parser.parse_args(["--data.input_distribution", "Normal(512, 128)"])))
+    assert whole == {"data": {"input_distribution": "Normal(512, 128)"}}
+
+
+# Setting the whole value and one of its fields in the same command is ambiguous. Input: both
+# '--data.input_distribution "Normal(512, 128)"' and '--data.input_distribution.mean 600'. Expected: a ValueError
+# naming the conflict, in either key order.
+def test_whole_value_and_field_flags_conflict() -> None:
+    import pytest
+
+    from inference_perf.utils.cli_parser import unflatten_dict
+
+    for flat in (
+        {"data.input_distribution": "Normal(512, 128)", "data.input_distribution.mean": "600"},
+        {"data.input_distribution.mean": "600", "data.input_distribution": "Normal(512, 128)"},
+    ):
+        with pytest.raises(ValueError, match="set the whole value or its fields, not both"):
+            unflatten_dict(flat)

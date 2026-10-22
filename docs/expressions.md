@@ -8,10 +8,42 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 
 ## Where expressions are accepted
 
-No config field accepts an expression yet. Fields are listed here as they are added, each linking to its own docs.
-
 | Field | `t` | Random | Rule |
 | --- | --- | --- | --- |
+| [`load.stages[].rate`](./config.md#rate-expressions) (constant, poisson) | yes | no | Nonnegative over the stage and not zero everywhere. |
+| [`load.stages[].stop_condition`](./config.md#stop-conditions) (constant, poisson) | yes | no | A [condition](#conditions). |
+| [`data.input_distribution`, `data.output_distribution`](./config.md#data-generation) | no | yes | Rounded to whole tokens. |
+| [`data.shared_prefix.system_prompt_len`, `question_len`, `output_len`](./config.md#data-generation) | no | yes | Rounded to whole tokens. |
+| [`data.conversation_replay` knobs](./conversation_replay.md#configuration-guide) | no | yes | Counts rounded; `tool_call_latency_sec` keeps fractions. |
+| [`data.synthetic_agentic` knobs and `context_compaction`](./synthetic_agentic.md) | no | yes | Counts rounded; latencies keep fractions. |
+| [`data.multimodal.*.count`](./config.md#multimodal-data-generation) | no | yes | Rounded to whole items. |
+| [`data.multimodal.*.insertion_point`](./config.md#multimodal-data-generation) | no | yes | Provably within [0, 1]. |
+
+A whole-number field also takes a bare number, which is a fixed value. A uniform over whole numbers
+is `Uniform(0.5, 3.5)`: after rounding, 1, 2 and 3 each have the same weight, where `Uniform(1, 3)`
+gives the two ends half the weight of the middle.
+
+## Legacy distribution blocks
+
+Every field above except `rate` and `stop_condition` used to take a `{type, min, max, mean, std_dev}`
+block. The block is deprecated: it still loads, rewritten to the expression it stood for, and the log
+shows that expression so the config can be updated. The block's `min` and `max` become a `Min`/`Max`
+clamp, `variance` becomes the `std_dev` it implies, and `total_count` is ignored because the number of
+values to pre-generate comes from the load stages.
+
+| Block | Expression |
+| --- | --- |
+| `{type: fixed, mean: 99.9}` | `99` (the truncated mean, as a bare number) |
+| `{mean: 512, std_dev: 200, min: 10, max: 1024}` | `Min(Max(Normal(512, 200), 10), 1024)` |
+| `{type: uniform, min: 10, max: 100}` | `Min(Uniform(10, 101), 100)`, or `Uniform(10, 100)` on `data.input_distribution` and `data.output_distribution` |
+| `{type: lognormal, mean: 150, std_dev: 60, min: 1, max: 4096}` | `Min(Max(LogNormal(4.936, 0.385), 1), 4096)`, the underlying normal's parameters moment-matched to the block's mean and std_dev |
+| `{type: poisson, mean: 3, min: 0, max: 10}` | `Min(Poisson(3), 10)` |
+| `{type: skew_normal, mean: 200, std_dev: 80, skew: 2.5, min: 10, max: 2000}` | `Min(Max(200 + 80*(0.928*Abs(Normal(0, 1)) + 0.371*Normal(0, 1)), 10), 2000)`, the Azzalini two-normal form |
+
+The `data.input_distribution` and `data.output_distribution` fields compile with the parameterisations
+their old sampler used, so a `uniform` there stays `Uniform(min, max)` and a `lognormal` is shifted by
+`min`. Same seed, same config gives the same draws run after run; the draws differ from those the block
+produced before it was compiled this way.
 
 ## Grammar
 
@@ -70,7 +102,7 @@ Not supported yet:
 
 ## Conditions
 
-A condition is a comparison over `t`, used where a field needs something to become true, such as a stage's stop condition. It must be false at `t = 0` and then true from some time onward, and this is proved when the config loads, so a condition reduces to the exact time it becomes true.
+A condition is a comparison over `t`, used where a field needs something to become true, such as a stage's stop condition. It must be false at `t = 0` and then true from some time onward, and this is proved when the config loads, so a condition reduces to the exact time it becomes true. A condition can also read what the stage measures, see [Measured terms](#measured-terms).
 
 | Condition | Ends at (s) |
 | --- | --- |
@@ -100,9 +132,93 @@ A condition may use `+ * /`, powers, `sqrt`, `exp`, `log`, `Min`, `Max`, the fou
 | `Normal(0, 1) >= t` | Random. A condition must be the same on every run. |
 | `requests >= 1000` | `requests` is not a known symbol. |
 
+## Measured terms
+
+A condition can read what the stage measures, so a stage can stop on a latency or error threshold as well as on time. A measured term is a window function over finished requests, written in PromQL's range syntax: `quantile_over_time(0.99, ttft[30s])` is the p99 time to first token of the requests that finished in the last 30 seconds. Terms are evaluated in-process on every finished request, from the same per-request values the report is computed from, so a quantile is the exact quantile of those requests rather than a histogram estimate.
+
+> **Series names are short, not the report's field names.** A condition says `ttft` where the report says `time_to_first_token`, and `latency` where it says `request_latency`. Writing the report's name is rejected with the short name in the error. The table below is the full list. It is checked against the code in both directions, so a series cannot be added, renamed or dropped without this table changing too.
+
+| Series | Report field | Unit | Samples |
+| --- | --- | --- | --- |
+| `latency` | `request_latency` | s | Every successful request: end minus start. |
+| `ttft` | `time_to_first_token` | s | Successful streamed requests. |
+| `tpot` | `time_per_output_token` | s | Successful streamed requests with more than one output token. |
+| `ntpot` | `normalized_time_per_output_token` | s | Successful requests with output tokens. |
+| `schedule_delay` | `schedule_delay` | s | Every request: how late it was sent against its schedule. |
+| `error` | none | 0 or 1 | Every request: 1 if it failed. |
+
+There is no inter-token latency series. The report re-derives each token's timestamp from the raw response chunks when it writes the report, so a value measured during the run would be a different number under the same name.
+
+A window function is `<aggregate>_over_<window>(...)`, and any aggregate works with any window. Like the series table, the two tables below are checked against the code in both directions.
+
+| Aggregate | Reads |
+| --- | --- |
+| `avg` | Mean of the samples. |
+| `min` | Smallest sample. |
+| `max` | Largest sample. |
+| `sum` | Sum of the samples. |
+| `count` | Number of samples. |
+| `stddev` | Population standard deviation, as PromQL computes it. |
+| `quantile` | The q-quantile, with q first and between 0 and 1, interpolated linearly as PromQL does. |
+
+There is no median: use `quantile(0.5, ...)`.
+
+| Window | Selects |
+| --- | --- |
+| `_over_time` | PromQL's window: samples that finished inside a range such as ttft[30s], with optional offset and @. |
+| `_over_last` | Ours: the last n samples, written (series, n). |
+| `_over_sent` | Ours: requests a up to b in the order they were sent, counting from 0, written (series, a, b). |
+
+| Window function | Reads |
+| --- | --- |
+| `quantile_over_time(0.99, ttft[30s])` | p99 TTFT of requests that finished in the last 30 s. |
+| `avg_over_time(latency[10s] offset 10s)` | Mean latency of requests that finished in the 10 s before the last 10 s. |
+| `sum_over_time(error[60s] @ 120)` | Failures that finished between stage seconds 60 and 120. |
+| `avg_over_last(latency, 100)` | Mean latency of the last 100 successful requests. |
+| `quantile_over_last(0.9, ttft, 50)` | p90 TTFT of the last 50 streamed requests. |
+| `avg_over_sent(ttft, 10, 30)` | Mean TTFT of the 11th to 30th request sent. |
+
+A range is a PromQL duration: `500ms`, `30s`, `5m`, `1h`, `1m30s`. `offset` moves the range back. `@` ends the range at a stage second, the same clock as `t`. That differs from PromQL, where `@` takes a unix timestamp. Subqueries (`[30s:5s]`) are not supported.
+
+A term has no value until its window is complete, and a comparison on a term with no value is false, so the rest of the condition decides. A time range is complete once it lies inside the stage, so `ttft[30s]` has no value before `t = 30`. `_over_last(series, n)` needs `n` samples. `_over_sent(series, a, b)` needs every request from `a` up to `b` to finish, and a failed request counts as finished even though it has no latency. A window with no samples has no value either.
+
+A condition can also read these signals directly, with no window.
+
+| Signal | Reads |
+| --- | --- |
+| `completed` | Requests finished so far in the stage, successes and failures. |
+| `errors` | Failed requests so far in the stage. |
+| `in_flight` | Requests sent and not yet finished. |
+| `since_last_completion` | Seconds since a request last finished, or since the stage started if none has. |
+
+A measured term is the system under test, so it cannot be solved like `t`. The time part of the condition is still proved when the config loads, twice. With every measured comparison false the condition must still become true on time alone: that is the time the stage ends by. With every measured comparison true it must again become true from some time onward: that is the earliest a measured term can end the stage. So a measured term can only end a stage early, never leave it without an end.
+
+| Condition | Ends by (s) | Can end from (s) |
+| --- | --- | --- |
+| `(t >= 600) \| (quantile_over_time(0.99, ttft[30s]) > 2)` | 600 | 0 |
+| `((t >= 60) & (avg_over_last(latency, 100) > 1)) \| (t >= 600)` | 600 | 60 |
+| `(t >= 300) \| (errors >= 10)` | 300 | 0 |
+| `(t >= 300) \| (avg_over_last(error, 100) > 0.05)` | 300 | 0 |
+| `(t >= 900) \| (avg_over_time(latency[10s]) > 1.5*avg_over_time(latency[10s] offset 10s))` | 900 | 0 |
+| `(t >= 900) \| (avg_over_last(ttft, 20) > 2*avg_over_sent(ttft, 10, 30))` | 900 | 0 |
+| `(t >= 600) \| ((in_flight > 0) & (since_last_completion > 30))` | 600 | 0 |
+
+| Rejected condition | Why |
+| --- | --- |
+| `quantile_over_time(0.99, ttft[30s]) > 2` | Cannot end on time alone. Write `(t >= 600) \| (...)`. |
+| `(t >= 60) & (avg_over_last(ttft, 50) > 2)` | Same: with the term false it never becomes true. |
+| `(t >= 600) \| (ttft > 2)` | A series is not a value. Read it through a window function, such as `avg_over_last(ttft, 100)`. |
+| `(t >= 600) \| (avg_over_time(time_to_first_token[30s]) > 2)` | The report's field name. The series is `ttft`. |
+| `(t >= 600) \| (median_over_time(ttft[30s]) > 2)` | No median. Use `quantile_over_time(0.5, ttft[30s])`. |
+| `(t >= 600) \| (avg_over_time(ttft[30s:5s]) > 2)` | Subqueries are not supported. |
+| `(t >= 600) \| (avg_over_time(ttft[10s] @ start()) > 2)` | `@` takes a stage second. |
+| `(t >= 600) or (avg_over_last(ttft, 50) > 2)` | Combine comparisons with `\|` and `&`, not `or` and `and`. |
+
 ## Value ranges
 
 A field can restrict the values an expression may take, for example a rate must not be negative. A value that can provably fall outside the range is rejected when the config loads; one that can only be caught while sampling raises then. Fields that would rather truncate random draws say so in their own docs.
+
+Every length, count and duration field clamps random draws at 0: `Normal(50, 40)` as a token length never yields a negative count, it yields 0 for the mass below zero. A constant below zero, such as `-5`, is rejected when the config loads. Clamping piles that mass onto 0, so an expression that often crosses zero is better written with its own floor, for example `Max(Normal(50, 40), 1)`.
 
 Some fields need an expression's largest possible value, for example to check that a request fits the model's context. That bound is worked out from the expression: each random variable contributes its support, and `Min`, `Max`, `Abs` and arithmetic combine them. The bound can be wider than the true range but never narrower. An expression with no finite upper bound, such as a bare `Normal(50, 10)`, can be capped with `Min(...)`.
 

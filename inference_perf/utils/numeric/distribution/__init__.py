@@ -11,6 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .utils import generate_distribution, sample_from_distribution
+from .utils import (
+    compile_legacy_distribution,
+    distribution_to_expression,
+    generate_distribution,
+    sample_from_distribution,
+    sample_lengths,
+    sample_values,
+    value_bounds,
+    value_ceiling,
+)
 
-__all__ = ["generate_distribution", "sample_from_distribution"]
+__all__ = [
+    "compile_legacy_distribution",
+    "distribution_to_expression",
+    "generate_distribution",
+    "sample_from_distribution",
+    "sample_lengths",
+    "sample_values",
+    "value_bounds",
+    "value_ceiling",
+]

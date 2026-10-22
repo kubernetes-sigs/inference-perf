@@ -34,14 +34,11 @@ In inference-perf, set `server.ignore_eos: true` and a fixed output distribution
 server:
   ignore_eos: true
 data:
-  output_distribution:
-    type: fixed
-    mean: 1024        # every request asks for exactly this many tokens
-    total_count: 1000
+  output_distribution: 1024        # every request asks for exactly this many tokens
 ```
 
-`type: fixed` emits `mean` for every request. The default is `type: normal` with a nonzero
-`std_dev`, so a config that does not say otherwise is sending a distribution, not a length.
+A bare number is a fixed length. An expression such as `"Normal(1024, 200)"` is a distribution,
+so a config written that way is sending a distribution, not a length.
 
 ## Input length and the range-ratio footgun
 
@@ -60,7 +57,7 @@ throughput gap, and it is the fixture the parity harness in #481 is built around
 strings printed by a serving container describe the engine, not the vendored benchmark script,
 so check the behavior rather than the version when a container is involved.
 
-The same care applies to inference-perf's `data.input_distribution`: pin it with `type: fixed`
+The same care applies to inference-perf's `data.input_distribution`: pin it to a bare number
 when the goal is comparability rather than a realistic mix.
 
 ## Warmup and the measurement window
@@ -113,8 +110,8 @@ read from.
 | Poisson arrivals at a rate | `load.type: poisson`, `stages[].rate` | `--request-rate` (default `--burstiness 1.0`) | `--request-rate` (default `--arrival-pattern poisson`) |
 | Fixed requests in flight | `load.type: concurrent`, `stages[].concurrency_level` | `--max-concurrency` | `--concurrency` |
 | How much load to send | `stages[].duration`, or `num_requests` under `concurrent` | `--num-prompts` | `--request-count`, or `--benchmark-duration` |
-| Input length | `data.input_distribution` (`type: fixed`, `mean`) | `--random-input-len` with `--random-range-ratio 0` | `--isl` with `--isl-stddev 0` |
-| Output length | `data.output_distribution` (`type: fixed`, `mean`) | `--random-output-len` with `--random-range-ratio 0` | `--osl` with `--osl-stddev 0` |
+| Input length | `data.input_distribution` (a bare number) | `--random-input-len` with `--random-range-ratio 0` | `--isl` with `--isl-stddev 0` |
+| Output length | `data.output_distribution` (a bare number) | `--random-output-len` with `--random-range-ratio 0` | `--osl` with `--osl-stddev 0` |
 | Generate to the length cap | `server.ignore_eos: true` | `--ignore-eos` | `--extra-inputs ignore_eos:true` |
 | Streaming | `api.streaming` | fixed by the endpoint, no flag | `--streaming` |
 | Tokenizer | `tokenizer.pretrained_model_name_or_path` | `--tokenizer` | `--tokenizer` |
@@ -148,8 +145,8 @@ a converted config still needs reading:
   is `[len * (1 - r), len * (1 + r)]` and the tool asserts `r < 1.0`, so the pre-v0.8.4
   fixed-length recipe of `1.0` now fails loudly instead of silently producing a different
   workload.
-- **Nobody's defaults agree.** inference-perf distributions default to `type: normal` with a
-  nonzero `std_dev`, AIPerf's `--isl-stddev` and `--osl-stddev` default to `0` (fixed) with
+- **Nobody's defaults agree.** An inference-perf length written as a distribution expression has
+  whatever spread the expression says, AIPerf's `--isl-stddev` and `--osl-stddev` default to `0` (fixed) with
   `--isl` defaulting to 550, and vLLM's range ratio defaults to `0` (fixed) at this version.
   A comparison of two default configs compares three different workloads.
 - **Only AIPerf can exclude a warmup.** Its warmup requests are sent and dropped; inference-perf
