@@ -103,6 +103,19 @@ load:
   worker_max_concurrency: 250
 ```
 
+### Generate a specific arrival pattern
+
+Set `request_interval` instead of `rate` to choose how requests are spaced: a number sends them exactly that many seconds apart, and a distribution draws each gap. `request_interval: "Exponential(r)"` is a Poisson process at `r` requests per second; a gamma gap with shape below 1 sends the same average load in bursts. Leave `load.type` out, since the gap distribution is the arrival process. See [Request interval](./config.md#request-interval) for the forms accepted.
+
+```yaml
+load:
+  stages:
+  - request_interval: "Exponential(100)"   # 100 per second on average, Poisson spaced
+    duration: 60
+  num_workers: 32
+  worker_max_concurrency: 250
+```
+
 ### Generate load with fixed concurrency levels
 
 Use the `concurrent` load type when you want to specify exact concurrency levels rather than request rates. This is ideal for testing how your system performs under specific concurrent user loads.
