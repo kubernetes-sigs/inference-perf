@@ -84,6 +84,8 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     convert_wire_file,
     detect_trace_format,
     iter_otel_jsonl_traces,
+    trace_stem,
+    trace_suffix,
 )
 from inference_perf.datagen.replay.trace_source import (
     HFDatasetTraceSource,
@@ -205,7 +207,8 @@ def _normalize_file_trace(
     normalized = dict(data)
 
     if "session_id" not in normalized:
-        fallback = Path(source_name).stem if row_index is None else f"{Path(source_name).stem}_{row_index}"
+        stem = trace_stem(Path(source_name))
+        fallback = stem if row_index is None else f"{stem}_{row_index}"
         normalized["session_id"] = normalized.get("trace_id") or fallback
 
     normalized["source_id"] = source_path
@@ -441,9 +444,9 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             if not trace_dir.is_dir():
                 raise ValueError(f"Trace directory path is not a directory: {trace_dir}")
 
-            trace_files = sorted(p for p in trace_dir.glob("*.json*") if p.suffix in TRACE_FILE_SUFFIXES)
+            trace_files = sorted(p for p in trace_dir.glob("*.json*") if trace_suffix(p) in TRACE_FILE_SUFFIXES)
             if not trace_files:
-                raise ValueError(f"No .json or .jsonl files found in {trace_dir}")
+                raise ValueError(f"No .json or .jsonl files (optionally .zst) found in {trace_dir}")
 
             source_label = self.otel_config.trace_directory
             self._trace_source: TraceSource = LocalTraceSource(
@@ -468,8 +471,8 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                     raise ValueError(f"Trace file does not exist: {trace_file}")
                 if not trace_file.is_file():
                     raise ValueError(f"Trace file path is not a file: {trace_file}")
-                if trace_file.suffix not in TRACE_FILE_SUFFIXES:
-                    raise ValueError(f"Trace file must be a .json or .jsonl file: {trace_file}")
+                if trace_suffix(trace_file) not in TRACE_FILE_SUFFIXES:
+                    raise ValueError(f"Trace file must be a .json or .jsonl file, optionally .zst: {trace_file}")
 
             source_label = str(self.otel_config.trace_files)
             self._trace_source = LocalTraceSource(
