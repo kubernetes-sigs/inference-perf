@@ -513,3 +513,56 @@ def test_tool_mismatch_absolute_and_relative_boundaries(client: int, server: int
 
     metric = metric_for_chunks([2], ["x" * client], server)
     assert correct_streamed_response_metrics(metric, cast(CustomTokenizer, CharacterTokenizer())) is mismatch
+
+
+@pytest.mark.asyncio
+async def test_null_function_preserves_id_through_replay_successor() -> None:
+    from inference_perf.datagen.replay.replay_graph_types import InputSegment
+
+    predecessor = api("chat_replay")
+    assert isinstance(predecessor, SessionChatCompletionAPIData)
+    predecessor.total_events_in_session = 2
+    events = [
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_live", "function": None}]}}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "ping", "arguments": "{}"}}]}}]},
+    ]
+    info = await predecessor.process_response(
+        cast(ClientResponse, Response({}, events)),
+        APIConfig(type=APIType.Chat, streaming=True),
+        cast(CustomTokenizer, CharacterTokenizer()),
+    )
+    assert isinstance(info, SessionInferenceInfo)
+    assert info.output_message is not None
+    assert info.output_message["tool_calls"][0]["id"] == "call_live"
+    assert isinstance(info.response_metrics, StreamedResponseMetrics)
+    assert info.response_metrics.output_tokens == len("ping{}")
+    assert len(info.response_metrics.tool_chunks) == 1  # ID-only delta is not generated output.
+
+    original: list[dict[str, Any]] = [
+        {"role": "user", "content": "ping"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "recorded", "type": "function", "function": {"name": "ping", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "recorded", "content": "pong"},
+    ]
+    successor = SessionChatCompletionAPIData(
+        messages=[ChatMessage(**message) for message in original],
+        original_messages=original,
+        event_id="s:next",
+        registry=predecessor.registry,
+        worker_tracker=predecessor.worker_tracker,
+        completion_queue=None,
+        total_events_in_session=2,
+        predecessor_event_ids=[predecessor.event_id],
+        input_segments=[
+            InputSegment(type="unique", message_count=1, token_count=1),
+            InputSegment(type="output", message_count=1, token_count=1, source_event_id=predecessor.event_id),
+            InputSegment(type="unique", message_count=1, token_count=1),
+        ],
+    )
+    await successor.wait_for_predecessors_and_substitute()
+    body = await successor.to_request_body("test", 100, False, True)
+    assert body["messages"][1]["tool_calls"][0]["id"] == "call_live"
+    assert body["messages"][2]["tool_call_id"] == "call_live"
