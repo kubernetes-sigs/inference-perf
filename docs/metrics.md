@@ -147,6 +147,10 @@ produces neither mismatch. The separate counter and tolerance keep template-toke
 and fragment-tokenization differences from drowning the text-turn signal. Expected
 template overhead, especially across multiple calls, can still exceed this threshold; a
 nonzero count is a diagnostic, not proof of an accounting bug.
+Per-request token-agreement validation uses the same absolute and relative tolerances
+for streamed records marked `has_tool_calls`. It compares assembled client counts,
+while the summary compares the fragment timeline, so fragmentation can still make
+the findings differ. Other per-request records retain their existing relative check.
 The 16-token floor covers the 13–14 token gaps measured for three single-call
 outputs rendered with the [Hermes 3 tool-use template](https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-8B/blob/896ea440e5a9e6070e3d8a2774daf2b481ab425b/tokenizer_config.json)
 and its tokenizer (empty, short, and long arguments). This is a template check,

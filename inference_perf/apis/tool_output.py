@@ -35,6 +35,9 @@ def chat_tool_calls(message: Any) -> list[dict[str, Any]]:
         if not isinstance(call, dict):
             continue
         function = call.get("function", {})
+        # ID-only deltas can explicitly carry a null function. Keep their metadata.
+        if function is None:
+            function = {}
         index = call.get("index", position)
         if not isinstance(function, dict) or type(index) is not int or index < 0:
             continue
