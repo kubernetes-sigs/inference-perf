@@ -680,17 +680,17 @@ def zst(path: Path) -> Path:
 
 
 @pytest.mark.parametrize(
-    "name, docs",
+    "name, text",
     [
-        ("a.json", [otel_trace()]),
-        ("a.json", [otel_trace(trace_id=None)]),  # no ids: the session is named after the file
-        ("calls.jsonl", [chat_record("s-1"), chat_record("s-1")]),
+        ("a.json", json.dumps(otel_trace())),
+        ("a.json", json.dumps(otel_trace(), indent=2)),  # pretty-printed: parsed whole, not by line
+        ("a.json", json.dumps(otel_trace(trace_id=None))),  # no ids: the session is named after the file
+        ("calls.jsonl", "".join(json.dumps(r) + "\n" for r in [chat_record("s-1"), chat_record("s-1")])),
     ],
 )
-def test_zst_file_loads_the_same_records_as_the_file_it_compresses(
-    tmp_path: Path, name: str, docs: List[Dict[str, Any]]
-) -> None:
-    plain = write_jsonl(tmp_path / name, docs)
+def test_zst_file_loads_the_same_records_as_the_file_it_compresses(tmp_path: Path, name: str, text: str) -> None:
+    plain = tmp_path / name
+    plain.write_text(text, encoding="utf-8")
     plain_source, zst_source = source_for([plain]), source_for([zst(plain)])
 
     assert [r.trace_format for r in zst_source.records] == [r.trace_format for r in plain_source.records]
@@ -718,14 +718,20 @@ def test_unreadable_zst_is_a_trace_read_error(tmp_path: Path) -> None:
             source_for([path])
 
 
+@pytest.mark.parametrize("via", ["trace_directory", "trace_files"])
 @pytest.mark.parametrize(
     "name, accepted",
     [("a.json.zst", True), ("calls.jsonl.zst", True), ("foo.zst", False), ("foo.txt.zst", False), ("a.json.gz", False)],
 )
-def test_trace_directory_takes_zst_of_json_and_jsonl_only(tmp_path: Path, name: str, accepted: bool) -> None:
+def test_zst_of_json_and_jsonl_only_is_taken(tmp_path: Path, name: str, accepted: bool, via: str) -> None:
     doc = chat_record("s-1") if name.startswith("calls") else otel_trace()
     (tmp_path / name).write_bytes(zstd.compress((json.dumps(doc) + "\n").encode()))
-    config = DataConfig(type="otel_trace_replay", otel_trace_replay=OTelTraceReplayConfig(trace_directory=str(tmp_path)))
+    replay = (
+        OTelTraceReplayConfig(trace_directory=str(tmp_path))
+        if via == "trace_directory"
+        else OTelTraceReplayConfig(trace_files=[str(tmp_path / name)])
+    )
+    config = DataConfig(type="otel_trace_replay", otel_trace_replay=replay)
 
     def generator() -> OTelTraceReplayDataGenerator:
         return OTelTraceReplayDataGenerator(
@@ -735,5 +741,5 @@ def test_trace_directory_takes_zst_of_json_and_jsonl_only(tmp_path: Path, name: 
     if accepted:
         assert len(generator().sessions) == 1
     else:
-        with pytest.raises(ValueError, match="No .json or .jsonl files"):
+        with pytest.raises(ValueError, match=r"\.json or \.jsonl file"):
             generator()
