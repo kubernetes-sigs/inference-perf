@@ -265,9 +265,13 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         # Closed-loop replenishment: when a conversation finishes all its turns,
         # reset the session so the slot immediately starts a fresh conversation.
+        # The id carries the stage because get_data() restarts data_index at 0 every
+        # stage while the slot keeps its previous id: without it, a stage-1 slot
+        # re-primed as slot_0_convo_1 would roll over onto slot_0_convo_1 again
+        # instead of starting a new conversation.
         if turn_idx == 0 and round_num > 0:
             self.user_sessions[conv_idx] = self._new_session(
-                user_session_id=f"slot_{conv_idx}_convo_{convo_num}",
+                user_session_id=f"stage_{data.stage_id}_slot_{conv_idx}_convo_{convo_num}",
                 context=bp.system_prompt,
                 system_prompt=bp.system_prompt,
             )
@@ -300,16 +304,14 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
     # -- Internal ---------------------------------------------------------
 
     def _new_session(self, user_session_id: str, context: str, system_prompt: str = "") -> LocalUserSession:
-        # A session id must map to exactly one object. load_lazy_data() runs once
-        # per request at dispatch time, so it is called repeatedly for the same
-        # slot and convo_num and asks for an id that already exists. Requests
-        # resolve their session by id late (UserSessionCompletionAPIData.
-        # user_session), so replacing the object would leave a request reading
-        # context from the old one and writing its response to the new one: turns
-        # parked in get_context() are never woken (the stage then hangs forever),
-        # and a straggler's response lands in the wrong conversation's history.
-        # Reuse means the id keeps its conversation, and repeated calls for one
-        # data_index are idempotent.
+        # A session id must map to exactly one object. Requests resolve their
+        # session by id late (UserSessionCompletionAPIData.user_session), so
+        # replacing the object for a live id would leave an in-flight request
+        # reading context from the old one and writing its response to the new
+        # one: turns parked in get_context() are never woken (the stage then hangs
+        # forever), and a straggler's response lands in the wrong conversation's
+        # history. Reusing the registered object keeps load_lazy_data() idempotent
+        # per data_index.
         existing = LocalUserSession._instances.get(user_session_id)
         if existing is not None:
             return existing

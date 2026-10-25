@@ -646,20 +646,25 @@ class TestSlidingWindowTruncation:
 class TestRolloverDoesNotOrphanWaiters:
     """A session id must map to exactly one object.
 
-    `load_lazy_data` runs per request at dispatch time, so it is called
-    repeatedly for the same slot and `convo_num` and asks `_new_session` for an
-    id that already exists. Requests resolve their session by id late
+    Requests resolve their session by id late
     (`UserSessionCompletionAPIData.user_session`), so replacing the object for a
     live id splits a request across two of them: it reads context from the old
     object and writes its response to the new one.
 
-    Two consequences, both covered below. A turn parked on the old object's
+    In a real run the collision comes from the stage boundary. `get_data()`
+    restarts `data_index` at 0 every stage while each slot keeps the id it
+    rolled over to, so a stage-1 slot is re-primed as the stage-0 rolled-over
+    conversation and its first rollover used to compute that same id again,
+    with earlier turns still in flight.
+
+    Consequences covered below. A turn parked on the old object's
     `asyncio.Future` is never woken, because every later release targets the new
     object — the stage's finished-request counter never reaches `num_requests`
-    and the run hangs silently with no traceback (the failure reported in
-    llm-d-benchmark#1688 with the `interactive-chat` workload). And a straggler
+    and the run hangs silently with no traceback (#700, and likely
+    llm-d-benchmark#1688 with the `interactive-chat` workload). A straggler
     that does complete writes its response into the wrong conversation's
-    history.
+    history. And a rollover that reuses the live id instead of starting fresh
+    makes every later stage replay conversations longer than the blueprint.
     """
 
     @staticmethod
@@ -684,11 +689,11 @@ class TestRolloverDoesNotOrphanWaiters:
         gen = self._fixed_turn_gen()
         idx = self._rollover_index(gen)
 
-        # First dispatch performs the rollover and registers slot_0_convo_1.
+        # First dispatch performs the rollover and registers stage_0_slot_0_convo_1.
         gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
         live = gen.user_sessions[0]
         sid = live.user_session_id
-        assert sid == "slot_0_convo_1"
+        assert sid == "stage_0_slot_0_convo_1"
 
         # Turn A acquires the session; turn B queues behind it.
         await live.get_context(0)
@@ -802,11 +807,11 @@ class TestRolloverDoesNotOrphanWaiters:
         """Re-priming a rolled-over slot in a later stage must set system_prompt.
 
         `LoadGenerator` calls `clear_instances()` between stages, so the next
-        dispatch re-primes the slot under its rolled-over id. If that session is
-        built without a `system_prompt`, `update_context` takes its
-        `else` branch (`user_session.py:85`) and assigns the raw response to
-        `context` — silently disabling history tracking and the
-        `max_model_len` sliding window for the rest of the run.
+        stage's first dispatch for the slot re-primes it under its rolled-over
+        id. If that session is built without a `system_prompt`,
+        `update_context` takes its `else` branch and assigns the raw response
+        to `context` — silently disabling history tracking and the
+        `max_model_len` sliding window until the slot's next rollover.
         """
         gen = self._fixed_turn_gen()
         idx = self._rollover_index(gen)
@@ -814,13 +819,13 @@ class TestRolloverDoesNotOrphanWaiters:
         # Stage 0: roll slot 0 over onto a fresh conversation.
         gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0, stage_id=0))
         rolled_over_id = gen.user_sessions[0].user_session_id
-        assert rolled_over_id == "slot_0_convo_1"
+        assert rolled_over_id == "stage_0_slot_0_convo_1"
 
         # LoadGenerator clears the registry between stages.
         LocalUserSession.clear_instances()
 
-        # Stage 1: the same slot is re-primed under its rolled-over id.
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0, stage_id=1))
+        # Stage 1 restarts data_index at 0, so the slot is re-primed under its rolled-over id.
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=1))
         session = LocalUserSession.get_instance(rolled_over_id)
 
         assert session.system_prompt, (
@@ -833,3 +838,80 @@ class TestRolloverDoesNotOrphanWaiters:
         # History tracking is live: a response is split into a new turn.
         session.update_context(f"{session.system_prompt} a new turn")
         assert session.history == ["a new turn"], f"history tracking is disabled after the stage boundary: {session.history}"
+
+    async def test_later_stage_rollover_does_not_orphan_queued_waiter(self) -> None:
+        """The real-run trigger: a stage-1 rollover must not orphan the slot's in-flight turns.
+
+        Stage 1 re-primes the slot under its stage-0 rolled-over id. Its first
+        rollover must not rebind that id while a turn holds the session and
+        another is parked behind it.
+        """
+        gen = self._fixed_turn_gen()
+        n_conv = len(gen.blueprints)
+        idx = self._rollover_index(gen)
+
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0, stage_id=0))
+        LocalUserSession.clear_instances()
+
+        # Stage 1, turns 0 and 1 of slot 0: A holds the session, B is parked behind it.
+        first = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=1))
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=n_conv, preferred_worker_id=0, stage_id=1))
+        assert isinstance(first, _ConversationReplayAPIData)
+        sid = first.user_session_id
+        held = LocalUserSession.get_instance(sid)
+        await held.get_context(0)
+        waiter = asyncio.ensure_future(held.get_context(1))
+        await asyncio.sleep(0)
+
+        # Slot 0 rolls over while A and B are still in flight.
+        rolled = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0, stage_id=1))
+        assert isinstance(rolled, _ConversationReplayAPIData)
+        assert rolled.user_session_id != sid, f"stage-1 rollover reused the in-flight id {sid!r}"
+
+        # A completes through the registry, as the client path resolves it.
+        LocalUserSession.get_instance(sid).update_context(f"{held.system_prompt} A done")
+
+        try:
+            await asyncio.wait_for(waiter, timeout=0.5)
+        except asyncio.TimeoutError:
+            waiter.cancel()
+            pytest.fail(
+                f"turn parked on {sid!r} was orphaned by the stage-1 rollover: the stage hangs "
+                "forever waiting for a request that can never complete (#700)."
+            )
+        assert LocalUserSession.get_instance(sid) is held
+
+    def test_later_stage_rollover_starts_a_fresh_conversation(self) -> None:
+        """Every rollover, in every stage, must start the slot on an empty history.
+
+        Reusing a live id at the stage-1 rollover would keep appending to the
+        conversation already on the slot, so later stages replay conversations
+        longer than the blueprint and send ever-growing contexts.
+        """
+        gen = self._fixed_turn_gen()
+        n_conv = len(gen.blueprints)
+        num_turns = gen.blueprints[0].num_turns
+        requests_per_stage = 3 * num_turns * n_conv  # three conversations per slot
+
+        for stage_id in range(3):
+            LocalUserSession.clear_instances()
+            seen_ids: set[str] = set()
+            for data_index in range(requests_per_stage):
+                data = gen.load_lazy_data(
+                    LazyLoadInferenceAPIData(data_index=data_index, preferred_worker_id=data_index % n_conv, stage_id=stage_id)
+                )
+                assert isinstance(data, _ConversationReplayAPIData)
+                conv_idx = data_index % n_conv
+                turn_idx = (data_index // n_conv) % gen.blueprints[conv_idx].num_turns
+                session = LocalUserSession.get_instance(data.user_session_id)
+                assert len(session.history) == turn_idx, (
+                    f"stage {stage_id} data_index {data_index}: turn {turn_idx} of {data.user_session_id!r} "
+                    f"would be sent with {len(session.history)} prior turns"
+                )
+                if turn_idx == 0:
+                    assert data.user_session_id not in seen_ids, (
+                        f"stage {stage_id}: rollover reused {data.user_session_id!r} instead of a fresh id"
+                    )
+                seen_ids.add(data.user_session_id)
+                # Complete the turn so the next one sees its history.
+                session.update_context(f"{session.context} reply {data_index}")
