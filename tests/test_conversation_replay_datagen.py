@@ -171,17 +171,137 @@ class TestConversationReplayDataGenerator:
         assert body["prompt"] == "SYSTEM  TURN"
 
     def test_turn_recycling(self) -> None:
-        """When data_index exceeds total turns, it wraps around."""
-        api_config, data_config = _make_config(num_conversations=2, turns_min=3, turns_max=3, turns_mean=3)
+        """A completed slot wraps to a fresh conversation after its final turn."""
+        api_config, data_config = _make_config(num_conversations=1, turns_min=3, turns_max=3, turns_mean=3)
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
 
-        # Conversation 0 has 3 turns. data_index=0 -> round 0, turn 0
-        # data_index=2 -> conv 0, round 1, turn 1
-        # data_index=6 -> conv 0, round 3, turn 0 (recycled)
-        lazy = LazyLoadInferenceAPIData(data_index=6, preferred_worker_id=0)
-        result = gen.load_lazy_data(lazy)
-        assert isinstance(result, _ConversationReplayAPIData)
-        assert result.target_round == 3  # 6 // 2 = 3
+        requests = []
+        for data_index in range(4):
+            request = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=data_index, preferred_worker_id=0))
+            assert isinstance(request, _ConversationReplayAPIData)
+            requests.append(request)
+            request.on_request_finished()
+
+        assert [request.target_round for request in requests] == [0, 1, 2, 3]
+        assert [request.user_session_id for request in requests] == ["conv_0"] * 3 + ["slot_0_convo_1"]
+
+    def test_completed_conversation_replenishes_a_busy_queue_slot(self) -> None:
+        """A ready conversation advances instead of waiting behind the fixed queue order."""
+        api_config, data_config = _make_config(num_conversations=3, turns_min=2, turns_max=2, turns_mean=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        first_round = [gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=i, preferred_worker_id=i)) for i in range(3)]
+        ready = first_round[2]
+        assert isinstance(ready, _ConversationReplayAPIData)
+        ready.on_request_finished()
+
+        # The next fixed token names slot 0, which is still busy. Slot 2 is ready
+        # and must advance immediately instead of consuming capacity waiting on 0.
+        replenished = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=3, preferred_worker_id=0))
+        assert isinstance(replenished, _ConversationReplayAPIData)
+        assert replenished.user_session_id == "conv_2"
+        assert replenished.target_round == 1
+
+    def test_ready_conversation_preserves_the_active_set(self) -> None:
+        """A ready slot wins over an unseen slot when concurrency is below the pool size."""
+        api_config, data_config = _make_config(num_conversations=3, turns_min=2, turns_max=2, turns_mean=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        first = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        second = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1))
+        assert isinstance(first, _ConversationReplayAPIData)
+        assert isinstance(second, _ConversationReplayAPIData)
+        first.on_request_finished()
+
+        third = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=2))
+        assert isinstance(third, _ConversationReplayAPIData)
+        assert third.user_session_id == "conv_0"
+        assert third.target_round == 1
+
+    def test_materialization_failure_does_not_skip_a_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        api_config, data_config = _make_config(num_conversations=1, turns_min=1, turns_max=1, turns_mean=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        first = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        first.on_request_finished()
+
+        original_new_session = gen._new_session
+        monkeypatch.setattr(gen, "_new_session", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+        with pytest.raises(RuntimeError, match="boom"):
+            gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=0))
+
+        monkeypatch.setattr(gen, "_new_session", original_new_session)
+        retried = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0))
+        assert isinstance(retried, _ConversationReplayAPIData)
+        assert retried.target_round == 1
+
+    def test_rollover_waits_for_the_previous_conversation_to_finish(self) -> None:
+        """A slot gets a fresh session only after its final old turn completes."""
+        api_config, data_config = _make_config(num_conversations=1, turns_min=2, turns_max=2, turns_mean=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        first = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(first, _ConversationReplayAPIData)
+        first.on_request_finished()
+        final = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=0))
+        assert isinstance(final, _ConversationReplayAPIData)
+        assert final.user_session_id == "conv_0"
+        final.on_request_finished()
+
+        rollover = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0))
+        assert isinstance(rollover, _ConversationReplayAPIData)
+        assert rollover.user_session_id == "slot_0_convo_1"
+        assert rollover.target_round == 2
+
+    def test_request_finished_is_idempotent(self) -> None:
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        request = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(request, _ConversationReplayAPIData)
+
+        request.on_request_finished()
+        request.on_request_finished()
+
+        assert list(gen._ready_slots) == [0]
+
+    async def test_request_finished_releases_a_session_lock_after_early_failure(self) -> None:
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        request = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(request, _ConversationReplayAPIData)
+        session = request.user_session
+        await session.get_context(request.target_round)
+        assert session._in_flight is not None and session._in_flight.locked()
+
+        request.on_request_finished()
+
+        assert not session._in_flight.locked()
+        assert list(gen._ready_slots) == [0]
+
+    async def test_request_finished_releases_slot_when_session_cleanup_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        request = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(request, _ConversationReplayAPIData)
+        session = request.user_session
+        await session.get_context(request.target_round)
+
+        def fail_cleanup(context: str) -> None:
+            raise RuntimeError("cleanup failed")
+
+        monkeypatch.setattr(session, "update_context", fail_cleanup)
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            request.on_request_finished()
+
+        assert session._in_flight is not None and not session._in_flight.locked()
+        assert list(gen._ready_slots) == [0]
+
+    def test_no_ready_conversation_fails_instead_of_waiting_with_capacity(self) -> None:
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+
+        with pytest.raises(RuntimeError, match="no ready conversation"):
+            gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=0))
 
     def test_requires_tokenizer(self) -> None:
         api_config, data_config = _make_config()

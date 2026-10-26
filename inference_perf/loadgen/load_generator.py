@@ -449,6 +449,10 @@ class Worker(mp.Process):
                         with self.active_requests_counter.get_lock():
                             if inflight:
                                 self.active_requests_counter.value -= 1
+                        try:
+                            request_data.on_request_finished()
+                        except Exception:
+                            logger.exception("[Worker %d] request finalization failed", self.id)
                         if not inflight:
                             # Retired without being sent: the session had already
                             # failed, the stage was winding down, or the task was
