@@ -310,10 +310,11 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         # reading context from the old one and writing its response to the new
         # one: turns parked in get_context() are never woken (the stage then hangs
         # forever), and a straggler's response lands in the wrong conversation's
-        # history. Reusing the registered object keeps load_lazy_data() idempotent
-        # per data_index.
+        # history. Reuse only a session this generator owns: the registry is
+        # process-global, so another generator's entry under the same id carries
+        # that generator's system prompt, history and limits.
         existing = LocalUserSession._instances.get(user_session_id)
-        if existing is not None:
+        if existing is not None and any(existing is owned for owned in self.user_sessions):
             return existing
         session = LocalUserSession(
             user_session_id=user_session_id,

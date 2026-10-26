@@ -922,3 +922,34 @@ class TestRolloverDoesNotOrphanWaiters:
                 seen_ids.add(data.user_session_id)
                 # Complete the turn so the next one sees its history.
                 session.update_context(f"{session.context} reply {data_index}")
+
+    async def test_successive_generators_do_not_adopt_each_others_sessions(self) -> None:
+        """A second generator in the same process must build its own sessions.
+
+        The registry is process-global and initial ids are fixed (`conv_N`), so a
+        generator built without a registry clear in between finds the previous
+        generator's entries under its ids. Adopting them would carry over that
+        generator's system prompt, history and max_model_len.
+        """
+        api_config, data_config = _make_config(num_conversations=2)
+        first = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        earlier = LocalUserSession.get_instance("conv_0")
+        earlier.update_context(f"{earlier.system_prompt} earlier conversation history")
+
+        assert data_config.conversation_replay is not None
+        other = data_config.conversation_replay.model_copy(update={"seed": 99, "max_model_len": 1000})
+        second = ConversationReplayDataGenerator(
+            api_config, data_config.model_copy(update={"conversation_replay": other}), _make_mock_tokenizer()
+        )
+
+        session = LocalUserSession.get_instance("conv_0")
+        assert session is not earlier, "the second generator adopted the first generator's session"
+        assert session is second.user_sessions[0]
+        assert session.max_model_len == 1000
+        assert session.system_prompt == second.blueprints[0].system_prompt
+        assert session.history == []
+
+        data = second.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        body = await data.to_request_body("model", 0, True, False)
+        assert "earlier conversation history" not in body["prompt"]
+        assert first.user_sessions[0] is earlier
