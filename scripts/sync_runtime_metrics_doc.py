@@ -34,6 +34,25 @@ The evidence for promotion is use, not age:
 
 Nothing is demoted. A `STABLE` metric that needs a different shape is added under a new name beside the old one, and the old one is removed only in the next major version. A `BETA` metric that needs renaming or removal keeps the old name exported for one more release, as its promise says.
 
+## Queries
+
+The endpoint is up only while the run is, so a scrape interval short relative to the stage length matters more than usual. See [config.md](./config.md#observability) for turning the endpoint on and the Helm chart README for scrape configs. A few starting points, all per stage:
+
+```promql
+# request throughput, successes and failures together
+sum by (stage) (rate(inference_perf_requests_total[1m]))
+
+# failure ratio
+sum by (stage) (rate(inference_perf_requests_total{{status="failure"}}[1m]))
+  / sum by (stage) (rate(inference_perf_requests_total[1m]))
+
+# failures by class, the same string the report shortens into its by_label keys
+sum by (stage, error_type) (increase(inference_perf_request_errors_total[5m]))
+
+# p99 time to first token, streaming runs only
+histogram_quantile(0.99, sum by (stage, le) (rate(inference_perf_time_to_first_token_seconds_bucket[1m])))
+```
+
 ## Metrics
 
 | Metric | Type | Stability | Labels | Exported | Description |
