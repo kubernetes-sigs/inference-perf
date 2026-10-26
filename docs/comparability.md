@@ -180,8 +180,10 @@ cannot come out of it; an argument list the peer itself would reject exits 1. Tw
 refuse on their own: an unset `--osl` (AIPerf then sends no `max_tokens`) and a
 `--num-dataset-entries` pool smaller than the request count (prompt reuse). A comma-separated
 value such as `--concurrency 8,16` is an AIPerf parameter sweep, one run per value, and refuses as
-well. `--api-key` is never written into the file, which is meant to be checked in; set
-`server.api_key` on the run host instead. The parity cases in #736 are the converter's acceptance
+well. `--api-key` is never written into the file, which is meant to be checked in, and neither is a
+`--header` whose name carries a credential (the `CREDENTIAL_HEADER_FRAGMENTS` rule in
+`inference_perf/config/redaction.py`); set `server.api_key` or the header under `api.headers` on
+the run host instead. The parity cases in #736 are the converter's acceptance
 oracle: converting each case's peer arguments must reproduce its checked-in config.
 
 ## Verify before comparing

@@ -41,7 +41,19 @@ Verified v0.12.0 behavior the rows rely on:
 - ``--api-key`` is never written into the emitted config, which is meant to
   be checked in; it is recorded as an assumption to set ``server.api_key``
   on the run host. A missing key fails on the first request and cannot
-  change the offered workload.
+  change the offered workload. A ``--header`` whose name carries a credential
+  (``CREDENTIAL_HEADER_FRAGMENTS`` in ``inference_perf/config/redaction.py``,
+  the rule the config renderer applies to ``api.headers``) is dropped the
+  same way, with an assumption to set ``api.headers`` on the run host, and
+  its value is scrubbed from the recorded argv.
+- ``--header`` takes what ``_parse_str_as_tuple_list`` takes: a value that
+  starts with ``{`` is a JSON object, anything else is a comma-separated list
+  of ``key:value`` items split at the first colon with both sides stripped.
+  Its ``coerce_value`` turns a ``key:value`` value such as ``3``, ``true`` or
+  ``null`` into a non-string, which the ``headers`` map on AIPerf's endpoint
+  config (string values only) then rejects, so such a value is a usage error
+  here. A name that is not an HTTP token (a JSON object with a leading space,
+  say, whose name would come out as ``{"X-C"``) refuses.
 - ``--num-dataset-entries`` (default 100) is a pool of unique entries reused
   across requests, a false friend of vllm's ``--num-prompts``.
 
@@ -52,8 +64,10 @@ active in the given argv are inert in AIPerf too and are dropped with an
 annotation instead, since an inert flag cannot change the offered workload.
 """
 
+import json
 import math
-from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple, Union
+import re
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, Union
 
 from inference_perf.config import (
     APIConfig,
@@ -83,14 +97,16 @@ from inference_perf.config import (
     VideoDatagenConfig,
     VideoProfile,
 )
+from inference_perf.config.redaction import CREDENTIAL_HEADER_FRAGMENTS
 from inference_perf.payloads import ImageRepresentation, VideoRepresentation
 from inference_perf.tools.convert.model import (
+    REDACTED,
     Conversion,
     PeerUsageError,
     fixed_dist,
     is_value_token,
     normal_dist,
-    redact_values,
+    rewrite_values,
 )
 from inference_perf.tools.convert.versions import (
     AIPERF_PROFILE_VERSIONS,
@@ -107,7 +123,9 @@ ParsedValue = Union[bool, str, List[str]]
 class _F(NamedTuple):
     field: str
     aliases: Tuple[str, ...]
-    kind: str  # "flag" | "value" | "list"
+    # "flag", "value", "list" (comma-separated items) or "entries" (one item
+    # per occurrence, kept whole for a parser of its own).
+    kind: str
     group: str
 
 
@@ -179,7 +197,7 @@ _FIELDS: Tuple[_F, ...] = (
             "--header",
             "-H",
         ),
-        "list",
+        "entries",
         "INPUT",
     ),
     _F("input_file", ("--input-file",), "value", "INPUT"),
@@ -830,6 +848,8 @@ _WARMUP_AGENTIC: Set[str] = {"agentic_cache_warmup_duration", "agentic_warmup_gr
 
 # Flags whose value is a credential: scrubbed from the recorded argv.
 _SECRET_FLAGS = frozenset(alias for spec in _FIELDS if spec.field == "api_key" for alias in spec.aliases)
+# Flags whose value may carry a credential under a header name: scrubbed by name.
+_HEADER_FLAGS = frozenset(alias for spec in _FIELDS if spec.field == "headers" for alias in spec.aliases)
 
 WARMUP_NOTE = (
     "warmup: aiperf excludes its warmup phase from the measured window; inference-perf measures every"
@@ -969,10 +989,13 @@ def _parse(argv: List[str], conversion: Conversion) -> _Parsed:
                 raise PeerUsageError(f"{name} expects a value")
             value_str = argv[i]
             i += 1
-        if spec.kind == "list":
+        if spec.kind in ("list", "entries"):
             existing = parsed.values.get(spec.field)
             items: List[str] = list(existing) if isinstance(existing, list) else []
-            items.extend(part.strip() for part in value_str.split(",") if part.strip())
+            if spec.kind == "list":
+                items.extend(part.strip() for part in value_str.split(",") if part.strip())
+            else:
+                items.append(value_str)
             parsed.values[spec.field] = items
         else:
             parsed.values[spec.field] = value_str
@@ -1065,21 +1088,115 @@ def _convert_extra_inputs(conversion: Conversion, parsed: _Parsed) -> Optional[b
     return ignore_eos
 
 
-def _convert_headers(conversion: Conversion, parsed: _Parsed) -> Optional[Dict[str, str]]:
-    entries = parsed.items("headers")
-    if not entries:
-        return None
-    headers: Dict[str, str] = {}
-    for entry in entries:
-        name, sep, value = entry.partition(":")
+# An HTTP header name is an RFC 7230 token. Anything else would go out
+# malformed, or not at all, whichever client sends it.
+_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+
+def _is_credential_header(name: str) -> bool:
+    """The rule redaction.py applies to a config's header map: the name holds a credential fragment, ignoring case."""
+    lowered = name.lower()
+    return any(fragment in lowered for fragment in CREDENTIAL_HEADER_FRAGMENTS)
+
+
+def _header_pairs(entry: str) -> Tuple[bool, List[Tuple[str, Any]]]:
+    """One ``--header`` occurrence as AIPerf's ``_parse_str_as_tuple_list`` reads it.
+
+    Returns whether the entry was a JSON object and its (name, value) pairs.
+    JSON values come back as parsed; ``key:value`` values come back stripped
+    and before ``coerce_value``. Raises ``PeerUsageError`` where AIPerf raises.
+    """
+    if entry.startswith("{"):
+        try:
+            loaded = json.loads(entry)
+        except json.JSONDecodeError as exc:
+            raise PeerUsageError(f"--header {entry!r} must be a valid JSON string") from exc
+        return True, [(str(name), value) for name, value in loaded.items()]
+    pairs: List[Tuple[str, Any]] = []
+    for item in entry.split(","):
+        name, sep, value = item.partition(":")
         if not sep:
-            raise PeerUsageError(f"--header entry '{entry}' is not 'Name: value'")
-        name = name.strip()
-        if name in headers:
-            conversion.refuse("--header", f"duplicate header '{name}'; refusing to pick one instead of last-wins")
-            return None
-        headers[name] = value.strip()
-    return headers
+            raise PeerUsageError(f"--header {entry!r}: each item must be in 'key:value' format")
+        pairs.append((name.strip(), value.strip()))
+    return False, pairs
+
+
+def _coerced_type(value: str) -> Optional[str]:
+    """The non-string type AIPerf's ``coerce_value`` gives a ``key:value`` value, or None when it stays a string."""
+    lowered = value.lower()
+    if lowered in ("true", "false"):
+        return "bool"
+    if lowered in ("none", "null"):
+        return "None"
+    unsigned = value[1:] if value.startswith("-") else value
+    if unsigned.isdigit() and (not unsigned.startswith("0") or unsigned == "0"):
+        return "int"
+    if unsigned.count(".") == 1 and unsigned.replace(".", "").isdigit():
+        return "float"
+    return None
+
+
+def _scrub_header_entry(entry: str) -> str:
+    """The entry with every credential header's value replaced, for the recorded argv.
+
+    An entry that does not parse is replaced whole, since nothing says where a
+    credential sits in it.
+    """
+    try:
+        is_json, pairs = _header_pairs(entry)
+    except PeerUsageError:
+        return REDACTED
+    if not any(_is_credential_header(name) for name, _ in pairs):
+        return entry
+    scrubbed = [(name, REDACTED if _is_credential_header(name) else value) for name, value in pairs]
+    if is_json:
+        return json.dumps(dict(scrubbed))
+    return ", ".join(f"{name}: {value}" for name, value in scrubbed)
+
+
+def _redact_argv(argv: List[str]) -> List[str]:
+    """The argv for the comment block: api key values and credential header values gone."""
+    rewriters: Dict[str, Callable[[str], str]] = {flag: (lambda _value: REDACTED) for flag in _SECRET_FLAGS}
+    rewriters.update({flag: _scrub_header_entry for flag in _HEADER_FLAGS})
+    return rewrite_values(argv, rewriters)
+
+
+def _convert_headers(conversion: Conversion, parsed: _Parsed) -> Optional[Dict[str, str]]:
+    """``api.headers`` from every ``--header`` occurrence, minus the credentials.
+
+    Each occurrence is read the way AIPerf reads it (``_header_pairs``). A
+    value AIPerf's ``headers`` map would reject is a usage error, a name that
+    is not an HTTP token refuses, and a credential header is dropped with an
+    assumption to set it on the run host, as ``--api-key`` is.
+    """
+    headers: Dict[str, str] = {}
+    for entry in parsed.items("headers"):
+        is_json, pairs = _header_pairs(entry)
+        for name, value in pairs:
+            if not _HEADER_NAME.match(name):
+                conversion.refuse(
+                    "--header",
+                    f"'{name}' is not an HTTP header name; a JSON object has to start at the first character and a"
+                    " key:value item puts the name before its first colon",
+                )
+                return None
+            coerced = type(value).__name__ if not isinstance(value, str) else (None if is_json else _coerced_type(value))
+            if coerced is not None:
+                raise PeerUsageError(
+                    f"--header {name}: aiperf reads this value as {coerced} and its headers map takes strings"
+                )
+            if _is_credential_header(name):
+                conversion.assume(
+                    f"--header {name} is not written: the converted file is meant to be checked in, so set"
+                    f" api.headers {name} on the run host instead (a missing credential fails on the first request"
+                    " and cannot change the offered workload)"
+                )
+                continue
+            if name in headers:
+                conversion.refuse("--header", f"duplicate header '{name}'; refusing to pick one instead of last-wins")
+                return None
+            headers[name] = value
+    return headers or None
 
 
 def _convert_goodput(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileFacts) -> Optional[GoodputConfig]:
@@ -1463,8 +1580,9 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
 
     parsed = _parse(argv, conversion)
     _refuse_sweeps(conversion, parsed, facts)
-    # The comment block records the argv; the key must not survive there either.
-    conversion.argv = redact_values(conversion.argv, _SECRET_FLAGS)
+    # The comment block records the argv; no key or credential header value
+    # may survive there either.
+    conversion.argv = _redact_argv(conversion.argv)
 
     # Input and dataset flags that select loaders with no verified twin.
     for field, flag in (

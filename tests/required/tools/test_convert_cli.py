@@ -131,3 +131,39 @@ def test_api_key_never_reaches_the_emitted_file(tmp_path: Path, capsys: pytest.C
     config = read_config(str(saved))
     assert config.server is not None
     assert config.server.api_key is None
+
+
+def test_api_key_equals_spelling_is_redacted(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--", "--model", "m", "--osl", "64", "--api-key=sk-test"]
+    assert run(argv) == 0
+    out = capsys.readouterr().out
+    assert "sk-test" not in out
+    assert "--api-key=<redacted>" in out
+
+
+def test_credential_header_never_reaches_the_emitted_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--", "--model", "m", "--osl", "64"]
+    argv += ["-H", "Authorization: Bearer sk-x", "--header", "X-Team: infra"]
+    assert run(argv) == 0
+    out = capsys.readouterr().out
+    assert "sk-x" not in out
+    assert "-H 'Authorization: <redacted>'" in out  # the recorded argv keeps the name, loses the value
+    body = "\n".join(line for line in out.splitlines() if not line.startswith("#"))
+    assert "Authorization" not in body
+    assert "X-Team: infra" in body
+    comment = " ".join(line.lstrip("# ") for line in out.splitlines() if line.startswith("#"))
+    assert "set api.headers Authorization" in comment
+    saved = tmp_path / "aiperf.yaml"
+    saved.write_text(out)
+    config = read_config(str(saved))
+    assert config.api.headers == {"X-Team": "infra"}
+
+
+def test_malformed_header_name_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "converted.yaml"
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "-o", str(out), "--", "--model", "m", "--osl", "64"]
+    assert run(argv + ["--header", ' {"X-C": "3"}']) == 2
+    assert not out.exists()
+    err = capsys.readouterr().err
+    assert "REFUSE --header:" in err
+    assert "'{\"X-C\"'" in err
