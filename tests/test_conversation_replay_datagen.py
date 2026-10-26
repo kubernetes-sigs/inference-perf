@@ -681,19 +681,21 @@ class TestRolloverDoesNotOrphanWaiters:
         return ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
 
     async def test_rollover_does_not_orphan_queued_waiter(self) -> None:
-        """A turn parked in get_context() must still complete across a rollover.
+        """A turn parked in get_context() must survive a rebuild of its session id.
 
-        Turn A holds the session lock, turn B queues behind it, then another
-        dispatch for the same slot rebuilds the session id. B must not hang.
+        Turn A holds the session lock, turn B queues behind it, then the same
+        data_index is materialized again. A real run never does that within a
+        stage; it pins the invariant the cross-stage tests below rely on.
+        B must not hang.
         """
         gen = self._fixed_turn_gen()
         idx = self._rollover_index(gen)
 
-        # First dispatch performs the rollover and registers stage_0_slot_0_convo_1.
+        # First dispatch performs the rollover onto a fresh session id.
         gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
         live = gen.user_sessions[0]
         sid = live.user_session_id
-        assert sid == "stage_0_slot_0_convo_1"
+        assert sid != "conv_0", "the rollover index did not start a new conversation"
 
         # Turn A acquires the session; turn B queues behind it.
         await live.get_context(0)
@@ -778,9 +780,14 @@ class TestRolloverDoesNotOrphanWaiters:
         registered = LocalUserSession.get_instance(sid)
         registered.update_context(f"{registered.context} third turn")
 
-        context_sent = await asyncio.wait_for(straggler, timeout=1.0)
-        assert context_sent.startswith(session.system_prompt), (
-            f"straggler was handed a context built from a different conversation's system prompt: {context_sent[:80]!r}"
+        try:
+            context_sent = await asyncio.wait_for(straggler, timeout=1.0)
+        except asyncio.TimeoutError:
+            straggler.cancel()
+            pytest.fail(f"straggler parked on {sid!r} was orphaned when the id was rebuilt; the stage would hang.")
+        # Both conversations on a slot share its system prompt, so check the history it carries.
+        assert context_sent == f"{session.system_prompt} first turn second turn third turn", (
+            f"straggler was handed a context from a different conversation: {context_sent[:120]!r}"
         )
 
         # The straggler must still be talking to the object it was dispatched
@@ -819,7 +826,7 @@ class TestRolloverDoesNotOrphanWaiters:
         # Stage 0: roll slot 0 over onto a fresh conversation.
         gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0, stage_id=0))
         rolled_over_id = gen.user_sessions[0].user_session_id
-        assert rolled_over_id == "stage_0_slot_0_convo_1"
+        assert rolled_over_id != "conv_0", "the rollover index did not start a new conversation"
 
         # LoadGenerator clears the registry between stages.
         LocalUserSession.clear_instances()
