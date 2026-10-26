@@ -26,7 +26,8 @@ metrics:
   # stops serving when the run ends, so keep this short relative to the run.
   interval: 15s
   # prometheus.io/* pod annotations, for Prometheus setups that discover
-  # pods by annotation.
+  # pods by annotation. Off while a monitor below is on, so a cluster that
+  # scrapes both ways does not collect the pod twice.
   annotations: true
   # PodMonitor for the Prometheus Operator. Requires the monitoring.coreos.com CRDs.
   podMonitor:
@@ -36,6 +37,8 @@ metrics:
   # PodMonitoring for Google Cloud Managed Service for Prometheus on GKE.
   podMonitoring:
     enabled: false
+    # Extra labels on the PodMonitoring.
+    labels: {}
 
 # A GCS bucket path that points to the dataset file.
 # The file will be copied from this path to the local file system

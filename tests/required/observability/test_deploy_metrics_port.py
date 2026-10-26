@@ -18,7 +18,8 @@ since neither can import Python. These tests pin those literals to
 DEFAULT_PORT so changing the tool's default cannot silently leave in-cluster
 scraping pointed at a dead port. The rendering tests check that the chart
 declares a port exactly when the config it ships would make the tool serve one,
-and that its monitors select the Job's pod.
+that its monitors select the Job's pod, and that a bad port fails the render
+with a message naming the value.
 """
 
 import re
@@ -39,13 +40,16 @@ CHART_DIR = REPO_ROOT / "deploy" / "inference-perf"
 
 class TestDeployMetricsPort(unittest.TestCase):
     # Input: deploy/manifests.yaml, the plain Job manifest.
-    # Expects the container's "metrics" port and the prometheus.io/port pod
-    # annotation to both equal DEFAULT_PORT (9464), and the path annotation
-    # to be /metrics.
+    # Expects the --observability.metrics.port container arg, the container's
+    # "metrics" port and the prometheus.io/port pod annotation to all equal
+    # DEFAULT_PORT (9464), and the path annotation to be /metrics.
     def test_plain_manifest_declares_default_port(self) -> None:
         manifest = yaml.safe_load((REPO_ROOT / "deploy" / "manifests.yaml").read_text())
         pod: Any = manifest["spec"]["template"]
-        ports = {p["name"]: p["containerPort"] for p in pod["spec"]["containers"][0]["ports"]}
+        container = pod["spec"]["containers"][0]
+        args = container["args"]
+        self.assertEqual(args[args.index("--observability.metrics.port") + 1], str(DEFAULT_PORT))
+        ports = {p["name"]: p["containerPort"] for p in container["ports"]}
         self.assertEqual(ports["metrics"], DEFAULT_PORT)
         annotations = pod["metadata"]["annotations"]
         self.assertEqual(annotations["prometheus.io/port"], str(DEFAULT_PORT))
@@ -67,16 +71,27 @@ class TestDeployMetricsPort(unittest.TestCase):
         self.assertEqual(values["config"]["observability"]["metrics"], {"port": DEFAULT_PORT})
 
 
-# Runs helm template on the chart with each --set override and returns its
-# documents keyed by kind (Job, ConfigMap, PodMonitor, ...). Fails the test with
-# helm's stderr if the render fails.
-def _render(test: unittest.TestCase, *overrides: str) -> Dict[str, Any]:
+# Runs helm template on the chart with each --set override.
+def _helm_template(*overrides: str) -> "subprocess.CompletedProcess[str]":
     args = ["helm", "template", "t", str(CHART_DIR)]
     for override in overrides:
         args += ["--set", override]
-    result = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    return subprocess.run(args, capture_output=True, text=True, timeout=60)
+
+
+# Renders the chart and returns its documents keyed by kind (Job, ConfigMap,
+# PodMonitor, ...). Fails the test with helm's stderr if the render fails.
+def _render(test: unittest.TestCase, *overrides: str) -> Dict[str, Any]:
+    result = _helm_template(*overrides)
     test.assertEqual(result.returncode, 0, result.stderr)
     return {doc["kind"]: doc for doc in yaml.safe_load_all(result.stdout) if doc}
+
+
+# Renders the chart expecting helm to refuse, and returns its stderr.
+def _render_error(test: unittest.TestCase, *overrides: str) -> str:
+    result = _helm_template(*overrides)
+    test.assertNotEqual(result.returncode, 0, result.stdout)
+    return result.stderr
 
 
 # The port the tool would serve on, read the way it reads the rendered ConfigMap.
@@ -129,22 +144,33 @@ class TestChartMetricsRendering(unittest.TestCase):
         self.assertNotIn("PodMonitor", docs)
         self.assertNotIn("PodMonitoring", docs)
 
-    # Port 9500 with annotations, a PodMonitor (release label prom) and a PodMonitoring.
-    # Expects the container port and annotation at 9500, and both monitors to
-    # select the Job's pod by its template labels and scrape the named
-    # "metrics" port at /metrics.
-    def test_custom_port_reaches_every_scrape_surface(self) -> None:
-        docs = _render(
-            self,
-            "config.observability.metrics.port=9500",
-            "metrics.podMonitor.enabled=true",
-            "metrics.podMonitor.labels.release=prom",
-            "metrics.podMonitoring.enabled=true",
-        )
+    # Port 9500 with the default scrape values (annotations only).
+    # Expects the tool to serve 9500 and the container port and
+    # prometheus.io/port annotation to both say 9500.
+    def test_custom_port_reaches_the_container_port_and_annotation(self) -> None:
+        docs = _render(self, "config.observability.metrics.port=9500")
         self.assertEqual(_served_port(docs), 9500)
         self.assertEqual(_declared_port(docs), 9500)
         self.assertEqual(_annotations(docs)["prometheus.io/port"], "9500")
+
+    # A PodMonitor (release label prom) and a PodMonitoring (label team=bench),
+    # with annotations left at their default of true.
+    # Expects both monitors to carry their extra labels, select the Job's pod by
+    # its template labels and scrape the named "metrics" port at /metrics, and
+    # the pod to carry no prometheus.io annotations so an annotation-based
+    # scrape job cannot collect it a second time.
+    def test_monitors_select_the_pod_and_replace_the_annotations(self) -> None:
+        docs = _render(
+            self,
+            "metrics.podMonitor.enabled=true",
+            "metrics.podMonitor.labels.release=prom",
+            "metrics.podMonitoring.enabled=true",
+            "metrics.podMonitoring.labels.team=bench",
+        )
+        self.assertEqual(_declared_port(docs), DEFAULT_PORT)
+        self.assertEqual(_annotations(docs), {})
         self.assertEqual(docs["PodMonitor"]["metadata"]["labels"]["release"], "prom")
+        self.assertEqual(docs["PodMonitoring"]["metadata"]["labels"]["team"], "bench")
         pod_labels = docs["Job"]["spec"]["template"]["metadata"]["labels"]
         for monitor, endpoint in (
             (docs["PodMonitor"], docs["PodMonitor"]["spec"]["podMetricsEndpoints"][0]),
@@ -154,6 +180,27 @@ class TestChartMetricsRendering(unittest.TestCase):
             selector = monitor["spec"]["selector"]["matchLabels"]
             self.assertEqual({key: pod_labels.get(key) for key in selector}, selector)
             self.assertEqual((endpoint["port"], endpoint["path"]), ("metrics", "/metrics"))
+
+    # --set metrics=null, then --set metrics.podMonitor=null, then
+    # --set metrics.podMonitoring=null, each on its own.
+    # Expects every render to succeed with the container port still declared.
+    # With the whole map nulled there is no scrape config, so no annotations.
+    def test_nulled_scrape_values_still_render(self) -> None:
+        docs = _render(self, "metrics=null")
+        self.assertEqual(_declared_port(docs), DEFAULT_PORT)
+        self.assertEqual(_annotations(docs), {})
+        for override in ("metrics.podMonitor=null", "metrics.podMonitoring=null"):
+            docs = _render(self, override)
+            self.assertEqual(_declared_port(docs), DEFAULT_PORT)
+            self.assertEqual(_annotations(docs)["prometheus.io/port"], str(DEFAULT_PORT))
+
+    # --set config.observability.metrics.port=abc, which --set passes as a string.
+    # Expects helm to refuse with a message naming the port key and "abc",
+    # not the ephemeral-port message that int conversion to 0 would give.
+    def test_non_numeric_port_fails_naming_the_value(self) -> None:
+        stderr = _render_error(self, "config.observability.metrics.port=abc")
+        self.assertIn('config.observability.metrics.port must be a port number, got "abc"', stderr)
+        self.assertNotIn("ephemeral", stderr)
 
 
 if __name__ == "__main__":

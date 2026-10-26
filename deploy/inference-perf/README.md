@@ -91,22 +91,23 @@ The identity executing the workload (e.g., the associated Kubernetes Service Acc
 
 #### Runtime Metrics Parameters
 
-inference-perf serves its own runtime metrics (stage state, request counts, latencies) on `/metrics` while the run is active. See [`docs/runtime_metrics.md`](../../docs/runtime_metrics.md) for the metric set. The endpoint runs when the benchmark config sets `config.observability.metrics`, which the default values do with `port: 9464`. Set it to `null` (`--set config.observability.metrics=null`) to turn the endpoint off. The chart reads the same block, so the container port and scrape configs always match what the process serves. Port `0` (ephemeral) cannot be scraped and fails the install.
+inference-perf serves its own runtime metrics (stage state, request counts, latencies) on `/metrics` while the run is active. See [`docs/runtime_metrics.md`](../../docs/runtime_metrics.md) for the metric set. The endpoint runs when the benchmark config sets `config.observability.metrics`, which the default values do with `port: 9464`. Set it to `null` (`--set config.observability.metrics=null`) to turn the endpoint off. The chart reads the same block, so the container port and scrape configs always match what the process serves. Port `0` (ephemeral) cannot be scraped and fails the install, as does a port that is not a number.
 
 The keys below only decide how Prometheus finds the pod. They render nothing while the endpoint is off.
 
 | Key | Description | Default |
 | :--- | :--- | :--- |
-| `metrics.annotations` | Add `prometheus.io/scrape`, `prometheus.io/port` and `prometheus.io/path` pod annotations, for Prometheus setups that discover pods by annotation. | `true` |
+| `metrics.annotations` | Add `prometheus.io/scrape`, `prometheus.io/port` and `prometheus.io/path` pod annotations, for Prometheus setups that discover pods by annotation. Off while a monitor below is enabled, so a cluster that also scrapes by annotation does not collect the pod twice. | `true` |
 | `metrics.interval` | Scrape interval for the `PodMonitor` and `PodMonitoring`. The pod stops serving when the run ends, so keep it short relative to the run. | `15s` |
 | `metrics.podMonitor.enabled` | Create a `PodMonitor` for the Prometheus Operator. Requires the `monitoring.coreos.com` CRDs. | `false` |
 | `metrics.podMonitor.labels` | Extra labels on the `PodMonitor`, e.g. the `release` label your Prometheus selects on. | `{}` |
 | `metrics.podMonitoring.enabled` | Create a `PodMonitoring` for Google Cloud Managed Service for Prometheus on GKE. | `false` |
+| `metrics.podMonitoring.labels` | Extra labels on the `PodMonitoring`. | `{}` |
 ---
 
 To check the endpoint by hand while a run is active:
 ```bash
-kubectl port-forward job/<release>-inference-perf-job 9464:9464
+kubectl port-forward $(kubectl get job -l app.kubernetes.io/instance=<release> -o name) 9464:9464
 curl -s localhost:9464/metrics | grep '^inference_perf_'
 ```
 

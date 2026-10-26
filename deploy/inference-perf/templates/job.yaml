@@ -12,7 +12,7 @@ spec:
       labels:
         {{- include "inference-perf.selectorLabels" . | nindent 8 }}
         app: inference-perf
-{{- if and (eq (include "inference-perf.metricsEnabled" .) "true") .Values.metrics.annotations }}
+{{- if include "inference-perf.annotationsEnabled" . }}
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ include "inference-perf.metricsPort" . | quote }}
