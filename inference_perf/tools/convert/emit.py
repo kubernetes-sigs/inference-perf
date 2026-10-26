@@ -20,9 +20,10 @@ its own. Only fields the conversion actually derived are emitted
 except where a table row emits a field explicitly because the peer default
 disagrees with the inference-perf default (``server.ignore_eos`` and
 ``api.streaming``). Credentials are never written: a converted file is meant
-to be checked in next to a parity case, so ``server.api_key`` stays unset and
-the aiperf frontend records ``--api-key`` as an assumption to satisfy on the
-run host.
+to be checked in next to a parity case, so ``server.api_key`` stays unset, a
+header whose name carries a credential is left out of ``api.headers``, and the
+aiperf frontend records ``--api-key`` and each such header as an assumption to
+satisfy on the run host. The recorded argv line is scrubbed the same way.
 """
 
 import shlex
