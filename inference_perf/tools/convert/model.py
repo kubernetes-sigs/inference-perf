@@ -35,7 +35,7 @@ refuses rather than guesses.
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import FrozenSet, List, Optional
+from typing import Callable, FrozenSet, List, Mapping, Optional
 
 from inference_perf.config import Config, Distribution, DistributionType
 
@@ -72,30 +72,36 @@ def is_value_token(token: str) -> bool:
 REDACTED = "<redacted>"
 
 
-def redact_values(argv: List[str], flags: FrozenSet[str]) -> List[str]:
-    """A copy of ``argv`` with the value of every flag in ``flags`` replaced.
+def rewrite_values(argv: List[str], rewriters: Mapping[str, Callable[[str], str]]) -> List[str]:
+    """A copy of ``argv`` with the value of every flag in ``rewriters`` passed through its rewriter.
 
     The emitted comment block records the source argv verbatim, so a credential
     passed on the peer CLI has to be scrubbed there as well as from the config
-    body. Both the ``--flag value`` and ``--flag=value`` spellings are covered.
+    body. Both the ``--flag value`` and ``--flag=value`` spellings are covered;
+    a trailing flag with no value left is copied as is.
     """
     out: List[str] = []
     i = 0
     while i < len(argv):
         token = argv[i]
         i += 1
-        name, eq, _ = token.partition("=")
-        if name in flags:
-            if eq:
-                out.append(f"{name}={REDACTED}")
-            else:
-                out.append(token)
-                if i < len(argv):
-                    out.append(REDACTED)
-                    i += 1
-            continue
-        out.append(token)
+        name, eq, inline = token.partition("=")
+        rewrite = rewriters.get(name)
+        if rewrite is None:
+            out.append(token)
+        elif eq:
+            out.append(f"{name}={rewrite(inline)}")
+        else:
+            out.append(token)
+            if i < len(argv):
+                out.append(rewrite(argv[i]))
+                i += 1
     return out
+
+
+def redact_values(argv: List[str], flags: FrozenSet[str]) -> List[str]:
+    """A copy of ``argv`` with the whole value of every flag in ``flags`` replaced by ``REDACTED``."""
+    return rewrite_values(argv, {flag: lambda _value: REDACTED for flag in flags})
 
 
 @dataclass
