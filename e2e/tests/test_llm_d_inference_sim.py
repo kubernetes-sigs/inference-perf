@@ -62,6 +62,9 @@ TEST_SHAREGPT_PATH = os.path.abspath("e2e/testdata/sharegpt.json")
                 # omitted to use hf_sharegpt_datagen.py default
             },
             id="data_sharegpt_default",
+            # One worker for the Hub cases until #923: each reads the 670 MB file whole
+            # (~5.5 GB resident), and two at once can exhaust a 16 GB CI runner.
+            marks=pytest.mark.xdist_group(name="sharegpt-hub"),
         ),
         pytest.param(
             {

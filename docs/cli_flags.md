@@ -425,6 +425,4 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--tokenizer.token` | str | HuggingFace access token used to download the tokenizer. Redacted in the logged and saved config. |
 | `--tokenizer.load_timeout` | float | Deadline in seconds for loading the tokenizer, including any download from Hugging Face Hub. Null disables the deadline. |
 | `--circuit_breakers` | JSON | Circuit breakers that stop the run when observed metrics cross configured thresholds. |
-| `--observability.metrics.enabled` | boolean | Serve inference-perf's own runtime metrics (stage state, request counts, latencies) over an HTTP /metrics endpoint for Prometheus to scrape. Metrics are always collected in-process; this only controls whether the HTTP endpoint is started. On by default, so a run is observable without being configured for it; set false to keep the port free. |
-| `--observability.metrics.host` | str | Address the runtime metrics endpoint binds to. Loopback by default, so a run on a laptop or shared host is not reachable from the network; set 0.0.0.0 where a scraper reaches the run by its pod or host IP, as the Helm chart and deploy/ config do. |
-| `--observability.metrics.port` | int | Port the runtime metrics endpoint listens on. 0 picks an ephemeral port, logged at startup. |
+| `--observability.metrics.port` | int | Port the runtime metrics endpoint listens on. Setting it turns the endpoint on. 0 picks an ephemeral port, logged at startup. |

@@ -35,6 +35,7 @@ from inference_perf.config import (
 )
 from asyncio import (
     CancelledError,
+    Event,
     Semaphore,
     Task,
     TimeoutError as AsyncioTimeoutError,
@@ -272,9 +273,6 @@ class Worker(mp.Process):
         self.stage_done_counter = stage_done_counter
         self.stage_boundary_seq = stage_boundary_seq
         self.teardown_grace_seconds = teardown_grace_seconds
-        # True while the stage is winding down: in-flight requests may finish,
-        # but no new requests are dispatched to the model server.
-        self.draining = False
         self.crash_queue = crash_queue
         # Stage this worker is currently serving, reported alongside a crash so the
         # failure can be attributed to a stage rather than to the run as a whole.
@@ -288,6 +286,7 @@ class Worker(mp.Process):
     async def loop(self) -> None:
         # The self.shared_max_concurrency is initialized to self.max_concurrency
         semaphore = Semaphore(self.max_concurrency)
+        draining = Event()
         current_concurrency = self.max_concurrency
         tasks = []
         event_loop = get_event_loop()
@@ -377,7 +376,13 @@ class Worker(mp.Process):
                         current_time = time.perf_counter()
                         sleep_time = request_time - current_time
                         if sleep_time > 0:
-                            await sleep(sleep_time)
+                            try:
+                                await wait_for(draining.wait(), timeout=sleep_time)
+                            except (AsyncioTimeoutError, TimeoutError):
+                                pass
+                            else:
+                                logger.debug(f"[Worker {self.id}] stage tearing down, dropping scheduled-ahead request")
+                                return
 
                         # Wait for dependencies before dispatching (OTel trace replay)
                         if hasattr(request_data, "wait_for_predecessors_and_substitute"):
@@ -395,7 +400,7 @@ class Worker(mp.Process):
                         # unwinds session-replay dependency chains quickly - a
                         # successor woken by its predecessor exits here instead
                         # of dispatching.
-                        if self.draining:
+                        if draining.is_set():
                             logger.debug(f"[Worker {self.id}] stage tearing down, not dispatching new request")
                             return
 
@@ -404,7 +409,7 @@ class Worker(mp.Process):
                         # are waiting for a permit without dispatching them.
                         while (
                             not permit_acquired
-                            and not self.draining
+                            and not draining.is_set()
                             and self.request_phase.is_set()
                             and not self.cancel_signal.is_set()
                         ):
@@ -417,7 +422,7 @@ class Worker(mp.Process):
                         # pending, before the worker loop observes teardown.
                         if (
                             not permit_acquired
-                            or self.draining
+                            or draining.is_set()
                             or not self.request_phase.is_set()
                             or self.cancel_signal.is_set()
                         ):
@@ -492,7 +497,7 @@ class Worker(mp.Process):
             self.skip = False
 
             if self.cancel_signal.is_set() or not self.request_phase.is_set():
-                await self._wind_down_stage(tasks)
+                await self._wind_down_stage(tasks, draining)
                 tasks = []
                 LocalUserSession.clear_instances()
                 if self.stage_done_counter is not None and self.stage_boundary_seq is not None:
@@ -526,16 +531,16 @@ class Worker(mp.Process):
 
         logger.debug(f"[Worker {self.id}] stopped")
 
-    async def _wind_down_stage(self, tasks: List["Task[None]"]) -> None:
+    async def _wind_down_stage(self, tasks: List["Task[None]"], draining: Event) -> None:
         """Bounded end-of-stage wind-down; always returns.
 
         In-flight requests get up to teardown_grace_seconds to finish naturally
         (recording their metrics). Tasks still parked on session predecessors
-        unwind quickly because new dispatches are gated off by self.draining.
+        unwind quickly because new dispatches are gated off by the draining event.
         Whatever remains after the grace is cancelled and reaped within a fixed
         bound, so the worker always reaches the stage rendezvous.
         """
-        self.draining = True
+        draining.set()
         try:
             pending = [t for t in tasks if not t.done()]
             if pending:
@@ -567,7 +572,7 @@ class Worker(mp.Process):
                     if exc is not None:
                         logger.error(f"[Worker {self.id}] task failed during stage: {type(exc).__name__}: {exc}")
         finally:
-            self.draining = False
+            draining.clear()
 
     def run(self) -> None:
         """Entry point in the worker process. Nothing below may escape unexplained."""

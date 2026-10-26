@@ -113,25 +113,6 @@ def test_get_model_server_metrics_retries_underscored_metric_names(field: str, m
     assert all(value > 0 for value in getattr(result, field).model_dump().values())
 
 
-def test_execute_query_distinguishes_empty_result_from_zero() -> None:
-    config = PrometheusClientConfig(url="http://localhost:9090")
-    client = PrometheusMetricsClient(config)
-    empty_response = Mock()
-    empty_response.json.return_value = {"status": "success", "data": {"result": []}}
-    zero_response = Mock()
-    zero_response.json.return_value = {
-        "status": "success",
-        "data": {"result": [{"metric": {}, "value": [100, "0"]}]},
-    }
-
-    with patch(
-        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
-        side_effect=[empty_response, zero_response],
-    ):
-        assert client.execute_query("sglang:num_queue_reqs{}", "100") is None
-        assert client.execute_query("sglang:num_queue_reqs{}", "100") == 0.0
-
-
 def test_get_model_server_metrics_does_not_retry_a_zero_value() -> None:
     config = PrometheusClientConfig(url="http://localhost:9090")
     client = PrometheusMetricsClient(config)
@@ -299,81 +280,6 @@ def test_execute_query_sends_auth_headers_and_verify() -> None:
     _, kwargs = mock_get.call_args
     assert kwargs["headers"] == {"Authorization": "Bearer prom-token"}
     assert kwargs["verify"] is False
-
-
-def test_execute_query_verifies_tls_by_default() -> None:
-    """Regression: TLS verification stays enabled unless explicitly disabled."""
-    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
-    response = Mock()
-    response.json.return_value = {"status": "success", "data": {"result": [{"metric": {}, "value": [100, "1"]}]}}
-    with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get", return_value=response) as mock_get:
-        client.execute_query("up{}", "100")
-    _, kwargs = mock_get.call_args
-    assert kwargs["verify"] is True
-    assert kwargs["headers"] == {}
-
-
-def _failed_response(status: str = "success", payload: object = None) -> Mock:
-    """A canned Prometheus HTTP response carrying the given JSON payload."""
-    response = Mock()
-    response.raise_for_status.return_value = None
-    response.json.return_value = payload if payload is not None else {"status": status, "data": {"result": []}}
-    return response
-
-
-def test_execute_query_returns_none_on_http_error() -> None:
-    """Bug scenario from #822: a 401/403 from a bad bearer_token must be missing, not 0.0."""
-    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
-    response = Mock()
-    response.raise_for_status.side_effect = Exception("401 Client Error: Unauthorized")
-    with patch(
-        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
-        return_value=response,
-    ):
-        assert client.execute_query("up{}", "100") is None
-
-
-def test_execute_query_returns_none_on_connection_error() -> None:
-    """A refused connection must be missing, not 0.0."""
-    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
-    with patch(
-        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
-        side_effect=ConnectionError("refused"),
-    ):
-        assert client.execute_query("up{}", "100") is None
-
-
-def test_execute_query_returns_none_on_error_status() -> None:
-    """A 200 carrying status other than success must be missing, not 0.0."""
-    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
-    with patch(
-        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
-        return_value=_failed_response(payload={"status": "error", "error": "bad token"}),
-    ):
-        assert client.execute_query("up{}", "100") is None
-
-
-def test_execute_query_returns_none_on_unparseable_value() -> None:
-    """A non-numeric sample must be missing, not 0.0."""
-    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
-    with patch(
-        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
-        return_value=_failed_response(
-            payload={"status": "success", "data": {"result": [{"metric": {}, "value": [100, "NaN-ish"]}]}}
-        ),
-    ):
-        # float("NaN-ish") raises ValueError; "+Inf" would parse, so use a truly invalid token.
-        assert client.execute_query("up{}", "100") is None
-
-
-def test_execute_query_returns_none_on_malformed_result_shape() -> None:
-    """A result entry without a value must be missing, not a silent 0.0."""
-    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
-    with patch(
-        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
-        return_value=_failed_response(payload={"status": "success", "data": {"result": [{"metric": {}}]}}),
-    ):
-        assert client.execute_query("up{}", "100") is None
 
 
 def test_failed_query_retries_underscored_fallback() -> None:

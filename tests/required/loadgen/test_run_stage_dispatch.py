@@ -1,0 +1,196 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Tests for run_stage's dispatch semantics: how many requests are enqueued,
+onto which worker channel, and how the stage exits on worker death."""
+
+import multiprocessing as mp
+import unittest
+from typing import Any, List, Optional, Tuple
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from inference_perf.config import LoadConfig, LoadType, StandardLoadStage
+from inference_perf.datagen import DataGenerator
+from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData
+from inference_perf.utils.request_queue import RequestQueue
+
+
+# A CONSTANT-load LoadGenerator with num_workers workers (4 by default) over a MagicMock datagen with no trace
+# and no pinned workers. No worker process is started.
+def _make_load_generator(num_workers: int = 4) -> LoadGenerator:
+    datagen = MagicMock(spec=DataGenerator)
+    datagen.trace = None
+    # Unpinned, so routing wraps preferred_worker_id over every worker.
+    datagen.is_preferred_worker_requested.return_value = False
+    load_config = LoadConfig(
+        type=LoadType.CONSTANT,
+        num_workers=num_workers,
+        worker_max_concurrency=10,
+        stages=[StandardLoadStage(rate=1, duration=1)],
+        base_seed=42,
+    )
+    with patch("inference_perf.loadgen.load_generator.get_circuit_breaker"):
+        return LoadGenerator(datagen, load_config)
+
+
+# One MagicMock request per id, in order. [0, 5, -1] yields three requests with preferred_worker_id 0, 5 and -1.
+def _mock_requests(preferred_worker_ids: List[int]) -> Any:
+    return iter([MagicMock(preferred_worker_id=worker_id) for worker_id in preferred_worker_ids])
+
+
+class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.load_generator = _make_load_generator()
+        self.request_queue = MagicMock(spec=RequestQueue)
+        # num_channels is set in RequestQueue.__init__, so spec=RequestQueue
+        # does not supply it. 1 matches what mp_run builds when the datagen
+        # requests no preferred worker, and keeps a dead worker's channel from
+        # being swapped out on respawn.
+        self.request_queue.num_channels = 1
+        self.finished_counter = mp.Value("i", 0)
+        self.active_counter = mp.Value("i", 0)
+        self.skipped_counter = mp.Value("i", 0)
+        self.request_phase = MagicMock()
+        self.cancel_signal = MagicMock()
+
+    # The (RequestQueueData, channel) pair from each request_queue.put call, in call order.
+    def _put_calls(self) -> List[Tuple[RequestQueueData, int]]:
+        return [(call.args[0], call.args[1]) for call in self.request_queue.put.call_args_list]
+
+    # Runs one run_stage. The patched sleep sets finished to num_requests on its first call, so the stage
+    # returns COMPLETED right after enqueueing. _run_stage(6, rate=6) enqueues 6 requests and returns at once.
+    async def _run_stage(
+        self,
+        num_requests: int,
+        stage_id: int = 0,
+        rate: float = 1,
+        duration: int = 1,
+        concurrency_level: Optional[int] = None,
+    ) -> None:
+        async def finish_all(*_args: Any, **_kwargs: Any) -> None:
+            self.finished_counter.value = num_requests
+
+        with patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock) as mock_sleep:
+            mock_sleep.side_effect = finish_all
+            await self.load_generator.run_stage(
+                stage_id=stage_id,
+                rate=rate,
+                duration=duration,
+                request_queue=self.request_queue,
+                active_requests_counter=self.active_counter,
+                finished_requests_counter=self.finished_counter,
+                skipped_requests_counter=self.skipped_counter,
+                request_phase=self.request_phase,
+                cancel_signal=self.cancel_signal,
+                concurrency_level=concurrency_level,
+            )
+
+    # Stage 5 at rate=5 for duration=2 over 10 unpinned requests. Expects 10 puts on channel -1, each tagged stage 5,
+    # with strictly increasing dispatch times, and the stage COMPLETED.
+    async def test_enqueues_rate_times_duration_requests_with_increasing_times(self) -> None:
+        self.load_generator.datagen.get_data.return_value = _mock_requests([-1] * 10)  # type: ignore[attr-defined]
+        await self._run_stage(num_requests=10, stage_id=5, rate=5, duration=2)
+
+        puts = self._put_calls()
+        self.assertEqual(len(puts), 10)
+        for item, channel in puts:
+            self.assertEqual(item.stage_id, 5)
+            self.assertEqual(channel, -1, "unaffined requests keep the broadcast channel id")
+        times = [item.request_time for item, _ in puts]
+        self.assertTrue(
+            all(b > a for a, b in zip(times, times[1:], strict=False)), "dispatch times must be strictly increasing"
+        )
+        self.assertEqual(self.load_generator.stage_runtime_info[5].status.name, "COMPLETED")
+
+    # 6 requests preferring workers 0-5 with 4 workers. Expects channels [0, 1, 2, 3, 0, 1].
+    async def test_affinity_remaps_preferred_worker_onto_num_workers(self) -> None:
+        self.load_generator.datagen.get_data.return_value = _mock_requests([0, 1, 2, 3, 4, 5])  # type: ignore[attr-defined]
+        await self._run_stage(num_requests=6, rate=6, duration=1)
+
+        channels = [channel for _, channel in self._put_calls()]
+        self.assertEqual(channels, [0, 1, 2, 3, 0, 1], "preferred_worker_id must wrap modulo num_workers")
+
+    # The same 6 requests with 4 workers but concurrency_level=2, so only workers 0 and 1 hold permits.
+    # Expects channels [0, 1, 0, 1, 0, 1]: affinity wraps onto the active workers, not all 4.
+    async def test_affinity_remaps_onto_active_workers_under_concurrency_level(self) -> None:
+        self.load_generator.datagen.get_data.return_value = _mock_requests([0, 1, 2, 3, 4, 5])  # type: ignore[attr-defined]
+        await self._run_stage(num_requests=6, rate=6, duration=1, concurrency_level=2)
+
+        channels = [channel for _, channel in self._put_calls()]
+        self.assertEqual(channels, [0, 1, 0, 1, 0, 1], "affinity must wrap modulo min(num_workers, concurrency_level)")
+
+    # A trace that reports 3 requests, with rate=100 and duration=100. Expects 3 puts, not 10000.
+    async def test_trace_bound_request_count_overrides_rate(self) -> None:
+        self.load_generator.datagen.trace = MagicMock()  # type: ignore[attr-defined]
+        self.load_generator.datagen.get_request_count.return_value = 3  # type: ignore[attr-defined]
+        self.load_generator.datagen.get_data.return_value = _mock_requests([-1] * 3)  # type: ignore[attr-defined]
+        await self._run_stage(num_requests=3, rate=100, duration=100)
+
+        self.assertEqual(len(self._put_calls()), 3, "trace-driven stages enqueue the trace's request count")
+
+    # Worker 0 alive and already acked boundary 1, worker 1 dead with exit code 1, one stage of 5 requests.
+    # Expects FAILED, one cancel set and clear, one queue drain, one request_phase clear, only worker 1 respawned,
+    # and worker 0 never terminated.
+    async def test_worker_death_fails_stage_and_cleans_up(self) -> None:
+        self.load_generator.datagen.get_data.return_value = _mock_requests([-1] * 5)  # type: ignore[attr-defined]
+        # The stage's crash report reads id and exitcode off each worker, so the
+        # doubles carry real values: a live worker has no exit code yet, and the
+        # dead one exited with code 1.
+        alive_worker = MagicMock(id=0, exitcode=None)
+        alive_worker.is_alive.return_value = True
+        # A real counter, because int() of a MagicMock is 1 and would only
+        # match the expected boundary by coincidence on a first stage.
+        alive_worker.stage_done_counter = mp.Value("i", 1)
+        dead_worker = MagicMock(id=1, exitcode=1)
+        dead_worker.is_alive.return_value = False
+        self.load_generator.workers = [alive_worker, dead_worker]
+        self.load_generator.num_workers = 2
+        # sleep is patched below, so a teardown that waits on the live worker
+        # would spin for grace + margins. Zero them so it fails at once.
+        self.load_generator.teardown_grace_seconds = 0
+
+        # Teardown respawns the dead worker so later stages run at full
+        # capacity. Stub it: the real one builds a Worker from the dead one's
+        # attributes and starts it, which cannot pickle a MagicMock.
+        with (
+            patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock),
+            patch("inference_perf.loadgen.load_generator._TEARDOWN_MARGIN_SECONDS", 0.0),
+            patch("inference_perf.loadgen.load_generator._FORCE_REAP_SECONDS", 0.0),
+            patch.object(self.load_generator, "_respawn_worker") as respawn,
+        ):
+            respawn.return_value = MagicMock()
+            await self.load_generator.run_stage(
+                stage_id=0,
+                rate=5,
+                duration=1,
+                request_queue=self.request_queue,
+                active_requests_counter=self.active_counter,
+                finished_requests_counter=self.finished_counter,
+                skipped_requests_counter=self.skipped_counter,
+                request_phase=self.request_phase,
+                cancel_signal=self.cancel_signal,
+            )
+
+        self.assertEqual(self.load_generator.stage_runtime_info[0].status.name, "FAILED")
+        self.cancel_signal.set.assert_called_once()
+        self.cancel_signal.clear.assert_called_once()
+        self.request_queue.drain.assert_called_once()
+        self.request_phase.clear.assert_called_once()
+        # Only the dead worker is replaced. The live one reached the
+        # rendezvous, so teardown never forces it.
+        respawn.assert_called_once_with(dead_worker, request_channel=None)
+        alive_worker.terminate.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -91,21 +91,15 @@ def log_metrics_endpoint_failure(metrics_config: RuntimeMetricsConfig, error: OS
     """Report a metrics endpoint that would not bind, without failing the run.
 
     Observability must not fail the run it observes: the benchmark and its
-    reports are unaffected, only the scrape endpoint is missing. Now that the
-    endpoint is on by default, losing the *default* port is the expected
-    outcome of two benchmarks sharing a host, so it is a warning. A non-default
-    port is an error: nothing puts a run on one except a user asking for it,
-    and something else has it.
+    reports are unaffected, only the scrape endpoint is missing. It is still an
+    error, since the endpoint only runs when someone asked for it.
     """
-    if metrics_config.port != RuntimeMetricsConfig.model_fields["port"].default:
-        logger.error("Could not start the runtime metrics endpoint on requested port: %s", error)
-    else:
-        logger.warning(
-            "Runtime metrics endpoint not started (default port %d unavailable): %s. "
-            "Set observability.metrics.port to choose another, or enabled: false to skip it.",
-            metrics_config.port,
-            error,
-        )
+    logger.error(
+        "Could not start the runtime metrics endpoint on port %d: %s. The run continues without it. "
+        "Set observability.metrics.port to choose another port.",
+        metrics_config.port,
+        error,
+    )
 
 
 class InferencePerfRunner:
@@ -217,7 +211,7 @@ def main_cli() -> None:
 
     # Runtime metrics inference-perf exports about itself. The hub always runs
     # in-process (it feeds the collector observer and stage hooks); the HTTP
-    # exposition endpoint is on by default, via observability.metrics.enabled.
+    # exposition endpoint starts only when observability.metrics is set.
     metrics_hub = build_metrics(config)
     collector.add_observer(metrics_hub.observe_request)
 
@@ -452,19 +446,16 @@ def main_cli() -> None:
     perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
 
     metrics_server: Optional[PrometheusMetricsServer] = None
-    if config.observability.metrics.enabled:
-        metrics_server = PrometheusMetricsServer(
-            metrics_hub.registry, port=config.observability.metrics.port, addr=config.observability.metrics.host
-        )
+    metrics_config = config.observability.metrics
+    if metrics_config is not None:
+        # Every interface, since a scraper reaches a pod or a docker -p container by its
+        # IP. Setting the block is the opt-in, so a run that never asked exposes nothing.
+        metrics_server = PrometheusMetricsServer(metrics_hub.registry, port=metrics_config.port, addr="0.0.0.0")
         try:
             metrics_server.start()
-            logger.info(
-                "Runtime metrics served at http://%s:%d/metrics",
-                config.observability.metrics.host,
-                metrics_server.bound_port,
-            )
+            logger.info("Runtime metrics served at http://0.0.0.0:%d/metrics", metrics_server.bound_port)
         except OSError as e:
-            log_metrics_endpoint_failure(config.observability.metrics, e)
+            log_metrics_endpoint_failure(metrics_config, e)
             metrics_server = None
 
     start_time = time.time()

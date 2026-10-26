@@ -58,6 +58,7 @@ from inference_perf.config import (
 )
 from inference_perf.datagen import MockDataGenerator, SessionGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData, TeardownResult, Worker
+from inference_perf.loadgen.load_timer import LoadTimer
 from inference_perf.utils.request_queue import Drained, RequestQueue
 
 
@@ -106,6 +107,32 @@ class QuickClient(_TestClientBase):
         self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
     ) -> None:
         await asyncio.sleep(0.05)
+
+
+class DispatchLogClient(_TestClientBase):
+    """Records requests that reach the model server."""
+
+    def __init__(self, dispatch_log: str) -> None:
+        super().__init__()
+        self.dispatch_log = dispatch_log
+
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
+        with open(self.dispatch_log, "a") as f:
+            f.write("dispatched\n")
+
+
+class FixedScheduleTimer(LoadTimer):
+    """Schedules requests at deterministic offsets from the stage start."""
+
+    def __init__(self, offsets: Tuple[float, ...]) -> None:
+        self.offsets = offsets
+
+    def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        start = time.monotonic() if initial is None else initial
+        for offset in self.offsets:
+            yield start + offset
 
 
 class CancelHostileClient(_TestClientBase):
@@ -460,15 +487,15 @@ async def test_permit_released_after_teardown_does_not_dispatch_waiter(
     with open(predecessor_done, "w") as f:
         f.write("done\n")
 
-    # Keep the worker's local draining flag false until the waiter has reacted
+    # Keep the worker's local draining event clear until the waiter has reacted
     # to the released permit. This isolates the shared-signal recheck added by
     # the fix: without it, the waiter dispatches before wind-down is allowed.
     original_wind_down = Worker._wind_down_stage
 
-    async def delayed_wind_down(worker: Worker, tasks: List[asyncio.Task[None]]) -> None:
+    async def delayed_wind_down(worker: Worker, tasks: List[asyncio.Task[None]], draining: asyncio.Event) -> None:
         while not os.path.exists(allow_wind_down):
             await asyncio.sleep(0.01)
-        await original_wind_down(worker, tasks)
+        await original_wind_down(worker, tasks, draining)
 
     # The autouse fixture forces fork, so the child inherits this patch. The
     # parent-side monkeypatch cleanup is sufficient once the child exits.
@@ -814,6 +841,35 @@ async def test_respawned_worker_resyncs_stage_rendezvous(tmp_path: object) -> No
         assert _line_count(completion_log) == 2, "in-flight requests must complete during the grace"
         assert harness.finished_counter.value == 2
         assert harness.worker_pids() == pids_after_respawn, "respawned worker must survive the next stage"
+    finally:
+        harness.shutdown()
+
+
+# 4 requests at +0.1s, +30s, +31s, +32s with a 10s grace, interrupted at 1.5s.
+# Expects teardown under 5s without waiting for the last three: 1 dispatch,
+# 4 finished, 3 skipped, same worker.
+async def test_interrupted_stage_drops_scheduled_ahead_requests(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    dispatch_log = os.path.join(str(tmp_path), "dispatch.log")
+    harness = _Harness(DispatchLogClient(dispatch_log), teardown_grace_seconds=10.0)
+
+    def fixed_timer(_rate: float, _duration: float) -> LoadTimer:
+        return FixedScheduleTimer((0.1, 30.0, 31.0, 32.0))
+
+    monkeypatch.setattr(harness.loadgen, "get_timer", fixed_timer)
+    try:
+        pids_before = harness.worker_pids()
+        stage_task = asyncio.create_task(harness.run_stage(0, timeout=60.0, rate=4))
+        await asyncio.sleep(1.5)
+        harness.loadgen.interrupt_sig = True
+        elapsed = await stage_task
+
+        assert elapsed < 5.0, f"scheduled-ahead requests delayed teardown: {elapsed:.1f}s"
+        assert harness.loadgen.stage_runtime_info[0].status.name == "INTERRUPTED"
+        assert _line_count(dispatch_log) == 1
+        assert harness.finished_counter.value == 4
+        assert harness.skipped_counter.value == 3
+        assert harness.worker_pids() == pids_before
+        assert harness.loadgen.workers[0].is_alive()
     finally:
         harness.shutdown()
 

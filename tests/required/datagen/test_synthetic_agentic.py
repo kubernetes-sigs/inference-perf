@@ -341,13 +341,14 @@ def test_no_agent_beyond_max_depth() -> None:
 
 
 def test_agent_first_call_carries_role_appropriate_system_head() -> None:
-    # Every agent's first call carries a {role:"system"} head, drawn from the
-    # ROLE-appropriate pool: the root/orchestrator from ROOT_SYSTEM_PROMPTS, a
-    # spawned sub-agent from SUBAGENT_SYSTEM_PROMPTS -- so the root and its
+    # Every agent's first call carries a {role:"system"} head, ROLE-appropriate:
+    # the root/orchestrator uses the theme's own system_prompt, a spawned
+    # sub-agent draws from SUBAGENT_SYSTEM_PROMPTS -- so the root and its
     # sub-agents carry DIFFERENT heads (like a real harness), not one identical
     # head. Each head is a distinct dict (no aliasing).
-    from inference_perf.datagen.synthetic_agentic.synthetic_themes import ROOT_SYSTEM_PROMPTS, SUBAGENT_SYSTEM_PROMPTS
+    from inference_perf.datagen.synthetic_agentic.synthetic_themes import SUBAGENT_SYSTEM_PROMPTS
 
+    assert GENERIC_THEME.system_prompt
     cfg = _cfg(
         fanout_probability=1.0,
         max_depth=2,
@@ -369,14 +370,13 @@ def test_agent_first_call_carries_role_appropriate_system_head() -> None:
         # the real prompt precedes any appended "## Operational context" filler
         return head["content"].split("## Operational context")[0].strip()
 
-    root_openings = {p.split("## Operational context")[0].strip() for p in ROOT_SYSTEM_PROMPTS}
     sub_openings = {p.split("## Operational context")[0].strip() for p in SUBAGENT_SYSTEM_PROMPTS}
 
-    # root first call -> a ROOT prompt
+    # root first call -> the theme's system prompt
     root_id = g.root_event_ids[0]
     root_system = _system_msg(g.events[root_id])
     assert root_system is not None, "root first call carries a system head"
-    assert _opening(root_system) in root_openings, "root head comes from ROOT_SYSTEM_PROMPTS"
+    assert _opening(root_system) == GENERIC_THEME.system_prompt, "root head is the theme's system_prompt"
 
     # each sub-agent first call -> a SUBAGENT prompt (and NOT the root's head)
     seen_dicts = [root_system]
@@ -390,6 +390,63 @@ def test_agent_first_call_carries_role_appropriate_system_head() -> None:
         for prior in seen_dicts:
             assert sm is not prior, "each event's system head is a distinct dict (no aliasing)"
         seen_dicts.append(sm)
+
+
+def test_root_head_falls_back_to_root_pool_without_theme_prompt() -> None:
+    # A theme with no system_prompt keeps the generic ROOT_SYSTEM_PROMPTS head.
+    from inference_perf.datagen.synthetic_agentic.synthetic_themes import ROOT_SYSTEM_PROMPTS
+
+    theme = GENERIC_THEME.model_copy(update={"system_prompt": None})
+    g = build_graph_for_session(_cfg(shared_system_prompt_len=800), theme, _word_tok(), 0)
+    root_msgs = g.events[g.root_event_ids[0]].call.messages
+    head = next(m for m in root_msgs if m.get("role") == "system")
+    opening = head["content"].split("## Operational context")[0].strip()
+    assert opening in {p.split("## Operational context")[0].strip() for p in ROOT_SYSTEM_PROMPTS}
+
+
+def test_tool_rotation_varies_across_rounds() -> None:
+    # Regression: every round builds a fresh root agent whose tool loop started at
+    # tool_defs[0], so each round's first tool call was the SAME tool. A seeded
+    # per-agent offset makes rounds start on different tools.
+    cfg = _cfg(
+        turns_per_session=Distribution(type="fixed", mean=6),
+        tool_loop_depth=Distribution(type="fixed", mean=1),
+        tool_catalog_size_per_agent=Distribution(type="fixed", mean=5),
+        max_events_per_session=2048,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
+    principals = _principal_events_by_round(g)
+    assert len(principals) == 6
+    first_tools = [principals[r].call.expected_output_tool_names[0] for r in sorted(principals)]
+    assert len(set(first_tools)) > 1, f"every round starts on the same tool: {first_tools}"
+
+
+def test_answer_text_varies_across_rounds() -> None:
+    # Regression: fit_filler ignored its rng and always cycled the word pool from
+    # index 0, so every round's terminal answer was byte-identical.
+    cfg = _cfg(
+        turns_per_session=Distribution(type="fixed", mean=4),
+        tool_loop_depth=Distribution(type="fixed", mean=0),
+        output_tokens_per_turn=Distribution(type="fixed", mean=40),
+        max_events_per_session=2048,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
+    principals = _principal_events_by_round(g)
+    answers = [principals[r].call.expected_output for r in sorted(principals)]
+    assert len(answers) == 4
+    assert len(set(answers)) == len(answers), "terminal answers repeat across rounds"
+
+
+def test_fit_filler_rng_offsets_word_cycle_deterministically() -> None:
+    # target well above the ~29-word <context> wrapper so the filler spans many words
+    tok = _word_tok()
+    pool = [f"w{i}" for i in range(50)]
+    a = fit_filler(tok, 80, "FIXED", rng=child_rng(7, 1), word_pool=pool)
+    b = fit_filler(tok, 80, "FIXED", rng=child_rng(7, 2), word_pool=pool)
+    assert a == fit_filler(tok, 80, "FIXED", rng=child_rng(7, 1), word_pool=pool), "same rng path -> same text"
+    assert a != b, "different rng paths -> different filler"
+    # rng=None keeps the fixed start at the pool's first word
+    assert fit_filler(tok, 80, "FIXED", rng=None, word_pool=pool).startswith(FILLER_OPEN + "w0 ")
 
 
 def test_event_budget_cost_is_k_plus_1_per_round() -> None:
