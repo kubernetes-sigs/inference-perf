@@ -31,8 +31,9 @@ from inference_perf.config import (
     MetricsClientType,
     StandardLoadStage,
 )
+from inference_perf.config.redaction import CREDENTIAL_HEADER_FRAGMENTS
 from inference_perf.tools.convert import convert_aiperf_profile
-from inference_perf.tools.convert.model import Conversion
+from inference_perf.tools.convert.model import Conversion, PeerUsageError
 
 VERSION = "v0.12.0"
 
@@ -469,3 +470,100 @@ def test_unverified_version_refuses() -> None:
     conversion = convert(["--model", "m", "--osl", "64"], version="0.11.0")
     assert conversion.config is None
     assert any("not in the verified surface registry" in refusal for refusal in conversion.refusals)
+
+
+# --header mirrors aiperf v0.12.0 _parse_str_as_tuple_list: a value starting
+# with { is a JSON object, anything else is a comma-separated list of
+# key:value items split at the first colon. A header whose name carries a
+# credential is dropped the way --api-key is.
+_HEADER_BASE = ["--model", "m", "--osl", "64", "--num-dataset-entries", "10"]
+
+
+def test_credential_header_is_dropped_and_assumed() -> None:
+    conversion = convert(_HEADER_BASE + ["-H", "Authorization: Bearer sk-x", "--header", "X-Team: infra"])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert conversion.config.api.headers == {"X-Team": "infra"}
+    assert any("set api.headers Authorization" in item for item in conversion.assumptions), conversion.assumptions
+    # The recorded argv keeps the header name and loses the value.
+    assert "sk-x" not in " ".join(conversion.argv)
+    assert "Authorization: <redacted>" in conversion.argv
+    assert "X-Team: infra" in conversion.argv
+
+
+@pytest.mark.parametrize("fragment", sorted(CREDENTIAL_HEADER_FRAGMENTS))
+def test_every_credential_fragment_drops_the_header(fragment: str) -> None:
+    name = f"X-{fragment.capitalize()}-Id"
+    conversion = convert(_HEADER_BASE + ["--header", f"{name}: v-1"])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert conversion.config.api.headers is None
+    assert any(f"set api.headers {name}" in item for item in conversion.assumptions), conversion.assumptions
+    assert "v-1" not in " ".join(conversion.argv)
+
+
+def test_json_header_form_is_parsed() -> None:
+    conversion = convert(_HEADER_BASE + ["--header", '{"X-C": "3", "X-Team": "infra"}'])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert conversion.config.api.headers == {"X-C": "3", "X-Team": "infra"}
+    assert '{"X-C": "3", "X-Team": "infra"}' in conversion.argv  # untouched without a credential
+
+
+def test_json_header_with_a_credential_is_scrubbed_in_place() -> None:
+    conversion = convert(_HEADER_BASE + ["--header", '{"X-Api-Key": "k-1", "X-Team": "infra"}'])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert conversion.config.api.headers == {"X-Team": "infra"}
+    assert any("set api.headers X-Api-Key" in item for item in conversion.assumptions), conversion.assumptions
+    assert "k-1" not in " ".join(conversion.argv)
+    assert '{"X-Api-Key": "<redacted>", "X-Team": "infra"}' in conversion.argv
+
+
+def test_comma_separated_header_items_are_split_like_aiperf() -> None:
+    conversion = convert(_HEADER_BASE + ["--header", "X-A: a, X-B: b", "--header=X-Team:infra"])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert conversion.config.api.headers == {"X-A": "a", "X-B": "b", "X-Team": "infra"}
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        '{"X-C": ',  # aiperf: must be a valid JSON string
+        "X-C",  # aiperf: each item must be in key:value format
+        "X-A: a, X-B",  # the second item has no colon
+    ],
+)
+def test_malformed_header_entry_is_a_usage_error(entry: str) -> None:
+    with pytest.raises(PeerUsageError, match="--header"):
+        convert(_HEADER_BASE + ["--header", entry])
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "X-C: 3",  # coerce_value reads 3 as an int
+        "X-C: true",  # and true as a bool
+        "X-C: null",  # and null as None
+        '{"X-C": 3}',  # a JSON number stays a number
+    ],
+)
+def test_header_value_aiperf_would_reject_is_a_usage_error(entry: str) -> None:
+    # aiperf's headers map takes strings, so these fail its config validation.
+    with pytest.raises(PeerUsageError, match="X-C"):
+        convert(_HEADER_BASE + ["--header", entry])
+
+
+@pytest.mark.parametrize(
+    "entry, bad_name",
+    [
+        (' {"X-C": "3"}', '{"X-C"'),  # a leading space defeats JSON detection, so the name is {"X-C"
+        (": v", ""),  # an empty name
+        ('{"X C": "3"}', "X C"),  # a JSON key with a space
+    ],
+)
+def test_malformed_header_name_refuses(entry: str, bad_name: str) -> None:
+    conversion = convert(_HEADER_BASE + ["--header", entry])
+    assert conversion.config is None
+    assert any(item.startswith("--header:") and f"'{bad_name}'" in item for item in conversion.refusals), conversion.refusals
