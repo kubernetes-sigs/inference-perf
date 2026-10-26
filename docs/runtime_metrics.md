@@ -14,7 +14,18 @@ Every metric declares a stability level, and that level is prepended to the metr
 - `BETA`: Labels may still change, but no rename or removal without a release that deprecates it first.
 - `STABLE`: Name, type and label names are fixed for the current major version.
 
-**Every metric below is `ALPHA` today, and nothing is promoted before v1.0.0.** These names, labels and buckets are a first cut that we expect to refine while the endpoint gets used; promotion is per metric, one `stability=` in its spec, not a blanket graduation of the set. The level appears only in the HELP text, never in a metric name and never in a label, so promoting a metric later does not break the queries or dashboards written against it.
+Promotion is per metric, one `stability=` on its spec, never a blanket graduation of the set. The level appears only in the HELP text, never in a metric name and never in a label, so promoting a metric does not break the queries or dashboards written against it.
+
+### Promotion
+
+A promotion is an ordinary PR. It changes `stability=` on the spec, adds the metric to the promoted list in `tests/required/observability/test_metric_sets.py`, regenerates this doc, and says in its description what reads the metric. It is reviewed like any other change and ships in the next minor release, named in the release notes. A promotion never lands in a patch release, and nothing is promoted before v1.0.0.
+
+The evidence for promotion is use, not age:
+
+- `ALPHA` to `BETA`: something outside this repo reads the metric by name from a released version. A dashboard, an alert rule, a recording rule, a benchmark harness. The PR links to it.
+- `BETA` to `STABLE`: the metric has been `BETA` for at least one minor release with no change to its name, type or labels, and is still read.
+
+Nothing is demoted. A `STABLE` metric that needs a different shape is added under a new name beside the old one, and the old one is removed only in the next major version. A `BETA` metric that needs renaming or removal keeps the old name exported for one more release, as its promise says.
 
 ## Metrics
 
