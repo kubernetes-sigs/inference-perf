@@ -69,6 +69,18 @@ def test_consecutive_miss_resets_counter() -> None:
     assert trigger.fired() is False
 
 
+def test_consecutive_fired_stays_latched_after_miss() -> None:
+    trigger = Consecutive(threshold=2)
+
+    trigger.update(_hit(1))
+    trigger.update(_hit(1))
+    assert trigger.fired() is True
+
+    trigger.update(_hit(0))
+    assert trigger.c == 0
+    assert trigger.fired() is True
+
+
 def test_consecutive_reset_fully_clears_state() -> None:
     trigger = Consecutive(threshold=2)
     trigger.update(_hit(1))

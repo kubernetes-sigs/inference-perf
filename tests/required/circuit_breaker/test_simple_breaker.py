@@ -20,7 +20,6 @@ its exact type is irrelevant to the behavior under test.
 
 from typing import List, Optional
 
-import pytest
 from pydantic import BaseModel
 
 from inference_perf.circuit_breaker.simple_breaker import SimpleCircuitBreaker
@@ -34,6 +33,10 @@ from inference_perf.config.circuit_breaker import (
 class _Metric(BaseModel):
     latency: float
     error: Optional[str] = None
+
+
+class _StringMetric(BaseModel):
+    latency: str
 
 
 def _config(*, matches: List[str], rules: Optional[List[str]] = None, threshold: int = 1) -> CircuitBreakerConfig:
@@ -107,25 +110,17 @@ def test_empty_rules_means_a_match_is_a_hit() -> None:
 # --- _search swallowing exceptions: characterization, not endorsement ------
 
 
-def test_search_swallows_runtime_exception(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CHARACTERIZATION test, not an endorsement (see kubernetes-sigs/inference-perf#732).
+def test_search_swallows_data_dependent_type_error() -> None:
+    """Characterize existing JMESPath error handling; see follow-up #927.
 
-    `_search` catches whatever exception a compiled expression's search() raises and
-    treats it as "no match" -- feed() must not propagate it, and the breaker must stay
-    closed. Pinned here deterministically by making search() itself raise, rather than
-    relying on any particular JMESPath expression or JMESPath version raising. This is
-    not an assertion that swallowing the exception is correct; production behavior is
-    deliberately left unchanged here.
+    Comparing a string latency to a numeric literal raises TypeError
+    during expression evaluation. The current breaker suppresses it.
+    This test does not endorse silent error handling.
     """
-    config = _config(matches=["latency > `0`"], rules=["latency > `0`"])
+    config = _config(matches=["latency > `0`"])
     breaker = SimpleCircuitBreaker(config)
 
-    def _raise(value: object) -> bool:
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(breaker._rules[0], "search", _raise)
-
-    breaker.feed(_Metric(latency=1.0))  # feed() must not propagate the exception
+    breaker.feed(_StringMetric(latency="not-a-number"))
 
     assert breaker.is_open() is False
 
