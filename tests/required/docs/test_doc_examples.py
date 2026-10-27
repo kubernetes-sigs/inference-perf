@@ -104,17 +104,10 @@ def _check_bounds(row: Row) -> None:
 # A condition must become true at the claimed second (2 dp).
 def _check_condition(row: Row) -> None:
     condition, ends_at = _code(row[0]), float(row[1])
-    assert round(Predicate(condition).boundary, 2) == ends_at, condition
+    assert round(Predicate(condition).deadline, 2) == ends_at, condition
 
 
 # A condition over measured terms must hold by the claimed second on time alone and be able to hold from the other.
-def _check_measured_condition(row: Row) -> None:
-    condition, ends_by, can_end_from = _code(row[0]), float(row[1]), float(row[2])
-    predicate = Predicate(condition)
-    assert (round(predicate.boundary, 2), round(predicate.earliest, 2)) == (ends_by, can_end_from), condition
-
-
-# A window function example must parse as exactly one term. Input: '`avg_over_last(latency, 100)`'.
 def _check_window_function(row: Row) -> None:
     term = _code(row[0])
     assert len(Predicate(f"(t >= 600) | ({term} > 0)").terms) == 1, term
@@ -153,8 +146,7 @@ def _rejects(build: Callable[[str], object]) -> Callable[[Row], None]:
 CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Expression", "Mean"): _check_mean,
     ("Expression", "Lower", "Upper"): _check_bounds,
-    ("Condition", "Holds from (s)"): _check_condition,
-    ("Condition", "Holds by (s)", "Can hold from (s)"): _check_measured_condition,
+    ("Condition", "Holds by (s)"): _check_condition,
     ("Window function", "Reads"): _check_window_function,
     ("Series", "Report field", "Unit", "Samples"): _check_series,
     ("Signal", "Reads"): _check_signal,

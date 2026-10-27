@@ -70,31 +70,29 @@ Not supported yet:
 
 ## Conditions
 
-A condition is a comparison over `t`, used where a field waits for something to become true. It must be false at `t = 0` and then true from some time onward, and this is proved when the config loads, so a condition reduces to the exact time it becomes true. A condition can also read what the stage measures, see [Measured terms](#measured-terms).
+A condition is a comparison over `t`, used where a field waits for something to become true. It must be false at `t = 0`, and one of its top-level `|` alternatives must be `t >= N` (or `t > N`) with `N` a number after 0. That alternative is the deadline: the condition holds from `N` on whatever else it reads, so nothing has to be solved for when the config loads. The other alternatives can only make it hold sooner. A condition can also read what the stage measures, see [Measured terms](#measured-terms).
 
-| Condition | Holds from (s) |
+| Condition | Holds by (s) |
 | --- | --- |
 | `t >= 60` | 60 |
 | `t > 90.5` | 90.5 |
 | `t >= 2*60` | 120 |
-| `(t >= 300) \| (t >= 60)` | 60 |
-| `(t >= 300) & (t >= 60)` | 300 |
 | `60 < t` | 60 |
-| `sqrt(t) >= 8` | 64 |
-| `t**2 >= 3600` | 60 |
-| `exp(t/10) > 100` | 46.05 |
+| `(t >= 300) \| (t >= 60)` | 60 |
+| `(t >= 600) \| (sqrt(t) >= 8)` | 600 |
+| `(t >= 600) \| ((t >= 60) & (t < 120))` | 600 |
 
-A condition may use `+ * /`, powers, `sqrt`, `exp`, `log`, `Min`, `Max`, the four inequalities, `&` and `|`. Other functions are rejected because SymPy's solver gives wrong answers for some of them (`Abs` among them). `&` and `|` bind tighter than a comparison, so parenthesise each comparison.
+An alternative may use `+ - * /`, powers, `sqrt`, `exp`, `log`, `Min`, `Max`, `Abs`, the four inequalities, `&` and `|`. `&` and `|` bind tighter than a comparison, so parenthesise each comparison.
 
 | Rejected condition | Why |
 | --- | --- |
 | `t = 60` | Equality holds at a single instant, which a check can step over. |
 | `t == 60` | Same. |
-| `t < 60` | True at the start, then false. It must become true and stay true. |
-| `(t >= 60) & (t < 120)` | Only true between 60 and 120. |
-| `t >= 0` | Already true at `t = 0`. |
-| `sin(t) > 0` | `sin` is not allowed in a condition. |
-| `Abs(t - 30) > 10` | `Abs` is not allowed in a condition. |
+| `t < 60` | No deadline: no alternative is `t >= N`. |
+| `sqrt(t) >= 8` | Same. Write the time as a number: `t >= 64`. |
+| `(t >= 60) & (t < 120)` | Same. The deadline must be a top-level alternative, not inside `&`. |
+| `t >= 0` | The deadline must be after `t = 0`. |
+| `(t >= 600) \| (t < 300)` | Already true at `t = 0`. |
 | `t >= 60 & t < 120` | `&` binds tighter than `>=`; parenthesise each comparison. |
 | `t` | A number, not a condition. |
 | `Normal(0, 1) >= t` | Random. A condition must be the same on every run. |
@@ -159,22 +157,22 @@ A condition can also read these signals directly, with no window.
 | `in_flight` | Requests sent and not yet finished. |
 | `since_last_completion` | Seconds since a request last finished, or since the stage started if none has. |
 
-A measured term is the system under test, so it cannot be solved like `t`. The time part of the condition is still proved when the config loads, twice. With every measured comparison false the condition must still become true on time alone: that is the time it holds by. With every measured comparison true it must again become true from some time onward: that is the earliest a measured term can make it hold. So a measured term can only make a condition hold sooner, never keep it from holding.
+A measured term is the system under test, so a comparison on it is only known as results arrive. The deadline alternative does not read one, which is what guarantees the condition holds by then: a measured term can only make a condition hold sooner, never keep it from holding.
 
-| Condition | Holds by (s) | Can hold from (s) |
-| --- | --- | --- |
-| `(t >= 600) \| (quantile_over_time(0.99, ttft[30s]) > 2)` | 600 | 0 |
-| `((t >= 60) & (avg_over_last(latency, 100) > 1)) \| (t >= 600)` | 600 | 60 |
-| `(t >= 300) \| (errors >= 10)` | 300 | 0 |
-| `(t >= 300) \| (avg_over_last(error, 100) > 0.05)` | 300 | 0 |
-| `(t >= 900) \| (avg_over_time(latency[10s]) > 1.5*avg_over_time(latency[10s] offset 10s))` | 900 | 0 |
-| `(t >= 900) \| (avg_over_last(ttft, 20) > 2*avg_over_sent(ttft, 10, 30))` | 900 | 0 |
-| `(t >= 600) \| ((in_flight > 0) & (since_last_completion > 30))` | 600 | 0 |
+| Condition | Holds by (s) |
+| --- | --- |
+| `(t >= 600) \| (quantile_over_time(0.99, ttft[30s]) > 2)` | 600 |
+| `((t >= 60) & (avg_over_last(latency, 100) > 1)) \| (t >= 600)` | 600 |
+| `(t >= 300) \| (errors >= 10)` | 300 |
+| `(t >= 300) \| (avg_over_last(error, 100) > 0.05)` | 300 |
+| `(t >= 900) \| (avg_over_time(latency[10s]) > 1.5*avg_over_time(latency[10s] offset 10s))` | 900 |
+| `(t >= 900) \| (avg_over_last(ttft, 20) > 2*avg_over_sent(ttft, 10, 30))` | 900 |
+| `(t >= 600) \| ((in_flight > 0) & (since_last_completion > 30))` | 600 |
 
 | Rejected condition | Why |
 | --- | --- |
-| `quantile_over_time(0.99, ttft[30s]) > 2` | Never holds on time alone. Write `(t >= 600) \| (...)`. |
-| `(t >= 60) & (avg_over_last(ttft, 50) > 2)` | Same: with the term false it never becomes true. |
+| `quantile_over_time(0.99, ttft[30s]) > 2` | No deadline. Write `(t >= 600) \| (...)`. |
+| `(t >= 60) & (avg_over_last(ttft, 50) > 2)` | Same. The deadline must be a top-level alternative: `((t >= 60) & (...)) \| (t >= 600)`. |
 | `(t >= 600) \| (ttft > 2)` | A series is not a value. Read it through a window function, such as `avg_over_last(ttft, 100)`. |
 | `(t >= 600) \| (avg_over_time(time_to_first_token[30s]) > 2)` | The report's field name. The series is `ttft`. |
 | `(t >= 600) \| (median_over_time(ttft[30s]) > 2)` | No median. Use `quantile_over_time(0.5, ttft[30s])`. |

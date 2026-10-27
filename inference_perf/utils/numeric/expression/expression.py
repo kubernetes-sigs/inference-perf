@@ -32,12 +32,11 @@ can never go negative, opts in with ``clip=True``.
 A :class:`Predicate` is the boolean counterpart: a condition over ``t`` such as
 ``"t >= 60"``, for a field that waits for something to become true. It shares
 the grammar and parser but is validated differently: it must be false at
-``t = 0`` and then hold from some time onward, which is proved statically so
-the condition compiles to an exact boundary instead of being polled. A predicate may also read measured terms
-(``quantile_over_time(0.99, ttft[30s])``, see :mod:`.measured`), which are the
-system under test and cannot be solved: they are evaluated as results arrive,
-and the proof is made with their comparisons all true and all false,
-bracketing when the condition can and must hold.
+``t = 0``, and one of its top-level ``|`` alternatives must be a literal
+``t >= N``, the deadline the condition holds from whatever else it reads. A
+predicate may also read measured terms (``quantile_over_time(0.99, ttft[30s])``,
+see :mod:`.measured`), which are the system under test: they are evaluated as
+results arrive and can only make the condition hold sooner than its deadline.
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ import inspect
 import logging
 import math
 import re
-from typing import Any, Callable, Mapping, Optional, Union
+from typing import Any, Mapping, Optional, Union
 
 import numpy as np
 import sympy
@@ -55,8 +54,8 @@ from numpy.typing import NDArray
 from sympy import AccumBounds, Interval, Symbol, oo
 from sympy.calculus.util import function_range
 from sympy.core.function import AppliedUndef
-from sympy.core.relational import GreaterThan, LessThan, Relational, StrictGreaterThan, StrictLessThan
-from sympy.logic.boolalg import And, Boolean, Or
+from sympy.core.relational import GreaterThan, LessThan, StrictGreaterThan, StrictLessThan
+from sympy.logic.boolalg import Boolean, Or
 from sympy.parsing.sympy_parser import parse_expr
 
 from .measured import SERIES, SIGNALS, Term, extract_terms
@@ -561,49 +560,33 @@ class Expression:
         return f"Expression({self.raw!r})"
 
 
-# The ``t`` domain a predicate is proved over: a stage runs from t = 0 onward.
-_TIME_DOMAIN = Interval(0, oo)
-
-
 class Predicate:
     """A boolean condition over stage time ``t`` and measured terms, e.g. ``"t >= 60"``.
 
     The string-grammar counterpart of :class:`Expression` for a trigger: a
     field that waits for the condition to become true and checks it at
     discrete instants. It is parsed and validated once at construction and
-    evaluated with :meth:`holds`. Construction raises :class:`ValueError`
-    unless the condition is false at ``t = 0`` and then holds for every later
-    ``t`` from some time onward. That shape is what makes a trigger meaningful
-    when it is checked at discrete instants: a condition that holds only at a
-    single time (``Eq(t, 60)``) or over a window (``(t >= 60) & (t < 120)``)
-    can be skipped over by the check, and one that already holds at ``t = 0``
-    (``t < 60``, ``t >= 0``) would fire before anything has run.
+    evaluated with :meth:`holds`.
 
-    The shape is proved statically by solving the condition over ``t >= 0``,
-    which is why :attr:`boundary` is always known: the condition compiles to
-    the exact time it starts holding, so a caller can schedule against it
-    instead of polling. The proof is only as good as sympy's inequality
-    solver, so a condition may use only the nodes the solver answers
-    correctly (see ``_PREDICATE_NODES``): ``+``, ``*``, ``/``, powers,
-    ``sqrt``, ``exp``, ``log``, ``Min``/``Max``, the inequalities ``>``,
-    ``>=``, ``<``, ``<=`` and their ``&``/``|`` combinations. Anything else,
-    e.g. ``sin`` or ``Abs``, is rejected by name rather than evaluated on an
-    unproven shape. Random variables are never permitted: a condition must be
-    the same on every run.
+    Construction raises :class:`ValueError` unless the condition is false at
+    ``t = 0`` and has a deadline: one of its top-level ``|`` alternatives is a
+    literal ``t >= N`` or ``t > N`` with ``N > 0``. That alternative is what
+    makes the condition hold from ``N`` onward whatever else it reads, so a
+    caller can schedule against :attr:`deadline` instead of polling, and
+    nothing has to be solved for. The other alternatives can only make the
+    condition hold sooner. They may use ``+ - * /``, powers, ``sqrt``,
+    ``exp``, ``log``, ``Min``, ``Max``, ``Abs``, the inequalities ``>``,
+    ``>=``, ``<``, ``<=`` and ``&``/``|``. Random variables are never
+    permitted: a condition must be the same on every run.
 
     Besides ``t`` a condition may read what the stage measures: window
     functions over finished requests (``quantile_over_time(0.99, ttft[30s])``,
     ``avg_over_last(latency, 100)``, ``avg_over_sent(ttft, 10, 30)``, see
     :mod:`.measured`) and the signals ``completed``, ``errors``, ``in_flight``
-    and ``since_last_completion``. Those are the system under test and cannot
-    be solved, so a comparison on one is evaluated as results arrive. The time
-    part is still proved, twice. With every measured comparison false the
-    condition must hold from some time onward on its own. That time is
-    :attr:`boundary`, the latest the condition can start holding. With every
-    measured comparison true it must again hold from some time onward. That
-    time is :attr:`earliest`, before which no result can make it hold. So a
-    measured term can only make the condition hold sooner, never keep it from
-    holding, and ``quantile_over_time(0.99, ttft[30s]) > 2`` alone is rejected.
+    and ``since_last_completion``. Those are the system under test, so a
+    comparison on one is evaluated as results arrive, and is false while the
+    value is unknown. The deadline does not depend on them, so
+    ``quantile_over_time(0.99, ttft[30s]) > 2`` alone is rejected.
 
     Equality in any spelling (``t = 60``, ``t == 60``, ``Eq(t, 60)``) and its
     negation are rejected up front: equality holds at a single instant, which
@@ -636,6 +619,8 @@ class Predicate:
             raise ValueError(f"Predicate {raw!r} is constant ({expr!r}); a condition must vary with t, e.g. 't >= 60'.")
         if not _is_condition(expr):
             raise ValueError(f"Predicate {raw!r} is not a condition; use a comparison such as 't >= 60'.")
+        if expr.has(sympy.Eq, sympy.Ne):
+            raise ValueError(_equality_message(raw))
         _reject_unknown_functions("Predicate", raw, expr)
 
         free = expr.free_symbols
@@ -646,99 +631,17 @@ class Predicate:
         if disallowed:
             raise ValueError(_disallowed_message(raw, disallowed))
         self._measured = frozenset(names - {"t"})
-        if "t" not in names:
-            if self._measured:
-                raise ValueError(
-                    f"Predicate {raw!r} can only hold on measured values; it must also hold on time alone, "
-                    f"e.g. '(t >= 600) | ({raw})'."
-                )
-            raise ValueError(f"Predicate {raw!r} does not depend on t; a condition must vary with t.")
-        _reject_unprovable_nodes(raw, expr)
-
         self._expr = expr
         self._symbols = [_T] + [Symbol(name) for name in sorted(self._measured)]
         self._holds = sympy.lambdify(self._symbols, expr, "numpy")
-
-        # A comparison that reads a measured value is unknown until the run.
-        # With them all false the condition must still hold from some time on:
-        # that is the boundary. With them all true it holds from the earliest
-        # time a result could make it hold. Both are plain conditions over t.
-        measured_atoms = [atom for atom in expr.atoms(Relational) if {str(s) for s in atom.free_symbols} & self._measured]
-        on_time_alone = expr.xreplace({atom: sympy.false for atom in measured_atoms})
-        self._boundary = self._prove_boundary(on_time_alone)
-        if measured_atoms:
-            self._earliest = self._prove_earliest(expr.xreplace({atom: sympy.true for atom in measured_atoms}))
-        else:
-            self._earliest = self._boundary
-
-    def _prove_boundary(self, on_time_alone: Any) -> float:
-        """Solve the condition with its measured comparisons false and require the shape ``[b, oo)`` with ``b > 0``."""
-        holding = _holding_set(on_time_alone)
-        if holding is None:
-            raise ValueError(f"Predicate {self.raw!r} could not be proved to hold from some time onward.")
-        if holding == sympy.S.EmptySet:
-            if self._measured:
-                raise ValueError(
-                    f"Predicate {self.raw!r} never holds on time alone; add a time bound so it always holds eventually, "
-                    f"e.g. '({self.raw}) | (t >= 600)'."
-                )
-            raise ValueError(f"Predicate {self.raw!r} never holds for t >= 0.")
-        if not isinstance(holding, Interval) or holding.sup != oo:
-            raise ValueError(
-                f"Predicate {self.raw!r} holds only on {_format_time_set(holding)}; a condition must hold from some time onward "
-                f"without lapsing, e.g. 't >= 60'."
-            )
-        if holding.inf == 0:
-            raise ValueError(
-                f"Predicate {self.raw!r} already holds at (or immediately after) t=0; "
-                f"a condition must be false at t=0, e.g. 't >= 60'."
-            )
-        boundary = float(holding.inf)
-        self._check_against_solver(sympy.lambdify([_T], on_time_alone, "numpy"), boundary)
-        return boundary
-
-    def _prove_earliest(self, at_the_earliest: Any) -> float:
-        """Solve the condition with its measured comparisons true and require the shape ``[b, oo)``, ``b >= 0``."""
-        holding = _holding_set(at_the_earliest)
-        if holding is None:
-            raise ValueError(f"Predicate {self.raw!r} could not be proved to hold from some time onward.")
-        if not isinstance(holding, Interval) or holding.sup != oo:
-            raise ValueError(
-                f"Predicate {self.raw!r} holds only on {_format_time_set(holding)} once its measured values hold; "
-                f"a condition must hold from some time onward without lapsing."
-            )
-        earliest = float(holding.inf)
-        self._check_against_solver(sympy.lambdify([_T], at_the_earliest, "numpy"), earliest)
-        return earliest
-
-    def _check_against_solver(self, holds_at: Callable[[Any], Any], boundary: float) -> None:
-        """Evaluate the condition either side of the proved boundary and far past it.
-
-        Defence in depth for the node allowlist: if sympy's solver ever answers
-        wrongly for an allowed node, the direct evaluation disagrees here and the
-        condition is rejected instead of compiling to a wrong boundary.
-        """
-        below = [boundary * f for f in (0.0, 0.5, 0.999)] if boundary > 0 else []
-        above = [boundary * f + d for f, d in ((1.001, 0.0), (2.0, 0.0), (10.0, 100.0), (1000.0, 1e6))]
-        # numpy floats so log(0) and 1/0 at t=0 evaluate to -inf/inf instead of raising.
-        with np.errstate(all="ignore"):
-            below_holds = [bool(holds_at(np.float64(x))) for x in below]
-            above_holds = [bool(holds_at(np.float64(x))) for x in above]
-        if any(below_holds) or not all(above_holds):
-            raise ValueError(
-                f"Predicate {self.raw!r} could not be proved to hold from some time onward: "
-                f"the solved boundary {boundary} disagrees with direct evaluation."
-            )
+        self._deadline = _deadline(raw, expr, bool(self._measured))
+        if self.holds(0):
+            raise ValueError(f"Predicate {raw!r} already holds at t=0; a condition must be false at t=0, e.g. 't >= 60'.")
 
     @property
-    def boundary(self) -> float:
-        """The time from which the condition holds on time alone, whatever the measured values read."""
-        return self._boundary
-
-    @property
-    def earliest(self) -> float:
-        """The time before which no result can make the condition hold; equal to :attr:`boundary` without measured values."""
-        return self._earliest
+    def deadline(self) -> float:
+        """The ``N`` of the earliest top-level ``t >= N`` alternative: the time the condition holds from whatever else it reads."""
+        return self._deadline
 
     @property
     def terms(self) -> Mapping[str, Term]:
@@ -780,49 +683,6 @@ class Predicate:
 # constant; '>=' and '<=' are not matched.
 _EQUALITY_SPELLING = re.compile(r"(?<![<>=!])=(?!=)|==|!=")
 
-# The only sympy node types a predicate may contain. An allowlist rather than a
-# denylist: sympy's inequality solver can return a confident but incomplete
-# answer (sin(t) > 0 solves to (0, pi) alone) or a wrong one (nested Abs), so a
-# node is allowed only once the solver has been checked against direct
-# evaluation for it. Powers are further restricted in _reject_unprovable_nodes.
-_PREDICATE_NODES: tuple[type, ...] = (
-    And,
-    Or,
-    GreaterThan,
-    StrictGreaterThan,
-    LessThan,
-    StrictLessThan,
-    sympy.Symbol,
-    sympy.Number,
-    sympy.NumberSymbol,
-    sympy.Add,
-    sympy.Mul,
-    sympy.Pow,
-    sympy.exp,
-    sympy.log,
-    sympy.Min,
-    sympy.Max,
-)
-
-
-def _format_time_set(s: Any) -> str:
-    """Render a solved set of times in interval notation, e.g. ``[0, 60)`` or ``[0, 30) or [60, infinity)``.
-
-    sympy's own repr (``Interval.Ropen(0, 60)``) is exact but reads as code in
-    a config error.
-    """
-    if isinstance(s, sympy.Union):
-        return " or ".join(_format_time_set(part) for part in s.args)
-    if isinstance(s, Interval):
-
-        def end(x: Any) -> str:
-            if x == oo:
-                return "infinity"
-            return str(x) if x.is_Integer else format(float(x), "g")
-
-        return f"{'(' if s.left_open else '['}{end(s.inf)}, {end(s.sup)}{')' if s.right_open else ']'}"
-    return str(s)
-
 
 def _disallowed_message(raw: str, disallowed: set[str]) -> str:
     names = sorted(disallowed)
@@ -847,53 +707,28 @@ def _equality_message(raw: str) -> str:
     )
 
 
-def _reject_unprovable_nodes(raw: str, expr: Any) -> None:
-    """Reject any node outside ``_PREDICATE_NODES``, naming it."""
-    for node in sympy.preorder_traversal(expr):
-        if isinstance(node, (sympy.Eq, sympy.Ne)):
-            raise ValueError(_equality_message(raw))
-        if isinstance(node, sympy.Pow):
-            base, exponent = node.args
-            # t**2, sqrt(t), 1/t (constant exponent) and 2**t (positive constant base) only.
-            if exponent.free_symbols and not (base.is_number and base.is_positive):
-                raise ValueError(
-                    f"Predicate {raw!r} uses {node}; a power needs a constant exponent or a positive constant base."
-                )
-            continue
-        if not isinstance(node, _PREDICATE_NODES):
-            name = node.func.__name__
-            raise ValueError(
-                f"Predicate {raw!r} uses {name!r}, which is not allowed in a condition; "
-                f"permitted: + - * / **, sqrt, exp, log, Min, Max, and > >= < <= combined with & and |."
-            )
+def _deadline(raw: str, expr: Any, measured: bool) -> float:
+    """The ``N`` of the earliest top-level ``t >= N`` / ``t > N`` alternative of ``expr``, which must be positive."""
+    alternatives = expr.args if isinstance(expr, Or) else (expr,)
+    deadlines = [float(alt.lts) for alt in alternatives if _is_time_threshold(alt)]
+    if not deadlines:
+        hint = f"'(t >= 600) | ({raw})'" if measured else "'t >= 60'"
+        raise ValueError(
+            f"Predicate {raw!r} has no deadline; one of its top-level '|' alternatives must be 't >= N' or 't > N', "
+            f"so that it holds on time alone from N onward whatever else it reads, e.g. {hint}."
+        )
+    deadline = min(deadlines)
+    if deadline <= 0:
+        raise ValueError(
+            f"Predicate {raw!r} already holds at (or immediately after) t=0; the deadline must be after t=0, e.g. 't >= 60'."
+        )
+    return deadline
 
 
-def _holding_set(expr: Any) -> Any:
-    """The set of ``t >= 0`` where ``expr`` holds, or ``None`` when not provable.
-
-    Leaves are solved by sympy, and ``&``/``|`` are folded as set
-    intersection/union of their solved leaves. A leaf the solver cannot
-    answer (a ``ConditionSet``) makes the whole condition unprovable. The
-    constants arise when a measured comparison is replaced by true or false.
-    """
-    if expr is sympy.true:
-        return _TIME_DOMAIN
-    if expr is sympy.false:
-        return sympy.S.EmptySet
-    if isinstance(expr, And):
-        sets = [_holding_set(arg) for arg in expr.args]
-        if any(s is None for s in sets):
-            return None
-        return sympy.Intersection(*sets)
-    if isinstance(expr, Or):
-        sets = [_holding_set(arg) for arg in expr.args]
-        if any(s is None for s in sets):
-            return None
-        return sympy.Union(*sets)
-    if isinstance(expr, Relational):
-        try:
-            solved = sympy.solveset(expr, _T, _TIME_DOMAIN)
-        except Exception:
-            return None
-        return None if solved.has(sympy.ConditionSet) else solved
-    return None
+def _is_time_threshold(node: Any) -> bool:
+    """``t >= N`` or ``t > N`` with ``N`` a number, in either spelling (``N <= t``)."""
+    return (
+        isinstance(node, (GreaterThan, StrictGreaterThan, LessThan, StrictLessThan))
+        and node.gts == _T
+        and bool(node.lts.is_number)
+    )

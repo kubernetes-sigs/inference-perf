@@ -13,74 +13,76 @@
 # limitations under the License.
 """Tests for ``Predicate``, the boolean condition a field waits on.
 
-A condition is checked at discrete instants, so the only shape that is
-safe to accept is one that is false at t=0 and then holds forever from some
-boundary time on. These tests pin that acceptance rule, the exact boundary
-each accepted shape compiles to, and the message for each rejected shape.
+A condition is checked at discrete instants, so it must be false at t=0 and
+carry a deadline: a top-level ``t >= N`` alternative that holds from N on
+whatever else the condition reads. These tests pin that acceptance rule, the
+deadline each accepted shape compiles to, and the message for each rejected
+shape.
 """
 
 import pytest
-from sympy import Interval, oo
 
 from inference_perf.utils.numeric.expression import Expression, Predicate
-from inference_perf.utils.numeric.expression import expression as expression_module
 
 
 class TestAccepted:
-    # 't >= 60' compiles to boundary 60.0; false at t=59, true at t=60 and t=61.
+    # 't >= 60' has deadline 60.0; false at t=59, true at t=60 and t=61.
     def test_simple_threshold(self) -> None:
         p = Predicate("t >= 60")
-        assert p.boundary == 60.0
+        assert p.deadline == 60.0
         assert p.free_symbols == {"t"}
         assert not p.holds(59)
         assert p.holds(60)
         assert p.holds(61)
 
-    # 't > 60' has the same boundary 60.0 but is false AT t=60 and true at t=60.001.
-    def test_strict_threshold_excludes_boundary(self) -> None:
+    # 't > 60' has the same deadline 60.0 but is false AT t=60 and true at t=60.001.
+    def test_strict_threshold_excludes_deadline(self) -> None:
         p = Predicate("t > 60")
-        assert p.boundary == 60.0
+        assert p.deadline == 60.0
         assert not p.holds(60)
         assert p.holds(60.001)
 
-    # '60 <= t' is the same condition written the other way round; boundary 60.0.
+    # '60 <= t' is the same condition written the other way round; deadline 60.0.
     def test_reversed_comparison(self) -> None:
-        assert Predicate("60 <= t").boundary == 60.0
+        assert Predicate("60 <= t").deadline == 60.0
 
-    # '2*t + 1 >= 121' and 't**2 >= 3600' both solve to t >= 60; boundary 60.0 for each.
-    def test_polynomial_forms_solve_to_boundary(self) -> None:
-        assert Predicate("2*t + 1 >= 121").boundary == 60.0
-        assert Predicate("t**2 >= 3600").boundary == 60.0
-
-    # Every allowed non-polynomial node solves to the boundary it should:
-    # exp(t) >= 100 -> ln(100), log(t) >= 3 -> e**3, sqrt(t) >= 5 -> 25, 1/t <= 0.1 -> 10,
-    # 2**t >= 1024 -> 10, Max(t, 10) >= 60 -> 60, Min(t, 100) >= 60 -> 60.
+    # The deadline may be any constant expression: 't >= 2*60' -> 120, 't >= sqrt(3600)' -> 60, 't >= log(100)' -> 4.605.
     @pytest.mark.parametrize(
-        "raw, boundary",
-        [
-            ("exp(t) >= 100", 4.605170185988092),
-            ("log(t) >= 3", 20.085536923187668),
-            ("sqrt(t) >= 5", 25.0),
-            ("1/t <= 0.1", 10.0),
-            ("2**t >= 1024", 10.0),
-            ("Max(t, 10) >= 60", 60.0),
-            ("Min(t, 100) >= 60", 60.0),
-        ],
+        "raw, deadline", [("t >= 2*60", 120.0), ("t >= sqrt(3600)", 60.0), ("t >= log(100)", 4.605170185988092)]
     )
-    def test_allowed_non_polynomial_nodes(self, raw: str, boundary: float) -> None:
-        assert Predicate(raw).boundary == pytest.approx(boundary)
+    def test_constant_expression_deadline(self, raw: str, deadline: float) -> None:
+        assert Predicate(raw).deadline == pytest.approx(deadline)
 
-    # '(t >= 60) | (t >= 30)' holds from whichever comes first: boundary 30.0, true at t=45.
+    # '(t >= 60) | (t >= 30)' holds from whichever comes first: deadline 30.0, true at t=45.
     def test_or_takes_earliest(self) -> None:
         p = Predicate("(t >= 60) | (t >= 30)")
-        assert p.boundary == 30.0
+        assert p.deadline == 30.0
         assert p.holds(45)
 
-    # '(t >= 60) & (t >= 30)' holds only once both do: boundary 60.0, false at t=45.
-    def test_and_takes_latest(self) -> None:
-        p = Predicate("(t >= 60) & (t >= 30)")
-        assert p.boundary == 60.0
-        assert not p.holds(45)
+    # The other alternatives can be anything evaluable and only make the condition hold sooner:
+    # '(t >= 600) | (sqrt(t) >= 8)' has deadline 600.0, is false at t=63 and true at t=64.
+    def test_other_alternatives_hold_sooner(self) -> None:
+        p = Predicate("(t >= 600) | (sqrt(t) >= 8)")
+        assert p.deadline == 600.0
+        assert not p.holds(63)
+        assert p.holds(64)
+
+    # An alternative may be a window: '(t >= 600) | ((t >= 60) & (t < 120))' holds at t=100, not at t=130, and from 600.
+    def test_window_alternative(self) -> None:
+        p = Predicate("(t >= 600) | ((t >= 60) & (t < 120))")
+        assert p.deadline == 600.0
+        assert p.holds(100)
+        assert not p.holds(130)
+        assert p.holds(600)
+
+    # Nothing is solved for, so any function the grammar knows is fine in an alternative:
+    # '(t >= 600) | (Abs(t - 300) < 10)' is false at t=0, true at t=295; '(t >= 600) | (sin(t) > 0)' true at t=1.
+    def test_any_known_function_in_an_alternative(self) -> None:
+        p = Predicate("(t >= 600) | (Abs(t - 300) < 10)")
+        assert p.deadline == 600.0
+        assert not p.holds(0)
+        assert p.holds(295)
+        assert Predicate("(t >= 600) | (sin(t) > 0)").holds(1)
 
     # holds() accepts an int and a float alike; 't >= 60' at t=60 (int) and t=60.0 (float) are both True.
     def test_holds_accepts_int_and_float(self) -> None:
@@ -101,62 +103,35 @@ class TestRejectedShapes:
         with pytest.raises(ValueError, match="uses equality"):
             Predicate(raw)
 
-    # 't < 60' is already true at t=0 and lapses at 60; rejected as holding only on [0, 60), in interval notation.
-    def test_lapsing_condition(self) -> None:
-        with pytest.raises(ValueError, match=r"holds only on \[0, 60\);"):
-            Predicate("t < 60")
+    # Without a top-level 't >= N' alternative there is no deadline, whatever the shape: a lapsing 't < 60',
+    # a window '(t >= 60) & (t < 120)', an '&' of thresholds, an implied threshold 'sqrt(t) >= 8' or
+    # 't**2 >= 3600', a capped 'Min(t, 50) >= 60' and a never-true 't < -5'. The hint is 't >= 60'.
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "t < 60",
+            "(t >= 60) & (t < 120)",
+            "(t >= 60) & (t >= 30)",
+            "sqrt(t) >= 8",
+            "t**2 >= 3600",
+            "Min(t, 50) >= 60",
+            "t < -5",
+        ],
+    )
+    def test_no_deadline(self, raw: str) -> None:
+        with pytest.raises(ValueError, match=r"has no deadline; .* e\.g\. 't >= 60'\."):
+            Predicate(raw)
 
-    # '(t >= 60) & (t < 120)' is a window; rejected as holding only on [60, 120).
-    def test_window(self) -> None:
-        with pytest.raises(ValueError, match=r"holds only on \[60, 120\);"):
-            Predicate("(t >= 60) & (t < 120)")
-
-    # 't >= 0', 't > 0' and 't >= -5' all hold from the start; each is rejected as already holding at t=0.
+    # 't >= 0', 't > 0' and 't >= -5' have a deadline at or before the start; each is rejected as already holding at t=0.
     @pytest.mark.parametrize("raw", ["t >= 0", "t > 0", "t >= -5"])
-    def test_already_holding_at_start(self, raw: str) -> None:
-        with pytest.raises(ValueError, match="already holds at"):
+    def test_deadline_not_after_start(self, raw: str) -> None:
+        with pytest.raises(ValueError, match=r"already holds at \(or immediately after\) t=0"):
             Predicate(raw)
 
-    # '(t < 30) | (t >= 60)' is true, lapses, then holds again; rejected naming both pieces: '[0, 30) or [60, infinity)'.
-    def test_lapsing_then_holding_again(self) -> None:
-        with pytest.raises(ValueError, match=r"holds only on \[0, 30\) or \[60, infinity\);"):
-            Predicate("(t < 30) | (t >= 60)")
-
-    # '(t > 60.5) & (t <= 90)' has open and fractional ends; rejected as holding only on (60.5, 90].
-    def test_window_with_open_fractional_end(self) -> None:
-        with pytest.raises(ValueError, match=r"holds only on \(60\.5, 90\];"):
-            Predicate("(t > 60.5) & (t <= 90)")
-
-    # 't < -5' is never true for t >= 0; rejected as never holding.
-    def test_never_holds(self) -> None:
-        with pytest.raises(ValueError, match="never holds"):
-            Predicate("t < -5")
-
-    # 'Min(t, 50) >= 60' caps at 50 so it is never true; rejected as never holding.
-    def test_capped_never_holds(self) -> None:
-        with pytest.raises(ValueError, match="never holds"):
-            Predicate("Min(t, 50) >= 60")
-
-    # A solver that answers wrongly is caught by direct evaluation: with the solved set forced to [30, oo)
-    # for 't >= 60', t=45 evaluates False inside the claimed set, so the condition is rejected.
-    def test_wrong_solver_answer_is_caught(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(expression_module, "_holding_set", lambda expr: Interval(30, oo))
-        with pytest.raises(ValueError, match="disagrees with direct evaluation"):
-            Predicate("t >= 60")
-
-
-class TestRejectedNodes:
-    # 'sin(t) > 0' (solver returns only (0, pi)), 'Abs(t - 30) >= 60' (solver wrong on nested Abs) and
-    # 'floor(t) >= 60' (unsolvable) use nodes outside the allowlist; each is rejected naming the node.
-    @pytest.mark.parametrize("raw, node", [("sin(t) > 0", "sin"), ("Abs(t - 30) >= 60", "Abs"), ("floor(t) >= 60", "floor")])
-    def test_node_outside_allowlist(self, raw: str, node: str) -> None:
-        with pytest.raises(ValueError, match=f"uses '{node}', which is not allowed"):
-            Predicate(raw)
-
-    # 't**t >= 5' has t in both base and exponent; rejected by the power rule. '2**t' (constant base) is accepted above.
-    def test_power_with_t_in_base_and_exponent(self) -> None:
-        with pytest.raises(ValueError, match="a power needs a constant exponent or a positive constant base"):
-            Predicate("t**t >= 5")
+    # '(t >= 600) | (t < 300)' has deadline 600 but another alternative is true at t=0; rejected by direct evaluation.
+    def test_another_alternative_holds_at_start(self) -> None:
+        with pytest.raises(ValueError, match="already holds at t=0"):
+            Predicate("(t >= 600) | (t < 300)")
 
 
 class TestRejectedInputs:

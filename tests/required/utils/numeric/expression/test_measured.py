@@ -163,33 +163,32 @@ class TestParsing:
             Predicate("(t >= 600) | (request_latency > 2)")
 
 
-class TestProof:
-    # '(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)' holds by 600 and can hold from 0.
+class TestDeadline:
+    # '(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)' has deadline 600; the term alternative is false until it has a value.
     def test_or_with_a_term(self) -> None:
         p = Predicate("(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)")
-        assert (p.boundary, p.earliest) == (600.0, 0.0)
+        assert p.deadline == 600.0
+        assert not p.holds(599)
+        assert p.holds(600)
 
-    # '((t >= 60) & (avg_over_last(latency, 50) > 1)) | (t >= 600)' holds by 600 and can hold from 60.
+    # '((t >= 60) & (avg_over_last(latency, 50) > 1)) | (t >= 600)': deadline 600, and the term cannot end it before 60.
     def test_term_gated_by_time(self) -> None:
         p = Predicate("((t >= 60) & (avg_over_last(latency, 50) > 1)) | (t >= 600)")
-        assert (p.boundary, p.earliest) == (600.0, 60.0)
+        assert p.deadline == 600.0
+        assert not p.holds(59, {"_term0": 5.0})
+        assert p.holds(60, {"_term0": 5.0})
 
-    # Signals are measured too: '(t >= 300) | (errors >= 10)' holds by 300 and can hold from 0.
+    # Signals are measured too: '(t >= 300) | (errors >= 10)' has deadline 300 and reads the signal 'errors'.
     def test_signal(self) -> None:
         p = Predicate("(t >= 300) | (errors >= 10)")
-        assert (p.boundary, p.earliest) == (300.0, 0.0)
+        assert p.deadline == 300.0
         assert p.signals == frozenset({"errors"})
 
-    # A condition that cannot hold on time alone is rejected: a term alone, and a term ANDed with time.
-    @pytest.mark.parametrize(
-        "condition, message",
-        [
-            ("avg_over_last(ttft, 5) > 2", "must also hold on time alone"),
-            ("(t >= 60) & (avg_over_last(ttft, 5) > 2)", "never holds on time alone"),
-        ],
-    )
-    def test_must_hold_on_time_alone(self, condition: str, message: str) -> None:
-        with pytest.raises(ValueError, match=message):
+    # A condition with no 't >= N' alternative has no deadline: a term alone, and a term ANDed with time.
+    # The hint wraps the condition: '(t >= 600) | (<condition>)'.
+    @pytest.mark.parametrize("condition", ["avg_over_last(ttft, 5) > 2", "(t >= 60) & (avg_over_last(ttft, 5) > 2)"])
+    def test_no_deadline(self, condition: str) -> None:
+        with pytest.raises(ValueError, match=r"has no deadline; .* e\.g\. '\(t >= 600\) \| \("):
             Predicate(condition)
 
     # A missing or NaN measured value makes its comparison false; the time part still decides.
