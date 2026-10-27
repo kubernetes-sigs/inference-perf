@@ -119,16 +119,19 @@ def test_rejects_invalid_timeout(value: float) -> None:
 
 @pytest.mark.parametrize("stall", ["load", "first_row"])
 @pytest.mark.parametrize("source", ["sharegpt", "cnn", "visionarena", "otel"])
+# Stalling the dataset open or first row must respect the configured 50 ms deadline.
 def test_generators_apply_configured_deadline(
     source: str, stall: str, monkeypatch: pytest.MonkeyPatch, blocked_load: Callable[..., Any]
 ) -> None:
     if source == "otel" and stall == "first_row":
         pytest.skip("OTel loads eagerly")
 
+    # Delay the first yielded row to exercise the streaming deadline.
     def rows() -> Iterator[Any]:
         blocked_load()
         yield {}
 
+    # Stall immediately or return the delayed iterator, as selected by the fixture.
     def load(*args: Any, **kwargs: Any) -> Any:
         return rows() if stall == "first_row" else blocked_load()
 
@@ -136,7 +139,7 @@ def test_generators_apply_configured_deadline(
     start = time.monotonic()
     with pytest.raises(TimeoutError, match="data.load_timeout"):
         if source == "sharegpt":
-            monkeypatch.setattr(hf_sharegpt_datagen, "load_dataset", load)
+            monkeypatch.setattr(hf_sharegpt_datagen.HFShareGPTDataGenerator, "_open_dataset", load)
             hf_sharegpt_datagen.HFShareGPTDataGenerator(APIConfig(), config, None)
         elif source == "cnn":
             monkeypatch.setattr(cnn_dailymail_datagen, "load_dataset", load)
@@ -173,11 +176,13 @@ def test_otel_passes_dataset_options(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize("source", ["sharegpt", "cnn"])
 @pytest.mark.parametrize("timeout", [5.0, None])
+# Startup consumes row zero once; unpickling stays lazy and reload primes once again.
 def test_streaming_startup_primes_once_and_reloads(
     source: str, timeout: float | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     consumed: list[int] = []
 
+    # Record each consumed value so priming and lazy reload are observable.
     def load(*args: Any, **kwargs: Any) -> Iterator[int]:
         for value in range(3):
             consumed.append(value)
@@ -186,7 +191,7 @@ def test_streaming_startup_primes_once_and_reloads(
     generator: hf_sharegpt_datagen.HFShareGPTDataGenerator | cnn_dailymail_datagen.CNNDailyMailDataGenerator
     config = DataConfig(load_timeout=timeout)
     if source == "sharegpt":
-        monkeypatch.setattr(hf_sharegpt_datagen, "load_dataset", load)
+        monkeypatch.setattr(hf_sharegpt_datagen.HFShareGPTDataGenerator, "_open_dataset", load)
         generator = hf_sharegpt_datagen.HFShareGPTDataGenerator(APIConfig(), config, None)
         attribute = "sharegpt_dataset"
     else:

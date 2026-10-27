@@ -106,6 +106,14 @@ data:
       std_dev: 5
 ```
 
+ShareGPT incrementally reads the original
+`anon8231489123/ShareGPT_Vicuna_unfiltered/ShareGPT_V3_unfiltered_cleaned_split.json`
+file without changing its record order or startup priming. Local `.json` files
+(JSON arrays or JSON Lines) are read incrementally too. Each pass reopens the
+source instead of retaining decoded records, so memory is bounded by the read
+buffer and individual records. Repeated Hub passes stream the file again; use
+`data.path` with a local copy to avoid repeated network transfers.
+
 `data.load_timeout` bounds Hub dataset initialization for ShareGPT, CNN/DailyMail,
 VisionArena, and OTel trace replay (300 seconds by default). For ShareGPT and
 CNN/DailyMail, this includes loading and reading the first row, when streaming

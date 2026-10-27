@@ -24,6 +24,7 @@ dependencies = [
     "llmd-benchmark-report<0.3,>=0.2.1",
     "sympy>=1.13.0,<1.15",
     "backports.zstd>=1.0.0; python_version < '3.14'",
+    "ijson>=3.4.0",
 ]
 requires-python = ">=3.12"
 readme = "README.md"
@@ -216,6 +217,7 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = [
     "datasets.*",
+    "ijson.*",
     "matplotlib.*",
     "boto3.*",
     "botocore.*",
