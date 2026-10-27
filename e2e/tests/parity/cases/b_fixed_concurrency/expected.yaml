@@ -23,3 +23,6 @@ tools:
     # vllm bench always sends one test request before the real run; it is
     # ignored. See a_fixed_rate/expected.yaml.
     leading_extra_requests: 1
+    # Same consecutive-id prompts as a_fixed_rate, so the same 1% may miss
+    # the prompt length bound. See there.
+    prompt_outlier_frac: 0.01

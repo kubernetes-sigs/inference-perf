@@ -33,3 +33,11 @@ tools:
     # vllm/benchmarks/serve.py), then sends all --num-prompts requests. So the
     # absorber records num_requests + 1, and the first one is ignored.
     leading_extra_requests: 1
+    # vllm bench builds each random prompt from consecutive token ids, then
+    # decodes and re-encodes it. A few id ranges in the gemma tokenizer
+    # (<unusedN>, control characters) collapse under that round trip, down to
+    # 17 tokens. Replaying the pinned sampler for these 600 prompts gives none
+    # at the default --seed 0 and 1 or 2 at seeds 1 to 4. So up to 1% of its
+    # prompts may miss the 128 +-15% bound. inference-perf declares nothing
+    # here, so every one of its prompts must be in range.
+    prompt_outlier_frac: 0.01

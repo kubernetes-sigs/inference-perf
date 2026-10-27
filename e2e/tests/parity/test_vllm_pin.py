@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""The vllm version check behind the parity tests, run against fake vllm installs."""
+"""The vllm version check and command choice behind the parity tests, run against fake vllm installs."""
 
 import logging
 from pathlib import Path
@@ -19,7 +19,14 @@ from typing import Optional
 
 import pytest
 
-from utils.vllm_bench import VLLM_PINNED_REF, check_vllm_version, installed_vllm_version, vllm_required
+from utils.vllm_bench import (
+    VLLM_PINNED_REF,
+    VllmUnavailable,
+    _bench_serve_cmd,
+    check_vllm_version,
+    installed_vllm_version,
+    vllm_required,
+)
 
 PINNED = VLLM_PINNED_REF.removeprefix("v")
 
@@ -92,7 +99,7 @@ def test_other_version_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ca
 # vllm 99.0.0 with VLLM_REQUIRED=1 fails, naming 99.0.0.
 def test_other_version_fails_when_required(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VLLM_REQUIRED", "1")
-    with pytest.raises(AssertionError, match="99.0.0"):
+    with pytest.raises(VllmUnavailable, match="99.0.0"):
         check_vllm_version(_fake_vllm(tmp_path, "echo 99.0.0"))
 
 
@@ -108,5 +115,43 @@ def test_unreadable_version_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 # No sibling python, so no version. With VLLM_REQUIRED=1 that fails.
 def test_unreadable_version_fails_when_required(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VLLM_REQUIRED", "1")
-    with pytest.raises(AssertionError, match="cannot read the vllm version"):
+    with pytest.raises(VllmUnavailable, match="cannot read the vllm version"):
         check_vllm_version(_fake_vllm(tmp_path, None))
+
+
+# Sibling python prints the pinned version, so it has vllm. The command runs
+# the bench-serve shim under that python, then the args.
+def test_bench_cmd_uses_shim_when_sibling_python_has_vllm(tmp_path: Path) -> None:
+    cmd = _bench_serve_cmd(_fake_vllm(tmp_path, f"echo {PINNED}"), ["--num-prompts", "4"])
+    assert Path(cmd[0]) == (tmp_path / "bin").resolve() / "python"
+    assert cmd[1] == "-c"
+    assert cmd[-2:] == ["--num-prompts", "4"]
+
+
+# Sibling python exits 1 on the version probe: an unrelated python next to the
+# vllm executable. The command falls back to `vllm bench serve --num-prompts 4`.
+def test_bench_cmd_uses_cli_when_sibling_python_lacks_vllm(tmp_path: Path) -> None:
+    vllm = _fake_vllm(tmp_path, "exit 1")
+    assert _bench_serve_cmd(vllm, ["--num-prompts", "4"]) == [vllm, "bench", "serve", "--num-prompts", "4"]
+
+
+# No python next to vllm. The command is `vllm bench serve --num-prompts 4`.
+def test_bench_cmd_uses_cli_without_sibling_python(tmp_path: Path) -> None:
+    vllm = _fake_vllm(tmp_path, None)
+    assert _bench_serve_cmd(vllm, ["--num-prompts", "4"]) == [vllm, "bench", "serve", "--num-prompts", "4"]
+
+
+# link/vllm is a symlink to bin/vllm, a fake venv whose python prints the pin,
+# and link/python is an unrelated python that exits 1 (the pipx layout). The
+# version is read from bin/python, and the shim runs under it.
+def test_symlinked_vllm_uses_the_python_it_points_at(tmp_path: Path) -> None:
+    target = _fake_vllm(tmp_path, f"echo {PINNED}")
+    link_dir = tmp_path / "link"
+    link_dir.mkdir()
+    (link_dir / "vllm").symlink_to(target)
+    unrelated = link_dir / "python"
+    unrelated.write_text("#!/bin/sh\nexit 1\n")
+    unrelated.chmod(0o755)
+    link = str(link_dir / "vllm")
+    assert installed_vllm_version(link) == PINNED
+    assert Path(_bench_serve_cmd(link, [])[0]) == (tmp_path / "bin").resolve() / "python"

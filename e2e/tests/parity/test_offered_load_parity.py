@@ -37,6 +37,7 @@ tools directly against each other. Each tool is run once per case and the
 result is cached, so the number of tests reading it does not matter.
 """
 
+import math
 import statistics
 from dataclasses import dataclass
 from functools import lru_cache
@@ -73,7 +74,8 @@ MODEL_NAME = "google/gemma-3-270m"
 TOKENIZER_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"
 
 PARITY_DIR = Path(__file__).resolve().parent
-CASE_DIRS = sorted(p for p in (PARITY_DIR / "cases").iterdir() if p.is_dir())
+CASES_ROOT = PARITY_DIR / "cases"
+CASE_DIRS = sorted(p for p in CASES_ROOT.iterdir() if p.is_dir()) if CASES_ROOT.is_dir() else []
 TOOLS = ("inference-perf", "vllm-bench")
 
 # Run this whole file on one pytest-xdist worker. The per-tool results are cached
@@ -82,11 +84,11 @@ TOOLS = ("inference-perf", "vllm-bench")
 pytestmark = pytest.mark.xdist_group(name="tool-parity")
 
 
-# Guard: at least one case directory exists. If cases/ were empty, every
-# parametrized test below would silently produce zero tests, and this file
-# would pass while checking nothing.
+# Guard: at least one case directory exists. If cases/ were empty or missing,
+# every parametrized test below would silently produce zero tests, and this
+# file would pass while checking nothing.
 def test_cases_are_committed() -> None:
-    assert CASE_DIRS, f"no parity cases committed under {PARITY_DIR / 'cases'}"
+    assert CASE_DIRS, f"no parity cases committed under {CASES_ROOT}"
 
 
 # Everything the checks below need to know about one tool's run, computed from
@@ -210,14 +212,14 @@ async def _drive_inference_perf(case_dir: Path, base_url: str) -> None:
 
 
 # Runs `vllm bench serve` with the case's vllm-bench.args, pointed at the
-# absorber. Blank lines and # comments in the args file are skipped; the
-# harness adds --base-url/--model/--tokenizer/--save-result/--result-filename
-# at the end. Fails if the run itself fails.
+# absorber. Blank lines and # comments in the args file are skipped, including
+# a comment after a flag (`--num-prompts  # count` reads as `--num-prompts`).
+# The harness adds --base-url/--model/--tokenizer at the end. Fails if the run
+# itself fails.
 async def _drive_vllm_bench(case_dir: Path, base_url: str, vllm_bin: str) -> None:
     lines = (case_dir / "vllm-bench.args").read_text(encoding="utf-8").splitlines()
-    args = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+    args = [arg for arg in (ln.split("#", 1)[0].strip() for ln in lines) if arg]
     args += ["--base-url", base_url, "--model", MODEL_NAME, "--tokenizer", str(extract_tarball(TOKENIZER_TARBALL))]
-    args += ["--save-result", "--result-filename", "vllm_bench_result.json"]
     warn_if_pin_stale()
     result = await run_vllm_bench(args, vllm_bin=vllm_bin)
     assert result.success, f"vllm bench run failed (rc={result.return_code}):\n{result.stdout[-4000:]}"
@@ -231,8 +233,9 @@ _PROFILES: Dict[Tuple[str, str], OfferedLoad] = {}
 # with the pacing from expected.yaml (default 40ms first chunk, 5ms between
 # chunks), runs the tool against it, then summarizes the recording with the
 # tool's leading_extra_requests dropped. Skips the vllm side when no vllm is
-# available, or fails it when VLLM_REQUIRED=1. Then checks the vllm version
-# against the pin. Cached, so a second call for the same case+tool is free.
+# available, or fails it when VLLM_REQUIRED=1, which also fails a vllm that is
+# not the pinned version. Cached, so a second call for the same case+tool is
+# free.
 async def _offered_load(case_dir: Path, tool: str) -> OfferedLoad:
     key = (case_dir.name, tool)
     if key in _PROFILES:
@@ -242,11 +245,11 @@ async def _offered_load(case_dir: Path, tool: str) -> OfferedLoad:
     if tool == "vllm-bench":
         try:
             vllm_bin = ensure_vllm_bench_bin()
+            check_vllm_version(vllm_bin)
         except VllmUnavailable as e:
             if vllm_required():
                 pytest.fail(f"VLLM_REQUIRED is set and {e}")
             pytest.skip(str(e))
-        check_vllm_version(vllm_bin)
 
     expected = _expected(case_dir)
     pacing = expected.get("absorber", {})
@@ -268,22 +271,37 @@ async def _offered_load(case_dir: Path, tool: str) -> OfferedLoad:
     return _PROFILES[key]
 
 
-# Every prompt length must be within target*rel_tol of target (at least +-1).
-# target=128, rel_tol=0.15 accepts 109..147 tokens. The message lists how many
-# were outside and the min/mean/max, and points at the length settings.
-def _assert_prompt_lens(lens: List[int], target: int, rel_tol: float, who: str) -> None:
+# Every prompt length must be within target*rel_tol of target (at least +-1),
+# except for up to ceil(outlier_frac * n) prompts. target=128, rel_tol=0.15
+# accepts 109..147 tokens. outlier_frac=0.01 lets 6 of 600 prompts (1 of 48)
+# fall outside. The message lists how many were outside and the min/mean/max,
+# and points at the length settings.
+def _assert_prompt_lens(lens: List[int], target: int, rel_tol: float, outlier_frac: float, who: str) -> None:
     bound = max(1, int(target * rel_tol))
     off = [n for n in lens if abs(n - target) > bound]
-    assert not off, (
-        f"{who}: {len(off)}/{len(lens)} prompts outside {target}±{bound} tokens "
+    allowed = math.ceil(outlier_frac * len(lens))
+    assert len(off) <= allowed, (
+        f"{who}: {len(off)}/{len(lens)} prompts outside {target}±{bound} tokens, {allowed} allowed "
         f"(min={min(lens)}, mean={statistics.mean(lens):.1f}, max={max(lens)}); "
         f"check the prompt-length settings (input_distribution vs --random-input-len/--random-range-ratio)"
     )
 
 
+# 594 prompts of 128 tokens plus 6 of 17 pass at outlier_frac=0.01 (6 of 600
+# allowed). A 7th short prompt fails, and so does a single one at
+# outlier_frac=0.
+def test_prompt_len_outlier_allowance() -> None:
+    _assert_prompt_lens([128] * 594 + [17] * 6, 128, 0.15, 0.01, "tool")
+    with pytest.raises(AssertionError, match="7/600 prompts outside 128±19 tokens, 6 allowed"):
+        _assert_prompt_lens([128] * 593 + [17] * 7, 128, 0.15, 0.01, "tool")
+    with pytest.raises(AssertionError, match="1/600 prompts outside 128±19 tokens, 0 allowed"):
+        _assert_prompt_lens([128] * 599 + [17], 128, 0.15, 0.0, "tool")
+
+
 # One tool against expected.yaml. For case a_fixed_rate that means: exactly 600
 # requests (after dropping warmup), every max_tokens == 64, every request has
-# stream=true and ignore_eos=true, every prompt is 128 tokens +-15%, and the
+# stream=true and ignore_eos=true, every prompt is 128 tokens +-15% (vllm
+# bench may miss on 1%, its tools.vllm-bench.prompt_outlier_frac), and the
 # average arrival rate is 40/s within rate_tolerance(600, arrival): +-5% for
 # inference-perf (constant), +-16% for vllm bench (poisson). For a
 # concurrency case, load_shape.assert_delivered_concurrency applies: never more
@@ -307,7 +325,10 @@ async def test_offered_load_matches_expected(case_dir: Path, tool: str) -> None:
     )
     assert offered.stream_flags == {workload["stream"]}, f"{tool} stream flags {offered.stream_flags}"
     assert offered.ignore_eos_flags == {workload["ignore_eos"]}, f"{tool} ignore_eos flags {offered.ignore_eos_flags}"
-    _assert_prompt_lens(offered.prompt_token_lens, workload["prompt_tokens"], workload["prompt_tokens_rel_tol"], tool)
+    outlier_frac = float(_tool_settings(expected, tool).get("prompt_outlier_frac", 0.0))
+    _assert_prompt_lens(
+        offered.prompt_token_lens, workload["prompt_tokens"], workload["prompt_tokens_rel_tol"], outlier_frac, tool
+    )
 
     if load["mode"] == "rate":
         rate, tol = float(load["rate"]), _rate_tol(expected, tool, offered.n, case_dir)

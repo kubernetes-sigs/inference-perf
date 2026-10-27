@@ -57,6 +57,7 @@ from typing import Optional
 
 import aiohttp
 
+from utils.host_env import isolated_env
 from utils.testdata import TEST_E2E_TESTDATA
 
 logger = logging.getLogger(__name__)
@@ -83,11 +84,6 @@ DEFAULT_MODEL = "facebook/opt-125m"
 # Minimal template so models without a built-in chat template (opt-125m)
 # still serve /v1/chat/completions.
 SIMPLE_CHAT_TEMPLATE = TEST_E2E_TESTDATA / "simple_chat_template.jinja"
-
-# The nix devshell exports python env vars for a torch built against a
-# different CPython ABI; a spawned vLLM must not inherit them (same fix as
-# the vllm-bench harness). LD_LIBRARY_PATH is deliberately kept.
-_HOST_PYTHON_ENV_VARS = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "NIX_PYTHONPATH")
 
 
 # Which multimodal inputs the served model accepts, so a multimodal case can
@@ -158,7 +154,7 @@ class VLLMServerRunner(AsyncContextDecorator):
         if shutil.which(self.executable) is None:
             raise FileNotFoundError(f"executable not found: {self.executable}")
 
-        env = {k: v for k, v in os.environ.items() if k not in _HOST_PYTHON_ENV_VARS}
+        env = isolated_env()
         env.setdefault("VLLM_CPU_KVCACHE_SPACE", "4")
         logger.debug(f"starting server: {self.argv=}")
         self._proc = await asyncio.create_subprocess_exec(

@@ -67,8 +67,8 @@ running; everything else in the two files is used exactly as written:
 - `inference-perf.yaml`: `server.base_url` and
   `tokenizer.pretrained_model_name_or_path` are replaced. The bundled
   gemma-3-270m tokenizer is used, so cases run without network access.
-- `vllm-bench.args`: `--base-url`, `--model`, `--tokenizer`, `--save-result`
-  and `--result-filename` are added to the end.
+- `vllm-bench.args`: `--base-url`, `--model` and `--tokenizer` are added to
+  the end.
 
 One thing to know: `tests/required/config/test_yaml_configs.py` schema-checks
 every YAML file under `e2e/`. That is good for `inference-perf.yaml` (a case
@@ -100,12 +100,18 @@ tools:
   vllm-bench:
     arrival: poisson
     leading_extra_requests: 1   # vllm bench sends one warmup request first
+    prompt_outlier_frac: 0.01   # share of prompts allowed outside prompt_tokens_rel_tol
 ```
 
 `leading_extra_requests` says how many of a tool's earliest requests are
 warmup traffic to ignore before checking anything. If a tool needs a nonzero
 value here, that is itself a difference between the tools, and it stays
 written down in the case file on purpose.
+
+`prompt_outlier_frac` (default 0) is the share of a tool's prompts, rounded
+up, allowed outside `prompt_tokens_rel_tol`. The vllm leg needs it, see
+"Prompt length is approximate" below. A tool that declares none must land
+every prompt in range.
 
 `arrival` is required in rate mode and is either `constant` or `poisson`.
 Both draw random gaps between requests. `constant` then scales its gaps to add
@@ -129,7 +135,10 @@ tighten a case is to raise `num_requests`, never to edit a number.
 - **Prompt length is approximate.** Both tools aim for `prompt_tokens` under
   the same tokenizer, but text built from random token ids does not always
   tokenize back to the same count. Hence `prompt_tokens_rel_tol` instead of an
-  exact match.
+  exact match. vllm bench builds each prompt from consecutive token ids, and
+  a few id ranges in the gemma tokenizer collapse to far fewer tokens when
+  decoded and re-encoded (down to 17 from 127). About 0.2% of its prompts land
+  there, so its leg also declares `prompt_outlier_frac: 0.01`.
 - **vllm flags change meaning between versions.** The args files are written
   for the vllm version pinned in `e2e/utils/vllm_bench.py` (`VLLM_PINNED_REF`),
   and every flag was checked against that version's
@@ -152,8 +161,8 @@ pdm run pytest e2e/tests/parity
 
 The inference-perf side always runs; the absorber needs nothing installed. The
 vllm side needs a runnable vllm: either set `$VLLM_BENCH_BIN` to one you
-already have, or set `$VLLM_BENCH_PROVISION=1` to let the test clone and
-install the pinned version once (large download, see
+already have, or set `$VLLM_BENCH_PROVISION=1` to let the test pip-install
+the pinned version from PyPI once (large download, see
 `e2e/utils/vllm_bench.py`). Without either, the vllm-side tests skip. With
 `$VLLM_REQUIRED=1` they fail instead, both when no vllm is found and when the
 one found is not the pinned version.

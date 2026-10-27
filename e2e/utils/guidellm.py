@@ -47,6 +47,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from utils.host_env import isolated_env
+
 logger = logging.getLogger(__name__)
 
 _REQUIREMENTS_IN = Path(__file__).resolve().parent.parent / "guidellm_requirements.in"
@@ -71,13 +73,6 @@ GUIDELLM_PINNED_VERSION = _pinned_version()
 # True when GUIDELLM_REQUIRED is set to anything but "" or "0". CI sets it.
 def guidellm_required() -> bool:
     return os.environ.get("GUIDELLM_REQUIRED", "0") not in ("", "0")
-
-
-# Environment variables that tell a Python process where to look for packages.
-# These tests run inside this repo's dev environment, which sets them for its
-# own Python. guidellm runs under a different Python, and if it inherited them
-# it would import this repo's packages instead of its own.
-_HOST_PYTHON_ENV_VARS = frozenset({"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "NIX_PYTHONPATH", "VIRTUAL_ENV"})
 
 
 class GuidellmUnavailable(Exception):
@@ -109,10 +104,6 @@ def find_guidellm_bin() -> str:
     return found
 
 
-def _isolated_env() -> Dict[str, str]:
-    return {k: v for k, v in os.environ.items() if k not in _HOST_PYTHON_ENV_VARS}
-
-
 # Compares the installed guidellm with the pinned version. On a mismatch:
 # with GUIDELLM_REQUIRED=1 it fails, otherwise it logs a warning and the
 # different version still runs (the warning explains a later KeyError on a
@@ -121,7 +112,7 @@ async def check_version(guidellm_bin: str) -> None:
     proc = await asyncio.create_subprocess_exec(
         guidellm_bin,
         "--version",
-        env=_isolated_env(),
+        env=isolated_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
@@ -171,7 +162,7 @@ async def run_guidellm(
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=str(wd),
-        env=_isolated_env(),
+        env=isolated_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         preexec_fn=os.setpgrp,

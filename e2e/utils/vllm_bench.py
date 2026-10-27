@@ -15,13 +15,13 @@
 
 vllm is not a dependency of inference-perf and this file does not make it one.
 Instead the tests use whatever vllm the environment provides, or optionally
-clone and install one specific pinned version into a throwaway venv. A warning
-is logged (never an error) if that pin has not been reviewed in a long time, so
+pip-install one specific pinned version into a throwaway venv. A warning is
+logged (never an error) if that pin has not been reviewed in a long time, so
 the comparison does not quietly go stale against an old vllm.
 
 Where the vllm executable comes from, tried in this order:
   1. $VLLM_BENCH_BIN: path to a `vllm` you already have. Nothing to install.
-  2. $VLLM_BENCH_PROVISION=1: clone the pinned vllm and pip-install it (which
+  2. $VLLM_BENCH_PROVISION=1: pip-install the pinned vllm from PyPI (which
      pulls in torch, so it is a large download) into a venv under a cache
      directory. Reused on later runs.
   3. Neither set: raise VllmUnavailable, which the tests turn into a skip.
@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import json
 import logging
 import os
 import shutil
@@ -43,7 +42,9 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
+
+from utils.host_env import isolated_env
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,7 @@ logger = logging.getLogger(__name__)
 #
 # Which vllm version the parity cases are written for. Bump these together.
 # VLLM_PIN_DATE is when someone last checked the pin; it drives the "this pin
-# is old" warning without any network access. warn_if_pin_stale can also
-# compare against GitHub's latest release, best-effort.
+# is old" warning without any network access.
 #
 # The case files (cases/*/vllm-bench.args) were written by reading this exact
 # tag (commit 6d8d0a24c02bfd84d46b3016b865a44f048ae84b). What each flag means is
@@ -67,9 +67,8 @@ VLLM_PINNED_REF = "v0.10.0"
 VLLM_COMPAT_PINS = "transformers<5"
 VLLM_PIN_DATE = datetime.date(2026, 1, 15)
 VLLM_STALENESS_WARN_DAYS = 180
-VLLM_REPO_URL = "https://github.com/vllm-project/vllm.git"
 
-# Where the cloned vllm and its venv live. Outside the repo by default; set
+# Where the provisioned vllm venv lives. Outside the repo by default; set
 # VLLM_BENCH_CACHE_DIR to somewhere CI keeps between runs.
 _DEFAULT_CACHE = Path(os.environ.get("VLLM_BENCH_CACHE_DIR", Path(tempfile.gettempdir()) / "inference-perf-vllm-bench"))
 
@@ -80,11 +79,13 @@ class VllmBenchResult:
     timed_out: bool
     return_code: int
     stdout: str
-    result_json: Optional[Dict[str, Any]]  # parsed --save-result output, if produced
 
 
 class VllmUnavailable(Exception):
-    """No usable vllm was found or installed. The tests catch this and skip, or fail under VLLM_REQUIRED."""
+    """No usable vllm was found or installed, or VLLM_REQUIRED is set and it is not the pin.
+
+    The tests catch this and skip, or fail under VLLM_REQUIRED.
+    """
 
 
 def vllm_required() -> bool:
@@ -92,13 +93,10 @@ def vllm_required() -> bool:
     return os.environ.get("VLLM_REQUIRED", "0") not in ("", "0")
 
 
-def warn_if_pin_stale(*, check_upstream: bool = False) -> None:
-    """Log a warning if the pinned vllm looks old. Never raises.
+def warn_if_pin_stale() -> None:
+    """Log a warning if VLLM_PIN_DATE is more than VLLM_STALENESS_WARN_DAYS ago. Never raises.
 
-    Always: warn if VLLM_PIN_DATE is more than VLLM_STALENESS_WARN_DAYS ago.
-    With check_upstream=True: also ask GitHub for vllm's latest release and warn
-    if the pin is behind it (skipped quietly on any network problem). A stale
-    pin still runs; the warning is just so nobody forgets it exists.
+    A stale pin still runs. The warning is just so nobody forgets it exists.
     """
     age_days = (datetime.date.today() - VLLM_PIN_DATE).days
     if age_days > VLLM_STALENESS_WARN_DAYS:
@@ -109,43 +107,6 @@ def warn_if_pin_stale(*, check_upstream: bool = False) -> None:
             age_days,
             VLLM_STALENESS_WARN_DAYS,
         )
-
-    if not check_upstream:
-        return
-    try:  # advisory only; a network problem here must not fail the test
-        import urllib.request
-
-        with urllib.request.urlopen("https://api.github.com/repos/vllm-project/vllm/releases/latest", timeout=5) as resp:
-            latest = json.loads(resp.read()).get("tag_name")
-        if latest and latest != VLLM_PINNED_REF:
-            logger.warning("vllm pin %s is behind upstream latest release %s.", VLLM_PINNED_REF, latest)
-    except Exception as e:  # noqa: BLE001 - advisory only
-        logger.debug("upstream vllm staleness check skipped: %s", e)
-
-
-# Environment variables that tell a Python process where to look for packages.
-# These tests usually run inside this repo's dev environment (nix devshell plus
-# venv), which sets PYTHONPATH for its own Python. vllm runs under a different
-# Python, and PYTHONPATH wins over that Python's own installed packages, so if
-# vllm inherited it, it would import this repo's torch (built for a different
-# Python) and crash on startup. So these are stripped from vllm's environment.
-# LD_LIBRARY_PATH is kept: a Python built against a shared libpython can need
-# it to find that library.
-_HOST_PYTHON_ENV_VARS = frozenset(
-    {
-        "PYTHONPATH",
-        "PYTHONHOME",
-        "PYTHONSTARTUP",
-        "NIX_PYTHONPATH",
-        "VIRTUAL_ENV",
-        "VIRTUAL_ENV_PROMPT",
-    }
-)
-
-
-def _isolated_env() -> Dict[str, str]:
-    """A copy of os.environ with _HOST_PYTHON_ENV_VARS removed."""
-    return {k: v for k, v in os.environ.items() if k not in _HOST_PYTHON_ENV_VARS}
 
 
 # Why we do not just run `vllm bench serve`: on a machine with no GPU (CI
@@ -173,40 +134,41 @@ def _bench_serve_cmd(vllm_bin: str, args: List[str]) -> List[str]:
     """The command line to run: equivalent to `vllm bench serve <args>`.
 
     Preferred: run _BENCH_SERVE_SHIM with the `python` that sits next to the
-    `vllm` executable (any venv or setup-python install has one). Fallback:
-    the real `vllm bench serve` when there is no such python, for example when
-    $VLLM_BENCH_BIN points at a wrapper script.
+    `vllm` executable (any venv or setup-python install has one), once that
+    python is known to have vllm installed. Fallback: the real
+    `vllm bench serve`, for example when $VLLM_BENCH_BIN points at a wrapper
+    script, or at a vllm whose directory holds some unrelated python.
     """
     python = _sibling_python(vllm_bin)
-    if python is not None:
+    if python is not None and _vllm_version_under(python) is not None:
         return [str(python), "-c", _BENCH_SERVE_SHIM, *args]
     return [vllm_bin, "bench", "serve", *args]
 
 
 def _sibling_python(vllm_bin: str) -> Optional[Path]:
-    """The `python` next to the `vllm` executable, or None when there is none."""
-    resolved = shutil.which(vllm_bin) or vllm_bin
-    python = Path(resolved).parent / "python"
+    """The `python` next to the `vllm` executable, or None when there is none.
+
+    Symlinks are followed first, so a pipx-style /usr/local/bin/vllm link finds
+    the python of the venv it points into, not /usr/local/bin/python.
+    """
+    found = shutil.which(vllm_bin) or vllm_bin
+    python = Path(found).resolve().parent / "python"
     return python if python.exists() else None
 
 
 def _run(cmd: List[str]) -> "subprocess.CompletedProcess[str]":
     logger.debug("running: %s", " ".join(cmd))
-    return subprocess.run(cmd, capture_output=True, text=True, check=True, env=_isolated_env())
+    return subprocess.run(cmd, capture_output=True, text=True, check=True, env=isolated_env())
 
 
-def installed_vllm_version(vllm_bin: str) -> Optional[str]:
-    """The version of the vllm package behind vllm_bin, or None if it cannot be read.
+def _vllm_version_under(python: Path) -> Optional[str]:
+    """The vllm version installed for `python`, or None if it has none or does not run.
 
-    Read from package metadata by the python next to vllm_bin, so the check
-    does not import vllm and its torch.
+    Read from package metadata, so the probe does not import vllm and its torch.
     """
-    python = _sibling_python(vllm_bin)
-    if python is None:
-        return None
     probe = "import importlib.metadata as m; print(m.version('vllm'))"
     try:
-        out = subprocess.run([str(python), "-c", probe], capture_output=True, text=True, timeout=60, env=_isolated_env())
+        out = subprocess.run([str(python), "-c", probe], capture_output=True, text=True, timeout=60, env=isolated_env())
     except (OSError, subprocess.TimeoutExpired):
         return None
     if out.returncode != 0:
@@ -214,22 +176,31 @@ def installed_vllm_version(vllm_bin: str) -> Optional[str]:
     return out.stdout.strip()
 
 
+def installed_vllm_version(vllm_bin: str) -> Optional[str]:
+    """The version of the vllm package behind vllm_bin, read by the python next to it, or None."""
+    python = _sibling_python(vllm_bin)
+    return None if python is None else _vllm_version_under(python)
+
+
 def check_vllm_version(vllm_bin: str) -> None:
-    """Warn when the vllm behind vllm_bin is not VLLM_PINNED_REF, and fail instead under VLLM_REQUIRED.
+    """Warn when the vllm behind vllm_bin is not VLLM_PINNED_REF, or raise VllmUnavailable under VLLM_REQUIRED.
 
     The args files were written against the pinned tag's flag meanings, so
     another version can run them and send a different workload without error.
+    A raise rather than an assert, so `python -O` cannot drop the gate.
     """
     pinned = VLLM_PINNED_REF.removeprefix("v")
     version = installed_vllm_version(vllm_bin)
-    if version is None:
-        assert not vllm_required(), f"cannot read the vllm version behind {vllm_bin}, VLLM_REQUIRED needs {pinned}"
-        logger.warning("cannot read the vllm version behind %s, parity cases were written against %s", vllm_bin, pinned)
-        return
     # A local build label such as +cpu does not change the bench CLI.
-    if version.split("+")[0] != pinned:
-        assert not vllm_required(), f"vllm reports {version!r}, VLLM_REQUIRED needs the pinned {pinned}"
-        logger.warning("vllm reports %r, parity cases were written against %s", version, pinned)
+    if version is not None and version.split("+")[0] == pinned:
+        return
+    if version is None:
+        problem = f"cannot read the vllm version behind {vllm_bin}, the pin is {pinned}"
+    else:
+        problem = f"vllm reports {version!r}, not the pinned {pinned}"
+    if vllm_required():
+        raise VllmUnavailable(problem)
+    logger.warning("%s. The parity cases were written against the pin.", problem)
 
 
 def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
@@ -238,7 +209,7 @@ def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
     Tried in order:
       1. $VLLM_BENCH_BIN set -> use it as is, for example a vllm installed
          under a separate Python 3.12. Nothing to install.
-      2. $VLLM_BENCH_PROVISION set -> clone the pinned vllm and pip-install it
+      2. $VLLM_BENCH_PROVISION set -> pip-install the pinned vllm from PyPI
          (with torch, so a multi-GB download) into a venv under cache_dir.
          Reused if it already exists.
       3. neither -> raise VllmUnavailable, so the tests skip.
@@ -247,6 +218,12 @@ def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
     an ordinary `pdm run test:e2e`. The pinned vllm needs Python <=3.12 and
     this repo's environment is usually newer, so option 2 also needs
     $VLLM_PYTHON pointed at a 3.12 interpreter. Option 1 avoids that.
+
+    PyPI rather than a clone of the tag: PyPI has a prebuilt wheel for Linux
+    x86_64, while installing a clone is a source build that needs nvcc there
+    (the build pins a CUDA torch). Other platforms get no wheel, so there pip
+    still builds from the source release, which needs cmake, ninja and a C++
+    toolchain.
     """
     override = os.environ.get("VLLM_BENCH_BIN")
     if override:
@@ -257,38 +234,30 @@ def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
     if not os.environ.get("VLLM_BENCH_PROVISION"):
         raise VllmUnavailable(
             "no vllm available: set $VLLM_BENCH_BIN to a vllm executable, or "
-            "$VLLM_BENCH_PROVISION=1 to clone+install the pinned vllm (heavy; "
+            "$VLLM_BENCH_PROVISION=1 to pip-install the pinned vllm (heavy; "
             "needs a Python <=3.12 interpreter via $VLLM_PYTHON)"
         )
 
     cache = cache_dir or _DEFAULT_CACHE
     cache.mkdir(parents=True, exist_ok=True)
-    clone_dir = cache / f"vllm-{VLLM_PINNED_REF}"
     venv_dir = cache / f"venv-{VLLM_PINNED_REF}"
     vllm_bin = venv_dir / "bin" / "vllm"
 
     if vllm_bin.exists():
         return str(vllm_bin)
 
-    if not shutil.which("git"):
-        raise VllmUnavailable("git not available to clone vllm")
-
     # The pinned vllm needs Python <=3.12, so the venv is created with
     # $VLLM_PYTHON (e.g. python3.12) when set.
     venv_python = os.environ.get("VLLM_PYTHON", "python")
 
     try:
-        if not clone_dir.exists():
-            logger.info("cloning pinned vllm %s (shallow) -> %s", VLLM_PINNED_REF, clone_dir)
-            _run(["git", "clone", "--depth", "1", "--branch", VLLM_PINNED_REF, VLLM_REPO_URL, str(clone_dir)])
-
         logger.info("creating isolated venv for vllm at %s (python=%s)", venv_dir, venv_python)
         _run([venv_python, "-m", "venv", str(venv_dir)])
         pip = str(venv_dir / "bin" / "pip")
         # No GPU needed: bench serve is only an HTTP client. Still a large
         # install because vllm pulls in torch; the venv is kept for next time.
         _run([pip, "install", "--upgrade", "pip"])
-        _run([pip, "install", str(clone_dir), *VLLM_COMPAT_PINS.split()])
+        _run([pip, "install", f"vllm=={VLLM_PINNED_REF.removeprefix('v')}", *VLLM_COMPAT_PINS.split()])
     except subprocess.CalledProcessError as e:
         raise VllmUnavailable(f"failed to provision vllm: {e.stderr or e}") from e
 
@@ -302,14 +271,13 @@ async def run_vllm_bench(
     *,
     vllm_bin: str,
     work_dir: Optional[Path] = None,
-    result_filename: str = "vllm_bench_result.json",
     timeout_sec: Optional[int] = 300,
 ) -> VllmBenchResult:
-    """Run `vllm bench serve <args>` and return its exit status, output, and --save-result JSON.
+    """Run `vllm bench serve <args>` and return its exit status and output.
 
-    `args` must already contain `--save-result --result-filename <path>` (the
-    parity test adds them); that file is read back into result_json. Runs in a
-    fresh temp dir unless work_dir is given, and is killed after timeout_sec.
+    Runs in a fresh temp dir unless work_dir is given, and is killed after
+    timeout_sec. Nothing vllm prints or saves is read: the parity tests check
+    what the absorber recorded.
     """
     wd = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="vllm-bench-e2e-"))
     wd.mkdir(parents=True, exist_ok=True)
@@ -319,7 +287,7 @@ async def run_vllm_bench(
     proc = await asyncio.create_subprocess_exec(
         *full,
         cwd=str(wd),
-        env=_isolated_env(),
+        env=isolated_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
@@ -341,20 +309,9 @@ async def run_vllm_bench(
         except ProcessLookupError:
             pass
 
-    # result_filename may be absolute; if relative, it is inside the work dir.
-    rf = Path(result_filename)
-    result_path = rf if rf.is_absolute() else wd / rf
-    result_json = None
-    if result_path.exists():
-        try:
-            result_json = json.loads(result_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            logger.warning("vllm bench result file present but unparseable: %s", result_path)
-
     return VllmBenchResult(
         success=(return_code == 0 and not timed_out),
         timed_out=timed_out,
         return_code=return_code,
         stdout=stdout,
-        result_json=result_json,
     )
