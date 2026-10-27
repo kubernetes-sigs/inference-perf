@@ -74,7 +74,7 @@ async def test_generate_reports_uses_the_tokenizer_the_client_resolved() -> None
     sync_tokenizer_config(config, client)
 
     generator = ReportGenerator(metrics_client=None, metrics_collector=Mock(get_metrics=Mock(return_value=[])), config=config)
-    with patch("inference_perf.reportgen.base.CustomTokenizer", RecordingTokenizer):
+    with patch("inference_perf.utils.custom_tokenizer.CustomTokenizer", RecordingTokenizer):
         await generator.generate_reports(ReportConfig(), _runtime_parameters())
 
     assert RecordingTokenizer.paths == [MODEL]
@@ -90,7 +90,7 @@ async def test_generate_reports_builds_no_tokenizer_when_the_client_resolved_non
     sync_tokenizer_config(config, client)
 
     generator = ReportGenerator(metrics_client=None, metrics_collector=Mock(get_metrics=Mock(return_value=[])), config=config)
-    with patch("inference_perf.reportgen.base.CustomTokenizer", RecordingTokenizer):
+    with patch("inference_perf.utils.custom_tokenizer.CustomTokenizer", RecordingTokenizer):
         await generator.generate_reports(ReportConfig(), _runtime_parameters())
 
     assert RecordingTokenizer.paths == []

@@ -302,10 +302,11 @@ servers that serve exactly one model need no model identifier at all. The lookup
 - When the tokenizer path is also unset, the tokenizer is loaded under the resolved
   model name, falling back to the entry's `root` (the real model path that vLLM reports
   when `--served-model-name` is a route alias). This fallback also applies when
-  `server.model_name` is set explicitly: the probe runs whenever the tokenizer path is
-  unset, and the entry whose `id` matches the configured name supplies `root`. If
-  neither loads, the error names `tokenizer.pretrained_model_name_or_path` so the
-  setting can be pinned explicitly.
+  `server.model_name` is set explicitly: if that name cannot load a tokenizer, the
+  client probes `/v1/models` and the entry whose `id` matches the configured name
+  supplies `root`. A name that loads its own tokenizer triggers no probe, so pinning a
+  real model path costs nothing. If neither loads, the error names
+  `tokenizer.pretrained_model_name_or_path` so the setting can be pinned explicitly.
 
 The same `/v1/models` lookup validates LoRA adapter names when
 `load.lora_traffic_split` is configured.
@@ -460,8 +461,8 @@ tokenizer:
 
 `tokenizer.pretrained_model_name_or_path` is optional. When it is unset, the tokenizer
 is loaded under the resolved `server.model_name` -- configured or detected; if that name
-is a server-side route alias the tokenizer has no files for, the client falls back to
-the `root` of the matching `/v1/models` entry (the real model path). When neither loads,
+is a server-side route alias the tokenizer has no files for, the client probes
+`/v1/models` and falls back to the `root` of the matching entry (the real model path). When neither loads,
 the error names this setting so it can be pinned explicitly. The path that resolved is
 written back into the run config, so the report bundle's `config.yaml` shows it and
 report generation counts tokens with the same tokenizer the run measured with -- note

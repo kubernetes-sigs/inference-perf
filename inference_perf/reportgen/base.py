@@ -1072,6 +1072,11 @@ class ReportGenerator:
         """
         if self.config.tokenizer is None or not self.config.tokenizer.pretrained_model_name_or_path:
             return None
+        # Imported here, not at module scope: the tests that substitute a tokenizer patch
+        # inference_perf.utils.custom_tokenizer.CustomTokenizer, and a module-level binding
+        # would resolve before that patch is applied.
+        from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
         return CustomTokenizer(self.config.tokenizer)
 
     def generate_config_report(self) -> ReportFile:

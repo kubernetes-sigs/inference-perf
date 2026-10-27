@@ -510,7 +510,7 @@ class BackendClientSuite:
 
     # Pinning the served alias with no tokenizer path: /v1/models lists one entry whose
     # id is that alias and whose root is MODEL, and the alias has no tokenizer files.
-    # The client must probe once and return with the tokenizer loaded from MODEL.
+    # The alias is tried first, then exactly one probe supplies the root to load from.
     def test_tokenizer_falls_back_to_model_root_with_explicit_model_name(self) -> None:
         models_response: Dict[str, Any] = {
             "object": "list",
@@ -575,11 +575,11 @@ class BackendClientSuite:
         assert client.model_name == "pinned-alias"
         mock_get.assert_not_called()
 
-    # An explicit model_name, no tokenizer path, and a /v1/models probe that times out:
-    # the client must still start and fall back to the configured name alone, because
-    # get_supported_models swallows the timeout and returns no entries.
-    def test_explicit_model_name_survives_a_failing_model_probe(self) -> None:
-        mock_get = MagicMock(side_effect=requests.Timeout("connection timed out"))
+    # An explicit model_name whose tokenizer loads under that name must not contact
+    # /v1/models: a server without that endpoint would otherwise cost every pinned-name
+    # run one request, one error log line and up to load.request_timeout of startup.
+    def test_a_loadable_explicit_model_name_never_probes(self) -> None:
+        mock_get = MagicMock()
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
@@ -594,9 +594,33 @@ class BackendClientSuite:
                 additional_filters=[],
             )
         assert client.model_name == "pinned-alias"
-        mock_get.assert_called_once()
+        mock_get.assert_not_called()
         assert client.tokenizer_config is not None
         assert client.tokenizer_config.pretrained_model_name_or_path == "pinned-alias"
+
+    # Explicit model_name, alias rejected, and the deferred /v1/models probe times out:
+    # the error must still name the setting the user can pin, after exactly one probe.
+    def test_explicit_model_name_probe_failure_names_the_config_field(self) -> None:
+        class AliasRejectingTokenizer:
+            def __init__(self, config: Any = None) -> None:
+                raise RuntimeError("no tokenizer files under this name")
+
+        mock_get = MagicMock(side_effect=requests.Timeout("connection timed out"))
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AliasRejectingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+            pytest.raises(Exception, match="tokenizer.pretrained_model_name_or_path"),
+        ):
+            self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name="served-alias",
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+            )
+        mock_get.assert_called_once()
 
     # Explicit model_name with a pinned tokenizer path and one LoRA adapter that the
     # server lists: the adapter check still needs /v1/models, so exactly one probe is
