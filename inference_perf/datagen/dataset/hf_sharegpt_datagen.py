@@ -26,7 +26,7 @@ from inference_perf.utils.dataset import load_dataset_with_deadline
 from ..base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
 from typing import Any, Dict, Generator, Iterator, List, Optional
-from huggingface_hub import HfFileSystem
+from huggingface_hub import hf_hub_download
 import os
 import json
 
@@ -51,7 +51,7 @@ class HFShareGPTDataGenerator(DataGenerator):
     def _load_dataset(self) -> Iterator[Any]:
         def load_and_prime() -> Iterator[Any]:
             dataset = self._open_dataset()
-            # Streaming downloads start when the first row is read.
+            # Keep both the Hub download and first parsed row inside the deadline.
             next(dataset)
             return dataset
 
@@ -74,20 +74,24 @@ class HFShareGPTDataGenerator(DataGenerator):
             else:
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
-            paths = [f"datasets/{SHAREGPT_HF_DATASET_URL}/{SHAREGPT_HF_DATAFILES_PATH}"]
+            paths = [
+                hf_hub_download(
+                    repo_id=SHAREGPT_HF_DATASET_URL,
+                    filename=SHAREGPT_HF_DATAFILES_PATH,
+                    repo_type="dataset",
+                )
+            ]
         return self._repeat_dataset(paths)
 
     def _repeat_dataset(self, paths: List[str]) -> Iterator[Any]:
-        fs = HfFileSystem() if self.config.path is None else None
         while True:
             has_rows = False
             for path in paths:
-                # block_size=0 uses a streaming HTTP response, without a growing
-                # block cache. Reopen on each pass instead of retaining rows in cycle.
-                source = fs.open(path, "rb", block_size=0) if fs is not None else open(path, "rb", buffering=0)
-                with source, io.BufferedReader(source) as stream:
+                # Reopen the local or cached file instead of retaining rows in cycle.
+                # No network reads remain while requests are generated between stages.
+                with open(path, "rb", buffering=0) as source, io.BufferedReader(source) as stream:
                     # Local .json files can also contain JSON Lines. Peek through
-                    # leading whitespace without seeking the remote stream.
+                    # leading whitespace without consuming the first JSON token.
                     while (first := stream.peek(1)[:1]) and first in b" \t\r\n":
                         stream.read(1)
                     is_array = first == b"["

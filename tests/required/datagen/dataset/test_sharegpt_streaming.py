@@ -40,7 +40,7 @@ def conversation(prompt: str) -> dict[str, list[dict[str, str]]]:
 @pytest.mark.parametrize("json_lines", [False, True])
 @pytest.mark.parametrize("source", ["file", "directory", "hub"])
 # Three rows from a file, directory, or Hub repeat in input order after
-# the existing first-row prime; completed Hub streams must close.
+# the existing first-row prime; Hub downloads once and completed files close.
 def test_two_passes_preserve_order_and_priming(
     source: str, json_lines: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -52,16 +52,18 @@ def test_two_passes_preserve_order_and_priming(
 
     config = DataConfig()
     streams: list[io.BytesIO] = []
-    fs = Mock()
+    download = Mock(return_value=str(tmp_path / "cached.json"))
+    open_file = Mock()
     if source == "hub":
-        # Each simulated Hub open returns a fresh stream of the same three rows.
+        # Each cached-file open returns a fresh stream of the same three rows.
         def open_stream(*args: object, **kwargs: object) -> io.BytesIO:
             stream = io.BytesIO(encode(rows).encode())
             streams.append(stream)
             return stream
 
-        fs.open.side_effect = open_stream
-        monkeypatch.setattr(sharegpt, "HfFileSystem", lambda: fs)
+        open_file.side_effect = open_stream
+        monkeypatch.setattr(sharegpt, "hf_hub_download", download)
+        monkeypatch.setattr(sharegpt, "open", open_file, raising=False)
     elif source == "file":
         path = tmp_path / "rows.json"
         path.write_text(encode(rows))
@@ -77,10 +79,13 @@ def test_two_passes_preserve_order_and_priming(
     generator = sharegpt.HFShareGPTDataGenerator(APIConfig(), config, None)
     assert list(itertools.islice(generator.sharegpt_dataset, 6)) == rows[1:] + rows + rows[:1]
     if source == "hub":
-        assert fs.open.call_count == 3
-        fs.open.assert_called_with(
-            f"datasets/{sharegpt.SHAREGPT_HF_DATASET_URL}/{sharegpt.SHAREGPT_HF_DATAFILES_PATH}", "rb", block_size=0
+        download.assert_called_once_with(
+            repo_id=sharegpt.SHAREGPT_HF_DATASET_URL,
+            filename=sharegpt.SHAREGPT_HF_DATAFILES_PATH,
+            repo_type="dataset",
         )
+        assert open_file.call_count == 3
+        open_file.assert_called_with(str(tmp_path / "cached.json"), "rb", buffering=0)
         assert all(stream.closed for stream in streams[:-1])
         assert isinstance(generator.sharegpt_dataset, Generator)
         generator.sharegpt_dataset.close()
@@ -90,22 +95,21 @@ def test_two_passes_preserve_order_and_priming(
 class BoundedReadStream(io.BytesIO):
     # Reject whole-file reads and reads larger than the parser buffer.
     def read(self, size: int | None = -1) -> bytes:
-        assert size is not None and 0 <= size <= 65536, "unbounded read"
+        assert size is not None and 0 <= size <= max(65536, io.DEFAULT_BUFFER_SIZE), "unbounded read"
         return super().read(size)
 
-    # Reject readinto buffers larger than 64 KiB while preserving BytesIO behavior.
+    # Accept the parser buffer or Python's default buffer, including 128 KiB on 3.14.
     def readinto(self, buffer: Buffer) -> int:
-        assert memoryview(buffer).nbytes <= 65536, "unbounded readinto"
+        assert memoryview(buffer).nbytes <= max(65536, io.DEFAULT_BUFFER_SIZE), "unbounded readinto"
         return super().readinto(buffer)
 
 
-# Priming a 2 MB Hub array must read less than a tenth of it and yield row two.
+# Priming a cached 2 MB array must read less than a tenth of it and yield row two.
 def test_hub_startup_does_not_read_whole_array(monkeypatch: pytest.MonkeyPatch) -> None:
     content = json.dumps([conversation("x" * 2000) for _ in range(1000)]).encode()
     stream = BoundedReadStream(content)
-    fs = Mock()
-    fs.open.return_value = stream
-    monkeypatch.setattr(sharegpt, "HfFileSystem", lambda: fs)
+    monkeypatch.setattr(sharegpt, "hf_hub_download", Mock(return_value="cached.json"))
+    monkeypatch.setattr(sharegpt, "open", Mock(return_value=stream), raising=False)
     generator = sharegpt.HFShareGPTDataGenerator(APIConfig(), DataConfig(), None)
     assert 0 < stream.tell() < len(content) // 10
     assert next(generator.sharegpt_dataset) == conversation("x" * 2000)
@@ -151,12 +155,11 @@ def test_empty_directory_fails(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("content", ["", "[", '[{"conversations": []}', "[{},]", "[{}] trailing"])
-# Empty, truncated, and invalid JSON must raise a parser error and close the Hub stream.
+# Empty, truncated, and invalid JSON must raise a parser error and close the cached file.
 def test_malformed_json_fails_and_closes_stream(content: str, monkeypatch: pytest.MonkeyPatch) -> None:
     stream = io.BytesIO(content.encode())
-    fs = Mock()
-    fs.open.return_value = stream
-    monkeypatch.setattr(sharegpt, "HfFileSystem", lambda: fs)
+    monkeypatch.setattr(sharegpt, "hf_hub_download", Mock(return_value="cached.json"))
+    monkeypatch.setattr(sharegpt, "open", Mock(return_value=stream), raising=False)
     with pytest.raises(ijson.JSONError):
         generator = sharegpt.HFShareGPTDataGenerator(APIConfig(), DataConfig(), None)
         next(generator.sharegpt_dataset)
@@ -204,32 +207,56 @@ def test_requests_keep_filtering_and_order(api: APIType, tmp_path: Path) -> None
         ] == ["hello", "bye", "prime", "hello"]
 
 
-# Unpickling must not open the Hub; the first lazy reload opens once and primes row one.
-def test_hub_pickle_does_not_reopen_until_needed(monkeypatch: pytest.MonkeyPatch) -> None:
-    fs = Mock()
-    fs.open.side_effect = lambda *args, **kwargs: io.BytesIO(
-        json.dumps([conversation("first"), conversation("second")]).encode()
-    )
-    monkeypatch.setattr(sharegpt, "HfFileSystem", lambda: fs)
+# Unpickling must not download the Hub file; lazy reload resolves the cache and primes once.
+def test_hub_pickle_does_not_reopen_until_needed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "cached.json"
+    path.write_text(json.dumps([conversation("first"), conversation("second")]))
+    download = Mock(return_value=str(path))
+    monkeypatch.setattr(sharegpt, "hf_hub_download", download)
     generator = sharegpt.HFShareGPTDataGenerator(APIConfig(), DataConfig(), None)
     restored = pickle.loads(pickle.dumps(generator))
-    assert fs.open.call_count == 1
+    assert download.call_count == 1
     restored._ensure_dataset_loaded()
-    assert fs.open.call_count == 2
+    assert download.call_count == 2
     assert next(restored.sharegpt_dataset) == conversation("second")
 
 
+# Once initialized, two passes must succeed even if further Hub access would fail.
+def test_hub_iteration_only_reads_cached_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [conversation("first"), conversation("second")]
+    path = tmp_path / "cached.json"
+    path.write_text(json.dumps(rows))
+    download = Mock(return_value=str(path))
+    monkeypatch.setattr(sharegpt, "hf_hub_download", download)
+    generator = sharegpt.HFShareGPTDataGenerator(APIConfig(), DataConfig(), None)
+    download.side_effect = AssertionError("Hub accessed after startup")
+    assert list(itertools.islice(generator.sharegpt_dataset, 4)) == [rows[1], rows[0]] * 2
+    assert download.call_count == 1
+
+
+# A failed cache download must propagate during initialization before any file read.
+def test_hub_download_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sharegpt, "hf_hub_download", Mock(side_effect=OSError("download failed")))
+    open_file = Mock()
+    monkeypatch.setattr(sharegpt, "open", open_file, raising=False)
+    with pytest.raises(OSError, match="download failed"):
+        sharegpt.HFShareGPTDataGenerator(APIConfig(), DataConfig(), None)
+    open_file.assert_not_called()
+
+
 @pytest.mark.parametrize("lazy_reload", [False, True])
-@pytest.mark.parametrize("stall", ["open", "read"])
-# Stalling either Hub open or the first read must time out at startup and
+@pytest.mark.parametrize("stall", ["download", "read"])
+# Stalling the download or first cached-file read must time out at startup and
 # on lazy reload, without marking a failed reload ready.
-def test_deadline_covers_hub_open_and_read(lazy_reload: bool, stall: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deadline_covers_hub_download_and_read(
+    lazy_reload: bool, stall: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     release = threading.Event()
     finished = threading.Event()
     content = json.dumps([conversation("first"), conversation("second")]).encode()
-    fs = Mock()
-    fs.open.side_effect = lambda *args, **kwargs: io.BytesIO(content)
-    monkeypatch.setattr(sharegpt, "HfFileSystem", lambda: fs)
+    path = tmp_path / "cached.json"
+    path.write_bytes(content)
+    monkeypatch.setattr(sharegpt, "hf_hub_download", Mock(return_value=str(path)))
     config = DataConfig(load_timeout=0.05)
     restored = None
     if lazy_reload:
@@ -237,7 +264,7 @@ def test_deadline_covers_hub_open_and_read(lazy_reload: bool, stall: str, monkey
         restored = pickle.loads(pickle.dumps(generator))
 
     class SlowStream(io.BytesIO):
-        # Hold the first read until cleanup releases it, simulating a stalled download.
+        # Hold the first cached-file read until cleanup releases it.
         def readinto(self, buffer: Buffer) -> int:
             try:
                 release.wait(5)
@@ -245,17 +272,18 @@ def test_deadline_covers_hub_open_and_read(lazy_reload: bool, stall: str, monkey
             finally:
                 finished.set()
 
-    # Stall the open itself or return a stream that stalls on its first read.
-    def open_stream(*args: object, **kwargs: object) -> io.BytesIO:
-        if stall == "open":
-            try:
-                release.wait(5)
-            finally:
-                finished.set()
-            return io.BytesIO(content)
-        return SlowStream(content)
+    # Stall the cache download until cleanup releases it, then return its local path.
+    def download(*args: object, **kwargs: object) -> str:
+        try:
+            release.wait(5)
+            return str(path)
+        finally:
+            finished.set()
 
-    fs.open.side_effect = open_stream
+    if stall == "download":
+        monkeypatch.setattr(sharegpt, "hf_hub_download", download)
+    else:
+        monkeypatch.setattr(sharegpt, "open", lambda *args, **kwargs: SlowStream(content), raising=False)
     try:
         with pytest.raises(TimeoutError, match="data.load_timeout"):
             if restored is None:

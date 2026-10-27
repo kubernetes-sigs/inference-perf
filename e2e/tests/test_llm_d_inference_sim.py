@@ -27,7 +27,6 @@ automatically be skipped.
 
 import os
 import pytest
-from typing import NotRequired, TypedDict
 
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.benchmark import run_benchmark_minimal
@@ -37,18 +36,6 @@ from utils.testdata import extract_tarball
 TEST_MODEL_NAME = "google/gemma-3-270m"
 TEST_MODEL_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"
 TEST_SHAREGPT_PATH = os.path.abspath("e2e/testdata/sharegpt.json")
-
-
-class LoadStage(TypedDict):
-    rate: int
-    duration: int
-
-
-class LoadConfig(TypedDict):
-    type: str
-    stages: list[LoadStage]
-    num_workers: int
-    interval: NotRequired[int]
 
 
 @pytest.mark.asyncio
@@ -121,9 +108,7 @@ class LoadConfig(TypedDict):
         ),
     ],
 )
-# Every data source and load shape must produce the configured request count
-# and a summary containing successful responses.
-async def test_completion_successful_run(data: dict[str, object], load: LoadConfig) -> None:
+async def test_completion_successful_run(data: dict, load: dict):
     """
     Very simple inference-perf integration test that ensures a wide range of
     vLLM benchmarking configurations can run successfully.
@@ -173,8 +158,7 @@ async def test_completion_successful_run(data: dict[str, object], load: LoadConf
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
-# A five-request chat benchmark must report input tokens and 30 server output tokens.
-async def test_chat_successful_run() -> None:
+async def test_chat_successful_run():
     """
     Integration test for Chat API that verifies request and response lengths.
     """

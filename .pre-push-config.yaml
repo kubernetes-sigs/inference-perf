@@ -6,14 +6,14 @@ repos:
     - id: pdm-lock-check
       name: check lock file matches pyproject
 
-- repo: local
+- repo: https://github.com/pre-commit/mirrors-mypy
+  rev: v1.14.1
   hooks:
     - id: mypy
       name: run static type check
-      entry: pdm run mypy --strict --ignore-missing-imports
-      language: system
-      types: [python]
-      require_serial: true
+      args: [--strict, --ignore-missing-imports]
+- repo: local
+  hooks:
     - id: check-license
       name: check license headers
       entry: python scripts/check_license.py

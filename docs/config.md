@@ -106,13 +106,16 @@ data:
       std_dev: 5
 ```
 
-ShareGPT incrementally reads the original
+ShareGPT downloads and caches the original
 `anon8231489123/ShareGPT_Vicuna_unfiltered/ShareGPT_V3_unfiltered_cleaned_split.json`
-file without changing its record order or startup priming. Local `.json` files
-(JSON arrays or JSON Lines) are read incrementally too. Each pass reopens the
-source instead of retaining decoded records, so memory is bounded by the read
-buffer and individual records. Repeated Hub passes stream the file again; use
-`data.path` with a local copy to avoid repeated network transfers.
+file within `data.load_timeout`, then reads it incrementally from disk without
+changing its record order or startup priming. Local `.json` files (JSON arrays or
+JSON Lines) use the same incremental reader. Each pass reopens the file instead
+of retaining decoded records, so memory is bounded by the read buffer and
+individual records. Repeat passes and later runs reuse the Hugging Face cache;
+request generation does not depend on a network connection staying open between
+stages. Parsed turns remain JSON objects, allowing Chat and Anthropic Messages
+to consume the default dataset as well as Completion.
 
 `data.load_timeout` bounds Hub dataset initialization for ShareGPT, CNN/DailyMail,
 VisionArena, and OTel trace replay (300 seconds by default). For ShareGPT and
