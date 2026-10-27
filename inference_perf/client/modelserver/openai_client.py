@@ -121,6 +121,13 @@ class openAIModelServerClient(ModelServerClient):
         # Initialize OTEL instrumentation (configured via environment variables)
         self.otel = get_otel_instrumentation()
 
+        # One config object is shared with the caller: the candidates below resolve a
+        # path into it, and report generation rebuilds its tokenizer from the same
+        # object (main.py copies it back into the run config).
+        tokenizer_config = tokenizer_config if tokenizer_config is not None else CustomTokenizerConfig()
+        self.tokenizer_config = tokenizer_config
+
+        supported_models: Optional[List[dict[str, Any]]] = None
         inferred_entry: Optional[dict[str, Any]] = None
         if model_name is None:
             supported_models = self.get_supported_models()
@@ -137,9 +144,17 @@ class openAIModelServerClient(ModelServerClient):
                 logger.warning(f"More than one supported model found {supported_models}, selecting {self.model_name}")
         else:
             self.model_name = model_name
+            if not tokenizer_config.pretrained_model_name_or_path:
+                # An explicit model name skips the probe above, so the entry carrying
+                # ``root`` would never be seen. Ask for it anyway when the tokenizer
+                # still has to be resolved: pinning the served alias is the common CLI
+                # usage, and a served alias often has no tokenizer files of its own.
+                supported_models = self.get_supported_models()
+                inferred_entry = next((model for model in supported_models if model.get("id") == model_name), None)
 
         if self.lora_config is not None:
-            supported_models = self.get_supported_models()
+            if supported_models is None:
+                supported_models = self.get_supported_models()
             supported_model_names = set()
             for model in supported_models:
                 supported_model_names.add(model.get("id"))
@@ -148,21 +163,22 @@ class openAIModelServerClient(ModelServerClient):
                 if adapter not in supported_model_names:
                     raise ValueError(f"LoRA adapter {adapter} not found in model server's available models")
 
-        if tokenizer_config and tokenizer_config.pretrained_model_name_or_path:
+        if tokenizer_config.pretrained_model_name_or_path:
             self.tokenizer = CustomTokenizer(tokenizer_config)
         else:
             self.tokenizer = self._load_tokenizer_from_candidates(tokenizer_config, inferred_entry)
 
     def _load_tokenizer_from_candidates(
-        self, tokenizer_config: Optional[CustomTokenizerConfig], inferred_entry: Optional[dict[str, Any]]
+        self, tokenizer_config: CustomTokenizerConfig, inferred_entry: Optional[dict[str, Any]]
     ) -> CustomTokenizer:
         """Load the tokenizer from the first candidate that works.
 
-        Candidates are the resolved model name (``id``) and, when the client inferred it
-        from ``/v1/models``, the entry's ``root``: vLLM sets ``id`` to
+        Candidates are the resolved model name (``id``) and, when the client has the
+        ``/v1/models`` entry, the entry's ``root``: vLLM sets ``id`` to
         ``--served-model-name``, which can be an alias the tokenizer cannot load under,
         while ``root`` is the real model path. If neither loads, the error names the
-        config field the user must set.
+        config field the user must set. The candidate that loaded is written back into
+        ``tokenizer_config``, which the caller keeps in the run config.
         """
         candidates = [self.model_name]
         if inferred_entry is not None:
@@ -171,18 +187,13 @@ class openAIModelServerClient(ModelServerClient):
                 candidates.append(root)
         errors: list[str] = []
         for candidate in candidates:
-            config = (
-                tokenizer_config.model_copy(update={"pretrained_model_name_or_path": candidate})
-                if tokenizer_config is not None
-                else CustomTokenizerConfig(pretrained_model_name_or_path=candidate)
-            )
+            config = tokenizer_config.model_copy(update={"pretrained_model_name_or_path": candidate})
             try:
                 tokenizer = CustomTokenizer(config)
             except Exception as e:
                 errors.append(f"'{candidate}': {e}")
             else:
-                if tokenizer_config is not None:
-                    tokenizer_config.pretrained_model_name_or_path = candidate
+                tokenizer_config.pretrained_model_name_or_path = candidate
                 return tokenizer
         raise Exception(
             "Unable to load a tokenizer for any candidate model name "

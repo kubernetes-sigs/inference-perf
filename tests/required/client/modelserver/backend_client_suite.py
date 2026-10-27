@@ -37,7 +37,7 @@ from inference_perf.client.modelserver.openai_client import (
     openAIModelServerClient,
     openAIModelServerClientSession,
 )
-from inference_perf.config import APIConfig, APIType
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 MODEL = "meta-llama/Llama-3.1-8B-Instruct"
@@ -507,6 +507,125 @@ class BackendClientSuite:
                 additional_filters=[],
             )
         assert client.model_name == "served-alias"
+
+    # Pinning the served alias with no tokenizer path: /v1/models lists one entry whose
+    # id is that alias and whose root is MODEL, and the alias has no tokenizer files.
+    # The client must probe once and return with the tokenizer loaded from MODEL.
+    def test_tokenizer_falls_back_to_model_root_with_explicit_model_name(self) -> None:
+        models_response: Dict[str, Any] = {
+            "object": "list",
+            "data": [
+                {
+                    "id": "served-alias",
+                    "object": "model",
+                    "created": 1750000000,
+                    "owned_by": "vllm",
+                    "root": MODEL,
+                }
+            ],
+        }
+
+        class AliasRejectingTokenizer:
+            def __init__(self, config: Any = None) -> None:
+                path = config.pretrained_model_name_or_path
+                if path == "served-alias":
+                    raise RuntimeError("no tokenizer files under served alias")
+                assert path == MODEL
+
+        mock_get = MagicMock()
+        mock_get.return_value.json.return_value = models_response
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AliasRejectingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+        ):
+            client = self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name="served-alias",
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+            )
+        assert client.model_name == "served-alias"
+        mock_get.assert_called_once()
+        # The resolved path is what main.py copies into the run config, so report
+        # generation counts tokens with the tokenizer the client measured with.
+        assert client.tokenizer_config is not None
+        assert client.tokenizer_config.pretrained_model_name_or_path == MODEL
+
+    # An explicit model_name plus a pinned tokenizer path: nothing has to be resolved,
+    # so the client must not spend a /v1/models call (up to load.request_timeout) and an
+    # error log line on a run that is already fully configured.
+    def test_explicit_model_name_with_a_tokenizer_path_does_not_probe(self) -> None:
+        mock_get = MagicMock()
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+        ):
+            client = self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name="pinned-alias",
+                tokenizer_config=CustomTokenizerConfig(pretrained_model_name_or_path=MODEL),
+                max_tcp_connections=4,
+                additional_filters=[],
+            )
+        assert client.model_name == "pinned-alias"
+        mock_get.assert_not_called()
+
+    # An explicit model_name, no tokenizer path, and a /v1/models probe that times out:
+    # the client must still start and fall back to the configured name alone, because
+    # get_supported_models swallows the timeout and returns no entries.
+    def test_explicit_model_name_survives_a_failing_model_probe(self) -> None:
+        mock_get = MagicMock(side_effect=requests.Timeout("connection timed out"))
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+        ):
+            client = self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name="pinned-alias",
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+            )
+        assert client.model_name == "pinned-alias"
+        mock_get.assert_called_once()
+        assert client.tokenizer_config is not None
+        assert client.tokenizer_config.pretrained_model_name_or_path == "pinned-alias"
+
+    # Explicit model_name with a pinned tokenizer path and one LoRA adapter that the
+    # server lists: the adapter check still needs /v1/models, so exactly one probe is
+    # sent (the tokenizer resolution must not add a second one).
+    def test_lora_validation_probes_once_with_an_explicit_model_name(self) -> None:
+        models_response: Dict[str, Any] = {
+            "object": "list",
+            "data": [
+                {"id": "pinned-alias", "object": "model", "created": 1750000000, "owned_by": "vllm"},
+                {"id": "adapter-a", "object": "model", "created": 1750000000, "owned_by": "vllm"},
+            ],
+        }
+        mock_get = MagicMock()
+        mock_get.return_value.json.return_value = models_response
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+        ):
+            self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name="pinned-alias",
+                tokenizer_config=CustomTokenizerConfig(pretrained_model_name_or_path=MODEL),
+                max_tcp_connections=4,
+                additional_filters=[],
+                lora_config=[MultiLoRAConfig(name="adapter-a", split=1.0)],
+            )
+        mock_get.assert_called_once()
 
     def test_tokenizer_fallback_error_names_config_field(self) -> None:
         """When neither the served id nor the model root loads a tokenizer, the error
