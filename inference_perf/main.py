@@ -87,6 +87,21 @@ import time
 logger = logging.getLogger(__name__)
 
 
+def sync_tokenizer_config(config: Config, client: ModelServerClient) -> None:
+    """Copy the tokenizer a client resolved back into the run config.
+
+    Report generation builds its own tokenizer from ``config.tokenizer``
+    (ReportGenerator._build_tokenizer), so a run that let the client resolve one -- a
+    detected model name, or the ``/v1/models`` entry's ``root`` behind a served alias --
+    would otherwise report with no tokenizer and silently skip the streamed
+    token-timing correction. A config that already pins a path is left alone.
+    """
+    if config.tokenizer is not None and config.tokenizer.pretrained_model_name_or_path:
+        return
+    if client.tokenizer_config is not None:
+        config.tokenizer = client.tokenizer_config
+
+
 def log_metrics_endpoint_failure(metrics_config: RuntimeMetricsConfig, error: OSError) -> None:
     """Report a metrics endpoint that would not bind, without failing the run.
 
@@ -300,6 +315,9 @@ def main_cli() -> None:
             # Don't overwrite tokenizer if mock client doesn't provide one
             if model_server_client.tokenizer is not None:
                 tokenizer = model_server_client.tokenizer
+        # The client resolved the run's tokenizer; report generation rebuilds its own
+        # from the config, so hand it over here.
+        sync_tokenizer_config(config, model_server_client)
     else:
         raise Exception("model server client config missing")
 
