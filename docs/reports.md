@@ -98,6 +98,10 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 - **`load_summary`**: Details about the requested vs achieved load.
 - **`successes`**: Metrics for successful requests.
 - **`failures`**: Metrics for failed requests, including the per-label error breakdown.
+- **`cancelled`**: (Only when present) Requests still in flight when the stage's teardown grace
+  ran out. Neither successes nor failures: `count`, `in_flight_sec` (how long each had been
+  waiting, a lower bound on its latency) and `prompt_tokens`. See
+  [`stage_teardown_grace_seconds`](./otel_trace_replay.md#stage-timing-max_stage_duration-and-stage_teardown_grace_seconds).
 - **`goodput_metrics`**: (Optional) Goodput statistics if constraints were configured.
 
 ### Token Counts

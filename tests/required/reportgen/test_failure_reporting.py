@@ -24,7 +24,7 @@ from inference_perf.apis.base import (
 from inference_perf.config.reportgen.config import ReportConfig
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.apis.base import InferenceInfo
-from inference_perf.reportgen.base import STAGE_TEARDOWN_CANCELLED_LABEL, ReportGenerator, summarize_requests
+from inference_perf.reportgen.base import ReportGenerator, summarize_requests
 
 
 PERCENTILES = [50.0, 90.0]
@@ -128,17 +128,20 @@ class TestRequestFailuresByLabel:
         assert bucket["count"] == 5
         assert len(bucket["messages"]) == 2  # capped on distinct messages
 
-    # One request that hit request_timeout and two cancelled at stage teardown.
-    # Expects two labels, "Timeout" with 1 and "Cancelled at Stage Teardown" with 2,
-    # even though the cancellation message mentions request_timeout.
-    def test_stage_teardown_cancellations_are_not_labelled_timeout(self) -> None:
+    # One request that hit request_timeout and two cancelled at stage teardown, each
+    # cancelled 1s after dispatch. Expects failures.count 1 with only the "Timeout"
+    # label, and a cancelled block with count 2 and in_flight_sec mean 1.0, even
+    # though the cancellation message mentions request_timeout.
+    def test_stage_teardown_cancellations_are_an_outcome_not_a_failure(self) -> None:
         timed_out = ErrorResponseInfo(error_type="TimeoutError", error_msg="Request timed out")
         cancelled = stage_teardown_cancelled_error()
         summary = summarize_requests([_req(error=timed_out), _req(error=cancelled), _req(error=cancelled)], PERCENTILES)
-        by_label = summary.failures["by_label"]
-        assert by_label["Timeout"]["count"] == 1
-        assert by_label[STAGE_TEARDOWN_CANCELLED_LABEL]["count"] == 2
-        assert "timeout" not in STAGE_TEARDOWN_CANCELLED_LABEL.lower()
+        assert summary.failures["count"] == 1
+        assert set(summary.failures["by_label"]) == {"Timeout"}
+        assert summary.cancelled is not None
+        assert summary.cancelled["count"] == 2
+        assert summary.cancelled["in_flight_sec"]["mean"] == 1.0
+        assert "latency" not in summary.cancelled
 
     def test_session_id_attached_to_messages(self) -> None:
         err = ErrorResponseInfo(error_type="HTTP Error 500", error_msg="boom")

@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 from prometheus_client import Counter, Gauge  # noqa: TID251 (declares each spec's metric_type)
 
-from inference_perf.apis.base import RequestLifecycleMetric, ResponseMetrics
+from inference_perf.apis.base import RequestLifecycleMetric, ResponseMetrics, is_stage_teardown_cancelled
 from inference_perf.observability.context import RunContext, StageContext
 from inference_perf.observability.metrics.registry import MetricSpec
 from inference_perf.reportgen.base import effective_output_tokens
@@ -78,12 +78,18 @@ def _stamp_stage(gauge: Gauge, context: StageContext) -> None:
 
 
 def _count_request(counter: Counter, metric: RequestLifecycleMetric) -> None:
-    status = "failure" if metric.error is not None else "success"
+    if metric.error is None:
+        status = "success"
+    elif is_stage_teardown_cancelled(metric.error):
+        status = "cancelled"
+    else:
+        status = "failure"
     counter.labels(stage_label(metric), status).inc()
 
 
 def _count_error(counter: Counter, metric: RequestLifecycleMetric) -> None:
-    if metric.error is not None:
+    # A cancellation is the load generator's doing, so it is not a server error.
+    if metric.error is not None and not is_stage_teardown_cancelled(metric.error):
         counter.labels(stage_label(metric), metric.error.error_type).inc()
 
 
@@ -150,8 +156,9 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
     MetricSpec(
         name="inference_perf_requests",
         documentation=(
-            "Request attempts that have completed, by stage and final status. "
-            "Incremented when the attempt finishes or fails, not when it is sent."
+            "Request attempts that have completed, by stage and final status: success, failure, "
+            "or cancelled (still in flight when the stage's teardown grace ran out). "
+            "Incremented when the attempt finishes, fails or is cancelled, not when it is sent."
         ),
         metric_type=Counter,
         labelnames=("stage", "status"),

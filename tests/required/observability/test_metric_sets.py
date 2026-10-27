@@ -26,6 +26,7 @@ from prometheus_client import Counter, Gauge, Histogram  # noqa: TID251 (throwaw
 from prometheus_client.exposition import generate_latest
 
 from inference_perf.apis.base import (
+    STAGE_TEARDOWN_CANCELLED_ERROR_TYPE,
     ErrorResponseInfo,
     InferenceInfo,
     RequestLifecycleMetric,
@@ -209,6 +210,23 @@ def test_errors_counted_by_class_and_only_for_failures() -> None:
     assert _sample(hub, "inference_perf_requests_total", stage="0", status="failure") == 3.0
     assert _sample(hub, "inference_perf_requests_total", stage="0", status="success") == 1.0
     assert 'error_type=""' not in generate_latest(hub.registry).decode(), "successes must not create an error series"
+
+
+# Three stage-0 requests: one HTTP 503 failure, one cancelled at stage teardown, one
+# success. Expects requests_total 1 each for failure, cancelled and success, and the
+# cancellation absent from errors_total, which reads 1 for "HTTP Error 503" only.
+def test_cancelled_requests_are_their_own_status_and_not_errors() -> None:
+    hub = _streaming_hub()
+    hub.observe_request(_streamed(error="HTTP Error 503"))
+    hub.observe_request(_streamed(error=STAGE_TEARDOWN_CANCELLED_ERROR_TYPE))
+    hub.observe_request(_streamed())
+
+    requests = "inference_perf_requests_total"
+    assert _sample(hub, requests, stage="0", status="failure") == 1.0
+    assert _sample(hub, requests, stage="0", status="cancelled") == 1.0
+    assert _sample(hub, requests, stage="0", status="success") == 1.0
+    assert _sample(hub, "inference_perf_request_errors_total", stage="0", error_type="HTTP Error 503") == 1.0
+    assert STAGE_TEARDOWN_CANCELLED_ERROR_TYPE not in generate_latest(hub.registry).decode()
 
 
 # Feeds the resolver a missing response, a client count of 5, a server count of 7,

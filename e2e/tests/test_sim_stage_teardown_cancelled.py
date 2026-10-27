@@ -17,8 +17,8 @@ End-to-end test covering requests cancelled in flight at stage teardown.
 The scenario: the sim holds every response for 3 seconds. A circuit breaker
 opens after the first 5 responses, which ends the stage while later requests
 are still waiting on the server. The teardown grace is 0.5 seconds, so those
-requests are cancelled. The stage report is expected to show them as failures
-labelled "Cancelled at Stage Teardown", and none labelled "Timeout".
+requests are cancelled. The stage report is expected to show them under its
+`cancelled` block, with no failure at all and nothing labelled "Timeout".
 
 Requires `llm-d-inference-sim` in PATH (see test_llm_d_inference_sim.py). If it
 is missing, the test is skipped automatically.
@@ -47,15 +47,13 @@ SIM_RESPONSE_DELAY_MS = 3000
 BREAKER_THRESHOLD = 5
 TEARDOWN_GRACE_SEC = 0.5
 
-CANCELLED_LABEL = "Cancelled at Stage Teardown"
-
 
 # Sim holds each response 3s; a breaker ends the stage after 5 responses with a
-# 0.5s grace. Expects the stage report to show at least 5 successes, at least one
-# failure labelled "Cancelled at Stage Teardown", and no other failure label.
+# 0.5s grace. Expects the stage report to show at least 5 successes, a cancelled
+# block with count >= 1, and failures.count 0 with no label at all.
 @pytest.mark.asyncio
 @pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
-async def test_requests_cancelled_at_stage_teardown_are_reported_as_failures():
+async def test_requests_cancelled_at_stage_teardown_are_reported_as_cancelled():
     model_name = TEST_MODEL_NAME
     model_path = extract_tarball(TEST_MODEL_TARBALL)
     port = get_free_port()
@@ -117,10 +115,16 @@ async def test_requests_cancelled_at_stage_teardown_are_reported_as_failures():
 
     # Requests sent to the sim and cancelled when the grace ran out must be in
     # the report. How many depends on timing, so the count is only bounded below.
-    by_label = {label: bucket["count"] for label, bucket in stage_report["failures"]["by_label"].items()}
-    assert by_label.get(CANCELLED_LABEL, 0) >= 1, f"No request reported as cancelled at stage teardown: {by_label}"
+    cancelled = stage_report.get("cancelled")
+    assert cancelled is not None and cancelled["count"] >= 1, (
+        f"No request reported as cancelled at stage teardown: {stage_report.keys()}"
+    )
+    # Every cancelled request was dispatched before the stage ended and cancelled
+    # once the grace ran out, so none can have been in flight for less than the grace.
+    assert cancelled["in_flight_sec"]["min"] >= TEARDOWN_GRACE_SEC, cancelled["in_flight_sec"]
 
-    # They are the stage's deadline, not the request's: nothing may be filed
-    # under "Timeout", and the sim itself fails nothing.
-    assert set(by_label) == {CANCELLED_LABEL}, f"Unexpected failure labels: {by_label}"
-    assert stage_report["failures"]["count"] == by_label[CANCELLED_LABEL]
+    # They are the stage's deadline, not the request's: they are not failures,
+    # nothing may be filed under "Timeout", and the sim itself fails nothing.
+    by_label = {label: bucket["count"] for label, bucket in stage_report["failures"]["by_label"].items()}
+    assert by_label == {}, f"Unexpected failure labels: {by_label}"
+    assert stage_report["failures"]["count"] == 0
