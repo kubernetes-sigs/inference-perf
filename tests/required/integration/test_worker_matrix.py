@@ -39,9 +39,8 @@ Everything driving real processes is wrapped in ``asyncio.wait_for``: a
 barrier-quorum regression (#469) hangs rather than fails, and a bounded wait
 turns that hang into a test failure instead of a stuck CI job.
 
-Standing finding: the ``num_workers = 0`` cell usually sends one request
-fewer per stage than the mp cells. The per-stage count in the matrix test says
-why.
+The ``num_workers = 0`` cell sends every planned request of a stage, like the
+mp cells; the per-stage count in the matrix test pins that.
 """
 
 import asyncio
@@ -291,19 +290,9 @@ async def test_worker_matrix_accounts_every_served_request(num_workers: int) -> 
         by_stage[metric.stage_id] = by_stage.get(metric.stage_id, 0) + 1
     assert sorted(by_stage) == list(range(NUM_STAGES)), f"expected one bucket per stage, got {sorted(by_stage)}"
     for stage_id in range(NUM_STAGES):
-        if num_workers == 0:
-            # ConstantLoadTimer scales its gaps to sum to the stage duration, so the last
-            # request is scheduled at end_time up to float rounding and the in-process
-            # `time_index < end_time` check sends it only when the rounding falls below,
-            # while the mp path enqueues every scheduled request.
-            assert by_stage[stage_id] in (REQUESTS_PER_STAGE - 1, REQUESTS_PER_STAGE), (
-                f"stage {stage_id} delivered {by_stage[stage_id]} requests, "
-                f"expected {REQUESTS_PER_STAGE - 1} or {REQUESTS_PER_STAGE}"
-            )
-        else:
-            assert by_stage[stage_id] == REQUESTS_PER_STAGE, (
-                f"stage {stage_id} delivered {by_stage[stage_id]} requests, expected {REQUESTS_PER_STAGE}"
-            )
+        assert by_stage[stage_id] == REQUESTS_PER_STAGE, (
+            f"stage {stage_id} delivered {by_stage[stage_id]} requests, expected {REQUESTS_PER_STAGE}"
+        )
 
     # Per-request token accounting is identical in every cell: the response is
     # scripted, so any drift here is the process machinery mangling a metric

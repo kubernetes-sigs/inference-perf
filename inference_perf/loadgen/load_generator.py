@@ -97,6 +97,10 @@ _WIND_DOWN_REAP_SECONDS = 10.0
 _TEARDOWN_MARGIN_SECONDS = 15.0
 _FORCE_REAP_SECONDS = 20.0
 
+# ConstantLoadTimer scales its gaps to sum to the stage duration, so its last request is scheduled at the stage end
+# up to float rounding. A request scheduled within this many seconds past the end still belongs to the stage.
+_STAGE_END_TOLERANCE = 1e-6
+
 # Log-line verb for each terminal StageStatus; anything not listed reads as "failed".
 _STAGE_STATUS_LOG_VERB: dict[StageStatus, str] = {
     StageStatus.COMPLETED: "completed",
@@ -1852,7 +1856,7 @@ class LoadGenerator:
                     stage_status = StageStatus.FAILED
                     break
                 now = time.perf_counter()
-                if time_index < end_time and now < end_time:
+                if time_index < end_time + _STAGE_END_TOLERANCE:
                     if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                         logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
                         stage_status = StageStatus.FAILED
