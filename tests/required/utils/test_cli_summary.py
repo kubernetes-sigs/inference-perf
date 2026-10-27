@@ -193,6 +193,35 @@ class TestCliSummary(unittest.TestCase):
         titles = [t.title for t in printed]
         self.assertIn("[bold magenta]Session Error Summary[/bold magenta]", titles)
 
+    # A stage report with 5 successes, no failures and a cancelled block of count 3.
+    # Expects the request error table to gain a "Cancelled at Teardown" column
+    # showing 3, with no error label column beside it.
+    @patch("inference_perf.utils.cli_summary.Console.print")
+    def test_cancelled_at_teardown_gets_its_own_column(self, mock_console_print: MagicMock) -> None:
+        contents = {
+            "successes": {"count": 5},
+            "failures": {"count": 0, "by_label": {}},
+            "cancelled": {"count": 3},
+        }
+        report = ReportFile(name="stage_0_lifecycle_metrics", contents=contents)
+        print_error_summary_table([report])
+
+        table = mock_console_print.call_args_list[0].args[0]
+        headers = [column.header for column in table.columns]
+        self.assertEqual(headers, ["Stage", "Successes", "Cancelled at Teardown"])
+        self.assertEqual(table.columns[2]._cells, ["[yellow]3[/]"])
+
+    # A stage report with 5 successes and no cancelled block. Expects no
+    # "Cancelled at Teardown" column.
+    @patch("inference_perf.utils.cli_summary.Console.print")
+    def test_cancelled_column_omitted_when_nothing_cancelled(self, mock_console_print: MagicMock) -> None:
+        contents = {"successes": {"count": 5}, "failures": {"count": 0, "by_label": {}}}
+        report = ReportFile(name="stage_0_lifecycle_metrics", contents=contents)
+        print_error_summary_table([report])
+
+        table = mock_console_print.call_args_list[0].args[0]
+        self.assertEqual([column.header for column in table.columns], ["Stage", "Successes"])
+
     @patch("inference_perf.utils.cli_summary.Console.print")
     def test_session_error_summary_table_omitted_when_no_failures(self, mock_console_print: MagicMock) -> None:
         """A clean replay run should not print a table whose only column is the success count."""

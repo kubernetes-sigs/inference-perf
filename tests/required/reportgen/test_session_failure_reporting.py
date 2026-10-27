@@ -26,6 +26,7 @@ from inference_perf.apis.base import (
     InferenceInfo,
     RequestLifecycleMetric,
     SessionLifecycleMetric,
+    stage_teardown_cancelled_error,
 )
 from inference_perf.config.reportgen.config import ReportConfig
 from inference_perf.datagen.replay.replay_graph_session_datagen import SessionFailureCause
@@ -189,6 +190,19 @@ class TestSessionErrorPrecedence:
 
         assert session.error is not None
         assert session.error.error_type == SessionFailureCause.SUBSTITUTION_TOOL_CALL_EXPECTED.value
+        assert session.success is False
+
+    # A 3-event session with 2 completed and no cause of its own, whose third request
+    # was cancelled at stage teardown. Expects the session to carry no error from it,
+    # and success False only because it is incomplete, not because it failed.
+    def test_teardown_cancellation_does_not_fail_the_session(self) -> None:
+        gen = _make_generator()
+        session = _sess(session_id="s1", error=None, num_events=3, num_events_completed=2)
+        requests = [_req(session_id="s1", error=stage_teardown_cancelled_error())]
+
+        gen._enrich_sessions([session], requests)
+
+        assert session.error is None
         assert session.success is False
 
     def test_request_error_fills_in_when_session_has_no_cause(self) -> None:

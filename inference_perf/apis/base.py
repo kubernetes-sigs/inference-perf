@@ -120,6 +120,15 @@ def stage_teardown_cancelled_error() -> ErrorResponseInfo:
     )
 
 
+def is_stage_teardown_cancelled(error: Optional[ErrorResponseInfo]) -> bool:
+    """A cancelled request is its own outcome, neither a success nor a failure.
+
+    The server never answered it and never refused it, so every consumer that
+    splits requests into successes and failures keeps it out of both.
+    """
+    return error is not None and error.error_type == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
+
+
 class RequestLifecycleMetric(BaseModel):
     stage_id: Optional[int] = None
     session_id: Optional[str] = None

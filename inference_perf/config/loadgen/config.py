@@ -288,8 +288,9 @@ class LoadConfig(StrictBaseModel):
             "margin) expires, remaining work is force-cancelled and unresponsive workers "
             "are terminated and respawned, so report generation always runs. Set to 0 to "
             "cancel in-flight requests immediately at stage end. A request cancelled this "
-            "way is reported as a failure with error type StageTeardownCancelled, separate "
-            "from a request_timeout failure (TimeoutError). The teardown window is "
+            "way is reported under cancelled, beside successes and failures, with error type "
+            "StageTeardownCancelled: it is the stage's deadline, not a request_timeout failure "
+            "(TimeoutError), and it counts as neither a success nor a failure. The teardown window is "
             "excluded from the stage's reported end_time and metrics windows; it is "
             "reported separately as teardown_duration."
         ),
