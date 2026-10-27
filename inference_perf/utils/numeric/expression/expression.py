@@ -127,8 +127,12 @@ def _is_random_symbol(sym: Any) -> bool:
     return isinstance(sym, sympy.stats.rv.RandomSymbol)
 
 
-def _parse_raw(kind: str, raw: Union[str, int, float]) -> Any:
-    """Parse a config value into a sympy object, shared by both grammars."""
+def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = None) -> Any:
+    """Parse a config value into a sympy object, shared by both grammars.
+
+    ``shown`` is the text to name in a parse error when ``raw`` has been
+    rewritten from it, so the author sees their own spelling.
+    """
     if isinstance(raw, bool):
         raise TypeError(f"{kind} does not accept bool input.")
     if isinstance(raw, (int, float)):
@@ -140,7 +144,7 @@ def _parse_raw(kind: str, raw: Union[str, int, float]) -> Any:
         try:
             return parse_expr(raw, local_dict=_parse_namespace([0]))
         except (SyntaxError, TypeError, AttributeError, sympy.SympifyError) as e:
-            raise ValueError(f"Could not parse {kind.lower()} {raw!r}: {e}") from e
+            raise ValueError(f"Could not parse {kind.lower()} {shown if shown is not None else raw!r}: {e}") from e
     raise TypeError(f"{kind} accepts str or number, got {type(raw).__name__}.")
 
 
@@ -624,7 +628,7 @@ class Predicate:
             raise ValueError(_equality_message(raw))
         rewritten, self._terms = extract_terms(raw)
         try:
-            expr = _parse_raw("Predicate", rewritten)
+            expr = _parse_raw("Predicate", rewritten, shown=raw)
         except ValueError as e:
             if "&" in raw or "|" in raw:
                 raise ValueError(
@@ -645,6 +649,9 @@ class Predicate:
         disallowed = names - {"t"} - set(SIGNALS) - set(self._terms)
         if disallowed:
             raise ValueError(_disallowed_message(raw, disallowed))
+        # sympy can fold a term away ('t + 0*avg_over_last(ttft, 5)'); a term
+        # the compiled condition never reads must not be evaluated either.
+        self._terms = {symbol: term for symbol, term in self._terms.items() if symbol in names}
         self._measured = frozenset(names - {"t"})
         if "t" not in names:
             if self._measured:
