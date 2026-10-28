@@ -10,10 +10,10 @@ repos:
   hooks:
     - id: mypy
       name: run static type check
-      entry: pdm run mypy --strict --ignore-missing-imports
+      entry: pdm run type-check
       language: system
       types: [python]
-      require_serial: true
+      pass_filenames: false
     - id: check-license
       name: check license headers
       entry: python scripts/check_license.py
