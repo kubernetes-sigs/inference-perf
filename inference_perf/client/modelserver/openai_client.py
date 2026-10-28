@@ -164,10 +164,16 @@ class openAIModelServerClient(ModelServerClient):
         if tokenizer_config.pretrained_model_name_or_path:
             self.tokenizer = CustomTokenizer(tokenizer_config)
         else:
-            self.tokenizer = self._load_tokenizer_from_candidates(tokenizer_config, inferred_entry, probe_for_root)
+            self.tokenizer = self._load_tokenizer_from_candidates(
+                tokenizer_config, inferred_entry, probe_for_root, known_models=supported_models
+            )
 
     def _load_tokenizer_from_candidates(
-        self, tokenizer_config: CustomTokenizerConfig, inferred_entry: Optional[dict[str, Any]], probe_for_root: bool = False
+        self,
+        tokenizer_config: CustomTokenizerConfig,
+        inferred_entry: Optional[dict[str, Any]],
+        probe_for_root: bool = False,
+        known_models: Optional[List[dict[str, Any]]] = None,
     ) -> CustomTokenizer:
         """Load the tokenizer from the first candidate that works.
 
@@ -176,8 +182,10 @@ class openAIModelServerClient(ModelServerClient):
         ``--served-model-name``, which can be an alias the tokenizer cannot load under,
         while ``root`` is the real model path. With ``probe_for_root`` the entry is
         fetched only if the name itself fails -- an explicit ``model_name`` defers it
-        here so a name that loads pays no probe. If nothing loads, the error names the
-        config field the user must set. The candidate that loaded is written back into
+        here so a name that loads pays no probe. ``known_models`` are entries the caller
+        already fetched (the LoRA adapter check); reusing them keeps startup at one
+        ``/v1/models`` request. If nothing loads, the error names the config field the
+        user must set. The candidate that loaded is written back into
         ``tokenizer_config``, which the caller keeps in the run config.
         """
         candidates = [self.model_name]
@@ -191,7 +199,8 @@ class openAIModelServerClient(ModelServerClient):
             if tokenizer is not None:
                 return tokenizer
         if probe_for_root and inferred_entry is None:
-            entry = next((model for model in self.get_supported_models() if model.get("id") == self.model_name), None)
+            models = known_models if known_models is not None else self.get_supported_models()
+            entry = next((model for model in models if model.get("id") == self.model_name), None)
             root = entry.get("root") if entry is not None else None
             if isinstance(root, str) and root != self.model_name:
                 candidates.append(root)

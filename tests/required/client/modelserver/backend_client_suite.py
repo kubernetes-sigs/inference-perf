@@ -651,6 +651,45 @@ class BackendClientSuite:
             )
         mock_get.assert_called_once()
 
+    # Explicit model_name, no tokenizer path, and one LoRA adapter the server lists: the
+    # adapter check already fetches /v1/models, so the deferred root fallback must read
+    # that list instead of sending a second probe (startup stays at one request).
+    def test_lora_validation_reuses_its_probe_for_the_tokenizer_fallback(self) -> None:
+        models_response: Dict[str, Any] = {
+            "object": "list",
+            "data": [
+                {"id": "pinned-alias", "object": "model", "created": 1750000000, "owned_by": "vllm", "root": MODEL},
+                {"id": "adapter-a", "object": "model", "created": 1750000000, "owned_by": "vllm"},
+            ],
+        }
+
+        class AliasRejectingTokenizer:
+            def __init__(self, config: Any = None) -> None:
+                path = config.pretrained_model_name_or_path
+                if path == "pinned-alias":
+                    raise RuntimeError("no tokenizer files under pinned alias")
+                assert path == MODEL
+
+        mock_get = MagicMock()
+        mock_get.return_value.json.return_value = models_response
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AliasRejectingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+        ):
+            client = self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name="pinned-alias",
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+                lora_config=[MultiLoRAConfig(name="adapter-a", split=1.0)],
+            )
+        assert client.tokenizer_config is not None
+        assert client.tokenizer_config.pretrained_model_name_or_path == MODEL
+        mock_get.assert_called_once()
+
     def test_tokenizer_fallback_error_names_config_field(self) -> None:
         """When neither the served id nor the model root loads a tokenizer, the error
         must point the user at tokenizer.pretrained_model_name_or_path (#809)."""
