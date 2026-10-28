@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import itertools
+import io
+import ijson
 import logging
 from inference_perf.apis import (
     AnthropicMessagesAPIData,
@@ -25,7 +26,7 @@ from inference_perf.utils.dataset import load_dataset_with_deadline
 from ..base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
 from typing import Any, Dict, Generator, Iterator, List, Optional
-from datasets import load_dataset
+from huggingface_hub import hf_hub_download
 import os
 import json
 
@@ -50,7 +51,7 @@ class HFShareGPTDataGenerator(DataGenerator):
     def _load_dataset(self) -> Iterator[Any]:
         def load_and_prime() -> Iterator[Any]:
             dataset = self._open_dataset()
-            # Streaming downloads start when the first row is read.
+            # Keep both the Hub download and first parsed row inside the deadline.
             next(dataset)
             return dataset
 
@@ -67,26 +68,42 @@ class HFShareGPTDataGenerator(DataGenerator):
             # depending on whether the dataset is a single file or a directory, we need to load it differently
             # TODO: add support for other file types
             if os.path.isfile(config.path) and config.path.endswith(".json"):
-                return itertools.cycle(load_dataset("json", data_files=config.path, streaming=True, split="train"))
+                paths = [config.path]
             elif os.path.isdir(config.path):
-                json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                return itertools.cycle(load_dataset("json", data_files=json_files, streaming=True, split="train"))
+                paths = [os.path.join(config.path, f) for f in os.listdir(config.path) if f.endswith(".json")]
             else:
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
-            return itertools.cycle(
-                load_dataset(
-                    SHAREGPT_HF_DATASET_URL,
-                    data_files=SHAREGPT_HF_DATAFILES_PATH,
-                    streaming=True,
-                    split="train",
+            paths = [
+                hf_hub_download(
+                    repo_id=SHAREGPT_HF_DATASET_URL,
+                    filename=SHAREGPT_HF_DATAFILES_PATH,
+                    repo_type="dataset",
                 )
-            )
+            ]
+        return self._repeat_dataset(paths)
+
+    def _repeat_dataset(self, paths: List[str]) -> Iterator[Any]:
+        while True:
+            has_rows = False
+            for path in paths:
+                # Reopen the local or cached file instead of retaining rows in cycle.
+                # No network reads remain while requests are generated between stages.
+                with open(path, "rb", buffering=0) as source, io.BufferedReader(source) as stream:
+                    # Local .json files can also contain JSON Lines. Peek through
+                    # leading whitespace without consuming the first JSON token.
+                    while (first := stream.peek(1)[:1]) and first in b" \t\r\n":
+                        stream.read(1)
+                    is_array = first == b"["
+                    for row in ijson.items(stream, "item" if is_array else "", multiple_values=not is_array):
+                        has_rows = True
+                        yield row
+            if not has_rows:
+                raise ValueError("ShareGPT dataset contains no records")
 
     def __getstate__(self) -> Dict[str, Any]:
-        # itertools.cycle wraps the streaming dataset's iterator, which holds an
-        # unpicklable generator internally, so a spawn/forkserver worker fails to
-        # unpickle the whole generator (#589). Drop it here; __setstate__ leaves
+        # The streaming iterator is unpicklable, so a spawn/forkserver worker
+        # fails to unpickle the whole generator (#589). Drop it here; __setstate__ leaves
         # it unloaded, and _ensure_dataset_loaded() rebuilds it lazily the first
         # time get_data() actually needs it in this process.
         state = self.__dict__.copy()
@@ -133,7 +150,7 @@ class HFShareGPTDataGenerator(DataGenerator):
             data = next(self.sharegpt_dataset)
             if (
                 data is None
-                or data[self.data_key] is None
+                or data.get(self.data_key) is None
                 or len(data[self.data_key]) < self.min_num_turns
                 or len(data[self.data_key]) == 0
             ):
@@ -190,7 +207,7 @@ class HFShareGPTDataGenerator(DataGenerator):
             data = next(self.sharegpt_dataset)
             if (
                 data is None
-                or data[self.data_key] is None
+                or data.get(self.data_key) is None
                 or len(data[self.data_key]) < self.min_num_turns
                 or len(data[self.data_key]) == 0
             ):
