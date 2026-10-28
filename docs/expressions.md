@@ -11,6 +11,7 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 | Field | `t` | Random | Rule |
 | --- | --- | --- | --- |
 | [`load.stages[].stop_condition`](./config.md#stop-conditions) (constant, poisson) | yes | no | A [condition](#conditions). |
+| [`load.stages[].stop_condition`](./config.md#stop-conditions) (trace_session_replay) | yes | no | A [condition](#conditions) without `_over_sent` windows. |
 
 ## Grammar
 

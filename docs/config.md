@@ -269,6 +269,17 @@ load:
 
 A stage ended this way is COMPLETED. The load generator logs the stage second the condition held at and the value of each term it read, and the requests it had scheduled after that point are reported as dropped.
 
+A `trace_session_replay` stage takes `stop_condition` too, in place of `duration` or `num_sessions`. At most one of the three is set. Reaching the condition stops admitting sessions and ends the stage COMPLETED, and sessions still running are recorded as truncated, the same as at a `duration` deadline. `_over_sent` windows are rejected on these stages, since a session's events are sent as the requests they wait on finish, not in the order they are queued.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: trace_session_replay
+  stages:
+  - concurrent_sessions: 16
+    stop_condition: "(t >= 1800) | (errors >= 10)"   # the tenth failure ends it, 1800s at the latest
+```
+
 Under `load.type: trace_replay` the trace sets when each request is sent, so `stop_condition` is rejected there.
 
 #### Retrying Transport Faults
@@ -759,9 +770,13 @@ load:
 - Whether the window is filled depends on the data generator. `otel_trace_replay` and `synthetic_agentic` replay their corpus once it is used up, each replay under its own session ID, so the corpus need not be sized by hand — and `duplicate_sessions_target` is rejected with `duration` for these two, since both would mint the same `_dupN` IDs. `weka_trace_replay` builds every session up front and so ends when its corpus does; raise its `duplicate_sessions_target` to cover the window. Either way a stage that falls short logs a warning saying by how much
 - Wall-clock time is `duration` plus teardown, since in-flight requests are given a chance to finish
 
+**`stop_condition`** (optional): End the stage on a condition rather than a fixed `duration`, e.g. `"(t >= 1800) | (errors >= 10)"`
+- `duration: N` means `stop_condition: "t >= N"`, and everything above about `duration` applies to the time the condition holds by
+- At most one of `num_sessions`, `duration` and `stop_condition`. See [Stop Conditions](#stop-conditions)
+
 **`max_stage_duration`** (optional): Wall-clock safety limit
 - If exceeded, in-flight sessions are cancelled and stage exits as FAILED
-- Distinct from `duration`: this is the fault signal, `duration` is the planned stop. Must be longer than `duration` when both are set
+- Distinct from `duration`: this is the fault signal, `duration` is the planned stop. Must be longer than `duration`, or the time `stop_condition` holds by, when both are set
 
 #### Trace File Format
 

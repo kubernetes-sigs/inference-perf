@@ -240,8 +240,21 @@ class TraceSessionReplayLoadStage(LoadStage):
             "much. Optional."
         ),
     )
+    stop_condition: Optional[Union[str, StopConditionConfig]] = Field(
+        None,
+        description=(
+            "Condition at which the stage stops admitting sessions, in the same grammar as on constant and "
+            "poisson stages, e.g. '(t >= 1800) | (errors >= 10)'. See docs/expressions.md. Reaching it ends "
+            "the stage the way duration does: COMPLETED, with sessions still running recorded as truncated. "
+            "duration: N is shorthand for stop_condition: 't >= N'. _over_sent windows are rejected, since a "
+            "session's events are sent as the requests they wait on finish, not in the order they are queued. "
+            "At most one of duration, num_sessions and stop_condition. Optional."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
+
+    _predicate: Optional[Predicate] = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def validate_trace_session_fields(self) -> "TraceSessionReplayLoadStage":
@@ -270,6 +283,26 @@ class TraceSessionReplayLoadStage(LoadStage):
                 "bound a stage by time, or num_sessions to bound it by session count; for a "
                 "wall-clock safety net on a count-bounded stage, use max_stage_duration."
             )
+        if self.stop_condition is not None and (self.duration is not None or self.num_sessions is not None):
+            other = "duration" if self.duration is not None else "num_sessions"
+            raise ValueError(
+                f"stop_condition and {other} cannot both be set: each one ends the stage. "
+                "duration: N is shorthand for stop_condition: 't >= N', and a count-bounded stage "
+                "that also has a deadline would report COMPLETED for whichever it reached first. "
+                "Set one of duration, num_sessions and stop_condition."
+            )
+
+        # Built here so a bad stop_condition fails at config load, with Predicate's reason as-is.
+        predicate = self.predicate
+        if predicate is not None:
+            for term in predicate.terms.values():
+                if term.sent_stop is not None:
+                    raise ValueError(
+                        f"stop_condition term {term.source!r} counts requests in the order they were sent, "
+                        "which a trace_session_replay stage does not know: a session's events are queued "
+                        "together and each is sent once the requests it waits on finish. Use an _over_time "
+                        "or _over_last window instead."
+                    )
 
         # duration is the planned stop and reports COMPLETED; max_stage_duration is the
         # failure safety net and reports FAILED. If the net fires first, every
@@ -286,8 +319,50 @@ class TraceSessionReplayLoadStage(LoadStage):
                 f"{effective_cap_field} <= duration the stage always fails before reaching "
                 f"its planned stop."
             )
+        if (
+            self.stop_condition is not None
+            and predicate is not None
+            and effective_cap is not None
+            and predicate.boundary >= effective_cap
+        ):
+            raise ValueError(
+                f"stop_condition {predicate.raw!r} holds by {predicate.boundary:g}s, which must be shorter "
+                f"than {effective_cap_field} ({effective_cap}). The condition is the planned stop and "
+                f"reports success. {effective_cap_field} is a safety limit that reports FAILED, so it "
+                f"would end every run before the condition could."
+            )
 
         return self
+
+    @property
+    def stop_settings(self) -> Optional[StopConditionConfig]:
+        """``stop_condition`` in its object form, ``t >= duration``, or None for a stage bounded by session count."""
+        if isinstance(self.stop_condition, StopConditionConfig):
+            return self.stop_condition
+        if self.stop_condition is not None:
+            return StopConditionConfig(condition=self.stop_condition)
+        if self.duration is not None:
+            return StopConditionConfig(condition=f"t >= {self.duration}")
+        return None
+
+    @property
+    def predicate(self) -> Optional[Predicate]:
+        """The stage's stop condition, or None for a stage bounded by session count.
+
+        Rebuilt whenever its source string changes, as on StandardLoadStage.
+        """
+        settings = self.stop_settings
+        if settings is None:
+            return None
+        if self._predicate is None or self._predicate.raw != settings.condition:
+            self._predicate = Predicate(settings.condition)
+        return self._predicate
+
+    @property
+    def effective_duration(self) -> Optional[float]:
+        """The stage's deadline in seconds, or None for a stage bounded by session count."""
+        predicate = self.predicate
+        return predicate.boundary if predicate is not None else None
 
 
 class StageGenType(Enum):

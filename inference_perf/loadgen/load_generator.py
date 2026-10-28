@@ -809,12 +809,14 @@ class LoadGenerator:
         )
         return True
 
-    def _stop_monitor_for(self, stage_id: int, stage: StandardLoadStage) -> Optional[StopConditionMonitor]:
+    def _stop_monitor_for(
+        self, stage_id: int, stage: Union[StandardLoadStage, TraceSessionReplayLoadStage]
+    ) -> Optional[StopConditionMonitor]:
         """A monitor for a stage whose stop condition reads measured terms; None when it ends on its deadline alone."""
-        predicate = stage.predicate
-        if not predicate.measured_symbols:
+        predicate, settings = stage.predicate, stage.stop_settings
+        if predicate is None or settings is None or not predicate.measured_symbols:
             return None
-        return StopConditionMonitor(stage_id, predicate, stage.stop_settings.hold, self.use_server_output_tokens)
+        return StopConditionMonitor(stage_id, predicate, settings.hold, self.use_server_output_tokens)
 
     async def _run_reported_stage(self, stage_id: int, runner: Awaitable[None]) -> None:
         """Run one stage so its observer sees exactly one start and one end, however the runner exits."""
@@ -932,7 +934,12 @@ class LoadGenerator:
         max_stage_duration = (
             stage.max_stage_duration if stage.max_stage_duration else stage.timeout
         )  # timeout is deprecated, kept for legacy
-        duration = stage.duration
+        # The stop condition's deadline: duration itself, or when stop_condition holds on time alone.
+        duration = stage.effective_duration
+        stop_monitor = self._stop_monitor_for(stage_id, stage)
+        if stop_monitor is not None:
+            stop_monitor.start(start_time)
+            self._stop_monitor = stop_monitor
 
         # A duration-bounded stage draws sessions without limit: indices past the corpus
         # resolve to further plays, so it fills its window instead of ending with the corpus.
@@ -1054,6 +1061,9 @@ class LoadGenerator:
             # this a session could be started microseconds after the deadline only to be
             # cut short immediately.
             if duration is not None and time.perf_counter() - start_time >= duration:
+                return False
+            # Same for a measured stop: a result observed mid-burst can make it hold.
+            if stop_monitor is not None and stop_monitor.met_at is not None:
                 return False
 
             # Check concurrency limit (0 = unlimited)
@@ -1270,6 +1280,12 @@ class LoadGenerator:
                 # Clean up completed session data to prevent memory leaks
                 self.datagen.cleanup_session(session_id)
 
+            # A measured stop is a planned stop like the deadline below: status stays RUNNING so
+            # the stage reports COMPLETED, and sessions still running are swept as truncated
+            # after teardown. Checked before admission so nothing starts once it has held.
+            if self._stop_condition_held(stage_id, stop_monitor):
+                break
+
             # Try to start new sessions to fill the pool
             while should_start_next_session():
                 session_idx = next_session_index
@@ -1331,14 +1347,16 @@ class LoadGenerator:
         if stage_task:
             stage_task.close()
             stage_task = None
+        stop_condition_met_at = stop_monitor.met_at if stop_monitor is not None else None
+        self._stop_monitor = None
 
         # A duration-bounded stage that exited before its deadline ran out of corpus, so
         # it measured a shorter window than was asked for. Only a generator that cannot
         # replay its corpus reaches here: a cycling one draws further plays instead of
         # running out. Checked here rather than at each break so every early-exit path is
         # covered, and only while the status is still RUNNING — on a failure the shortfall
-        # is not the story.
-        if duration is not None and stage_status == StageStatus.RUNNING:
+        # is not the story. A measured stop condition that held ended it early on purpose.
+        if duration is not None and stage_status == StageStatus.RUNNING and stop_condition_met_at is None:
             elapsed = time.perf_counter() - start_time
             if elapsed < duration:
                 # Kept generic: weka_trace_replay grows its corpus with
@@ -1474,6 +1492,7 @@ class LoadGenerator:
             dropped_requests_exact=teardown.dropped_requests_exact,
             sessions_not_completed_active=sessions_not_completed_active,
             sessions_not_completed_pending=sessions_not_completed_pending,
+            stop_condition_met_at=stop_condition_met_at,
         )
         logger.info("Stage %d - session-based run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
         self._stage_ended(stage_context)
