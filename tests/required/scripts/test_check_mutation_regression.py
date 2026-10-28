@@ -523,6 +523,37 @@ def test_hung_reruns_fail_closed(cmr: Any, tmp_path: Path, monkeypatch: pytest.M
     assert not cmr.canary_passes(side, ["m.x_f"], [])
 
 
+# Faked reruns. Exit 1 naming FAILED tests/test_a.py::t three times is a kill, so the survivor stops
+# counting. Exit 4 (usage error), exit 5 (nothing collected) and exit 1 with no test named each
+# stop the run with an error that quotes the output, since none of them ran a test that failed.
+# The canary accepts 0 and 5, fails on 1, and stops the run on 4 the same way.
+def test_reruns_count_only_a_named_failing_test_as_a_kill(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    listed = subprocess.CompletedProcess([], 0, "tests/test_a.py::t\n", "")
+    monkeypatch.setattr(cmr, "mutmut", lambda *a: listed)
+    monkeypatch.setattr(cmr, "rerun_timeout", lambda *a: 1.0)
+    side = cmr.Side(tree=tmp_path, results={"m.x_f__mutmut_1": "survived"})
+    (tmp_path / "mutants").mkdir()
+    (tmp_path / "mutants" / "mutmut-stats.json").write_text(
+        '{"tests_by_mangled_function_name": {"m.x_f": ["tests/test_a.py::t"]}, "duration_by_test": {}}'
+    )
+
+    def fake(code: int, output: str) -> None:
+        monkeypatch.setattr(cmr, "rerun", lambda *a: (code, output))
+
+    fake(1, "FAILED tests/test_a.py::t - assert\n")
+    assert not cmr.still_survives(side, "m.x_f__mutmut_1", []).counts
+    assert not cmr.canary_passes(side, ["m.x_f"], [])
+    for code, output in [(4, "ERROR: not found: tests/test_a.py::t\n"), (5, "no tests ran\n"), (1, "1 failed\n")]:
+        fake(code, output)
+        with pytest.raises(cmr.MutationRunError, match=f"exited {code} .*\n{output.strip()}"):
+            cmr.still_survives(side, "m.x_f__mutmut_1", [])
+    fake(4, "usage: pytest\n")
+    with pytest.raises(cmr.MutationRunError, match="the canary exited 4"):
+        cmr.canary_passes(side, ["m.x_f"], [])
+    fake(5, "")
+    assert cmr.canary_passes(side, ["m.x_f"], [])
+
+
 # Commits inference_perf/m.py with f(x) = x > 1 and tests/test_m.py, whose test_f pins both sides of
 # the comparison. Returns the repo root.
 def tested_function_repo(tmp_path: Path) -> Path:

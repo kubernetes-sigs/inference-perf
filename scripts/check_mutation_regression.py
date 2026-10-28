@@ -980,8 +980,11 @@ def canary_passes(side: Side, names: list[str], pytest_args: list[str]) -> bool:
     canary = canary_id(names[0], set(side.results))
     for _ in range(RERUNS):
         # a hang counts as a failed run, so tests that only hang under the harness still fail the canary
-        if rerun(side, tests, canary, pytest_args)[0] in (0, 5):  # 5: nothing collected
+        code, output = rerun(side, tests, canary, pytest_args)
+        if code in (0, 5):  # 5: nothing collected
             return True
+        if code not in (None, 1):
+            raise unusable_rerun("the canary", code, output)
     return False
 
 
@@ -1157,6 +1160,12 @@ class Survival(NamedTuple):
     killed_by: list[str]
 
 
+def unusable_rerun(what: str, code: int | None, output: str) -> MutationRunError:
+    """A rerun that neither passed nor failed a named test: a usage error, nothing collected, an interrupt."""
+    tail = "\n".join(output.splitlines()[-DIAGNOSIS_TAIL_LINES:])
+    return MutationRunError(f"Rerunning the tests for {what} exited {code} without a passing or failing test.\n{tail}")
+
+
 def still_survives(side: Side, mutant: str, pytest_args: list[str]) -> Survival:
     """Rerun the tests that cover a surviving mutant. It stops counting only when every rerun kills it."""
     if side.results.get(mutant) == "no tests":
@@ -1168,7 +1177,11 @@ def still_survives(side: Side, mutant: str, pytest_args: list[str]) -> Survival:
         # a hang is not a kill
         if code is None or code == 0:
             return Survival(True, sorted(killed_by))
-        killed_by.update(failed_tests(output) or ["(no failing test named)"])
+        failed = failed_tests(output)
+        # only a named failing test is a kill. Any other exit would count a rerun that ran nothing
+        if code != 1 or not failed:
+            raise unusable_rerun(mutant, code, output)
+        killed_by.update(failed)
     return Survival(False, sorted(killed_by))
 
 
