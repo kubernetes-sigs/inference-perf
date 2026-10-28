@@ -295,13 +295,18 @@ def test_ttft_and_tpot_absent_on_unary_runs() -> None:
 # --- conventions (the checkable half of #628) -----------------------------------
 
 # "cause" is bounded the same way "error_type" is: an exception class name, a
-# signal name, or an exit code, never a message or an id.
-ALLOWED_LABELS = {"stage", "status", "error_type", "cause"}
+# signal name, or an exit code, never a message or an id. "modality" is one of
+# image, video or audio.
+ALLOWED_LABELS = {"stage", "status", "error_type", "cause", "modality"}
+
+# A histogram observes one quantity per request or media instance, named by its
+# unit: a base unit (seconds, bytes) or a plain count of something (pixels, frames).
+HISTOGRAM_UNIT_SUFFIXES = ("_seconds", "_bytes", "_pixels", "_frames")
 
 
 # Walks every spec in ALL_SPECS. Expects unique inference_perf_-prefixed names with
 # no hand-written _total suffix, labels drawn only from the allowlist, histograms
-# named _seconds with explicit buckets, timestamps named _timestamp_seconds, and a
+# named by their unit with explicit buckets, timestamps named _timestamp_seconds, and a
 # non-empty description on each.
 def test_all_specs_follow_naming_and_label_conventions() -> None:
     names = [spec.name for spec in ALL_SPECS]
@@ -311,7 +316,7 @@ def test_all_specs_follow_naming_and_label_conventions() -> None:
         assert not spec.name.endswith("_total"), f"{spec.name}: prometheus_client appends _total to counters"
         assert set(spec.labelnames) <= ALLOWED_LABELS, f"{spec.name}: labels must be bounded and from the allowlist"
         if spec.metric_type is Histogram:
-            assert spec.name.endswith("_seconds"), f"{spec.name}: histograms here are durations in base units"
+            assert spec.name.endswith(HISTOGRAM_UNIT_SUFFIXES), f"{spec.name}: histograms are named by their unit"
             assert spec.buckets is not None
         if spec.metric_type is Gauge and "timestamp" in spec.name:
             assert spec.name.endswith("_timestamp_seconds"), spec.name
