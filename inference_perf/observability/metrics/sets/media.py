@@ -26,7 +26,7 @@ from typing import Callable, Optional, Union
 from prometheus_client import Counter, Histogram  # noqa: TID251 (declares each spec's metric_type)
 
 from inference_perf.apis.base import RequestLifecycleMetric
-from inference_perf.observability.metrics.registry import MetricSpec
+from inference_perf.observability.metrics.registry import MetricSpec, ObservedRequest
 from inference_perf.payloads import Audios, Images, Videos
 
 from .core import stage_label
@@ -53,8 +53,9 @@ def response_media(metric: RequestLifecycleMetric) -> MediaByModality:
     return {"image": response.image, "video": response.video, "audio": response.audio}
 
 
-def _count_instances(side: Side) -> Callable[[Counter, RequestLifecycleMetric], None]:
-    def observe(counter: Counter, metric: RequestLifecycleMetric) -> None:
+def _count_instances(side: Side) -> Callable[[Counter, ObservedRequest], None]:
+    def observe(counter: Counter, request: ObservedRequest) -> None:
+        metric = request.metric
         if metric.error is not None:
             return
         for modality, payload in side(metric).items():
@@ -64,8 +65,9 @@ def _count_instances(side: Side) -> Callable[[Counter, RequestLifecycleMetric], 
     return observe
 
 
-def _observe_field(side: Side, field: str, modalities: tuple[str, ...]) -> Callable[[Histogram, RequestLifecycleMetric], None]:
-    def observe(histogram: Histogram, metric: RequestLifecycleMetric) -> None:
+def _observe_field(side: Side, field: str, modalities: tuple[str, ...]) -> Callable[[Histogram, ObservedRequest], None]:
+    def observe(histogram: Histogram, request: ObservedRequest) -> None:
+        metric = request.metric
         if metric.error is not None:
             return
         for modality, payload in side(metric).items():
@@ -79,8 +81,9 @@ def _observe_field(side: Side, field: str, modalities: tuple[str, ...]) -> Calla
     return observe
 
 
-def _observe_frames(side: Side) -> Callable[[Histogram, RequestLifecycleMetric], None]:
-    def observe(histogram: Histogram, metric: RequestLifecycleMetric) -> None:
+def _observe_frames(side: Side) -> Callable[[Histogram, ObservedRequest], None]:
+    def observe(histogram: Histogram, request: ObservedRequest) -> None:
+        metric = request.metric
         if metric.error is not None:
             return
         videos = side(metric).get("video")
