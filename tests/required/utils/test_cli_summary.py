@@ -210,3 +210,55 @@ class TestCliSummary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSessionSummaryWithNoCompletedSessions(unittest.TestCase):
+    """A stage where every session was truncated still has to print.
+
+    ``summarize()`` returns ``None`` for an empty list, and ``session_duration_sec`` is
+    summarized over completed sessions only. A duration-bounded stage whose deadline is
+    shorter than one session completes none of them, so the key is present with value
+    ``None`` -- not absent -- and ``contents.get(key, {})`` hands back that ``None``.
+    Observed for real: a 150s->8s duration stage truncated all 4 sessions and the run
+    died with ``AttributeError: 'NoneType' object has no attribute 'get'`` after the
+    reports were already on disk, losing every summary table.
+    """
+
+    # Matches the shape reportgen writes when no session completed: the aggregate
+    # counters are real, the distributions are None.
+    NO_COMPLETIONS = {
+        "num_sessions": 4,
+        "num_sessions_completed": 0,
+        "num_sessions_succeeded": 0,
+        "num_sessions_failed": 0,
+        "num_sessions_not_completed": 4,
+        "num_sessions_not_completed_active": 4,
+        "num_sessions_not_completed_pending": 0,
+        "total_events": 46,
+        "total_events_completed": 20,
+        "total_events_cancelled": 26,
+        "sessions_per_second": 0.5,
+        "session_duration_sec": None,
+        "num_events": None,
+        "total_input_tokens": None,
+        "total_output_tokens": None,
+    }
+
+    @patch("inference_perf.utils.cli_summary.Console.print")
+    def test_all_sessions_truncated_still_prints_the_tables(self, mock_console_print: MagicMock) -> None:
+        report = ReportFile(name="stage_0_session_lifecycle_metrics", contents=dict(self.NO_COMPLETIONS))
+
+        print_session_summary_tables([report])
+
+        self.assertEqual(mock_console_print.call_count, 3)
+
+    @patch("inference_perf.utils.cli_summary.Console.print")
+    def test_missing_distributions_render_as_dashes_not_zeroes(self, mock_console_print: MagicMock) -> None:
+        """0.00 would read as "sessions took no time"; a dash says "nothing to measure"."""
+        report = ReportFile(name="stage_0_session_lifecycle_metrics", contents=dict(self.NO_COMPLETIONS))
+
+        print_session_summary_tables([report])
+
+        duration_table = mock_console_print.call_args_list[1][0][0]
+        cells = [list(column.cells) for column in duration_table.columns]
+        self.assertEqual([c[0] for c in cells], ["0", "-", "-", "-", "-", "-", "-"])
