@@ -342,3 +342,14 @@ def test_read_config_stop_condition_object_form() -> None:
         assert stage.effective_duration == 300.0
     finally:
         os.remove(tmp_path)
+
+
+# An otel_trace_replay stage bounded by stop_condition '(t >= 1800) | (errors >= 10)' cycles its corpus the way a
+# duration stage does, so it gets the same checks: duplicate_sessions_target and concurrent_sessions 0 with no
+# session_rate are both rejected.
+def test_stop_condition_stage_gets_the_corpus_cycling_checks() -> None:
+    stage = {"concurrent_sessions": 4, "stop_condition": "(t >= 1800) | (errors >= 10)"}
+    with pytest.raises(ValueError, match="duplicate_sessions_target cannot be combined with"):
+        Config.model_validate(_replay_config({"duplicate_sessions_target": 100}, stage))
+    with pytest.raises(ValueError, match="concurrent_sessions: 0 cannot be combined with"):
+        Config.model_validate(_replay_config({}, {**stage, "concurrent_sessions": 0}))

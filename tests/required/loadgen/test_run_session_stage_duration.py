@@ -36,14 +36,30 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from inference_perf.apis import LazyLoadInferenceAPIData, SessionLifecycleMetric
+from inference_perf.apis import (
+    ErrorResponseInfo,
+    InferenceInfo,
+    LazyLoadInferenceAPIData,
+    RequestLifecycleMetric,
+    SessionLifecycleMetric,
+    UnaryResponseMetrics,
+)
 from inference_perf.client.server_metrics.base import StageStatus
-from inference_perf.config import APIConfig, APIType, DataConfig, LoadConfig, LoadType, TraceSessionReplayLoadStage
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    DataConfig,
+    LoadConfig,
+    LoadType,
+    StopConditionConfig,
+    TraceSessionReplayLoadStage,
+)
 from inference_perf.datagen import SessionGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.observability.context import StageContext
 from inference_perf.observability.progress import STAGE_ELAPSED_BAR, STAGE_SESSIONS_BAR
+from inference_perf.payloads import RequestMetrics, Text
 
 
 class _IdTable:
@@ -774,3 +790,119 @@ async def test_a_session_failing_during_teardown_ends_at_its_failure_and_reports
         assert m.end_time - m.start_time == pytest.approx(m.duration_sec, abs=1e-6)
     assert set(otel.ended) == {m.session_id for m in recorded}
     assert all(status is not None for status in otel.ended.values()), "a failed session must not be traced as OK"
+
+
+# --- stop_condition ----------------------------------------------------------
+
+
+# A ScriptedSessionGenerator that reports one failed request to `loadgen` as each session in `fail_on` is activated,
+# so a stop condition over `errors` can hold mid-stage. E.g. fail_on={"s1"} makes errors reach 1 when s1 starts.
+class FailingSessionGenerator(ScriptedSessionGenerator):
+    def __init__(self, num_sessions: int, fail_on: set[str]) -> None:
+        super().__init__(num_sessions, polls_to_complete=None)
+        self.fail_on = fail_on
+        self.loadgen: Optional[LoadGenerator] = None
+
+    def activate_session(self, session_id: str) -> None:
+        super().activate_session(session_id)
+        if session_id in self.fail_on and self.loadgen is not None:
+            self.loadgen.observe_result(_failed_result())
+
+
+# A stage-0 request that started 10ms ago and just timed out, on the perf_counter clock the monitor reads.
+def _failed_result() -> RequestLifecycleMetric:
+    now = time.perf_counter()
+    return RequestLifecycleMetric(
+        stage_id=0,
+        scheduled_time=now - 0.01,
+        start_time=now - 0.01,
+        end_time=now,
+        request_data="x",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=1)), response_metrics=UnaryResponseMetrics(output_tokens=0)
+        ),
+        error=ErrorResponseInfo(error_type="TimeoutError", error_msg="timed out"),
+    )
+
+
+# A loadgen around FailingSessionGenerator(5000 sessions, fail_on), wired so the generator can report failures to it.
+def _failing_load_generator(fail_on: set[str]) -> tuple[LoadGenerator, SessionMetricsCollector, FailingSessionGenerator]:
+    datagen = FailingSessionGenerator(num_sessions=5000, fail_on=fail_on)
+    loadgen, collector = _load_generator(datagen)
+    datagen.loadgen = loadgen
+    return loadgen, collector, datagen
+
+
+# '(t >= 30) | (errors >= 1)' with 4 slots and a failure reported as s1 starts: the stage ends COMPLETED right away,
+# well inside 5s, s2 and s3 are never admitted, s0 and s1 are recorded as truncated, and no shortfall is logged.
+@pytest.mark.asyncio
+async def test_measured_stop_condition_ends_the_stage_completed(caplog: pytest.LogCaptureFixture) -> None:
+    loadgen, collector, datagen = _failing_load_generator(fail_on={"s1"})
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="(t >= 30) | (errors >= 1)")
+
+    with caplog.at_level("INFO"):
+        await _run_stage(loadgen, stage)
+
+    assert datagen.activated == ["s0", "s1"]
+    info = loadgen.stage_runtime_info[0]
+    assert info.status == StageStatus.COMPLETED
+    assert info.duration == 30.0
+    assert info.stop_condition_met_at is not None and info.stop_condition_met_at < 30
+    assert info.end_time - info.start_time < 5, "ended on the condition, not the 30s deadline"
+    assert info.sessions_not_completed_active == 2
+    assert all(m.truncated for m in collector.get_metrics())
+    assert "stop condition '(t >= 30) | (errors >= 1)' held" in caplog.text
+    assert "corpus exhausted" not in caplog.text
+    assert loadgen._stop_monitor is None
+
+
+# The object form's hold flows through: hold=2 on '(t >= 30) | (errors >= 1)' with failures as s1 and s2 start needs
+# both, so s0 to s2 are admitted and s3 is not.
+@pytest.mark.asyncio
+async def test_stop_condition_hold_applies_on_session_stages() -> None:
+    loadgen, _, datagen = _failing_load_generator(fail_on={"s1", "s2"})
+    stage = TraceSessionReplayLoadStage(
+        concurrent_sessions=4, stop_condition=StopConditionConfig(condition="(t >= 30) | (errors >= 1)", hold=2)
+    )
+
+    await _run_stage(loadgen, stage)
+
+    assert datagen.activated == ["s0", "s1", "s2"]
+    assert loadgen.stage_runtime_info[0].stop_condition_met_at is not None
+
+
+# '(t >= 0.2) | (errors >= 1)' with no failures runs to its 0.2s deadline like duration=0.2: COMPLETED, the pool of
+# 4 filled, and stop_condition_met_at None.
+@pytest.mark.asyncio
+async def test_unmet_measured_stop_condition_runs_to_its_deadline(caplog: pytest.LogCaptureFixture) -> None:
+    loadgen, _, datagen = _failing_load_generator(fail_on=set())
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="(t >= 0.2) | (errors >= 1)")
+
+    with caplog.at_level("INFO"):
+        await _run_stage(loadgen, stage)
+
+    assert "duration 0.2s reached" in caplog.text
+    assert datagen.activated == ["s0", "s1", "s2", "s3"]
+    info = loadgen.stage_runtime_info[0]
+    assert info.status == StageStatus.COMPLETED
+    assert info.duration == 0.2
+    assert info.stop_condition_met_at is None
+
+
+# stop_condition 't >= 0.2' and duration=0.2 run the same stage: both COMPLETE at the 0.2s deadline with the pool of 4
+# filled, and neither builds a monitor, since nothing is measured.
+@pytest.mark.asyncio
+async def test_time_only_stop_condition_runs_like_duration() -> None:
+    for stage in (
+        TraceSessionReplayLoadStage(concurrent_sessions=4, duration=0.2),
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="t >= 0.2"),
+    ):
+        datagen = ScriptedSessionGenerator(num_sessions=5000, polls_to_complete=None)
+        loadgen, _ = _load_generator(datagen)
+        assert loadgen._stop_monitor_for(0, stage) is None
+
+        await _run_stage(loadgen, stage)
+
+        assert datagen.activated == ["s0", "s1", "s2", "s3"]
+        info = loadgen.stage_runtime_info[0]
+        assert (info.status, info.duration, info.stop_condition_met_at) == (StageStatus.COMPLETED, 0.2, None)

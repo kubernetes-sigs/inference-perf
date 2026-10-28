@@ -178,6 +178,76 @@ def test_trace_session_replay_stage_duration_checked_against_deprecated_timeout(
         TraceSessionReplayLoadStage(concurrent_sessions=4, duration=2100, timeout=1800)
 
 
+# stop_condition '(t >= 1800) | (errors >= 10)' on a session stage: its deadline is 1800.0, it reads the
+# measured signal errors, and it holds once by default.
+def test_trace_session_replay_stage_stop_condition_valid() -> None:
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=16, stop_condition="(t >= 1800) | (errors >= 10)")
+    assert stage.effective_duration == 1800.0
+    assert stage.predicate is not None and stage.predicate.measured_symbols == {"errors"}
+    assert stage.stop_settings == StopConditionConfig(condition="(t >= 1800) | (errors >= 10)")
+
+
+# duration=30 is shorthand for stop_condition 't >= 30.0': same predicate source, deadline 30.0, nothing measured.
+def test_trace_session_replay_stage_duration_is_stop_condition_shorthand() -> None:
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, duration=30)
+    assert stage.stop_settings == StopConditionConfig(condition="t >= 30.0")
+    assert stage.effective_duration == 30.0
+    assert stage.predicate is not None and not stage.predicate.measured_symbols
+
+
+# A stage bounded by num_sessions=10, or by nothing (all remaining sessions), has no stop condition and no deadline.
+def test_trace_session_replay_stage_count_bounded_has_no_stop_condition() -> None:
+    for stage in (
+        TraceSessionReplayLoadStage(concurrent_sessions=4, num_sessions=10),
+        TraceSessionReplayLoadStage(concurrent_sessions=4),
+    ):
+        assert stage.stop_settings is None
+        assert stage.predicate is None
+        assert stage.effective_duration is None
+
+
+# The object form {condition: '(t >= 600) | (errors >= 3)', hold: 2} keeps its hold of 2.
+def test_trace_session_replay_stage_stop_condition_object_form() -> None:
+    settings = StopConditionConfig(condition="(t >= 600) | (errors >= 3)", hold=2)
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition=settings)
+    assert stage.stop_settings == settings
+    assert stage.effective_duration == 600.0
+
+
+# stop_condition 't >= 60' with duration=60, or with num_sessions=100, is rejected: each one ends the stage.
+def test_trace_session_replay_stage_stop_condition_excludes_duration_and_num_sessions() -> None:
+    with pytest.raises(ValueError, match="stop_condition and duration cannot both be set"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="t >= 60", duration=60)
+    with pytest.raises(ValueError, match="stop_condition and num_sessions cannot both be set"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="t >= 60", num_sessions=100)
+
+
+# A condition that never holds on time alone, 'quantile_over_time(0.99, ttft[30s]) > 2', fails at load with the
+# same reason a constant stage gets.
+def test_trace_session_replay_stage_rejects_condition_without_deadline() -> None:
+    with pytest.raises(ValueError, match="it must also hold on time alone"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="quantile_over_time(0.99, ttft[30s]) > 2")
+
+
+# '(t >= 600) | (avg_over_sent(ttft, 0, 10) > 2)' is rejected on a session stage: events are sent as their
+# dependencies finish, so the stage has no send order for _over_sent to count.
+def test_trace_session_replay_stage_rejects_over_sent_terms() -> None:
+    with pytest.raises(ValueError, match="counts requests in the order they were sent"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="(t >= 600) | (avg_over_sent(ttft, 0, 10) > 2)")
+
+
+# A deadline of 1800s against max_stage_duration=1800 (or timeout=1200) is rejected, since the safety limit would
+# fail every run before the condition could end it. 1799s against 1800 is accepted.
+def test_trace_session_replay_stage_stop_condition_deadline_shorter_than_cap() -> None:
+    with pytest.raises(ValueError, match="holds by 1800s, which must be shorter than max_stage_duration"):
+        TraceSessionReplayLoadStage(
+            concurrent_sessions=4, stop_condition="(t >= 1800) | (errors >= 10)", max_stage_duration=1800
+        )
+    with pytest.raises(ValueError, match="must be shorter than timeout"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="t >= 1800", timeout=1200)
+    TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="t >= 1799", max_stage_duration=1800)
+
+
 # --- LoadConfig cross-stage validation -----------------------------------
 
 
