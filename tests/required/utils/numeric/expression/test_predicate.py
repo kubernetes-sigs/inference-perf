@@ -258,6 +258,11 @@ class TestErrorsNameTheFault:
         with pytest.raises(ValueError, match=r"^Predicate 't < 60' holds only on"):
             Predicate("t < 60")
 
+    # An accepted condition carries the same label its errors would use: "stop_condition 't >= 60'".
+    def test_label_is_the_name_and_the_quoted_condition(self) -> None:
+        assert Predicate("t >= 60", name="stop_condition").label == "stop_condition 't >= 60'"
+        assert Predicate("t >= 60").label == "Predicate 't >= 60'"
+
     # '(t >= 60) & (t < 120)' is one clause, so the cause is the comparison alone with no clause number.
     def test_single_clause_names_the_comparison_only(self) -> None:
         with pytest.raises(ValueError) as rejected:

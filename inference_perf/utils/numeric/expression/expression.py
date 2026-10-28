@@ -764,6 +764,11 @@ class Predicate:
         return float(holding.inf)
 
     @property
+    def label(self) -> str:
+        """The condition as its errors name it: its name, then at most ``_QUOTE_LIMIT`` characters of it in quotes."""
+        return self._subject
+
+    @property
     def boundary(self) -> float:
         """The time from which the condition holds on time alone, whatever the measured values read."""
         return self._boundary
