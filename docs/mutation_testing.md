@@ -37,7 +37,7 @@ Two errors stop the run before a verdict. **`The base branch ... fails its own u
 
 ## What is deliberately not here
 
-**There is no opt-out in code.** `# pragma: no mutate` is stripped before mutating. `[tool.mutmut]` is read from the base branch, so a PR cannot change what gets mutated for its own run. The script, the workflow and the config are owned separately (#876) so a PR cannot edit its own check. Each of these closes a hole an automated contributor would find.
+**There is no opt-out in code.** `# pragma: no mutate` is stripped before mutating. `[tool.mutmut]` is read from the base branch, so a PR cannot change what gets mutated for its own run. CI runs the PR's own copy of the script and the workflow, so the code cannot stop a PR from editing its check. The script, the workflow and the config are owned separately (#876), so such an edit lands only after an owner reads it. Each of these closes a hole an automated contributor would find.
 
 **Equivalent mutants are paid for, not allowlisted.** A mutant no test can kill because it does not change behaviour is real and does happen. The ratchet does not try to recognise one. Deleting dead code, killing a survivor in a neighbouring function in scope, or restructuring so the equivalent mutant is not generated are the ways out. An allowlist would be the opt-out the previous paragraph removes.
 

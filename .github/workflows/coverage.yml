@@ -112,11 +112,11 @@ jobs:
       - name: Check for source changes
         id: changes
         run: |
-          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qE '^(inference_perf|tests)/.*\.py$|^(pdm\.lock|pyproject\.toml)$'; then
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qE '^(inference_perf|tests)/.*\.py$|^(pdm\.lock|pyproject\.toml)$|^scripts/check_mutation_regression\.py$|^\.github/workflows/coverage\.yml$'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
-            echo "No Python changes under inference_perf/ or tests/ and no change to pdm.lock or pyproject.toml; skipping mutation testing."
+            echo "No Python changes under inference_perf/ or tests/, no change to pdm.lock or pyproject.toml, and no change to the mutation check itself; skipping mutation testing."
           fi
       - name: Set up Python
         if: steps.changes.outputs.code == 'true'
