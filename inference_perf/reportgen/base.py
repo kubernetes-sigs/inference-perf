@@ -28,6 +28,7 @@ from pydantic import BaseModel, model_serializer
 
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.apis.chat import reasoning_field
+from inference_perf.utils.numeric.expression import SERIES
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageRuntimeInfo, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
@@ -729,7 +730,9 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
 
     Uses the same formulas as the aggregation loop in summarize_requests() so
     per-request values stay consistent with the summary/per-stage reports.
-    Assumes correct_streamed_response_metrics() has already been applied.
+    The report applies correct_streamed_response_metrics() first. The runtime
+    metrics call this during the run on the raw chunk times: TTFT, TPOT and
+    NTPOT come out the same either way, ITL does not.
     """
     request_latency = m.end_time - m.start_time
     response_metrics = m.info.response_metrics
@@ -783,6 +786,24 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
         "inter_token_latency": itl,
         "inter_token_latency_deltas": itl_deltas,
     }
+
+
+def series_values(m: RequestLifecycleMetric, use_server_output_tokens: bool = False) -> dict[str, float]:
+    """One finished request's value for each expression series it has one for, by the report's formulas.
+
+    The runtime metrics read the run's results through this, so they carry the
+    numbers the report will. ``schedule_delay`` is there for every request, the
+    other series for successful ones. ``error`` is not: it is ``m.error``.
+    """
+    values = {"schedule_delay": m.start_time - m.scheduled_time}
+    if m.error is not None:
+        return values
+    latency = compute_request_latency_metrics(m, use_server_output_tokens)
+    for name, series in SERIES.items():
+        value = latency.get(series.report_field) if series.report_field else None
+        if value is not None:
+            values[name] = float(value)
+    return values
 
 
 def summarize_requests(

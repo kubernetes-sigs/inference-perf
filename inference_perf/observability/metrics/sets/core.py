@@ -25,28 +25,17 @@ classes and HTTP status codes); nothing per-request goes on a label.
 """
 
 import time
-from typing import Any, Optional
+from typing import Any
 
 from prometheus_client import Counter, Gauge  # noqa: TID251 (declares each spec's metric_type)
 
-from inference_perf.apis.base import RequestLifecycleMetric, ResponseMetrics
+from inference_perf.apis.base import RequestLifecycleMetric
 from inference_perf.observability.context import RunContext, StageContext
-from inference_perf.observability.metrics.registry import MetricSpec
-from inference_perf.reportgen.base import effective_output_tokens
+from inference_perf.observability.metrics.registry import MetricSpec, ObservedRequest
 
 
 def stage_label(metric: RequestLifecycleMetric) -> str:
     return "" if metric.stage_id is None else str(metric.stage_id)
-
-
-def output_tokens(response_metrics: Optional[ResponseMetrics]) -> int:
-    """Output token count for runtime metrics: the server's own count when it
-    reported one, else the client-side count. Prompt tokens already resolve
-    this way at construction (#676); the report keeps a separate opt-in for
-    output tokens for back-compat, but a new surface has no such constraint.
-    Resolved by the report's own function with that opt-in on, so both read
-    the same usage keys and both keep a reported 0."""
-    return effective_output_tokens(response_metrics, use_server_output_tokens=True)
 
 
 def _mark_run_start(gauge: Gauge, context: RunContext) -> None:
@@ -77,24 +66,31 @@ def _stamp_stage(gauge: Gauge, context: StageContext) -> None:
     gauge.labels(context.stage_label).set(time.time())
 
 
-def _count_request(counter: Counter, metric: RequestLifecycleMetric) -> None:
-    status = "failure" if metric.error is not None else "success"
-    counter.labels(stage_label(metric), status).inc()
+def _count_request(counter: Counter, request: ObservedRequest) -> None:
+    status = "failure" if request.metric.error is not None else "success"
+    counter.labels(stage_label(request.metric), status).inc()
 
 
-def _count_error(counter: Counter, metric: RequestLifecycleMetric) -> None:
-    if metric.error is not None:
-        counter.labels(stage_label(metric), metric.error.error_type).inc()
+def _count_error(counter: Counter, request: ObservedRequest) -> None:
+    if request.metric.error is not None:
+        counter.labels(stage_label(request.metric), request.metric.error.error_type).inc()
 
 
-def _count_prompt_tokens(counter: Counter, metric: RequestLifecycleMetric) -> None:
-    if metric.error is None:
-        counter.labels(stage_label(metric)).inc(metric.info.request_metrics.text.input_tokens)
+def _count_prompt_tokens(counter: Counter, request: ObservedRequest) -> None:
+    if request.metric.error is None:
+        counter.labels(stage_label(request.metric)).inc(request.metric.info.request_metrics.text.input_tokens)
 
 
-def _count_output_tokens(counter: Counter, metric: RequestLifecycleMetric) -> None:
-    if metric.error is None:
-        counter.labels(stage_label(metric)).inc(output_tokens(metric.info.response_metrics))
+def _count_output_tokens(counter: Counter, request: ObservedRequest) -> None:
+    if request.metric.error is None:
+        counter.labels(stage_label(request.metric)).inc(request.output_tokens)
+
+
+def _stamp_last_completion(gauge: Gauge, request: ObservedRequest) -> None:
+    # end_time is on the perf_counter clock the workers share. Shifting it by
+    # that clock's gap to Unix time now gives the Unix time the request finished.
+    finished = time.time() - (time.perf_counter() - request.metric.end_time)
+    gauge.labels(stage_label(request.metric)).set(finished)
 
 
 def _count_workers_lost(counter: Counter, context: StageContext) -> None:
@@ -145,6 +141,7 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         name="inference_perf_requests_in_flight",
         documentation="Requests sent to the server and not yet finished, sampled at scrape time.",
         metric_type=Gauge,
+        signal="in_flight",
         on_run_start=_bind_in_flight,
     ),
     MetricSpec(
@@ -155,7 +152,17 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         ),
         metric_type=Counter,
         labelnames=("stage", "status"),
+        series="error",
+        signal="completed",
         on_request=_count_request,
+    ),
+    MetricSpec(
+        name="inference_perf_last_completion_timestamp_seconds",
+        documentation="Unix time at which a request of the stage last finished, success or failure.",
+        metric_type=Gauge,
+        labelnames=("stage",),
+        signal="since_last_completion",
+        on_request=_stamp_last_completion,
     ),
     MetricSpec(
         name="inference_perf_workers_lost",
@@ -177,6 +184,7 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         ),
         metric_type=Counter,
         labelnames=("stage", "error_type"),
+        signal="errors",
         on_request=_count_error,
     ),
     MetricSpec(
@@ -190,8 +198,9 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         name="inference_perf_output_tokens",
         documentation=(
             "Output tokens of successful requests by stage; rate() gives output throughput. "
-            "Uses the server's reported output count (usage.completion_tokens, or usage.output_tokens on the "
-            "Anthropic Messages API) when present, else the client-side count."
+            "Counted as the report's output_tokens_per_sec counts them: the client-side count, or the server's "
+            "reported count (usage.completion_tokens, or usage.output_tokens on the Anthropic Messages API) "
+            "under report.request_lifecycle.use_server_output_tokens."
         ),
         metric_type=Counter,
         labelnames=("stage",),
