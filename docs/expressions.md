@@ -106,14 +106,14 @@ A condition can read what the stage measures, so it can become true on a latency
 
 > **Series names are short, not the report's field names.** A condition says `ttft` where the report says `time_to_first_token`, and `latency` where it says `request_latency`. Writing the report's name is rejected with the short name in the error. The table below is the full list. It is checked against the code in both directions, so a series cannot be added, renamed or dropped without this table changing too.
 
-| Series | Report field | Unit | Samples |
-| --- | --- | --- | --- |
-| `latency` | `request_latency` | s | Every successful request: end minus start. |
-| `ttft` | `time_to_first_token` | s | Successful streamed requests. |
-| `tpot` | `time_per_output_token` | s | Successful streamed requests with more than one output token. |
-| `ntpot` | `normalized_time_per_output_token` | s | Successful requests with output tokens. |
-| `schedule_delay` | `schedule_delay` | s | Every request: how late it was sent against its schedule. |
-| `error` | none | 0 or 1 | Every request: 1 if it failed. |
+| Series | Report field | Unit | Samples | Runtime metric |
+| --- | --- | --- | --- | --- |
+| `latency` | `request_latency` | s | Every successful request: end minus start. | `inference_perf_request_latency_seconds` |
+| `ttft` | `time_to_first_token` | s | Successful streamed requests. | `inference_perf_time_to_first_token_seconds` |
+| `tpot` | `time_per_output_token` | s | Successful streamed requests with more than one output token. | `inference_perf_time_per_output_token_seconds` |
+| `ntpot` | `normalized_time_per_output_token` | s | Successful requests with output tokens. | `inference_perf_normalized_time_per_output_token_seconds` |
+| `schedule_delay` | `schedule_delay` | s | Every request: how late it was sent against its schedule. | `inference_perf_schedule_delay_seconds` |
+| `error` | none | 0 or 1 | Every request: 1 if it failed. | `inference_perf_requests_total` |
 
 There is no inter-token latency series. The report re-derives each token's timestamp from the raw response chunks when it writes the report, so a value measured during the run would be a different number under the same name.
 
@@ -152,12 +152,12 @@ A term has no value until its window is complete, and a comparison on a term wit
 
 A condition can also read these signals directly, with no window.
 
-| Signal | Reads |
-| --- | --- |
-| `completed` | Requests finished so far in the stage, successes and failures. |
-| `errors` | Failed requests so far in the stage. |
-| `in_flight` | Requests sent and not yet finished. |
-| `since_last_completion` | Seconds since a request last finished, or since the stage started if none has. |
+| Signal | Reads | Runtime metric |
+| --- | --- | --- |
+| `completed` | Requests finished so far in the stage, successes and failures. | `inference_perf_requests_total` |
+| `errors` | Failed requests so far in the stage. | `inference_perf_request_errors_total` |
+| `in_flight` | Requests sent and not yet finished. | `inference_perf_requests_in_flight` |
+| `since_last_completion` | Seconds since a request last finished, or since the stage started if none has. | `inference_perf_last_completion_timestamp_seconds` |
 
 A measured term is the system under test, so it cannot be solved like `t`. The time part of the condition is still proved when the config loads, twice. With every measured comparison false the condition must still become true on time alone: that is the time it holds by. With every measured comparison true it must again become true from some time onward: that is the earliest a measured term can make it hold. So a measured term can only make a condition hold sooner, never keep it from holding.
 
