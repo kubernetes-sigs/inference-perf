@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Tests for scripts/check_mutation_regression.py, the mutation ratchet CI runs on every change."""
+
 import importlib.util
 import json
 import os
