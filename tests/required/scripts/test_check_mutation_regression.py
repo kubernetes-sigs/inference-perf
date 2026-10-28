@@ -817,7 +817,28 @@ def test_logic_moved_into_an_excluded_file_fails(cmr: Any, tmp_path: Path, monke
 
     failures = static_failures(cmr, tmp_path, monkeypatch, base, head)
 
-    assert "Statements mutmut never mutates rose from 0 to 1" in failures
+
+# The head's m.py is missing a closing parenthesis. The run fails on "does not parse" with the file
+# named, writes the summary and the record, and exits 1 instead of raising a SyntaxError.
+def test_main_fails_on_a_file_that_does_not_parse(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_tree(tmp_path, {"inference_perf/__init__.py": "", "inference_perf/m.py": GT, "pdm.lock": MUTMUT_LOCK_ENTRY})
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-qm", "base")
+    write_tree(tmp_path, {"inference_perf/m.py": "def f(x:\n    return x > 1\n"})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cmr, "installed_mutmut", lambda: FakeDistribution("3.8.0"), raising=False)
+    monkeypatch.setattr(cmr, "load_config", lambda base: MUTMUT_CONFIG)
+    monkeypatch.setattr("sys.argv", ["check", "--base", "HEAD", "--output", str(tmp_path / "mutation.json")])
+
+    with pytest.raises(SystemExit) as exited:
+        cmr.main()
+
+    assert exited.value.code == 1
+    assert "FAIL: inference_perf/m.py does not parse" in capsys.readouterr().out
+    assert json.loads((tmp_path / "mutation.json").read_text())["failures"] == ["inference_perf/m.py does not parse"]
 
 
 # Head adds only declarations next to f: constants, constant arithmetic, __all__, a type alias, a

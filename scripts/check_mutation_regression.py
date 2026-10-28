@@ -358,10 +358,15 @@ def module_name(path: str) -> str:
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
-def functions(source: str) -> dict[str, FunctionNode]:
+def parse(source: str, path: str | None = None) -> ast.Module:
+    """ast.parse with the file's path on a SyntaxError, so the failure names the file."""
+    return ast.parse(source, filename=path or "<unknown>")
+
+
+def functions(source: str, path: str | None = None) -> dict[str, FunctionNode]:
     """Each module-level function and method, keyed by mutmut's mangled name."""
     found: dict[str, FunctionNode] = {}
-    for node in ast.parse(source).body:
+    for node in parse(source, path).body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             found[f"x_{node.name}"] = node
         elif isinstance(node, ast.ClassDef):
@@ -371,12 +376,12 @@ def functions(source: str) -> dict[str, FunctionNode]:
     return found
 
 
-def function_spans(source: str) -> dict[str, tuple[int, int]]:
+def function_spans(source: str, path: str | None = None) -> dict[str, tuple[int, int]]:
     """Line span of each module-level function and method, keyed by mutmut's mangled name."""
     # decorators belong to the function, so a change to one touches it
     return {
         name: (min([d.lineno for d in node.decorator_list] + [node.lineno]), node.end_lineno or node.lineno)
-        for name, node in functions(source).items()
+        for name, node in functions(source, path).items()
     }
 
 
@@ -610,7 +615,7 @@ class _UncheckedScan:
         return ""
 
 
-def unchecked_statements(source: str, patterns: list[str], excluded: bool = False) -> list[Unchecked]:
+def unchecked_statements(source: str, patterns: list[str], excluded: bool = False, path: str | None = None) -> list[Unchecked]:
     """Statements mutmut never mutates that do more than declare or delegate, one entry per statement.
 
     mutmut mutates the bodies of module-level functions and of methods of module-level classes. Inside
@@ -619,7 +624,7 @@ def unchecked_statements(source: str, patterns: list[str], excluded: bool = Fals
     function whose body is one plain delegation counts 0. `excluded` marks a file do_not_mutate skips.
     """
     scan = _UncheckedScan(source, patterns, excluded)
-    scan.declarations(ast.parse(source).body, "module")
+    scan.declarations(parse(source, path).body, "module")
     return scan.found
 
 
@@ -682,7 +687,7 @@ def touched_functions(base: str, do_not_mutate: list[str]) -> Touched:
     for base_path, head_path in changed_source_files(base, do_not_mutate):
         base_src = git("show", f"{base}:{base_path}") if base_path else ""
         head_src = Path(head_path).read_text() if head_path else ""
-        base_spans, head_spans = function_spans(base_src), function_spans(head_src)
+        base_spans, head_spans = function_spans(base_src, base_path), function_spans(head_src, head_path)
         if base_path and head_path:
             old_lines, new_lines = parse_hunks(git("diff", "-U0", "-M", base, "--", base_path, head_path))
             hit = touched_names(base_spans, old_lines) | touched_names(head_spans, new_lines)
@@ -1361,10 +1366,10 @@ def unchecked_by_file(merge_base: str, config: dict[str, Any]) -> list[tuple[str
         before, after = [], []
         if base_path and base_path.endswith(".py"):
             source = git("show", f"{merge_base}:{base_path}")
-            before = unchecked_statements(source, patterns, excluded=not mutable(base_path, do_not_mutate))
+            before = unchecked_statements(source, patterns, not mutable(base_path, do_not_mutate), base_path)
         if head_path and head_path.endswith(".py"):
             source = Path(head_path).read_text()
-            after = unchecked_statements(source, patterns, excluded=not mutable(head_path, do_not_mutate))
+            after = unchecked_statements(source, patterns, not mutable(head_path, do_not_mutate), head_path)
         rows.append((head_path or base_path or "", before, after))
     return rows
 
@@ -1374,7 +1379,7 @@ def check_unchecked(checks: Checks, merge_base: str, config: dict[str, Any]) -> 
     try:
         rows = unchecked_by_file(merge_base, config)
     except SyntaxError as e:
-        checks.fail(f"{e.filename or 'A changed file'} does not parse", "Unparseable source", [str(e)])
+        checks.fail(f"{e.filename} does not parse", "Unparseable source", [str(e)])
         return
     checks.unchecked = {path: (len(b), len(a)) for path, b, a in rows if b or a}
     if checks.unchecked:
@@ -1763,7 +1768,12 @@ def main() -> None:
     config = load_config(merge_base)
     do_not_mutate = [str(p) for p in config.get("do_not_mutate", [])]
     checks = static_checks(merge_base, config)
-    touched = touched_functions(merge_base, do_not_mutate)
+    try:
+        touched = touched_functions(merge_base, do_not_mutate)
+    except SyntaxError as e:
+        # check_unchecked already failed on it. The tests could not import it either
+        nothing_to_mutate(f"{e.filename} does not parse, so nothing can run.", args, merge_base, checks)
+        return
     changed_tests = changed_test_files(merge_base) + changed_test_support(merge_base)
     if not (touched.existing or touched.new or touched.deleted or changed_tests):
         message = f"No functions under {SOURCE_PREFIX} and no tests changed since {args.base}. Nothing to mutate."
