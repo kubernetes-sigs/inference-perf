@@ -719,6 +719,11 @@ def is_test_file(path: str) -> bool:
     return Path(path).name.startswith("test_") and path.endswith(".py")
 
 
+def excluded_test(path: str) -> bool:
+    """A test file the ratchet never runs: under tests/optional, or one that needs a checkout."""
+    return path in EXCLUDED_TESTS or path.startswith(EXCLUDED_TEST_PREFIXES)
+
+
 def changed_test_files(base: str) -> list[str]:
     """Test files the change adds, edits, deletes or renames, under their names on both sides.
 
@@ -733,7 +738,8 @@ def changed_test_files(base: str) -> list[str]:
     changed.update(
         p for p in git("ls-files", "--others", "--exclude-standard", "--", TESTS_PREFIX).splitlines() if is_test_file(p)
     )
-    return sorted(changed)
+    # an edited live test would otherwise run under coverage with nothing but the budget to stop it
+    return sorted(p for p in changed if not excluded_test(p))
 
 
 def changed_test_support(base: str) -> list[str]:
@@ -834,12 +840,12 @@ def tests_in_scope(base: str, base_tree: Path, head_tree: Path) -> list[str]:
 def unit_suite(tree: Path) -> list[str]:
     """Every unit test file in the tree. mutmut's own stats then decide which tests run against which function."""
     found = (str(p.relative_to(tree)) for p in (tree / TESTS_PREFIX).rglob("test_*.py"))
-    return sorted(p for p in found if p not in EXCLUDED_TESTS and not p.startswith(EXCLUDED_TEST_PREFIXES))
+    return sorted(p for p in found if not excluded_test(p))
 
 
 def functions_run_by(tree: Path, tests: list[str]) -> set[str]:
     """Functions whose body runs while one of `tests` runs, not at import or collection time."""
-    tests = [t for t in tests if (tree / t).exists() and t not in EXCLUDED_TESTS]
+    tests = [t for t in tests if (tree / t).exists() and not excluded_test(t)]
     if not tests:
         return set()
     data, report = tree / ".mutation-coverage", tree / ".mutation-coverage.json"

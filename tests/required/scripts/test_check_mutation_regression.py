@@ -170,6 +170,22 @@ def test_unit_suite_is_every_unit_test_file(cmr: Any, tmp_path: Path) -> None:
     assert cmr.unit_suite(tmp_path) == ["tests/required/utils/test_b.py", "tests/test_a.py"]
 
 
+# The change edits tests/optional/test_live.py and the YAML test and adds tests/test_new.py. Only
+# the new file is a changed test, so the live tests never run under coverage.
+def test_changed_test_files_skip_what_the_suite_skips(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_tree(tmp_path, {"tests/optional/test_live.py": "", "tests/required/config/test_yaml_configs.py": ""})
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-qm", "base")
+    write_tree(
+        tmp_path, {"tests/optional/test_live.py": "# edited\n", "tests/required/config/test_yaml_configs.py": "# edited\n"}
+    )
+    write_tree(tmp_path, {"tests/test_new.py": ""})
+    monkeypatch.chdir(tmp_path)
+
+    assert cmr.changed_test_files("HEAD") == ["tests/test_new.py"]
+
+
 # A module with f, called by the test, g, called at import time, and h, never called.
 # Only f counts as run by the test. Import-time calls do not.
 def test_functions_run_by_ignores_import_time(cmr: Any, tmp_path: Path) -> None:
