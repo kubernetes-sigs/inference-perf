@@ -815,7 +815,15 @@ def test_logic_moved_into_an_excluded_file_fails(cmr: Any, tmp_path: Path, monke
         "inference_perf/skip.py": "def g():\n    return 1\n\n\ndef gt(x):\n    return x > 1\n",
     }
 
-    failures = static_failures(cmr, tmp_path, monkeypatch, base, head)
+    checks = static_result(cmr, tmp_path, monkeypatch, base, head)
+
+    assert "Statements mutmut never mutates rose from 0 to 1" in checks.failures
+    # moving the logic within skip.py cannot help, so the hint says to leave the file
+    assert "Move the logic into a file do_not_mutate does not exclude" in checks.sections[-1]
+    assert "undecorated" not in checks.sections[-1]
+    assert [(a.line, a.message.split(". ")[-1]) for a in checks.annotations] == [
+        (6, "Move the logic into a file do_not_mutate does not exclude and call it from here.")
+    ]
 
 
 # The head's m.py is missing a closing parenthesis. The run fails on "does not parse" with the file

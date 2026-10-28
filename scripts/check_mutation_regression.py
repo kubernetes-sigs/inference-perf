@@ -516,6 +516,16 @@ class Unchecked:
     why: str
 
 
+EXCLUDED_FILE = "in a file do_not_mutate excludes"
+
+
+def how_to_pass(why: str) -> str:
+    """Where to move an unchecked statement so mutmut reaches it. Moving within an excluded file cannot help."""
+    if why == EXCLUDED_FILE:
+        return "Move the logic into a file do_not_mutate does not exclude"
+    return "Move the logic into an undecorated module-level function or method"
+
+
 class _UncheckedScan:
     """Walks a module the way mutmut 3.8 decides what to mutate (file_mutation.py) and records what it never will."""
 
@@ -547,7 +557,7 @@ class _UncheckedScan:
 
     def skipped_because(self, node: FunctionNode, where: str) -> str:
         if self.excluded:
-            return "in a file do_not_mutate excludes"
+            return EXCLUDED_FILE
         if where == "other":
             return "function outside module level and module-level classes"
         if mutmut_skips(node):
@@ -1391,10 +1401,10 @@ def check_unchecked(checks: Checks, merge_base: str, config: dict[str, Any]) -> 
         shown = found[:MAX_SHOWN_SURVIVORS] + (
             [f"{len(found) - MAX_SHOWN_SURVIVORS} more"] if len(found) > MAX_SHOWN_SURVIVORS else []
         )
+        hints = dict.fromkeys(how_to_pass(u.why) for _, b, a in rows if len(a) > len(b) for u in a)
         checks.fail(
             f"Statements mutmut never mutates rose from {before} to {after}",
-            "Statements mutmut never mutates, in the files where they rose. "
-            "Move the logic into an undecorated module-level function or method",
+            "Statements mutmut never mutates, in the files where they rose. " + ". ".join(hints),
             shown,
         )
         for path, b, a in rows:
@@ -1409,7 +1419,7 @@ def check_unchecked(checks: Checks, merge_base: str, config: dict[str, Any]) -> 
                     u.line,
                     "Statement mutmut never mutates",
                     f"No mutant is ever made from this statement ({u.why}), so no test is checked against it. "
-                    "Move the logic into an undecorated module-level function or method and call it from here.",
+                    f"{how_to_pass(u.why)} and call it from here.",
                 )
                 for u in a
                 if u.line in changed
