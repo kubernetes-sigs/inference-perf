@@ -17,7 +17,7 @@ Stub: in :data:`AudioSpecUnion` (construction works) but not yet wired into
 the chat.py materializer — passing one through ``to_request_body`` raises
 ``TypeError`` until that branch lands. The materializer will emit the URL
 verbatim in an ``input_audio`` wire block and
-record ``bytes=0`` on the realized metric (we send a URL, not samples; the
+record nothing measured on the realized metric (we send a URL, not samples; the
 server does the fetch). Private buckets are expected to use signed URLs —
 no auth-headers field on the spec.
 """
@@ -37,8 +37,8 @@ class RemoteAudioSpec(AudioSpec):
     def get_metrics(self, wire_bytes: int) -> Audio:
         # We sent a URL, not samples. ``duration`` on the spec is an
         # unverified caller hint; deliberately not surfaced as a
-        # measurement. Returning zeros makes "remote means no measurement"
-        # visible in aggregate reports rather than silently faking signal.
+        # measurement. Every field stays None, so reports leave the instance
+        # out of the size distributions instead of averaging in a fake zero.
         return Audio()
 
 
