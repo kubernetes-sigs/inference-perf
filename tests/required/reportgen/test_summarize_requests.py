@@ -60,6 +60,50 @@ def test_summarize_requests_tpot_calculation() -> None:
     assert tpot_summary["mean"] == pytest.approx(2.0 / 9.0)
 
 
+# A request sent at 0.00s whose only streamed token arrives at 0.20s, ending at 0.21s.
+# TTFT and TTFO = 0.20. TPOT and ITL stay None: both need a second token.
+def test_single_token_stream_has_ttft() -> None:
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0,
+        start_time=0.0,
+        end_time=0.21,
+        request_data="test_request",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=StreamedResponseMetrics(output_tokens=1, chunk_times=[0.20], output_token_times=[0.20]),
+        ),
+        error=None,
+    )
+
+    latency = compute_request_latency_metrics(metric)
+
+    assert latency["time_to_first_token"] == pytest.approx(0.20)
+    assert latency["time_to_first_output_token"] == pytest.approx(0.20)
+    assert latency["time_per_output_token"] is None
+    assert latency["inter_token_latency"] is None
+
+
+# A streamed request that finished with no token timestamps (no chunk arrived).
+# There is no first token, so TTFT and TTFO are None.
+def test_stream_without_tokens_has_no_ttft() -> None:
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0,
+        start_time=0.0,
+        end_time=0.21,
+        request_data="test_request",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=StreamedResponseMetrics(output_tokens=0, output_token_times=[]),
+        ),
+        error=None,
+    )
+
+    latency = compute_request_latency_metrics(metric)
+
+    assert latency["time_to_first_token"] is None
+    assert latency["time_to_first_output_token"] is None
+
+
 def test_summarize_requests_tpot_fallback() -> None:
     # Test fallback when output_tokens is not available or <= 1
     info = InferenceInfo(
