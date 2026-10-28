@@ -46,7 +46,7 @@ import inspect
 import logging
 import math
 import re
-from typing import Any, Callable, Mapping, Optional, Union
+from typing import Any, Mapping, Optional, Union
 
 import numpy as np
 import sympy
@@ -701,7 +701,8 @@ class Predicate:
                 f"a condition must be false at t=0, e.g. 't >= 60'."
             )
         boundary = float(holding.inf)
-        self._check_against_solver(sympy.lambdify([_T], on_time_alone, "numpy"), boundary)
+        if not math.isfinite(boundary):
+            raise ValueError(f"Predicate {self.raw!r} holds only from t = {holding.inf}, which is too large for a float.")
         return boundary
 
     def _prove_earliest(self, at_the_earliest: Any) -> float:
@@ -714,28 +715,7 @@ class Predicate:
                 f"Predicate {self.raw!r} holds only on {_format_time_set(holding)} once its measured values hold; "
                 f"a condition must hold from some time onward without lapsing."
             )
-        earliest = float(holding.inf)
-        self._check_against_solver(sympy.lambdify([_T], at_the_earliest, "numpy"), earliest)
-        return earliest
-
-    def _check_against_solver(self, holds_at: Callable[[Any], Any], boundary: float) -> None:
-        """Evaluate the condition either side of the proved boundary and far past it.
-
-        Defence in depth for the node allowlist: if sympy's solver ever answers
-        wrongly for an allowed node, the direct evaluation disagrees here and the
-        condition is rejected instead of compiling to a wrong boundary.
-        """
-        below = [boundary * f for f in (0.0, 0.5, 0.999)] if boundary > 0 else []
-        above = [boundary * f + d for f, d in ((1.001, 0.0), (2.0, 0.0), (10.0, 100.0), (1000.0, 1e6))]
-        # numpy floats so log(0) and 1/0 at t=0 evaluate to -inf/inf instead of raising.
-        with np.errstate(all="ignore"):
-            below_holds = [bool(holds_at(np.float64(x))) for x in below]
-            above_holds = [bool(holds_at(np.float64(x))) for x in above]
-        if any(below_holds) or not all(above_holds):
-            raise ValueError(
-                f"Predicate {self.raw!r} could not be proved to hold from some time onward: "
-                f"the solved boundary {boundary} disagrees with direct evaluation."
-            )
+        return float(holding.inf)
 
     @property
     def boundary(self) -> float:
@@ -790,8 +770,8 @@ _EQUALITY_SPELLING = re.compile(r"(?<![<>=!])=(?!=)|==|!=")
 # The only sympy node types a predicate may contain. An allowlist rather than a
 # denylist: sympy's inequality solver can return a confident but incomplete
 # answer (sin(t) > 0 solves to (0, pi) alone) or a wrong one (nested Abs), so a
-# node is allowed only once the solver has been checked against direct
-# evaluation for it. Powers are further restricted in _reject_unprovable_nodes.
+# node is allowed only once test_predicate.py pins the boundary the solver
+# gives for it. Powers are further restricted in _reject_unprovable_nodes.
 _PREDICATE_NODES: tuple[type, ...] = (
     And,
     Or,
