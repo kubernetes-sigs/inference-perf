@@ -32,19 +32,36 @@ from inference_perf.apis.base import (
     StreamedResponseMetrics,
     UnaryResponseMetrics,
 )
-from inference_perf.config import APIConfig, Config, LoadConfig, StageGenType, StandardLoadStage, SweepConfig
-from inference_perf.observability.metrics import MetricsHub, MetricStability, RunContext, StageContext, build_metrics
+from inference_perf.config import (
+    APIConfig,
+    Config,
+    LoadConfig,
+    ReportConfig,
+    RequestLifecycleMetricsReportConfig,
+    StageGenType,
+    StandardLoadStage,
+    SweepConfig,
+)
+from inference_perf.observability.metrics import (
+    MetricSpec,
+    MetricsHub,
+    MetricStability,
+    RunContext,
+    StageContext,
+    build_metrics,
+)
 from inference_perf.observability.metrics.sets import ALL_SPECS
-from inference_perf.observability.metrics.sets.core import output_tokens
 from inference_perf.payloads import RequestMetrics, Text
+from inference_perf.utils.numeric.expression import SERIES, SIGNALS
 
 
-# Builds one streamed request: starts at 10.0s, four chunks at 10.5/11.0/11.5/12.0s,
-# ends at 12.0s, 11 prompt tokens and 5 client-counted output tokens. Pass
-# server_completion_tokens to make the server report a different output count, or
-# error= to turn it into a failure.
+# Builds one streamed request: scheduled and started at 10.0s, four chunks at
+# 10.5/11.0/11.5/12.0s, ends at 12.0s, 11 prompt tokens and 5 client-counted output
+# tokens. Pass scheduled= to send it late, server_completion_tokens to make the server
+# report a different output count, or error= to turn it into a failure.
 def _streamed(
     stage_id: int = 0,
+    scheduled: Optional[float] = None,
     start: float = 10.0,
     token_times: Optional[List[float]] = None,
     end: float = 12.0,
@@ -56,7 +73,7 @@ def _streamed(
     usage = {"completion_tokens": server_completion_tokens} if server_completion_tokens is not None else None
     return RequestLifecycleMetric(
         stage_id=stage_id,
-        scheduled_time=start,
+        scheduled_time=scheduled if scheduled is not None else start,
         start_time=start,
         end_time=end,
         request_data="r",
@@ -92,8 +109,15 @@ def _unary(stage_id: int = 0, client_output_tokens: int = 5) -> RequestLifecycle
 
 # A hub built from a streaming run of `stages` identical 1 req/s, 1s stages, so the
 # streaming-only latency metrics are exported and stage labels 0..stages-1 exist.
-def _streaming_hub(stages: int = 1) -> MetricsHub:
-    config = Config(api=APIConfig(streaming=True), load=LoadConfig(stages=[StandardLoadStage(rate=1, duration=1)] * stages))
+# use_server_output_tokens sets the report flag the token-based metrics follow.
+def _streaming_hub(stages: int = 1, use_server_output_tokens: bool = False) -> MetricsHub:
+    config = Config(
+        api=APIConfig(streaming=True),
+        load=LoadConfig(stages=[StandardLoadStage(rate=1, duration=1)] * stages),
+        report=ReportConfig(
+            request_lifecycle=RequestLifecycleMetricsReportConfig(use_server_output_tokens=use_server_output_tokens)
+        ),
+    )
     return build_metrics(config)
 
 
@@ -211,22 +235,22 @@ def test_errors_counted_by_class_and_only_for_failures() -> None:
     assert 'error_type=""' not in generate_latest(hub.registry).decode(), "successes must not create an error series"
 
 
-# Feeds the resolver a missing response, a client count of 5, a server count of 7,
-# the Anthropic spelling of a server count of 6, a server payload with no output
-# count, and a server count of 0. Expects 0, 5, 7, 6, 5, 0: the server wins
-# whenever it reported a count, including 0, as in the report.
-def test_output_tokens_prefer_server_usage_then_client_count() -> None:
-    assert output_tokens(None) == 0
-    assert output_tokens(UnaryResponseMetrics(output_tokens=5)) == 5
-    assert output_tokens(UnaryResponseMetrics(output_tokens=5, server_usage={"completion_tokens": 7})) == 7
-    assert output_tokens(UnaryResponseMetrics(output_tokens=5, server_usage={"output_tokens": 6})) == 6
-    assert output_tokens(UnaryResponseMetrics(output_tokens=5, server_usage={"prompt_tokens": 9})) == 5
-    assert output_tokens(UnaryResponseMetrics(output_tokens=5, server_usage={"completion_tokens": 0})) == 0
+# One success the client counts as 5 output tokens and the server as 8, then one with
+# no server count. Expects the counter to add 5 + 5 = 10 with use_server_output_tokens
+# off and 8 + 5 = 13 with it on: the count the report's output_tokens_per_sec uses.
+@pytest.mark.parametrize(("use_server_output_tokens", "expected"), [(False, 10.0), (True, 13.0)])
+def test_output_token_counter_follows_use_server_output_tokens(use_server_output_tokens: bool, expected: float) -> None:
+    hub = _streaming_hub(use_server_output_tokens=use_server_output_tokens)
+    hub.observe_request(_streamed(client_output_tokens=5, server_completion_tokens=8))
+    hub.observe_request(_streamed(client_output_tokens=5))
+
+    assert _sample(hub, "inference_perf_output_tokens_total", stage="0") == expected
 
 
 # Stage 0 gets 11+5 tokens, then 13 prompt with the server reporting 8 output, then
-# a 100/100 failure; stage 1 gets 2+3. Expects prompt 24 and output 13 for stage 0
-# (the failure counted nowhere, the server's 8 preferred) and 2 and 3 for stage 1.
+# a 100/100 failure; stage 1 gets 2+3. Expects prompt 24 and output 10 for stage 0
+# (the failure counted nowhere, the client's 5 counted as the report does by default)
+# and 2 and 3 for stage 1.
 def test_token_counters_sum_successful_requests_only() -> None:
     hub = _streaming_hub()
     hub.observe_request(_streamed(input_tokens=11, client_output_tokens=5))
@@ -235,7 +259,7 @@ def test_token_counters_sum_successful_requests_only() -> None:
     hub.observe_request(_streamed(stage_id=1, input_tokens=2, client_output_tokens=3))
 
     assert _sample(hub, "inference_perf_prompt_tokens_total", stage="0") == 24.0
-    assert _sample(hub, "inference_perf_output_tokens_total", stage="0") == 13.0
+    assert _sample(hub, "inference_perf_output_tokens_total", stage="0") == 10.0
     assert _sample(hub, "inference_perf_prompt_tokens_total", stage="1") == 2.0
     assert _sample(hub, "inference_perf_output_tokens_total", stage="1") == 3.0
 
@@ -243,13 +267,13 @@ def test_token_counters_sum_successful_requests_only() -> None:
 # --- latency ------------------------------------------------------------------
 
 
-# One streamed request, start 10.0, chunks 10.5..12.0, end 12.0, server says 4
-# output tokens. Expects one observation in each histogram: latency 2.0, TTFT 0.5,
-# TPOT (12.0 - 10.5) / (4 - 1) = 0.5, the same arithmetic the report uses.
-def test_latency_histograms_match_report_derivation() -> None:
-    hub = _streaming_hub()
-    # start=10.0, chunks at 10.5 .. 12.0, end=12.0, 5 output tokens (client) but the server says 4:
-    # TTFT = 0.5, TPOT = (12.0 - 10.5) / (4 - 1) = 0.5, request latency = 2.0
+# One streamed request, start 10.0, chunks 10.5..12.0, end 12.0, the client counts 5
+# output tokens and the server 4. Expects latency 2.0, TTFT 0.5 and TPOT
+# (12.0 - 10.5) / (5 - 1) = 0.375 with use_server_output_tokens off, or
+# (12.0 - 10.5) / (4 - 1) = 0.5 with it on: the arithmetic and count the report use.
+@pytest.mark.parametrize(("use_server_output_tokens", "tpot"), [(False, 0.375), (True, 0.5)])
+def test_latency_histograms_match_report_derivation(use_server_output_tokens: bool, tpot: float) -> None:
+    hub = _streaming_hub(use_server_output_tokens=use_server_output_tokens)
     hub.observe_request(_streamed(start=10.0, token_times=[10.5, 11.0, 11.5, 12.0], end=12.0, server_completion_tokens=4))
 
     assert _sample(hub, "inference_perf_request_latency_seconds_count", stage="0") == 1.0
@@ -257,7 +281,35 @@ def test_latency_histograms_match_report_derivation() -> None:
     assert _sample(hub, "inference_perf_time_to_first_token_seconds_count", stage="0") == 1.0
     assert _sample(hub, "inference_perf_time_to_first_token_seconds_sum", stage="0") == pytest.approx(0.5)
     assert _sample(hub, "inference_perf_time_per_output_token_seconds_count", stage="0") == 1.0
-    assert _sample(hub, "inference_perf_time_per_output_token_seconds_sum", stage="0") == pytest.approx(0.5)
+    assert _sample(hub, "inference_perf_time_per_output_token_seconds_sum", stage="0") == pytest.approx(tpot)
+
+
+# A success scheduled at 9.9 and sent at 10.0, ending at 12.0 with 5 client tokens, and a
+# failure scheduled at 10.0 and sent at 10.25. Expects NTPOT observed once, 2.0 / 5 = 0.4,
+# and schedule delay observed for both, summing 0.1 + 0.25 = 0.35.
+def test_ntpot_and_schedule_delay_histograms() -> None:
+    hub = _streaming_hub()
+    hub.observe_request(_streamed(scheduled=9.9, start=10.0, end=12.0, client_output_tokens=5))
+    hub.observe_request(_streamed(scheduled=10.0, start=10.25, error="TimeoutError"))
+
+    assert _sample(hub, "inference_perf_normalized_time_per_output_token_seconds_count", stage="0") == 1.0
+    assert _sample(hub, "inference_perf_normalized_time_per_output_token_seconds_sum", stage="0") == pytest.approx(0.4)
+    assert _sample(hub, "inference_perf_schedule_delay_seconds_count", stage="0") == 2.0
+    assert _sample(hub, "inference_perf_schedule_delay_seconds_sum", stage="0") == pytest.approx(0.35)
+
+
+# A request that finished 2s ago on the perf_counter clock, then a failure that finished
+# 1s ago. Expects the stage's last completion gauge to read the Unix time of the later
+# one, time.time() - 1.0, within 50ms.
+def test_last_completion_timestamp_is_the_unix_time_the_last_request_finished() -> None:
+    hub = _streaming_hub()
+    now = time.perf_counter()
+    hub.observe_request(_streamed(start=now - 3.0, token_times=[now - 2.5], end=now - 2.0))
+    hub.observe_request(_streamed(start=now - 2.0, end=now - 1.0, error="TimeoutError"))
+
+    assert _sample(hub, "inference_perf_last_completion_timestamp_seconds", stage="0") == pytest.approx(
+        time.time() - 1.0, abs=0.05
+    )
 
 
 # Three requests: a failure, a one-token stream, and a zero-token stream. Expects
@@ -290,6 +342,24 @@ def test_ttft_and_tpot_absent_on_unary_runs() -> None:
     body = generate_latest(streaming.registry).decode()
     assert "inference_perf_time_to_first_token_seconds" in body
     assert "inference_perf_time_per_output_token_seconds" in body
+
+
+# --- expression terms ---------------------------------------------------------
+
+
+# Walks ALL_SPECS for the series and signal each metric declares. Expects every name in
+# SERIES and SIGNALS backed by exactly one metric, e.g. ttft by
+# inference_perf_time_to_first_token_seconds, so each term reads one runtime metric.
+@pytest.mark.parametrize(("attribute", "names"), [("series", SERIES), ("signal", SIGNALS)])
+def test_every_expression_term_has_one_runtime_metric(attribute: str, names: dict[str, object]) -> None:
+    backed = [getattr(spec, attribute) for spec in ALL_SPECS if getattr(spec, attribute) is not None]
+    assert sorted(backed) == sorted(names), f"{attribute}: backed {sorted(backed)}, terms {sorted(names)}"
+
+
+# A spec declaring series="ttfb", which is not a series. Expects a ValueError naming it.
+def test_spec_with_an_unknown_series_is_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown series 'ttfb'"):
+        MetricSpec(name="inference_perf_x_seconds", documentation="x", metric_type=Histogram, series="ttfb")
 
 
 # --- conventions (the checkable half of #628) -----------------------------------

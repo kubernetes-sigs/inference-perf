@@ -37,6 +37,8 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from inference_perf.config import DataConfig, LoadConfig
+from inference_perf.observability.metrics.registry import exposition_name
+from inference_perf.observability.metrics.sets import ALL_SPECS
 from inference_perf.utils.numeric.expression import SERIES, SIGNALS, Expression, Predicate
 from inference_perf.utils.numeric.expression.measured import AGGREGATES, WINDOWS
 
@@ -120,15 +122,26 @@ def _check_window_function(row: Row) -> None:
     assert len(Predicate(f"(t >= 600) | ({term} > 0)").terms) == 1, term
 
 
-# A series row must match the code's SERIES entry: name, report field ('none' for no field), unit and samples.
+# The runtime metric a spec declares as the form of series or signal `name`, as a scrape names it.
+# Input: ("series", "ttft") -> "inference_perf_time_to_first_token_seconds".
+def _runtime_metric(attribute: str, name: str) -> str:
+    return next(exposition_name(spec) for spec in ALL_SPECS if getattr(spec, attribute) == name)
+
+
+# A series row must match the code's SERIES entry: name, report field ('none' for no field), unit and samples,
+# and name the runtime metric that declares the series.
 def _check_series(row: Row) -> None:
-    series = SERIES[_code(row[0])]
+    name = _code(row[0])
+    series = SERIES[name]
     assert (series.report_field or "none", series.unit, series.samples) == (_code(row[1]), row[2], row[3]), row
+    assert _code(row[4]) == _runtime_metric("series", name), row
 
 
-# A signal row must name a signal the code computes, with the code's description.
+# A signal row must name a signal the code computes, with the code's description and its runtime metric.
 def _check_signal(row: Row) -> None:
-    assert SIGNALS[_code(row[0])] == row[1], row
+    name = _code(row[0])
+    assert SIGNALS[name] == row[1], row
+    assert _code(row[2]) == _runtime_metric("signal", name), row
 
 
 # An aggregate row must match the code's AGGREGATES entry. Input: ['`count`', 'Number of samples.'].
@@ -156,8 +169,8 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Condition", "Holds from (s)"): _check_condition,
     ("Condition", "Holds by (s)", "Can hold from (s)"): _check_measured_condition,
     ("Window function", "Reads"): _check_window_function,
-    ("Series", "Report field", "Unit", "Samples"): _check_series,
-    ("Signal", "Reads"): _check_signal,
+    ("Series", "Report field", "Unit", "Samples", "Runtime metric"): _check_series,
+    ("Signal", "Reads", "Runtime metric"): _check_signal,
     ("Aggregate", "Reads"): _check_aggregate,
     ("Window", "Selects"): _check_window,
     ("Rejected expression", "Why"): _rejects(Expression),
@@ -213,8 +226,8 @@ def test_every_checked_table_is_present() -> None:
 @pytest.mark.parametrize(
     ("header", "names"),
     [
-        (("Series", "Report field", "Unit", "Samples"), set(SERIES)),
-        (("Signal", "Reads"), set(SIGNALS)),
+        (("Series", "Report field", "Unit", "Samples", "Runtime metric"), set(SERIES)),
+        (("Signal", "Reads", "Runtime metric"), set(SIGNALS)),
         (("Aggregate", "Reads"), set(AGGREGATES)),
         (("Window", "Selects"), {f"_over_{window}" for window in WINDOWS}),
     ],
