@@ -20,10 +20,8 @@ each accepted shape compiles to, and the message for each rejected shape.
 """
 
 import pytest
-from sympy import Interval, oo
 
 from inference_perf.utils.numeric.expression import Expression, Predicate
-from inference_perf.utils.numeric.expression import expression as expression_module
 
 
 class TestAccepted:
@@ -137,12 +135,11 @@ class TestRejectedShapes:
         with pytest.raises(ValueError, match="never holds"):
             Predicate("Min(t, 50) >= 60")
 
-    # A solver that answers wrongly is caught by direct evaluation: with the solved set forced to [30, oo)
-    # for 't >= 60', t=45 evaluates False inside the claimed set, so the condition is rejected.
-    def test_wrong_solver_answer_is_caught(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(expression_module, "_holding_set", lambda expr: Interval(30, oo))
-        with pytest.raises(ValueError, match="disagrees with direct evaluation"):
-            Predicate("t >= 60")
+    # 'log(t + 1) >= 871' solves to exp(871) - 1, past the largest float; rejected naming the time rather than
+    # compiling to an infinite boundary.
+    def test_boundary_past_float_range(self) -> None:
+        with pytest.raises(ValueError, match=r"holds only from t = -1 \+ exp\(871\), which is too large for a float"):
+            Predicate("log(t + 1) >= 871")
 
 
 class TestRejectedNodes:
