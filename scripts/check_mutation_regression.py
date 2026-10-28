@@ -38,6 +38,7 @@ import argparse
 import ast
 import atexit
 import fnmatch
+import functools
 import importlib.metadata
 import io
 import json
@@ -1226,9 +1227,15 @@ class Verdict:
     new: list[str] = field(default_factory=list)
 
 
+@functools.cache
+def mutant_diff(tree: Path, mutant: str) -> str:
+    """`mutmut show` for one mutant, once per tree. Matching, annotating and the summary all ask for it."""
+    return mutmut(tree, "show", mutant).stdout
+
+
 def mutation_lines(side: Side, mutant: str) -> tuple[str, ...]:
     """The lines a mutant changes, without diff headers or context, so the same mutation matches across versions."""
-    shown = mutmut(side.tree, "show", mutant).stdout.splitlines()
+    shown = mutant_diff(side.tree, mutant).splitlines()
     return tuple(sorted(line.rstrip() for line in shown if line[:1] in "+-" and not line.startswith(("+++", "---"))))
 
 
@@ -1607,7 +1614,7 @@ def annotations(head: Side, verdict: Verdict, checks: Checks) -> list[Annotation
         if path is None:
             continue
         try:
-            diff = mutmut(head.tree, "show", mutant).stdout
+            diff = mutant_diff(head.tree, mutant)
         except BudgetExhausted:
             break
         added = [line[1:].strip() for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")]
@@ -1674,7 +1681,7 @@ def report(
         lines += ["", f"<details><summary>{len(shown)} surviving mutants on the head</summary>", ""]
         for mutant in shown[:MAX_SHOWN_SURVIVORS]:
             try:
-                diff = mutmut(head.tree, "show", mutant).stdout.strip()
+                diff = mutant_diff(head.tree, mutant).strip()
             except BudgetExhausted:
                 lines.append("Out of time for the remaining diffs.")
                 break

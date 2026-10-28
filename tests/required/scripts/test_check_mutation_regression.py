@@ -1290,6 +1290,30 @@ def test_mutant_line_finds_the_mutated_copy(cmr: Any) -> None:
     assert cmr.mutant_line(source, "x_f", shown(f"{F}3", missing)) == 3
 
 
+# Three asks for the same mutant's diff on one tree start one `mutmut show`. A second tree starts
+# its own.
+def test_mutant_diff_runs_mutmut_show_once_per_tree(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[Path, str]] = []
+
+    def fake(tree: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        calls.append((tree, args[1]))
+        return subprocess.CompletedProcess([], 0, shown(args[1], f"# from {tree}"), "")
+
+    monkeypatch.setattr(cmr, "mutmut", fake)
+    side = cmr.Side(tree=tmp_path / "a")
+
+    diffs = [
+        cmr.mutant_diff(tmp_path / "a", f"{F}1"),
+        cmr.mutation_lines(side, f"{F}1"),
+        cmr.mutant_diff(tmp_path / "a", f"{F}1"),
+    ]
+    other = cmr.mutant_diff(tmp_path / "b", f"{F}1")
+
+    assert diffs[0] == diffs[2] and diffs[1] == ()
+    assert "from " + str(tmp_path / "b") in other
+    assert calls == [(tmp_path / "a", f"{F}1"), (tmp_path / "b", f"{F}1")]
+
+
 # Path, title and message each hold characters GitHub's workflow commands reserve. The message
 # encodes '%', CR and LF and keeps ':' and ','. The path and title encode all five.
 def test_workflow_command_escapes_reserved_characters(cmr: Any) -> None:
