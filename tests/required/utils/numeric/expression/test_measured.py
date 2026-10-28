@@ -188,6 +188,11 @@ class TestProof:
         p = Predicate("((t >= 60) & (avg_over_last(latency, 50) > 1)) | (t >= 600)")
         assert (p.boundary, p.earliest) == (600.0, 60.0)
 
+    # A 't > 0' gate is open at 0: '(t >= 600) | ((t > 0) & (errors > 10))' holds by 600 and can hold from 0.
+    def test_gate_open_at_zero(self) -> None:
+        p = Predicate("(t >= 600) | ((t > 0) & (errors > 10))")
+        assert (p.boundary, p.earliest) == (600.0, 0.0)
+
     # With the term true, '(t >= 600) | ((t < 300) & (errors > 10))' lapses between 300 and 600: rejected.
     def test_lapsing_once_true_is_rejected(self) -> None:
         with pytest.raises(ValueError, match=r"holds only on \[0, 300\) or \[600, infinity\) once its measured values hold"):
