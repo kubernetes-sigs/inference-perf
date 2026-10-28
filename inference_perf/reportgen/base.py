@@ -748,8 +748,9 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
 
     # output_token_times holds every generated token, reasoning included
     # (#559): the server generates and counts reasoning tokens like any other,
-    # so TTFT, TPOT and ITL do too. Streamable means more than one timestamp.
-    if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
+    # so TTFT, TPOT and ITL do too. TTFT needs one timestamp. TPOT and ITL are
+    # differences between timestamps, so they need two.
+    if isinstance(response_metrics, StreamedResponseMetrics) and response_metrics.output_token_times:
         # TTFT: First Token Time - Start Time
         ttft = response_metrics.output_token_times[0] - m.start_time
 
@@ -759,6 +760,7 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
         if (first_content := first_content_token_time(response_metrics)) is not None:
             ttfo = first_content - m.start_time
 
+    if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
         # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
         duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
         tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
