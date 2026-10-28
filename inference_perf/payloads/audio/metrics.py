@@ -13,16 +13,19 @@
 # limitations under the License.
 """Post-flight measurement records for audio instances on a request."""
 
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
 
 class Audio(BaseModel):
-    """Realized stats of one audio instance (per-instance, recorded post-flight)."""
+    """Realized stats of one audio instance (per-instance, recorded post-flight).
 
-    bytes: int = 0
-    seconds: float = 0.0
+    None means not measured, not zero (see :class:`~inference_perf.payloads.Image`).
+    """
+
+    bytes: Optional[int] = None
+    seconds: Optional[float] = None
 
 
 class Audios(BaseModel):

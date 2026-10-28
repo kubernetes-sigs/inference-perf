@@ -41,6 +41,7 @@ class MockModelServerClient(ModelServerClient):
         mock_latency: float = 1,
         request_retries: int = 0,
         request_retry_backoff_sec: float = 0.5,
+        response_metrics: Optional[UnaryResponseMetrics] = None,
     ) -> None:
         # Accepted for signature parity with the real clients; the mock never makes a
         # network call, so there is no transport fault to retry.
@@ -52,6 +53,9 @@ class MockModelServerClient(ModelServerClient):
         )
         self.metrics_collector = metrics_collector
         self.mock_latency = mock_latency
+        # What every successful request reports as its response. A test passes one
+        # carrying media to drive the output media path with no real endpoint.
+        self.response_metrics = response_metrics or UnaryResponseMetrics(output_tokens=0)
         self.tokenizer = None
 
     async def process_request(
@@ -79,7 +83,7 @@ class MockModelServerClient(ModelServerClient):
                         request_data=str(await data.to_request_body(effective_model_name, 3, False, False)),
                         info=InferenceInfo(
                             request_metrics=RequestMetrics(text=Text(input_tokens=0)),
-                            response_metrics=UnaryResponseMetrics(output_tokens=0),
+                            response_metrics=self.response_metrics.model_copy(deep=True),
                             lora_adapter=lora_adapter,
                         ),
                         error=None,

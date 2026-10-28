@@ -71,8 +71,8 @@ Each modality's `spec/` subpackage is further factored
 - **Synthetic** — bytes generated at materialization time from geometry hints.
 - **Pre-encoded** — bytes supplied by an upstream dataset loader (e.g.
   ShareGPT4Video frames).
-- **Remote** — URL referenced; the server fetches the bytes. `bytes=0` on the
-  realized metric.
+- **Remote** — URL referenced; the server fetches the bytes. Nothing measured
+  (every field None) on the realized metric.
 - **Local file** — bytes read from a disk path at materialization time. Same
   wire shape as pre-encoded; deferred read.
 

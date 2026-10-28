@@ -340,7 +340,7 @@ class ChatCompletionAPIData(InferenceAPIData):
             # Metric construction is delegated to ``vid.get_metrics(total_bytes)``
             # so each provenance owns its own measurement rule (synthetic and
             # pre-encoded report real pixel/byte/frame counts; remote/local
-            # stubs would return zero-or-declared-dims per their own contract).
+            # stubs would return unmeasured (None) fields per their own contract).
             if isinstance(vid, SyntheticMp4VideoSpec):
                 if deterministic:
                     # Deterministic mode bypasses the pool — pool sampling is
@@ -467,7 +467,8 @@ class ChatCompletionAPIData(InferenceAPIData):
             images=len(all_images),
             videos=len(all_videos),
             audios=len(all_audios),
-            video_frames=sum(v.frames for v in all_videos),
+            # A remote video has no measured frame count, so it adds none to the progress line.
+            video_frames=sum(v.frames or 0 for v in all_videos),
         )
 
         return combined

@@ -59,8 +59,8 @@ class MediaSpec(BaseModel, Generic[T_Metric]):
         pre-encoded variants; ~0 for remote variants where we sent only a
         URL). Each provenance decides how to translate that into the
         modality's pixel / duration / frame fields based on what it can
-        honestly claim — for example, :class:`RemoteImageSpec` returns
-        zero pixels because we never saw the bytes; :class:`SyntheticImageSpec`
+        honestly claim — for example, :class:`RemoteImageSpec` leaves
+        pixels as None because we never saw the bytes; :class:`SyntheticImageSpec`
         returns ``width * height`` because it generated them.
         """
         ...
