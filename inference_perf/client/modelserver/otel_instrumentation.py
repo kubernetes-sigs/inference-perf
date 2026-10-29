@@ -150,6 +150,19 @@ class OTelInstrumentation:
             self._setup_tracer()
             logger.info(f"OTEL tracing enabled for service: {self.service_name}")
 
+    def __getstate__(self) -> Dict[str, Any]:
+        # Workers receive the client by pickle. The provider holds locks and an exporter
+        # thread, so only the settings travel and each worker builds its own.
+        state = self.__dict__.copy()
+        state["tracer"] = None
+        state.pop("_provider", None)
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        if self.enabled:
+            self._setup_tracer()
+
     def _setup_tracer(self) -> None:
         """Set up the OpenTelemetry tracer."""
         if not OTEL_AVAILABLE:

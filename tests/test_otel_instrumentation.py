@@ -15,13 +15,17 @@
 """Tests for OpenTelemetry instrumentation."""
 
 import base64
-from typing import Any
+from multiprocessing.queues import SimpleQueue
+from typing import Any, Optional
+
+import pytest
 
 from inference_perf.client.modelserver.otel_instrumentation import (
     OTelInstrumentation,
     get_otel_instrumentation,
     summarize_media,
 )
+from inference_perf.utils.mp_context import MP_CONTEXT
 
 
 def test_otel_instrumentation_init() -> None:
@@ -160,3 +164,31 @@ def test_summarize_media_replaces_inline_payloads_and_keeps_everything_else() ->
     assert summary[1]["content"][0]["input_audio"]["data"].startswith("[3 bytes, sha256:")
     assert summary[2] == messages[2]
     assert messages[0]["content"][1]["image_url"]["url"].endswith(png)  # the request itself is untouched
+
+
+# Runs in the worker: opens one span and reports whether it is recording.
+def _span_records_in_worker(otel: OTelInstrumentation, result: "SimpleQueue[bool]") -> None:
+    with otel.trace_llm_request(operation_name="completions", model_name="test-model") as span:
+        result.put(span is not None and span.is_recording())
+
+
+# An enabled instance goes to a forkserver worker, once with the console exporter and once with OTLP.
+# The worker reports True: the instance pickled and the worker built a live tracer of its own.
+@pytest.mark.parametrize("otlp_endpoint", [None, "http://localhost:4317"])
+def test_enabled_instrumentation_traces_in_forkserver_worker(
+    monkeypatch: pytest.MonkeyPatch, otlp_endpoint: Optional[str]
+) -> None:
+    pytest.importorskip("opentelemetry.sdk.trace")
+    if otlp_endpoint is None:
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    else:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", otlp_endpoint)
+    otel = OTelInstrumentation(service_name="test-service", enabled=True)
+
+    result: "SimpleQueue[bool]" = MP_CONTEXT.SimpleQueue()
+    worker = MP_CONTEXT.Process(target=_span_records_in_worker, args=(otel, result))  # type: ignore[attr-defined]
+    worker.start()
+    worker.join(timeout=60)
+
+    assert worker.exitcode == 0
+    assert result.get() is True

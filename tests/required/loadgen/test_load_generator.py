@@ -328,6 +328,15 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
             mock_tg = MagicMock()
             MockTaskGroup.return_value.__aenter__.return_value = mock_tg
 
+            # create_task is given client.process_request(...) — an AsyncMock
+            # coroutine. The real TaskGroup would await it; the mock must close
+            # it so it isn't garbage-collected later as "never awaited".
+            def _close_coro(coro: Any) -> MagicMock:
+                coro.close()
+                return MagicMock()
+
+            mock_tg.create_task.side_effect = _close_coro
+
             async def dummy_process_request(*args: Any, **kwargs: Any) -> None:
                 pass
 
@@ -406,6 +415,50 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         drained = q.drain(0)
         self.assertEqual(drained, (2, True))
         self.assertTrue(q.get_channel(0).empty())
+
+    async def test_await_workers_ready_returns_once_workers_signal(self) -> None:
+        ready = mp.Value("i", self.load_generator.num_workers)
+        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=None)])
+
+        await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
+
+    # 2 workers: one dies at startup, the other has not signalled yet. The gate keeps
+    # waiting, then returns once the live one signals (1 ready + 1 dead = 2).
+    async def test_await_workers_ready_waits_for_live_workers_after_one_exits(self) -> None:
+        ready = mp.Value("i", 0)
+        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=1)])
+
+        wait = asyncio.create_task(self.load_generator._await_workers_ready(ready))
+        await asyncio.sleep(0.2)
+        self.assertFalse(wait.done())
+
+        ready.value = 1
+        await asyncio.wait_for(wait, timeout=5)
+
+    # Both workers die at startup and neither ever signals. The gate returns
+    # instead of blocking the run until its 300s timeout.
+    async def test_await_workers_ready_gives_up_when_every_worker_exits(self) -> None:
+        ready = mp.Value("i", 0)
+        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=1), MagicMock(exitcode=1)])
+
+        await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
+
+    # 2 live workers, neither has signalled, and SIGINT has arrived. The gate
+    # returns instead of holding Ctrl-C until its 300s timeout.
+    async def test_await_workers_ready_returns_on_sigint(self) -> None:
+        ready = mp.Value("i", 0)
+        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=None)])
+        self.load_generator.interrupt_sig = True
+
+        await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
+
+    async def test_await_workers_ready_gives_up_on_timeout(self) -> None:
+        # Workers still alive but silent: the gate expires and load starts anyway.
+        ready = mp.Value("i", 0)
+        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=None)])
+
+        with patch("inference_perf.loadgen.load_generator.WORKER_STARTUP_TIMEOUT_SEC", 0.1):
+            await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
 
     def test_sigint_and_sigterm_interrupt_the_run(self) -> None:
         for signum in (signal.SIGINT, signal.SIGTERM):
