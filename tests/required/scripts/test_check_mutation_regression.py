@@ -594,7 +594,8 @@ def scope_after_change(cmr: Any, repo: Path, tmp_path: Path) -> Any:
     touched = cmr.touched_functions("HEAD", [])
     base_tree = tmp_path / "base-tree"
     cmr.export_base("HEAD", base_tree)
-    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, cmr.changed_test_files("HEAD"))
+    base_tests, head_tests = cmr.tests_in_scope("HEAD", base_tree, repo)
+    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, base_tests, head_tests)
     return touched
 
 
@@ -620,6 +621,133 @@ def test_renaming_a_test_file_away_brings_what_it_ran_into_scope(
 
     assert cmr.changed_test_files("HEAD") == ["tests/checks_m.py", "tests/test_m.py"]
     assert scope_after_change(cmr, repo, tmp_path).via_tests == {"inference_perf.m.x_f"}
+
+
+# tests/test_m.py has test_a running f and test_b running g. The change edits only test_b's assert,
+# adds test_c, and reformats the import. Only test_b is selected on each side, so g joins the scope
+# and f, which only the untouched test_a runs, does not.
+def test_editing_one_test_scopes_only_what_it_runs(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    write_tree(
+        repo,
+        {
+            "inference_perf/__init__.py": "",
+            "inference_perf/m.py": "def f(x):\n    return x > 1\n\n\ndef g(x):\n    return x < 1\n",
+            "tests/test_m.py": "from inference_perf.m import f, g\n\n\n"
+            "def test_a():\n    assert f(2)\n\n\ndef test_b():\n    assert g(0)\n    assert not g(1)\n",
+        },
+    )
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "base")
+    (repo / "tests" / "test_m.py").write_text(
+        "from inference_perf.m import (\n    f,\n    g,\n)\n\n\n"
+        "def test_a():\n    assert f(2)\n\n\ndef test_b():\n    assert g(0)\n\n\n"
+        "# a new test only adds kills\ndef test_c():\n    assert f(3)\n"
+    )
+    monkeypatch.chdir(repo)
+    base_tree = tmp_path / "base-tree"
+    cmr.export_base("HEAD", base_tree)
+
+    base_tests, head_tests = cmr.tests_in_scope("HEAD", base_tree, repo)
+
+    assert (base_tests, head_tests) == (["tests/test_m.py::test_b"], ["tests/test_m.py::test_b"])
+    touched = cmr.touched_functions("HEAD", [])
+    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, base_tests, head_tests)
+    assert touched.via_tests == {"inference_perf.m.x_g"}
+
+
+# A file with helper check(), fixture value, constant N, class TestC with test_c and module-level
+# tests test_a (uses check) and test_b (uses value and N). Each kind of change reaches the tests that
+# read it, a comment or blank line reaches none, a new import name reaches its users, and a bare
+# module-level statement reaches the whole file.
+def test_changed_tests_in_follows_names_to_the_tests_that_use_them(cmr: Any) -> None:
+    base = (
+        "import os\n"  # 1
+        "import pytest\n"  # 2
+        "\n"  # 3
+        "N = 1\n"  # 4
+        "\n"  # 5
+        "\n"  # 6
+        "def check(x):\n"  # 7
+        "    assert x\n"  # 8
+        "\n"  # 9
+        "\n"  # 10
+        "@pytest.fixture\n"  # 11
+        "def value():\n"  # 12
+        "    return 1\n"  # 13
+        "\n"  # 14
+        "\n"  # 15
+        "class TestC:\n"  # 16
+        "    limit = 2\n"  # 17
+        "\n"  # 18
+        "    def test_c(self):\n"  # 19
+        "        assert self.limit\n"  # 20
+        "\n"  # 21
+        "\n"  # 22
+        "# about test_a\n"  # 23
+        "def test_a():\n"  # 24
+        "    check(True)\n"  # 25
+        "\n"  # 26
+        "\n"  # 27
+        "def test_b(value):\n"  # 28
+        "    assert value == N\n"  # 29
+        "\n"  # 30
+        "\n"  # 31
+        "def test_d():\n"  # 32
+        "    assert os.sep\n"  # 33
+    )
+
+    def selected(head: str, old: set[int], new: set[int]) -> set[str] | None:
+        return cmr.changed_tests_in(base, head, old, new, "tests/test_x.py")
+
+    assert selected(base, {8}, {8}) == {"test_a"}  # helper body
+    assert selected(base, {13}, {13}) == {"test_b"}  # fixture body
+    assert selected(base, {4}, {4}) == {"test_b"}  # constant
+    assert selected(base, {17}, {17}) == {"TestC::test_c"}  # class attribute
+    assert selected(base, {25}, {25}) == {"test_a"}  # a test's own line
+    assert selected(base, {23, 3}, {23, 3}) == set()  # comment and blank
+    assert selected(base.replace("import os\n", "import sys\n"), set(), {1}) == {"test_d"}  # import rebound
+    assert selected(base, set(), {30}) == set()  # nothing added where only blanks sit
+    assert selected(base + "print(N)\n", set(), {34}) is None  # module-level statement
+    assert selected(base + "def broken(:\n", set(), {34}) is None  # does not parse
+    # a test added on the head is not selected; a test deleted from the base is
+    added = base + "\n\ndef test_e():\n    check(1)\n"
+    assert selected(added, set(), {36, 37}) == set()
+    assert selected(base.replace("def test_d():\n    assert os.sep\n", ""), {32, 33}, set()) == {"test_d"}
+
+
+# A survivor's tests exit 4 under the mutant with an ERROR line naming the file, because the mutant
+# broke the module at import. The same tests collect with the mutant off (canary exits 1 with a
+# failure, 0 the next round), so it counts as a kill by that file. When the canary cannot collect
+# either, the rerun is unusable.
+def test_still_survives_counts_a_collection_failure_the_mutant_caused(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    side = cmr.Side(tree=tmp_path, results={"m.x_f__mutmut_1": "survived"})
+    (tmp_path / "mutants").mkdir()
+    (tmp_path / "mutants" / "mutmut-stats.json").write_text(
+        '{"tests_by_mangled_function_name": {"m.x_f": ["tests/test_a.py::t"]}, "duration_by_test": {}}'
+    )
+    monkeypatch.setattr(cmr, "mutmut", lambda *a: subprocess.CompletedProcess(a, 0, "tests/test_a.py::t\n", ""))
+    broken = "ERROR tests/test_a.py - ValueError: buckets are only valid for Histogram metrics\n"
+    calls: list[str] = []
+
+    def rerun(side: Any, tests: list[str], mutant: str, args: list[str]) -> tuple[int, str]:
+        calls.append(mutant)
+        if mutant == "m.x_f__mutmut_1":
+            return 4, broken
+        return (1, "FAILED tests/test_a.py::t - flaky\n") if len(calls) == 2 else (0, "")
+
+    monkeypatch.setattr(cmr, "rerun", rerun)
+    survival = cmr.still_survives(side, "m.x_f__mutmut_1", [])
+    assert not survival.counts
+    assert survival.killed_by == ["tests/test_a.py"]
+    assert len(calls) == cmr.RERUNS * 2
+
+    monkeypatch.setattr(cmr, "rerun", lambda *a: (4, broken))
+    with pytest.raises(cmr.MutationRunError, match="exited 4"):
+        cmr.still_survives(side, "m.x_f__mutmut_1", [])
 
 
 # Writes each {path: source} under `root`, creating directories.
@@ -654,10 +782,10 @@ def test_loosening_a_test_helper_brings_what_its_tests_run_into_scope(
     cmr.export_base("HEAD", base_tree)
 
     assert cmr.changed_test_files("HEAD") == []
-    tests = cmr.tests_in_scope("HEAD", base_tree, repo)
-    assert tests == ["tests/test_m.py"]
+    base_tests, head_tests = cmr.tests_in_scope("HEAD", base_tree, repo)
+    assert (base_tests, head_tests) == (["tests/test_m.py"], ["tests/test_m.py"])
     touched = cmr.touched_functions("HEAD", [])
-    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, tests)
+    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, base_tests, head_tests)
     assert touched.via_tests == {"inference_perf.m.x_f"}
 
 
