@@ -935,12 +935,40 @@ def _touched_tests_and_symbols(source: str, lines: set[int], path: str | None) -
     return tests, symbols
 
 
+def _usefixtures(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> set[str]:
+    """Fixtures a `pytest.mark.usefixtures("...")` decorator requests, which the test never names as an argument."""
+    found: set[str] = set()
+    for d in node.decorator_list:
+        if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "usefixtures":
+            found.update(a.value for a in d.args if isinstance(a, ast.Constant) and isinstance(a.value, str))
+    return found
+
+
+def _autouse_fixtures(module: ast.Module) -> set[str]:
+    """Module-level fixtures declared `autouse=True`: every test in the file runs them without naming them."""
+    found: set[str] = set()
+    for node in module.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for d in node.decorator_list:
+            if isinstance(d, ast.Call) and any(
+                k.arg == "autouse" and isinstance(k.value, ast.Constant) and k.value.value is True for k in d.keywords
+            ):
+                found.add(node.name)
+    return found
+
+
 def _tests_using_symbols(source: str, symbols: set[str], path: str | None) -> set[str]:
-    """Tests that read any of `symbols`, directly or through other defs and classes in the file."""
+    """Tests that read any of `symbols`, directly or through other defs and classes in the file.
+
+    Autouse fixtures and `usefixtures` marks count as read by every test they apply to.
+    """
     module = parse(source, path)
     reached = set(symbols)
+    # an autouse fixture inside a test class is a class line, which already reaches every test in the class
+    implicit = _autouse_fixtures(module)
     uses = {
-        node.name: _names_used(node)
+        node.name: _names_used(node) | implicit | _usefixtures(node)
         for node in module.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
@@ -948,7 +976,7 @@ def _tests_using_symbols(source: str, symbols: set[str], path: str | None) -> se
         if isinstance(node, ast.ClassDef):
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    uses[f"{node.name}::{sub.name}"] = _names_used(sub)
+                    uses[f"{node.name}::{sub.name}"] = _names_used(sub) | implicit | _usefixtures(node) | _usefixtures(sub)
     changed = True
     while changed:
         changed = False
@@ -963,8 +991,8 @@ def changed_tests_in(base_src: str, head_src: str, old_lines: set[int], new_line
     """Node ids (below the file) of the tests on the base this change edits or deletes, or None for the whole file.
 
     A test the change adds only adds kills, so it cannot raise the survivor count and is not here. A changed
-    helper, fixture, class, constant or import reaches the tests that read it. Any other changed line, such as
-    module-level code, reaches every test.
+    helper, fixture, class, constant or import reaches the tests that read it, autouse fixtures and
+    `usefixtures` marks included. Any other changed line, such as module-level code, reaches every test.
     """
     try:
         head_tests, head_symbols = _touched_tests_and_symbols(head_src, new_lines, path)

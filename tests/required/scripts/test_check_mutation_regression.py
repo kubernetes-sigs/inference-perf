@@ -717,6 +717,45 @@ def test_changed_tests_in_follows_names_to_the_tests_that_use_them(cmr: Any) -> 
     assert selected(base.replace("def test_d():\n    assert os.sep\n", ""), {32, 33}, set()) == {"test_d"}
 
 
+# tests/test_x.py has an autouse fixture clock, a plain fixture value, test_a naming no fixture,
+# test_b(value), and class TestC marked usefixtures("value") holding test_c. Editing clock's body
+# reaches all three tests. Editing value's body reaches test_b and TestC::test_c, not test_a.
+def test_changed_tests_in_reaches_tests_through_autouse_and_usefixtures(cmr: Any) -> None:
+    base = (
+        "import pytest\n"  # 1
+        "\n"  # 2
+        "\n"  # 3
+        "@pytest.fixture(autouse=True)\n"  # 4
+        "def clock():\n"  # 5
+        "    return 1\n"  # 6
+        "\n"  # 7
+        "\n"  # 8
+        "@pytest.fixture\n"  # 9
+        "def value():\n"  # 10
+        "    return 2\n"  # 11
+        "\n"  # 12
+        "\n"  # 13
+        "def test_a():\n"  # 14
+        "    assert True\n"  # 15
+        "\n"  # 16
+        "\n"  # 17
+        "def test_b(value):\n"  # 18
+        "    assert value\n"  # 19
+        "\n"  # 20
+        "\n"  # 21
+        '@pytest.mark.usefixtures("value")\n'  # 22
+        "class TestC:\n"  # 23
+        "    def test_c(self):\n"  # 24
+        "        assert True\n"  # 25
+    )
+
+    def selected(old: set[int], new: set[int]) -> Any:
+        return cmr.changed_tests_in(base, base, old, new, "tests/test_x.py")
+
+    assert selected({6}, {6}) == {"test_a", "test_b", "TestC::test_c"}  # autouse fixture body
+    assert selected({11}, {11}) == {"test_b", "TestC::test_c"}  # fixture named by arg and by usefixtures
+
+
 # A survivor's tests exit 4 under the mutant with an ERROR line naming the file, because the mutant
 # broke the module at import. The same tests collect with the mutant off (canary exits 1 with a
 # failure, 0 the next round), so it counts as a kill by that file. When the canary cannot collect
