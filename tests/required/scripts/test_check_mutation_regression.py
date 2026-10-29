@@ -698,7 +698,7 @@ def test_changed_tests_in_follows_names_to_the_tests_that_use_them(cmr: Any) -> 
         "    assert os.sep\n"  # 33
     )
 
-    def selected(head: str, old: set[int], new: set[int]) -> set[str] | None:
+    def selected(head: str, old: set[int], new: set[int]) -> Any:
         return cmr.changed_tests_in(base, head, old, new, "tests/test_x.py")
 
     assert selected(base, {8}, {8}) == {"test_a"}  # helper body
