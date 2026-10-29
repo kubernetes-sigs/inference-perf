@@ -194,6 +194,9 @@ CANARY_RANGE = 10**9
 # tests are seen to collect with the mutant off.
 COLLECTION_FAILURE_CODES = (2, 4)
 
+# pytest reads these module-level names itself, so an assignment to one changes every test in the file
+PYTEST_MODULE_NAMES = frozenset({"pytestmark", "pytest_plugins", "collect_ignore", "collect_ignore_glob"})
+
 # A rerun gets its tests' measured time, scaled for a busier runner, plus room for pytest to start.
 # Past that it is hung, and a hang must not run into the workflow's timeout.
 RERUN_SLOWDOWN = 5
@@ -857,17 +860,23 @@ def changed_test_pairs(base: str) -> list[tuple[str | None, str | None]]:
     return [(b, h) for b, h in kept if b or h]
 
 
+def _span(node: ast.stmt) -> tuple[int, int]:
+    """A statement's lines, decorators included, since a changed decorator changes what it decorates."""
+    decorators: list[ast.expr] = getattr(node, "decorator_list", [])
+    return min([d.lineno for d in decorators] + [node.lineno]), node.end_lineno or node.lineno
+
+
 def test_ids(source: str, path: str | None = None) -> dict[str, tuple[int, int]]:
-    """Line span of each test function, keyed by its node id below the file: `test_x` or `Class::test_x`."""
+    """Line span of each test pytest collects, keyed by its node id below the file: `test_x` or `Class::test_x`."""
     found: dict[str, tuple[int, int]] = {}
     for node in parse(source, path).body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
-            found[node.name] = (min([d.lineno for d in node.decorator_list] + [node.lineno]), node.end_lineno or node.lineno)
-        elif isinstance(node, ast.ClassDef):
+            found[node.name] = _span(node)
+        # pyproject's python_classes collects Test* classes only
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and sub.name.startswith("test_"):
-                    start = min([d.lineno for d in sub.decorator_list] + [sub.lineno])
-                    found[f"{node.name}::{sub.name}"] = (start, sub.end_lineno or sub.lineno)
+                    found[f"{node.name}::{sub.name}"] = _span(sub)
     return found
 
 
@@ -882,13 +891,22 @@ def _names_used(node: ast.AST) -> set[str]:
     return found
 
 
-def _import_names(module: ast.Module) -> set[str]:
-    return {
-        (alias.asname or alias.name).split(".")[0]
-        for node in module.body
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-        for alias in node.names
-    }
+ImportAlias = tuple[int, str | None, str, str | None]
+
+
+def _imports(module: ast.Module) -> set[ImportAlias]:
+    """Each imported alias as (level, module, name, asname): the same across a reformat, not across a swapped source."""
+    found: set[ImportAlias] = set()
+    for node in module.body:
+        if isinstance(node, ast.Import):
+            found.update((0, None, alias.name, alias.asname) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            found.update((node.level, node.module, alias.name, alias.asname) for alias in node.names)
+    return found
+
+
+def _bound_names(aliases: set[ImportAlias]) -> set[str]:
+    return {(asname or name).split(".")[0] for _, _, name, asname in aliases}
 
 
 class WholeFile(Exception):
@@ -906,14 +924,15 @@ def _touched_tests_and_symbols(source: str, lines: set[int], path: str | None) -
     symbols: set[str] = set()
     spans = test_ids(source, path)
     for line in sorted(lines):
-        stripped = text[line - 1].strip() if 0 < line <= len(text) else ""
-        if not stripped or stripped.startswith("#"):
-            continue
+        # a test owns every line in its span, a comment or blank inside a string included
         owner = next((name for name, (start, end) in spans.items() if start <= line <= end), None)
         if owner:
             tests.add(owner)
             continue
-        stmt = next((n for n in module.body if n.lineno <= line <= (n.end_lineno or n.lineno)), None)
+        stripped = text[line - 1].strip() if 0 < line <= len(text) else ""
+        if not stripped or stripped.startswith("#"):
+            continue
+        stmt = next((n for n in module.body if _span(n)[0] <= line <= _span(n)[1]), None)
         if isinstance(stmt, ast.ClassDef):
             # a class attribute or fixture of a test class changes every test in it
             symbols.add(stmt.name)
@@ -925,7 +944,7 @@ def _touched_tests_and_symbols(source: str, lines: set[int], path: str | None) -
         elif isinstance(stmt, (ast.Assign, ast.AnnAssign)):
             targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
             names = {t.id for t in targets if isinstance(t, ast.Name)}
-            if not names:
+            if not names or names & PYTEST_MODULE_NAMES:
                 raise WholeFile(f"line {line}")
             symbols.update(names)
         elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
@@ -976,7 +995,10 @@ def _tests_using_symbols(source: str, symbols: set[str], path: str | None) -> se
         if isinstance(node, ast.ClassDef):
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    uses[f"{node.name}::{sub.name}"] = _names_used(sub) | implicit | _usefixtures(node) | _usefixtures(sub)
+                    # a class attribute or decorator a method reads through self is read by the class
+                    uses[f"{node.name}::{sub.name}"] = (
+                        _names_used(sub) | {node.name} | implicit | _usefixtures(node) | _usefixtures(sub)
+                    )
     changed = True
     while changed:
         changed = False
@@ -984,7 +1006,8 @@ def _tests_using_symbols(source: str, symbols: set[str], path: str | None) -> se
             if name not in reached and used & reached:
                 reached.add(name)
                 changed = True
-    return {name for name in reached if name in test_ids(source, path)}
+    ids = test_ids(source, path)
+    return {name for name in reached if name in ids}
 
 
 def changed_tests_in(base_src: str, head_src: str, old_lines: set[int], new_lines: set[int], path: str) -> set[str] | None:
@@ -1000,7 +1023,10 @@ def changed_tests_in(base_src: str, head_src: str, old_lines: set[int], new_line
     except (WholeFile, SyntaxError):
         # a file that does not parse fails its own run; the whole file stays in scope so that shows
         return None
-    symbols = head_symbols | base_symbols | (_import_names(parse(head_src, path)) ^ _import_names(parse(base_src, path)))
+    rebound = _imports(parse(head_src, path)) ^ _imports(parse(base_src, path))
+    if any(name == "*" for _, _, name, _ in rebound):
+        return None  # a star import can rebind any name in the file
+    symbols = head_symbols | base_symbols | _bound_names(rebound)
     touched = (
         head_tests | base_tests | _tests_using_symbols(head_src, symbols, path) | _tests_using_symbols(base_src, symbols, path)
     )
@@ -1015,7 +1041,8 @@ def tests_in_scope(base: str, base_tree: Path, head_tree: Path) -> tuple[list[st
     """
     base_ids: set[str] = set()
     head_ids: set[str] = set()
-    for base_path, head_path in changed_test_pairs(base):
+    pairs = changed_test_pairs(base)
+    for base_path, head_path in pairs:
         if base_path is None:
             continue  # every test in an added file is new
         if head_path is None:
@@ -1033,7 +1060,9 @@ def tests_in_scope(base: str, base_tree: Path, head_tree: Path) -> tuple[list[st
         head_ids.update(f"{head_path}::{t}" for t in selected if t in on_head)
     support = changed_test_support(base)
     base_ids.update(tests_using(base_tree, support))
-    head_ids.update(tests_using(head_tree, support))
+    # a test file the change adds can only add kills, even when it imports changed support
+    on_base = {h: b for b, h in pairs if b and h}
+    head_ids.update(t for t in tests_using(head_tree, support) if (base_tree / on_base.get(t, t)).is_file())
     return sorted(base_ids), sorted(head_ids)
 
 
@@ -1063,10 +1092,17 @@ def functions_run_by(tree: Path, tests: list[str]) -> set[str]:
     env = harness_env(tree, env)
     cov = ["--cov=inference_perf", "--cov-context=test", "--cov-report=", f"--cov-config={harness_dir() / 'coverage.toml'}"]
     plugins = ["-p", "no:cacheprovider", "-p", CHILD_PLUGIN]
-    run_bounded([sys.executable, "-m", "pytest", "-q", *plugins, "-o", "log_cli=false", *cov, *tests], tree, env)
-    run_bounded([sys.executable, "-m", "coverage", "json", "--show-contexts", "-o", str(report)], tree, env)
-    if not report.exists():
-        raise MutationRunError(f"coverage over the changed tests produced no report in {tree}")
+    run = run_bounded([sys.executable, "-m", "pytest", "-q", *plugins, "-o", "log_cli=false", *cov, *tests], tree, env)
+    # 0 and 1 mean the tests ran. Anything else collected nothing, and the report would be silently empty
+    if run.returncode not in (0, 1):
+        raise MutationRunError(
+            f"pytest over the changed tests in {tree} exited {run.returncode}\n{output_tail(run.stdout + run.stderr)}"
+        )
+    export = run_bounded([sys.executable, "-m", "coverage", "json", "--show-contexts", "-o", str(report)], tree, env)
+    if export.returncode != 0 or not report.exists():
+        raise MutationRunError(
+            f"coverage over the changed tests produced no report in {tree}\n{output_tail(export.stdout + export.stderr)}"
+        )
     found: set[str] = set()
     for path, info in json.loads(report.read_text())["files"].items():
         rel = os.path.relpath(path, tree) if os.path.isabs(path) else path
@@ -1229,7 +1265,7 @@ def diagnose_setup_failure(side: Side, pytest_args: list[str]) -> SetupFailure:
     except subprocess.TimeoutExpired as e:
         partial = e.stdout if isinstance(e.stdout, str) else ""
         output = partial + f"\nThe suite was still running after {DIAGNOSIS_TIMEOUT_S} s and was stopped."
-    return SetupFailure(side.tree, failed_tests(output), "\n".join(output.splitlines()[-DIAGNOSIS_TAIL_LINES:]))
+    return SetupFailure(side.tree, failed_tests(output), output_tail(output))
 
 
 def run_mutmut(side: Side, globs: list[str], max_children: int, pytest_args: list[str]) -> tuple[str, bool]:
@@ -1388,9 +1424,13 @@ class Survival(NamedTuple):
     killed_by: list[str]
 
 
+def output_tail(output: str) -> str:
+    return "\n".join(output.splitlines()[-DIAGNOSIS_TAIL_LINES:])
+
+
 def unusable_rerun(what: str, code: int | None, output: str) -> MutationRunError:
     """A rerun that neither passed nor failed a named test: a usage error, nothing collected, an interrupt."""
-    tail = "\n".join(output.splitlines()[-DIAGNOSIS_TAIL_LINES:])
+    tail = output_tail(output)
     return MutationRunError(f"Rerunning the tests for {what} exited {code} without a passing or failing test.\n{tail}")
 
 
@@ -1400,6 +1440,7 @@ def still_survives(side: Side, mutant: str, pytest_args: list[str]) -> Survival:
         return Survival(True, [])
     tests = [t for t in mutmut(side.tree, "tests-for-mutant", mutant).stdout.splitlines() if "::" in t]
     killed_by: set[str] = set()
+    collects: bool | None = None
     for _ in range(RERUNS):
         code, output = rerun(side, tests, mutant, pytest_args)
         # a hang is not a kill
@@ -1407,10 +1448,10 @@ def still_survives(side: Side, mutant: str, pytest_args: list[str]) -> Survival:
             return Survival(True, sorted(killed_by))
         failed = failed_tests(output)
         # only a named failing test is a kill. Any other exit would count a rerun that ran nothing,
-        # unless the mutant itself is what stopped the tests from collecting
-        broke_collection = (
-            code in COLLECTION_FAILURE_CODES and bool(failed) and collects_without(side, tests, mutant, pytest_args)
-        )
+        # unless the mutant itself is what stopped the tests from collecting. The canary answers that once
+        if code in COLLECTION_FAILURE_CODES and failed and collects is None:
+            collects = collects_without(side, tests, mutant, pytest_args)
+        broke_collection = code in COLLECTION_FAILURE_CODES and bool(failed) and bool(collects)
         if not failed or (code != 1 and not broke_collection):
             raise unusable_rerun(mutant, code, output)
         killed_by.update(failed)
