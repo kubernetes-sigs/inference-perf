@@ -121,6 +121,15 @@ def add_pydantic_args(
             else:
                 parser.add_argument(arg_name, type=str, help=f"{help_text} (handled as string)", default=argparse.SUPPRESS)
                 docs.append(f"| `{arg_name}` | string | {help_text} |")
+                # A field that is a model OR a scalar (e.g. a Distribution or an expression
+                # string) keeps the model's nested flags too, so `--x.mean 600` still works.
+                models = [
+                    arg
+                    for arg in typing.get_args(annotation)
+                    if origin is typing.Union and isinstance(arg, type) and issubclass(arg, BaseModel)
+                ]
+                if len(models) == 1:
+                    add_pydantic_args(parser, models[0], prefix=f"{prefix}{name}.", docs=docs)
 
     return docs
 
@@ -135,7 +144,13 @@ def unflatten_dict(flat_dict: dict[str, typing.Any]) -> dict[str, typing.Any]:
             continue
         parts = key.split(".")
         d = result
-        for part in parts[:-1]:
+        for i, part in enumerate(parts[:-1]):
             d = d.setdefault(part, {})
+            if not isinstance(d, dict):
+                raise ValueError(
+                    f"--{key} conflicts with --{'.'.join(parts[: i + 1])}: set the whole value or its fields, not both."
+                )
+        if isinstance(d.get(parts[-1]), dict):
+            raise ValueError(f"--{key} conflicts with --{key}.*: set the whole value or its fields, not both.")
         d[parts[-1]] = value
     return result
