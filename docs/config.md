@@ -290,11 +290,44 @@ Configures connection to the model serving backend:
 
 ```yaml
 server:
-  type: vllm                                          # Currently only vLLM supported
-  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"   # Required model identifier
+  type: vllm                                          # Server type (vllm|sglang|tgi|mock); vLLM, SGLang and TGI verified
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"   # Optional; auto-detected from /v1/models if unset
   base_url: "http://0.0.0.0:8000"                     # Required server endpoint
   ignore_eos: true                                    # Whether to ignore End-of-Sequence tokens
   api_key: ""                                         # Optional API key for authenticated endpoints
+  cert_path: ""                                       # Optional path to a client TLS certificate (mutual TLS)
+  key_path: ""                                        # Optional path to the private key for cert_path
+```
+
+`server.type` selects the model server (vLLM by default). Verified servers are vLLM,
+SGLang, and TGI; the `mock` type runs against a built-in client that needs no network.
+
+`server.model_name` is optional. When it is unset, the client queries
+`GET {base_url}/v1/models` and uses the first entry's `id` as the model name, so
+servers that serve exactly one model need no model identifier at all. The lookup:
+
+- Reuses the connection settings of the benchmark: `api_key`, and `cert_path`/`key_path`
+  when the endpoint requires mutual TLS.
+- Uses `load.request_timeout` when set, falling back to a bounded 30-second probe so an
+  unresponsive server fails startup instead of hanging it.
+- When the tokenizer path is also unset, the tokenizer is loaded under the resolved
+  model name, falling back to the entry's `root` (the real model path that vLLM reports
+  when `--served-model-name` is a route alias). This fallback also applies when
+  `server.model_name` is set explicitly: if that name cannot load a tokenizer, the
+  client probes `/v1/models` and the entry whose `id` matches the configured name
+  supplies `root`. A name that loads its own tokenizer triggers no probe, so pinning a
+  real model path costs nothing. If neither loads, the error names
+  `tokenizer.pretrained_model_name_or_path` so the setting can be pinned explicitly.
+
+The same `/v1/models` lookup validates LoRA adapter names when
+`load.lora_traffic_split` is configured.
+
+Example — let both the model name and the tokenizer be auto-detected:
+
+```yaml
+server:
+  type: vllm
+  base_url: "http://0.0.0.0:8000"
 ```
 
 ### Metrics Collection
@@ -429,13 +462,23 @@ Optional tokenizer configuration for specialized tokenization:
 
 ```yaml
 tokenizer:
-  pretrained_model_name_or_path: "model-id"   # Required model path
+  pretrained_model_name_or_path: "model-id"   # Optional; defaults to server.model_name, then that model's root
   trust_remote_code: true                     # Whether to trust custom tokenizer code
   token: ""                                   # HuggingFace access token for private models
   load_timeout: 300.0                         # Deadline in seconds for loading the tokenizer,
                                               # including any download from Hugging Face Hub.
                                               # Set to null to disable. Default: 300.
 ```
+
+`tokenizer.pretrained_model_name_or_path` is optional. When it is unset, the tokenizer
+is loaded under the resolved `server.model_name` -- configured or detected; if that name
+is a server-side route alias the tokenizer has no files for, the client probes
+`/v1/models` and falls back to the `root` of the matching entry (the real model path). When neither loads,
+the error names this setting so it can be pinned explicitly. The path that resolved is
+written back into the run config, so the report bundle's `config.yaml` shows it and
+report generation counts tokens with the same tokenizer the run measured with -- note
+that a resolved `root` is a path on the model server, so the bundled config describes
+that server's environment rather than a portable one.
 
 `load_timeout: null` can only be set in a YAML config file; the `--tokenizer.load_timeout` CLI flag parses a float and rejects `null`. The deadline applies to each tokenizer construction independently; a run constructs a tokenizer in several stages (data generation, the model server client, report generation), so the worst-case total wait is a small multiple of `load_timeout`.
 

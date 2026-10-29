@@ -43,6 +43,11 @@ import ssl
 
 logger = logging.getLogger(__name__)
 
+# Bound for the /v1/models probe that backs model auto-detection. ``request_timeout``
+# is optional and defaults to None; an unresponsive server must not hang startup, so
+# the probe falls back to this bounded deadline.
+_SUPPORTED_MODELS_TIMEOUT_SEC = 30.0
+
 
 class OpenAIMetrics(BaseMetrics):
     def __init__(
@@ -116,12 +121,22 @@ class openAIModelServerClient(ModelServerClient):
         # Initialize OTEL instrumentation (configured via environment variables)
         self.otel = get_otel_instrumentation()
 
+        # One config object is shared with the caller: the candidates below resolve a
+        # path into it, and report generation rebuilds its tokenizer from the same
+        # object (main.py copies it back into the run config).
+        tokenizer_config = tokenizer_config if tokenizer_config is not None else CustomTokenizerConfig()
+        self.tokenizer_config = tokenizer_config
+
+        supported_models: Optional[List[dict[str, Any]]] = None
+        inferred_entry: Optional[dict[str, Any]] = None
+        probe_for_root = False
         if model_name is None:
             supported_models = self.get_supported_models()
             if not supported_models:
                 logger.error("No supported models found")
                 raise Exception("openAI client init failed, no model_name could be found")
-            inferred_id = supported_models[0].get("id")
+            inferred_entry = supported_models[0]
+            inferred_id = inferred_entry.get("id")
             if not isinstance(inferred_id, str):
                 raise Exception(f"openAI client init failed, model entry has no string 'id': {supported_models[0]}")
             self.model_name: str = inferred_id
@@ -130,9 +145,14 @@ class openAIModelServerClient(ModelServerClient):
                 logger.warning(f"More than one supported model found {supported_models}, selecting {self.model_name}")
         else:
             self.model_name = model_name
+            # Deferred, not probed here: a name that loads its own tokenizer never needs
+            # the entry, and probing first would cost every pinned-name run one request
+            # (and one timeout against a server that has no /v1/models at all).
+            probe_for_root = not tokenizer_config.pretrained_model_name_or_path
 
         if self.lora_config is not None:
-            supported_models = self.get_supported_models()
+            if supported_models is None:
+                supported_models = self.get_supported_models()
             supported_model_names = set()
             for model in supported_models:
                 supported_model_names.add(model.get("id"))
@@ -141,11 +161,69 @@ class openAIModelServerClient(ModelServerClient):
                 if adapter not in supported_model_names:
                     raise ValueError(f"LoRA adapter {adapter} not found in model server's available models")
 
-        if tokenizer_config and not tokenizer_config.pretrained_model_name_or_path:
-            tokenizer_config.pretrained_model_name_or_path = self.model_name
-        elif not tokenizer_config:
-            tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path=self.model_name)
-        self.tokenizer = CustomTokenizer(tokenizer_config)
+        if tokenizer_config.pretrained_model_name_or_path:
+            self.tokenizer = CustomTokenizer(tokenizer_config)
+        else:
+            self.tokenizer = self._load_tokenizer_from_candidates(
+                tokenizer_config, inferred_entry, probe_for_root, known_models=supported_models
+            )
+
+    def _load_tokenizer_from_candidates(
+        self,
+        tokenizer_config: CustomTokenizerConfig,
+        inferred_entry: Optional[dict[str, Any]],
+        probe_for_root: bool = False,
+        known_models: Optional[List[dict[str, Any]]] = None,
+    ) -> CustomTokenizer:
+        """Load the tokenizer from the first candidate that works.
+
+        Candidates are the resolved model name (``id``) and, when the client has the
+        ``/v1/models`` entry, the entry's ``root``: vLLM sets ``id`` to
+        ``--served-model-name``, which can be an alias the tokenizer cannot load under,
+        while ``root`` is the real model path. With ``probe_for_root`` the entry is
+        fetched only if the name itself fails -- an explicit ``model_name`` defers it
+        here so a name that loads pays no probe. ``known_models`` are entries the caller
+        already fetched (the LoRA adapter check); reusing them keeps startup at one
+        ``/v1/models`` request. If nothing loads, the error names the config field the
+        user must set. The candidate that loaded is written back into
+        ``tokenizer_config``, which the caller keeps in the run config.
+        """
+        candidates = [self.model_name]
+        if inferred_entry is not None:
+            root = inferred_entry.get("root")
+            if isinstance(root, str) and root != self.model_name:
+                candidates.append(root)
+        errors: list[str] = []
+        for candidate in candidates:
+            tokenizer = self._try_tokenizer(tokenizer_config, candidate, errors)
+            if tokenizer is not None:
+                return tokenizer
+        if probe_for_root and inferred_entry is None:
+            models = known_models if known_models is not None else self.get_supported_models()
+            entry = next((model for model in models if model.get("id") == self.model_name), None)
+            root = entry.get("root") if entry is not None else None
+            if isinstance(root, str) and root != self.model_name:
+                candidates.append(root)
+                tokenizer = self._try_tokenizer(tokenizer_config, root, errors)
+                if tokenizer is not None:
+                    return tokenizer
+        raise Exception(
+            "Unable to load a tokenizer for any candidate model name "
+            f"{candidates}. Set 'tokenizer.pretrained_model_name_or_path' explicitly. Errors: {errors}"
+        )
+
+    def _try_tokenizer(
+        self, tokenizer_config: CustomTokenizerConfig, candidate: str, errors: list[str]
+    ) -> Optional[CustomTokenizer]:
+        """Load the tokenizer under one candidate, recording why it failed if it did."""
+        config = tokenizer_config.model_copy(update={"pretrained_model_name_or_path": candidate})
+        try:
+            tokenizer = CustomTokenizer(config)
+        except Exception as e:
+            errors.append(f"'{candidate}': {e}")
+            return None
+        tokenizer_config.pretrained_model_name_or_path = candidate
+        return tokenizer
 
     def new_session(self) -> "ModelServerClientSession":
         return openAIModelServerClientSession(self)
@@ -184,7 +262,14 @@ class openAIModelServerClient(ModelServerClient):
 
     def get_supported_models(self) -> List[dict[str, Any]]:
         try:
-            response = requests.get(f"{self.uri}/v1/models", headers=_build_request_headers(self.api_config, self.api_key))
+            timeout = self.timeout if self.timeout is not None else _SUPPORTED_MODELS_TIMEOUT_SEC
+            cert = (self.cert_path, self.key_path) if self.cert_path and self.key_path else None
+            response = requests.get(
+                f"{self.uri}/v1/models",
+                headers=_build_request_headers(self.api_config, self.api_key),
+                timeout=timeout,
+                cert=cert,
+            )
             response.raise_for_status()
             data = response.json()
             if "data" in data and isinstance(data["data"], list):

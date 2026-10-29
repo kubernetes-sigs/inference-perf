@@ -1061,6 +1061,24 @@ class ReportGenerator:
         """
         return self.metrics_collector
 
+    def _build_tokenizer(self) -> Optional[CustomTokenizer]:
+        """Build the tokenizer the report counts tokens with, if the run has one.
+
+        The run config carries the tokenizer main.py resolved -- the configured path, a
+        detected model name, or the model entry's root -- so the report corrects
+        streamed token timings the same way the client counted them. A run that resolves
+        no tokenizer (the mock server type among them) reports without the correction
+        rather than failing.
+        """
+        if self.config.tokenizer is None or not self.config.tokenizer.pretrained_model_name_or_path:
+            return None
+        # Imported here, not at module scope: the tests that substitute a tokenizer patch
+        # inference_perf.utils.custom_tokenizer.CustomTokenizer, and a module-level binding
+        # would resolve before that patch is applied.
+        from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
+        return CustomTokenizer(self.config.tokenizer)
+
     def generate_config_report(self) -> ReportFile:
         """
         Generates a report file containing the config.
@@ -1083,11 +1101,7 @@ class ReportGenerator:
         use_server_output_tokens = report_config.request_lifecycle.use_server_output_tokens
         max_error_messages = report_config.request_lifecycle.max_error_messages
 
-        tokenizer = None
-        if self.config.tokenizer:
-            from inference_perf.utils.custom_tokenizer import CustomTokenizer
-
-            tokenizer = CustomTokenizer(self.config.tokenizer)
+        tokenizer = self._build_tokenizer()
 
         # Filter out the preprocessing stage -1
         request_metrics = [
