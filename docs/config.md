@@ -318,6 +318,10 @@ servers that serve exactly one model need no model identifier at all. The lookup
   supplies `root`. A name that loads its own tokenizer triggers no probe, so pinning a
   real model path costs nothing. If neither loads, the error names
   `tokenizer.pretrained_model_name_or_path` so the setting can be pinned explicitly.
+- The `root` fallback relies on vLLM reporting the model path there. SGLang reports the
+  served name instead, so behind `--served-model-name` there is no path to fall back to
+  and the tokenizer cannot be auto-detected: pin
+  `tokenizer.pretrained_model_name_or_path` when serving an SGLang alias.
 
 The same `/v1/models` lookup validates LoRA adapter names when
 `load.lora_traffic_split` is configured.
