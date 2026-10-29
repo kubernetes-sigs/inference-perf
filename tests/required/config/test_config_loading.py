@@ -28,6 +28,7 @@ import pytest
 import yaml
 
 from inference_perf.config import (
+    StandardLoadStage,
     APIType,
     Config,
     DataGenType,
@@ -291,3 +292,53 @@ def test_duration_stage_allows_unlimited_concurrency_for_weka_replay() -> None:
         _replay_config({}, {"concurrent_sessions": 0, "duration": 1800}, data_type="weka_trace_replay")
     )
     assert config.data.weka_trace_replay is not None
+
+
+# A YAML file whose stage sets stop_condition 't >= 30' instead of duration loads through read_config; the stage's effective_duration is 30.0.
+def test_read_config_stop_condition_stage() -> None:
+    config_content = {
+        "data": {"type": "mock"},
+        "load": {"type": "constant", "stages": [{"rate": 2, "stop_condition": "t >= 30"}]},
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+    try:
+        config = read_config(tmp_path)
+        stage = config.load.stages[0]
+        assert isinstance(stage, StandardLoadStage)
+        assert stage.duration is None
+        assert stage.stop_condition == "t >= 30"
+        assert stage.effective_duration == 30.0
+    finally:
+        os.remove(tmp_path)
+
+
+# A YAML stage whose stop_condition is the object form {condition: '(t >= 300) |
+# (quantile_over_time(0.99, ttft[30s]) > 2)', hold: 2} loads through read_config with that hold; effective_duration
+# is the 300s deadline.
+def test_read_config_stop_condition_object_form() -> None:
+    config_content = {
+        "data": {"type": "mock"},
+        "load": {
+            "type": "constant",
+            "stages": [
+                {
+                    "rate": 2,
+                    "stop_condition": {"condition": "(t >= 300) | (quantile_over_time(0.99, ttft[30s]) > 2)", "hold": 2},
+                }
+            ],
+        },
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+    try:
+        config = read_config(tmp_path)
+        stage = config.load.stages[0]
+        assert isinstance(stage, StandardLoadStage)
+        assert stage.stop_settings.condition == "(t >= 300) | (quantile_over_time(0.99, ttft[30s]) > 2)"
+        assert stage.stop_settings.hold == 2
+        assert stage.effective_duration == 300.0
+    finally:
+        os.remove(tmp_path)
