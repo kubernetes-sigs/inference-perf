@@ -117,11 +117,16 @@ class AbsorberServer:
     /health and /metrics so tools that probe those do not error). ``ttft_s`` is
     the wait before the first chunk (or before a non-streaming reply) and
     ``itl_s`` the wait between chunks. ``default_output_tokens`` is how many
-    chunks to send when the request has no ``max_tokens``.
+    chunks to send when the request has no ``max_tokens``. ``model`` is the id
+    /v1/models reports and ``root`` the model path behind it; leaving ``root``
+    unset answers the way a plain single-model server does, with the two equal.
     """
 
     port: int
     model: str
+    # What /v1/models reports as `root`: the model path behind the id, which is
+    # what vLLM puts there when --served-model-name makes `model` an alias.
+    root: Optional[str] = None
     ttft_s: float = 0.04
     itl_s: float = 0.005
     default_output_tokens: int = 16
@@ -153,7 +158,8 @@ class AbsorberServer:
             await self._runner.cleanup()
 
     async def _handle_models(self, request: web.Request) -> web.Response:
-        return web.json_response({"object": "list", "data": [{"id": self.model, "object": "model"}]})
+        root = self.root if self.root is not None else self.model
+        return web.json_response({"object": "list", "data": [{"id": self.model, "object": "model", "root": root}]})
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         return web.Response(text="")
