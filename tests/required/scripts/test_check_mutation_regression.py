@@ -741,6 +741,36 @@ def test_changed_tests_in_follows_names_to_the_tests_that_use_them(cmr: Any) -> 
     assert selected(base.replace("def test_d():\n    assert os.sep\n", ""), {32, 33}, set()) == {"test_d"}
 
 
+# tests/test_x.py has constant N, helper check(), and class TestC with limit = N, test_c reading
+# self.limit and test_g calling check. Editing N reaches both tests through the class attribute.
+# Editing check's body reaches test_g only, not its sibling test_c.
+def test_a_symbol_read_by_one_method_reaches_only_that_method(cmr: Any) -> None:
+    base = (
+        "N = 1\n"  # 1
+        "\n"  # 2
+        "\n"  # 3
+        "def check(x):\n"  # 4
+        "    assert x\n"  # 5
+        "\n"  # 6
+        "\n"  # 7
+        "class TestC:\n"  # 8
+        "    limit = N\n"  # 9
+        "\n"  # 10
+        "    def test_c(self):\n"  # 11
+        "        assert self.limit\n"  # 12
+        "\n"  # 13
+        "    def test_g(self):\n"  # 14
+        "        check(1)\n"  # 15
+    )
+
+    def selected(old: set[int], new: set[int]) -> set[str] | None:
+        result: set[str] | None = cmr.changed_tests_in(base, base, old, new, "tests/test_x.py")
+        return result
+
+    assert selected({1}, {1}) == {"TestC::test_c", "TestC::test_g"}
+    assert selected({5}, {5}) == {"TestC::test_g"}
+
+
 # tests/test_x.py has an autouse fixture clock, a plain fixture value, test_a naming no fixture,
 # test_b(value), and class TestC marked usefixtures("value") holding test_c. Editing clock's body
 # reaches all three tests. Editing value's body reaches test_b and TestC::test_c, not test_a.

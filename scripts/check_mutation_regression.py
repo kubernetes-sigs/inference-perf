@@ -977,6 +977,15 @@ def _autouse_fixtures(module: ast.Module) -> set[str]:
     return found
 
 
+def _class_level_names(node: ast.ClassDef) -> set[str]:
+    """Names the class reads outside its methods: decorators, bases, attributes. Every method depends on those."""
+    outside = [s for s in node.body if not isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    found: set[str] = set()
+    for part in [*node.decorator_list, *node.bases, *node.keywords, *outside]:
+        found |= _names_used(part)
+    return found
+
+
 def _tests_using_symbols(source: str, symbols: set[str], path: str | None) -> set[str]:
     """Tests that read any of `symbols`, directly or through other defs and classes in the file.
 
@@ -995,9 +1004,9 @@ def _tests_using_symbols(source: str, symbols: set[str], path: str | None) -> se
         if isinstance(node, ast.ClassDef):
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    # a class attribute or decorator a method reads through self is read by the class
+                    # a method reads its class's attributes and decorators, not its sibling methods
                     uses[f"{node.name}::{sub.name}"] = (
-                        _names_used(sub) | {node.name} | implicit | _usefixtures(node) | _usefixtures(sub)
+                        _names_used(sub) | _class_level_names(node) | implicit | _usefixtures(node) | _usefixtures(sub)
                     )
     changed = True
     while changed:
