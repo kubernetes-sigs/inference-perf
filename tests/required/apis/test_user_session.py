@@ -259,7 +259,15 @@ def _unary_response(text: str) -> MagicMock:
     """Minimal non-streaming completion response carrying ``text``."""
     response = MagicMock()
     body: asyncio.Future[Any] = asyncio.Future()
-    body.set_result({"choices": [{"text": text}]})
+    body.set_result(
+        {
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 0,
+            "model": "test-model",
+            "choices": [{"index": 0, "finish_reason": "stop", "text": text}],
+        }
+    )
     response.json = MagicMock(return_value=body)
     response.status = 200
     response.headers = {"content-type": "application/json"}
