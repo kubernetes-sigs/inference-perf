@@ -21,6 +21,7 @@ from aiohttp import ClientResponse
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, StreamedResponseMetrics, UnaryResponseMetrics
 from inference_perf.apis.chat import ChatMessage, _clean_parameters
 from inference_perf.apis.image_parts import is_image_part, openai_image_to_part
+from inference_perf.apis.response_errors import InBandError, in_band_error
 from inference_perf.apis.streaming_parser import ParsedSSEStream, parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
@@ -373,6 +374,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
                     output_tokens=output_len,
                     output_token_times=parsed.generated_chunk_times,
                     server_usage=server_usage,
+                    finish_reason=parsed.finish_reason,
                     reasoning_chunks=parsed.reasoning_chunks,
                     reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
@@ -381,6 +383,9 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             )
 
         data = await response.json()
+        # A 200 whose body is an error payload is that error, not a success.
+        if (error_payload := in_band_error(data)) is not None:
+            raise InBandError(error_payload)
         usage = data.get("usage") or {}
         output_text, output_message = parse_anthropic_content(data.get("content"))
         input_tokens = usage.get("input_tokens")
@@ -394,7 +399,9 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             request_metrics=RequestMetrics(
                 text=Text(input_tokens=int(input_tokens) if input_tokens is not None else self._count_prompt_tokens(tokenizer))
             ),
-            response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=usage or None),
+            response_metrics=UnaryResponseMetrics(
+                output_tokens=output_len, server_usage=usage or None, finish_reason=data.get("stop_reason")
+            ),
             lora_adapter=lora_adapter,
             extra_info=extra_info,
         )
