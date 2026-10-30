@@ -13,9 +13,10 @@
 # limitations under the License.
 from inference_perf.apis import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, SharedPrefix, TraceConfig
+from inference_perf.config import APIConfig, APIType, DataConfig, SharedPrefix, TraceConfig
+from inference_perf.utils.numeric.distribution import value_bounds
 from abc import ABC, abstractmethod
-from typing import Generator, Optional, List, Dict, Any
+from typing import Generator, NamedTuple, Optional, List, Dict, Any
 
 
 class BaseGenerator(ABC):
@@ -65,11 +66,21 @@ class BaseGenerator(ABC):
         return None
 
 
+class LengthBounds(NamedTuple):
+    """Provable (min, max) of an IO length value; dataset generators filter rows by it."""
+
+    min: float
+    max: float
+
+
 class DataGenerator(BaseGenerator):
     """Request-based data generation for standard load types (CONSTANT, POISSON, CONCURRENT, TRACE_REPLAY)."""
 
-    input_distribution: Optional[Distribution]
-    output_distribution: Optional[Distribution]
+    # Provable bounds of the IO length fields, used as dataset filter bounds.
+    # Infinite on a side nothing bounds; the generators that sample lengths
+    # (synthetic/random) read the raw value from self.config instead.
+    input_distribution: Optional[LengthBounds]
+    output_distribution: Optional[LengthBounds]
     shared_prefix: Optional[SharedPrefix]
     trace: Optional[TraceConfig]
 
@@ -92,8 +103,12 @@ class DataGenerator(BaseGenerator):
         if config.shared_prefix is not None and not self.is_shared_prefix_supported():
             raise Exception("Shared prefix not supported for this data generator")
 
-        self.input_distribution = config.input_distribution
-        self.output_distribution = config.output_distribution
+        self.input_distribution = (
+            LengthBounds(*value_bounds(config.input_distribution)) if config.input_distribution is not None else None
+        )
+        self.output_distribution = (
+            LengthBounds(*value_bounds(config.output_distribution)) if config.output_distribution is not None else None
+        )
         self.shared_prefix = config.shared_prefix
         self.trace = config.trace
 

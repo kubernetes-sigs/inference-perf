@@ -64,6 +64,6 @@ class VisionArenaConfig(StrictBaseModel):
         default=0.0,
         description=(
             "Placement of the image block(s) within the prompt text. Float in [0.0, 1.0] "
-            "(0=start, 1=end), or a Distribution to sample per request."
+            "(0=start, 1=end), or an expression string provably within [0, 1] to sample per request."
         ),
     )

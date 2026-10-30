@@ -33,6 +33,7 @@ from inference_perf.config import (
     PrometheusClientConfig,
     MultiLoRAConfig,
 )
+from inference_perf.utils.numeric.distribution import compile_legacy_distribution
 import os
 import tempfile
 
@@ -260,10 +261,12 @@ def test_shared_prefix_inline_distribution() -> None:
     )
     sp = config.data.shared_prefix
     assert sp is not None
-    assert isinstance(sp.question_len, Distribution)
-    assert sp.question_len.type == DistributionType.SKEW_NORMAL
-    assert sp.question_len.mean == 200
-    assert sp.question_len.skew == 2.5
+    # The legacy block is rewritten on load to the expression it stood for: the
+    # Azzalini skew-normal build with skew 2.5, clamped to [10, 2000].
+    assert sp.question_len == compile_legacy_distribution(
+        Distribution(type="skew_normal", mean=200, std_dev=80, skew=2.5, min=10, max=2000)
+    )
+    assert isinstance(sp.question_len, str) and sp.question_len.startswith("Min(Max(200 + 80*(")
 
 
 def test_shared_prefix_fixed_int_unchanged() -> None:
@@ -326,9 +329,10 @@ def test_shared_prefix_legacy_distribution_compat() -> None:
     )
     sp = config.data.shared_prefix
     assert sp is not None
-    assert sp.question_len == 50
-    assert sp.question_distribution is not None
-    assert sp.question_distribution.mean == 512
+    # The deprecated alias is rewritten to the expression it stood for and
+    # folded into question_len, which the datagen reads.
+    assert sp.question_len == "Min(Max(Normal(512, 200), 10), 1024)"
+    assert sp.question_distribution is None
 
 
 def test_shared_prefix_seed_field() -> None:
@@ -477,11 +481,11 @@ def test_multimodal_config_parsing() -> None:
         assert config.data.multimodal is not None
         assert config.data.multimodal.image is not None
         assert config.data.multimodal.image.insertion_point == 0.5
-        assert config.data.multimodal.image.count is not None
-        assert config.data.multimodal.image.count.mean == 3
+        # uniform blocks with min == max are rewritten to the expression they stood
+        # for: an integer uniform over [min, max + 1) clamped back to max.
+        assert config.data.multimodal.image.count == "Min(Uniform(3, 4), 3)"
         assert config.data.multimodal.video is not None
-        assert config.data.multimodal.video.count is not None
-        assert config.data.multimodal.video.count.mean == 1
+        assert config.data.multimodal.video.count == "Min(Uniform(1, 2), 1)"
         assert config.data.multimodal.video.profiles is not None
         assert isinstance(config.data.multimodal.video.profiles, VideoProfile)
         assert config.data.multimodal.video.profiles.resolution == "1080p"
