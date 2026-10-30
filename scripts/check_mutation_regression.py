@@ -189,6 +189,14 @@ HARNESS_DIR: Path | None = None
 # id is random per run, so a test cannot recognise the canary and pass only for it.
 CANARY_RANGE = 10**9
 
+# pytest exits 2 when collection is interrupted and 4 when a node id cannot be collected. A mutant that
+# breaks a module at import does both, and the ERROR line names the file, so it is a kill once the same
+# tests are seen to collect with the mutant off.
+COLLECTION_FAILURE_CODES = (2, 4)
+
+# pytest reads these module-level names itself, so an assignment to one changes every test in the file
+PYTEST_MODULE_NAMES = frozenset({"pytestmark", "pytest_plugins", "collect_ignore", "collect_ignore_glob"})
+
 # A rerun gets its tests' measured time, scaled for a busier runner, plus room for pytest to start.
 # Past that it is hung, and a hang must not run into the workflow's timeout.
 RERUN_SLOWDOWN = 5
@@ -832,10 +840,268 @@ def tests_using(tree: Path, support: list[str]) -> set[str]:
     return found
 
 
-def tests_in_scope(base: str, base_tree: Path, head_tree: Path) -> list[str]:
-    """Changed test files plus the unit tests that run changed helpers, conftests or package inits, on either side."""
+def changed_test_pairs(base: str) -> list[tuple[str | None, str | None]]:
+    """(base path, head path) for each changed test file the suite runs, following renames."""
+    pairs: list[tuple[str | None, str | None]] = []
+    for line in git("diff", "--name-status", "-M", base, "--", TESTS_PREFIX).splitlines():
+        status, *paths = line.split("\t")
+        if status.startswith("R"):
+            pairs.append((paths[0], paths[1]))
+        elif status == "D":
+            pairs.append((paths[0], None))
+        elif status == "A":
+            pairs.append((None, paths[0]))
+        else:
+            pairs.append((paths[0], paths[0]))
+    for path in git("ls-files", "--others", "--exclude-standard", "--", TESTS_PREFIX).splitlines():
+        pairs.append((None, path))
+    kept = [(b if b and is_test_file(b) and not excluded_test(b) else None, h) for b, h in pairs]
+    kept = [(b, h if h and is_test_file(h) and not excluded_test(h) else None) for b, h in kept]
+    return [(b, h) for b, h in kept if b or h]
+
+
+def _span(node: ast.stmt) -> tuple[int, int]:
+    """A statement's lines, decorators included, since a changed decorator changes what it decorates."""
+    decorators: list[ast.expr] = getattr(node, "decorator_list", [])
+    return min([d.lineno for d in decorators] + [node.lineno]), node.end_lineno or node.lineno
+
+
+def test_ids(source: str, path: str | None = None) -> dict[str, tuple[int, int]]:
+    """Line span of each test pytest collects, keyed by its node id below the file: `test_x` or `Class::test_x`."""
+    found: dict[str, tuple[int, int]] = {}
+    for node in parse(source, path).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+            found[node.name] = _span(node)
+        # pyproject's python_classes collects Test* classes only
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and sub.name.startswith("test_"):
+                    found[f"{node.name}::{sub.name}"] = _span(sub)
+            if node.bases:
+                # inherited tests cannot be listed statically. The class's own node id runs them all, so a
+                # changed line anywhere in the class, or a symbol it reads, selects the class after its methods
+                found[node.name] = _span(node)
+    return found
+
+
+def _names_used(node: ast.AST) -> set[str]:
+    """Every name a def or class reads, attribute chains by their root, plus its argument names (fixtures)."""
+    found: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name):
+            found.add(sub.id)
+        elif isinstance(sub, ast.arg):
+            found.add(sub.arg)
+    return found
+
+
+ImportAlias = tuple[int, str | None, str, str | None]
+
+
+def _imports(module: ast.Module) -> set[ImportAlias]:
+    """Each imported alias as (level, module, name, asname): the same across a reformat, not across a swapped source."""
+    found: set[ImportAlias] = set()
+    for node in module.body:
+        if isinstance(node, ast.Import):
+            found.update((0, None, alias.name, alias.asname) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            found.update((node.level, node.module, alias.name, alias.asname) for alias in node.names)
+    return found
+
+
+def _bound_names(aliases: set[ImportAlias]) -> set[str]:
+    return {(asname or name).split(".")[0] for _, _, name, asname in aliases}
+
+
+class WholeFile(Exception):
+    """A changed line no test or named helper owns, so every test in the file may run differently."""
+
+
+def _touched_tests_and_symbols(source: str, lines: set[int], path: str | None) -> tuple[set[str], set[str]]:
+    """Tests whose span a changed line falls in, and the helpers, fixtures, classes and constants changed.
+
+    Blank and comment lines change nothing. Raises WholeFile for a changed line nothing named owns.
+    """
+    module = parse(source, path)
+    text = source.splitlines()
+    tests: set[str] = set()
+    symbols: set[str] = set()
+    spans = test_ids(source, path)
+    for line in sorted(lines):
+        # a test owns every line in its span, a comment or blank inside a string included
+        owner = next((name for name, (start, end) in spans.items() if start <= line <= end), None)
+        if owner:
+            tests.add(owner)
+            continue
+        stripped = text[line - 1].strip() if 0 < line <= len(text) else ""
+        if not stripped or stripped.startswith("#"):
+            continue
+        stmt = next((n for n in module.body if _span(n)[0] <= line <= _span(n)[1]), None)
+        if isinstance(stmt, ast.ClassDef):
+            # a class attribute or fixture of a test class changes every test in it
+            symbols.add(stmt.name)
+            tests.update(name for name in spans if name.startswith(f"{stmt.name}::"))
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            symbols.add(stmt.name)
+        elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            continue  # compared whole-file per alias, since a reformatted import keeps the same aliases
+        elif isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            names = {t.id for t in targets if isinstance(t, ast.Name)}
+            if not names or names & PYTEST_MODULE_NAMES:
+                raise WholeFile(f"line {line}")
+            symbols.update(names)
+        elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue  # a docstring
+        else:
+            raise WholeFile(f"line {line}")
+    return tests, symbols
+
+
+def _usefixtures(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> set[str]:
+    """Fixtures a `pytest.mark.usefixtures("...")` decorator requests, which the test never names as an argument."""
+    found: set[str] = set()
+    for d in node.decorator_list:
+        if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "usefixtures":
+            found.update(a.value for a in d.args if isinstance(a, ast.Constant) and isinstance(a.value, str))
+    return found
+
+
+def _autouse_fixtures(module: ast.Module) -> set[str]:
+    """Module-level fixtures declared `autouse=True`: every test in the file runs them without naming them."""
+    found: set[str] = set()
+    for node in module.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for d in node.decorator_list:
+            if isinstance(d, ast.Call) and any(
+                k.arg == "autouse" and isinstance(k.value, ast.Constant) and k.value.value is True for k in d.keywords
+            ):
+                found.add(node.name)
+    return found
+
+
+def _class_level_names(node: ast.ClassDef) -> set[str]:
+    """Names the class reads outside its methods: decorators, bases, attributes. Every method depends on those."""
+    outside = [s for s in node.body if not isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    found: set[str] = set()
+    for part in [*node.decorator_list, *node.bases, *node.keywords, *outside]:
+        found |= _names_used(part)
+    return found
+
+
+def _tests_using_symbols(source: str, symbols: set[str], path: str | None) -> set[str]:
+    """Tests that read any of `symbols`, directly or through other defs and classes in the file.
+
+    Autouse fixtures and `usefixtures` marks count as read by every test they apply to.
+    """
+    module = parse(source, path)
+    reached = set(symbols)
+    # an autouse fixture inside a test class is a class line, which already reaches every test in the class
+    implicit = _autouse_fixtures(module)
+    uses = {
+        node.name: _names_used(node) | implicit | _usefixtures(node)
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    for node in module.body:
+        if isinstance(node, ast.ClassDef):
+            siblings = {s.name for s in node.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    # a method reads its class's attributes and decorators, the siblings it calls through
+                    # `self` and the sibling fixtures it requests by argument, not every sibling method
+                    called = {
+                        f"{node.name}::{a.attr}"
+                        for a in ast.walk(sub)
+                        if isinstance(a, ast.Attribute)
+                        and isinstance(a.value, ast.Name)
+                        and a.value.id == "self"
+                        and a.attr in siblings
+                    }
+                    requested = {f"{node.name}::{a.arg}" for a in sub.args.args if a.arg in siblings}
+                    uses[f"{node.name}::{sub.name}"] = (
+                        _names_used(sub)
+                        | called
+                        | requested
+                        | _class_level_names(node)
+                        | implicit
+                        | _usefixtures(node)
+                        | _usefixtures(sub)
+                    )
+    changed = True
+    while changed:
+        changed = False
+        for name, used in uses.items():
+            if name not in reached and used & reached:
+                reached.add(name)
+                changed = True
+    ids = test_ids(source, path)
+    return {name for name in reached if name in ids}
+
+
+def changed_tests_in(base_src: str, head_src: str, old_lines: set[int], new_lines: set[int], path: str) -> set[str] | None:
+    """Node ids (below the file) of the tests on the base this change edits or deletes, or None for the whole file.
+
+    A test the change adds only adds kills, so it cannot raise the survivor count and is not here, unless it
+    overrides a test its class inherits, which maps to the class's own id. A changed helper, fixture, class,
+    constant or import reaches the tests that read it, autouse fixtures and `usefixtures` marks included.
+    Any other changed line, such as module-level code, reaches every test.
+    """
+    try:
+        head_tests, head_symbols = _touched_tests_and_symbols(head_src, new_lines, path)
+        base_tests, base_symbols = _touched_tests_and_symbols(base_src, old_lines, path)
+    except (WholeFile, SyntaxError):
+        # a file that does not parse fails its own run; the whole file stays in scope so that shows
+        return None
+    rebound = _imports(parse(head_src, path)) ^ _imports(parse(base_src, path))
+    if any(name == "*" for _, _, name, _ in rebound):
+        return None  # a star import can rebind any name in the file
+    symbols = head_symbols | base_symbols | _bound_names(rebound)
+    touched = (
+        head_tests | base_tests | _tests_using_symbols(head_src, symbols, path) | _tests_using_symbols(base_src, symbols, path)
+    )
+    on_base = test_ids(base_src, path)
+    # a method the head adds to a class that inherits its tests may override one of them: the class id runs them all
+    return {t if t in on_base else t.split("::")[0] for t in touched if t in on_base or t.split("::")[0] in on_base}
+
+
+def tests_in_scope(base: str, base_tree: Path, head_tree: Path) -> tuple[list[str], list[str]]:
+    """What to run under coverage on each side: pytest node ids, or whole files, of the tests the change can weaken.
+
+    Those are the tests that existed on the base and were edited, deleted or renamed, plus every test
+    in a file that imports a changed helper, conftest or package __init__, directly or through another helper.
+    """
+    base_ids: set[str] = set()
+    head_ids: set[str] = set()
+    pairs = changed_test_pairs(base)
+    for base_path, head_path in pairs:
+        if base_path is None:
+            continue  # every test in an added file is new
+        if head_path is None:
+            base_ids.add(base_path)
+            continue
+        old_lines, new_lines = parse_hunks(git("diff", "-U0", "-M", base, "--", base_path, head_path))
+        base_src, head_src = git("show", f"{base}:{base_path}"), Path(head_path).read_text()
+        selected = changed_tests_in(base_src, head_src, old_lines, new_lines, head_path)
+        if selected is None:
+            base_ids.add(base_path)
+            head_ids.add(head_path)
+            continue
+        on_head = test_ids(head_src, head_path)
+        base_ids.update(f"{base_path}::{t}" for t in selected)
+        head_ids.update(f"{head_path}::{t}" for t in selected if t in on_head)
     support = changed_test_support(base)
-    return sorted(set(changed_test_files(base)) | tests_using(base_tree, support) | tests_using(head_tree, support))
+    base_ids.update(tests_using(base_tree, support))
+    # a test file the change adds can only add kills, even when it imports changed support
+    on_base = {h: b for b, h in pairs if b and h}
+    head_ids.update(t for t in tests_using(head_tree, support) if (base_tree / on_base.get(t, t)).is_file())
+    return sorted(base_ids), sorted(head_ids)
+
+
+def test_files_of(tests: list[str]) -> list[str]:
+    """The files behind a list of node ids or files."""
+    return sorted({t.split("::")[0] for t in tests})
 
 
 def unit_suite(tree: Path) -> list[str]:
@@ -845,8 +1111,8 @@ def unit_suite(tree: Path) -> list[str]:
 
 
 def functions_run_by(tree: Path, tests: list[str]) -> set[str]:
-    """Functions whose body runs while one of `tests` runs, not at import or collection time."""
-    tests = [t for t in tests if (tree / t).exists() and not excluded_test(t)]
+    """Functions whose body runs while one of `tests` (files or pytest node ids) runs, not at import or collection time."""
+    tests = [t for t in tests if (tree / t.split("::")[0]).exists() and not excluded_test(t.split("::")[0])]
     if not tests:
         return set()
     data, report = tree / ".mutation-coverage", tree / ".mutation-coverage.json"
@@ -859,10 +1125,17 @@ def functions_run_by(tree: Path, tests: list[str]) -> set[str]:
     env = harness_env(tree, env)
     cov = ["--cov=inference_perf", "--cov-context=test", "--cov-report=", f"--cov-config={harness_dir() / 'coverage.toml'}"]
     plugins = ["-p", "no:cacheprovider", "-p", CHILD_PLUGIN]
-    run_bounded([sys.executable, "-m", "pytest", "-q", *plugins, "-o", "log_cli=false", *cov, *tests], tree, env)
-    run_bounded([sys.executable, "-m", "coverage", "json", "--show-contexts", "-o", str(report)], tree, env)
-    if not report.exists():
-        raise MutationRunError(f"coverage over the changed tests produced no report in {tree}")
+    run = run_bounded([sys.executable, "-m", "pytest", "-q", *plugins, "-o", "log_cli=false", *cov, *tests], tree, env)
+    # 0 and 1 mean the tests ran. Anything else collected nothing, and the report would be silently empty
+    if run.returncode not in (0, 1):
+        raise MutationRunError(
+            f"pytest over the changed tests in {tree} exited {run.returncode}\n{output_tail(run.stdout + run.stderr)}"
+        )
+    export = run_bounded([sys.executable, "-m", "coverage", "json", "--show-contexts", "-o", str(report)], tree, env)
+    if export.returncode != 0 or not report.exists():
+        raise MutationRunError(
+            f"coverage over the changed tests produced no report in {tree}\n{output_tail(export.stdout + export.stderr)}"
+        )
     found: set[str] = set()
     for path, info in json.loads(report.read_text())["files"].items():
         rel = os.path.relpath(path, tree) if os.path.isabs(path) else path
@@ -877,10 +1150,12 @@ def functions_run_by(tree: Path, tests: list[str]) -> set[str]:
     return found
 
 
-def add_functions_run_by_changed_tests(touched: Touched, base_tree: Path, head_tree: Path, tests: list[str]) -> None:
-    """Bring in unchanged functions a changed test runs. That is where a loosened assert or a backfill test shows."""
+def add_functions_run_by_changed_tests(
+    touched: Touched, base_tree: Path, head_tree: Path, base_tests: list[str], head_tests: list[str]
+) -> None:
+    """Bring in unchanged functions a changed test runs on either side. That is where a loosened assert shows."""
     in_scope = set(touched.base_names) | set(touched.head_names)
-    for name in sorted(functions_run_by(base_tree, tests) | functions_run_by(head_tree, tests)):
+    for name in sorted(functions_run_by(base_tree, base_tests) | functions_run_by(head_tree, head_tests)):
         if name in in_scope or not _exists(base_tree, name) or not _exists(head_tree, name):
             continue
         touched.existing.append((name, name))
@@ -1023,7 +1298,7 @@ def diagnose_setup_failure(side: Side, pytest_args: list[str]) -> SetupFailure:
     except subprocess.TimeoutExpired as e:
         partial = e.stdout if isinstance(e.stdout, str) else ""
         output = partial + f"\nThe suite was still running after {DIAGNOSIS_TIMEOUT_S} s and was stopped."
-    return SetupFailure(side.tree, failed_tests(output), "\n".join(output.splitlines()[-DIAGNOSIS_TAIL_LINES:]))
+    return SetupFailure(side.tree, failed_tests(output), output_tail(output))
 
 
 def run_mutmut(side: Side, globs: list[str], max_children: int, pytest_args: list[str]) -> tuple[str, bool]:
@@ -1182,9 +1457,13 @@ class Survival(NamedTuple):
     killed_by: list[str]
 
 
+def output_tail(output: str) -> str:
+    return "\n".join(output.splitlines()[-DIAGNOSIS_TAIL_LINES:])
+
+
 def unusable_rerun(what: str, code: int | None, output: str) -> MutationRunError:
     """A rerun that neither passed nor failed a named test: a usage error, nothing collected, an interrupt."""
-    tail = "\n".join(output.splitlines()[-DIAGNOSIS_TAIL_LINES:])
+    tail = output_tail(output)
     return MutationRunError(f"Rerunning the tests for {what} exited {code} without a passing or failing test.\n{tail}")
 
 
@@ -1194,17 +1473,28 @@ def still_survives(side: Side, mutant: str, pytest_args: list[str]) -> Survival:
         return Survival(True, [])
     tests = [t for t in mutmut(side.tree, "tests-for-mutant", mutant).stdout.splitlines() if "::" in t]
     killed_by: set[str] = set()
+    collects: bool | None = None
     for _ in range(RERUNS):
         code, output = rerun(side, tests, mutant, pytest_args)
         # a hang is not a kill
         if code is None or code == 0:
             return Survival(True, sorted(killed_by))
         failed = failed_tests(output)
-        # only a named failing test is a kill. Any other exit would count a rerun that ran nothing
-        if code != 1 or not failed:
+        # only a named failing test is a kill. Any other exit would count a rerun that ran nothing,
+        # unless the mutant itself is what stopped the tests from collecting. The canary answers that once
+        if code in COLLECTION_FAILURE_CODES and failed and collects is None:
+            collects = collects_without(side, tests, mutant, pytest_args)
+        broke_collection = code in COLLECTION_FAILURE_CODES and bool(failed) and bool(collects)
+        if not failed or (code != 1 and not broke_collection):
             raise unusable_rerun(mutant, code, output)
         killed_by.update(failed)
     return Survival(False, sorted(killed_by))
+
+
+def collects_without(side: Side, tests: list[str], mutant: str, pytest_args: list[str]) -> bool:
+    """Whether `tests` collect once the mutant is off: then a collection error under it was the mutant's doing."""
+    code, _ = rerun(side, tests, canary_id(mutant.partition("__mutmut_")[0], set(side.results)), pytest_args)
+    return code in (0, 1, 5)
 
 
 def by_function(mutants: list[str]) -> Counter[str]:
@@ -1816,9 +2106,11 @@ def main() -> None:
         export_working_tree(workdir / "head")
         stripped = {side: strip_no_mutate_pragmas(workdir / side) for side in ("base", "head")}
         PROGRESS.stage = "finding the functions the changed tests run"
-        tests = tests_in_scope(merge_base, workdir / "base", workdir / "head")
-        if tests:
-            add_functions_run_by_changed_tests(touched, workdir / "base", workdir / "head", tests)
+        base_tests, head_tests = tests_in_scope(merge_base, workdir / "base", workdir / "head")
+        if base_tests or head_tests:
+            add_functions_run_by_changed_tests(touched, workdir / "base", workdir / "head", base_tests, head_tests)
+        # the changed-tests-first pass runs whole files: a test the change adds settles nothing on the base
+        tests = test_files_of(base_tests + head_tests)
         if not (touched.base_names or touched.head_names):
             nothing_to_mutate(f"No function in scope since {args.base}. Nothing to mutate.", args, merge_base, checks)
             return

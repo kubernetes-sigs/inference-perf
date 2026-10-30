@@ -594,7 +594,8 @@ def scope_after_change(cmr: Any, repo: Path, tmp_path: Path) -> Any:
     touched = cmr.touched_functions("HEAD", [])
     base_tree = tmp_path / "base-tree"
     cmr.export_base("HEAD", base_tree)
-    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, cmr.changed_test_files("HEAD"))
+    base_tests, head_tests = cmr.tests_in_scope("HEAD", base_tree, repo)
+    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, base_tests, head_tests)
     return touched
 
 
@@ -622,6 +623,304 @@ def test_renaming_a_test_file_away_brings_what_it_ran_into_scope(
     assert scope_after_change(cmr, repo, tmp_path).via_tests == {"inference_perf.m.x_f"}
 
 
+# tests/test_m.py has test_a running f and test_b running g. The change edits only test_b's assert,
+# adds test_c, and reformats the import. Only test_b is selected on each side, so g joins the scope
+# and f, which only the untouched test_a runs, does not.
+def test_editing_one_test_scopes_only_what_it_runs(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    write_tree(
+        repo,
+        {
+            "inference_perf/__init__.py": "",
+            "inference_perf/m.py": "def f(x):\n    return x > 1\n\n\ndef g(x):\n    return x < 1\n",
+            "tests/test_m.py": "from inference_perf.m import f, g\n\n\n"
+            "def test_a():\n    assert f(2)\n\n\ndef test_b():\n    assert g(0)\n    assert not g(1)\n",
+        },
+    )
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "base")
+    (repo / "tests" / "test_m.py").write_text(
+        "from inference_perf.m import (\n    f,\n    g,\n)\n\n\n"
+        "def test_a():\n    assert f(2)\n\n\ndef test_b():\n    assert g(0)\n\n\n"
+        "# a new test only adds kills\ndef test_c():\n    assert f(3)\n"
+    )
+    monkeypatch.chdir(repo)
+    base_tree = tmp_path / "base-tree"
+    cmr.export_base("HEAD", base_tree)
+
+    base_tests, head_tests = cmr.tests_in_scope("HEAD", base_tree, repo)
+
+    assert (base_tests, head_tests) == (["tests/test_m.py::test_b"], ["tests/test_m.py::test_b"])
+    touched = cmr.touched_functions("HEAD", [])
+    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, base_tests, head_tests)
+    assert touched.via_tests == {"inference_perf.m.x_g"}
+
+
+# A file with helper check(), fixture value, constant N, class TestC (limit = N) with test_c, module-level
+# tests test_a (uses check), test_b (uses value and N), test_d (uses os), test_f (holds a string with a
+# comment line), and a Helper class pytest never collects. Each kind of change reaches the tests that read
+# it, a comment or blank line outside a test reaches none, a rebound or swapped import reaches its users,
+# and a bare statement, a pytestmark or a star import reaches the whole file.
+def test_changed_tests_in_follows_names_to_the_tests_that_use_them(cmr: Any) -> None:
+    base = (
+        "import os\n"  # 1
+        "import pytest\n"  # 2
+        "\n"  # 3
+        "N = 1\n"  # 4
+        "\n"  # 5
+        "\n"  # 6
+        "def check(x):\n"  # 7
+        "    assert x\n"  # 8
+        "\n"  # 9
+        "\n"  # 10
+        "@pytest.fixture\n"  # 11
+        "def value():\n"  # 12
+        "    return 1\n"  # 13
+        "\n"  # 14
+        "\n"  # 15
+        "class TestC:\n"  # 16
+        "    limit = N\n"  # 17
+        "\n"  # 18
+        "    def test_c(self):\n"  # 19
+        "        assert self.limit\n"  # 20
+        "\n"  # 21
+        "\n"  # 22
+        "# about test_a\n"  # 23
+        "def test_a():\n"  # 24
+        "    check(True)\n"  # 25
+        "\n"  # 26
+        "\n"  # 27
+        "def test_b(value):\n"  # 28
+        "    assert value == N\n"  # 29
+        "\n"  # 30
+        "\n"  # 31
+        "def test_d():\n"  # 32
+        "    assert os.sep\n"  # 33
+        "\n"  # 34
+        "\n"  # 35
+        "def test_f():\n"  # 36
+        '    s = """\n'  # 37
+        "    # inside a string\n"  # 38
+        "\n"  # 39
+        '    """\n'  # 40
+        "    assert s\n"  # 41
+        "\n"  # 42
+        "\n"  # 43
+        "class Helper:\n"  # 44
+        "    def test_x(self):\n"  # 45
+        "        pass\n"  # 46
+    )
+
+    def selected(head: str, old: set[int], new: set[int]) -> set[str] | None:
+        result: set[str] | None = cmr.changed_tests_in(base, head, old, new, "tests/test_x.py")
+        return result
+
+    assert "Helper::test_x" not in cmr.test_ids(base)  # pytest collects Test* classes only
+    assert selected(base, {8}, {8}) == {"test_a"}  # helper body
+    assert selected(base, {13}, {13}) == {"test_b"}  # fixture body
+    assert selected(base, {4}, {4}) == {"test_b", "TestC::test_c"}  # constant, read by a class attribute too
+    assert selected(base, {17}, {17}) == {"TestC::test_c"}  # class attribute
+    assert selected(base, {25}, {25}) == {"test_a"}  # a test's own line
+    assert selected(base, {23, 3}, {23, 3}) == set()  # comment and blank
+    assert selected(base, {38}, {38}) == {"test_f"}  # a comment line inside a test's string
+    assert selected(base, {39}, {39}) == {"test_f"}  # a blank line inside a test's string
+    assert selected(base, {45}, {45}) == set()  # a class pytest does not collect is a helper
+    decorated = base.replace("@pytest.fixture\n", '@pytest.fixture(scope="module")\n')
+    assert selected(decorated, {11}, {11}) == {"test_b"}  # a fixture's decorator
+    assert selected(base.replace("import os\n", "import sys\n"), set(), {1}) == {"test_d"}  # import rebound
+    assert selected(base.replace("import os\n", "import posixpath as os\n"), {1}, {1}) == {"test_d"}  # source swapped
+    assert selected(base, set(), {30}) == set()  # nothing added where only blanks sit
+    assert selected(base + "print(N)\n", set(), {47}) is None  # module-level statement
+    assert selected(base + "pytestmark = pytest.mark.skip\n", set(), {47}) is None  # pytest reads it for the file
+    assert selected(base + "from os import *\n", set(), {47}) is None  # can rebind anything
+    assert selected(base + "def broken(:\n", set(), {47}) is None  # does not parse
+    # a test added on the head is not selected; a test deleted from the base is
+    added = base + "\n\ndef test_e():\n    check(1)\n"
+    assert selected(added, set(), {49, 50}) == set()
+    assert selected(base.replace("def test_d():\n    assert os.sep\n", ""), {32, 33}, set()) == {"test_d"}
+
+
+# tests/test_x.py has constant N, helper check(), and class TestC with limit = N, test_c reading
+# self.limit and test_g calling check. Editing N reaches both tests through the class attribute.
+# Editing check's body reaches test_g only, not its sibling test_c.
+def test_a_symbol_read_by_one_method_reaches_only_that_method(cmr: Any) -> None:
+    base = (
+        "N = 1\n"  # 1
+        "\n"  # 2
+        "\n"  # 3
+        "def check(x):\n"  # 4
+        "    assert x\n"  # 5
+        "\n"  # 6
+        "\n"  # 7
+        "class TestC:\n"  # 8
+        "    limit = N\n"  # 9
+        "\n"  # 10
+        "    def test_c(self):\n"  # 11
+        "        assert self.limit\n"  # 12
+        "\n"  # 13
+        "    def test_g(self):\n"  # 14
+        "        check(1)\n"  # 15
+    )
+
+    def selected(old: set[int], new: set[int]) -> set[str] | None:
+        result: set[str] | None = cmr.changed_tests_in(base, base, old, new, "tests/test_x.py")
+        return result
+
+    assert selected({1}, {1}) == {"TestC::test_c", "TestC::test_g"}
+    assert selected({5}, {5}) == {"TestC::test_g"}
+
+
+# tests/test_x.py has constant TOL, constant LIMIT, and class TestC with helper _close reading TOL,
+# fixture thing reading LIMIT, test_a calling self._close, test_b requesting thing, and test_c using
+# neither. Editing TOL reaches test_a only. Editing LIMIT reaches test_b only. Editing _close's body
+# or thing's body is a class line and reaches all three.
+def test_a_symbol_reaches_a_test_through_a_sibling_helper_or_fixture(cmr: Any) -> None:
+    base = (
+        "import pytest\n"  # 1
+        "\n"  # 2
+        "TOL = 1\n"  # 3
+        "LIMIT = 2\n"  # 4
+        "\n"  # 5
+        "\n"  # 6
+        "class TestC:\n"  # 7
+        "    def _close(self, x):\n"  # 8
+        "        return x < TOL\n"  # 9
+        "\n"  # 10
+        "    @pytest.fixture\n"  # 11
+        "    def thing(self):\n"  # 12
+        "        return LIMIT\n"  # 13
+        "\n"  # 14
+        "    def test_a(self):\n"  # 15
+        "        assert self._close(0)\n"  # 16
+        "\n"  # 17
+        "    def test_b(self, thing):\n"  # 18
+        "        assert thing\n"  # 19
+        "\n"  # 20
+        "    def test_c(self):\n"  # 21
+        "        assert True\n"  # 22
+    )
+
+    def selected(old: set[int], new: set[int]) -> set[str] | None:
+        result: set[str] | None = cmr.changed_tests_in(base, base, old, new, "tests/test_x.py")
+        return result
+
+    everything = {"TestC::test_a", "TestC::test_b", "TestC::test_c"}
+    assert selected({3}, {3}) == {"TestC::test_a"}
+    assert selected({4}, {4}) == {"TestC::test_b"}
+    assert selected({9}, {9}) == everything
+    assert selected({13}, {13}) == everything
+
+
+# tests/test_x.py imports Suite and has class TestV(Suite) with attribute url and own test_a, plus class
+# TestO with test_o. TestV inherits its other tests, so pytest's id for the class itself is listed after
+# TestV::test_a. Editing url or adding an override to TestV selects the class id, the test_a line
+# selects test_a, and swapping the import's source selects both. Editing test_o selects test_o only.
+def test_a_class_with_inherited_tests_is_selected_by_its_own_node_id(cmr: Any) -> None:
+    base = (
+        "from suite import Suite\n"  # 1
+        "\n"  # 2
+        "\n"  # 3
+        "class TestV(Suite):\n"  # 4
+        '    url = "http://x"\n'  # 5
+        "\n"  # 6
+        "    def test_a(self):\n"  # 7
+        "        assert self.url\n"  # 8
+        "\n"  # 9
+        "\n"  # 10
+        "class TestO:\n"  # 11
+        "    def test_o(self):\n"  # 12
+        "        assert True\n"  # 13
+    )
+
+    def selected(head: str, old: set[int], new: set[int]) -> set[str] | None:
+        result: set[str] | None = cmr.changed_tests_in(base, head, old, new, "tests/test_x.py")
+        return result
+
+    assert list(cmr.test_ids(base)) == ["TestV::test_a", "TestV", "TestO::test_o"]
+    assert "TestO" not in cmr.test_ids(base)  # no bases, so every test it runs has its own id
+    assert selected(base, {5}, {5}) == {"TestV"}
+    assert selected(base, {8}, {8}) == {"TestV::test_a"}
+    assert selected(base, {13}, {13}) == {"TestO::test_o"}
+    assert selected(base.replace("from suite import", "from other import"), {1}, {1}) == {"TestV", "TestV::test_a"}
+    override = base.replace("        assert self.url\n", "        assert self.url\n\n    def test_z(self):\n        pass\n")
+    assert selected(override, set(), {10, 11}) == {"TestV"}
+
+
+# tests/test_x.py has an autouse fixture clock, a plain fixture value, test_a naming no fixture,
+# test_b(value), and class TestC marked usefixtures("value") holding test_c. Editing clock's body
+# reaches all three tests. Editing value's body reaches test_b and TestC::test_c, not test_a.
+def test_changed_tests_in_reaches_tests_through_autouse_and_usefixtures(cmr: Any) -> None:
+    base = (
+        "import pytest\n"  # 1
+        "\n"  # 2
+        "\n"  # 3
+        "@pytest.fixture(autouse=True)\n"  # 4
+        "def clock():\n"  # 5
+        "    return 1\n"  # 6
+        "\n"  # 7
+        "\n"  # 8
+        "@pytest.fixture\n"  # 9
+        "def value():\n"  # 10
+        "    return 2\n"  # 11
+        "\n"  # 12
+        "\n"  # 13
+        "def test_a():\n"  # 14
+        "    assert True\n"  # 15
+        "\n"  # 16
+        "\n"  # 17
+        "def test_b(value):\n"  # 18
+        "    assert value\n"  # 19
+        "\n"  # 20
+        "\n"  # 21
+        '@pytest.mark.usefixtures("value")\n'  # 22
+        "class TestC:\n"  # 23
+        "    def test_c(self):\n"  # 24
+        "        assert True\n"  # 25
+    )
+
+    def selected(old: set[int], new: set[int]) -> set[str] | None:
+        result: set[str] | None = cmr.changed_tests_in(base, base, old, new, "tests/test_x.py")
+        return result
+
+    assert selected({6}, {6}) == {"test_a", "test_b", "TestC::test_c"}  # autouse fixture body
+    assert selected({11}, {11}) == {"test_b", "TestC::test_c"}  # fixture named by arg and by usefixtures
+
+
+# A survivor's tests exit 4 under the mutant with an ERROR line naming the file, because the mutant
+# broke the module at import. The same tests collect with the mutant off (the canary exits 1 with a
+# failure), so it counts as a kill by that file. The canary runs once, not once per rerun. When the
+# canary cannot collect either, the rerun is unusable.
+def test_still_survives_counts_a_collection_failure_the_mutant_caused(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    side = cmr.Side(tree=tmp_path, results={"m.x_f__mutmut_1": "survived"})
+    (tmp_path / "mutants").mkdir()
+    (tmp_path / "mutants" / "mutmut-stats.json").write_text(
+        '{"tests_by_mangled_function_name": {"m.x_f": ["tests/test_a.py::t"]}, "duration_by_test": {}}'
+    )
+    monkeypatch.setattr(cmr, "mutmut", lambda *a: subprocess.CompletedProcess(a, 0, "tests/test_a.py::t\n", ""))
+    broken = "ERROR tests/test_a.py - ValueError: buckets are only valid for Histogram metrics\n"
+    calls: list[str] = []
+
+    def rerun(side: Any, tests: list[str], mutant: str, args: list[str]) -> tuple[int, str]:
+        calls.append(mutant)
+        if mutant == "m.x_f__mutmut_1":
+            return 4, broken
+        return 1, "FAILED tests/test_a.py::t - flaky\n"
+
+    monkeypatch.setattr(cmr, "rerun", rerun)
+    survival = cmr.still_survives(side, "m.x_f__mutmut_1", [])
+    assert not survival.counts
+    assert survival.killed_by == ["tests/test_a.py"]
+    assert len(calls) == cmr.RERUNS + 1
+    assert len([m for m in calls if m != "m.x_f__mutmut_1"]) == 1
+
+    monkeypatch.setattr(cmr, "rerun", lambda *a: (4, broken))
+    with pytest.raises(cmr.MutationRunError, match="exited 4"):
+        cmr.still_survives(side, "m.x_f__mutmut_1", [])
+
+
 # Writes each {path: source} under `root`, creating directories.
 def write_tree(root: Path, files: dict[str, str]) -> None:
     for rel, source in files.items():
@@ -630,7 +929,8 @@ def write_tree(root: Path, files: dict[str, str]) -> None:
 
 
 # tests/test_m.py imports the sibling helper check from tests/helpers.py. The change loosens check to
-# assert nothing and touches no test file. test_m.py still counts as changed, so f comes into scope.
+# assert nothing and adds tests/test_new.py, which imports check too. test_m.py counts as changed on
+# both sides, so f comes into scope; the added file only adds kills and is selected on neither side.
 def test_loosening_a_test_helper_brings_what_its_tests_run_into_scope(
     cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -649,15 +949,16 @@ def test_loosening_a_test_helper_brings_what_its_tests_run_into_scope(
     git(repo, "add", ".")
     git(repo, "commit", "-qm", "base")
     (repo / "tests" / "helpers.py").write_text("def check(value, expected):\n    pass\n")
+    (repo / "tests" / "test_new.py").write_text("from helpers import check\n\n\ndef test_new():\n    check(1, 1)\n")
     monkeypatch.chdir(repo)
     base_tree = tmp_path / "base-tree"
     cmr.export_base("HEAD", base_tree)
 
-    assert cmr.changed_test_files("HEAD") == []
-    tests = cmr.tests_in_scope("HEAD", base_tree, repo)
-    assert tests == ["tests/test_m.py"]
+    assert cmr.changed_test_files("HEAD") == ["tests/test_new.py"]
+    base_tests, head_tests = cmr.tests_in_scope("HEAD", base_tree, repo)
+    assert (base_tests, head_tests) == (["tests/test_m.py"], ["tests/test_m.py"])
     touched = cmr.touched_functions("HEAD", [])
-    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, tests)
+    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, base_tests, head_tests)
     assert touched.via_tests == {"inference_perf.m.x_f"}
 
 
@@ -1204,6 +1505,24 @@ def test_functions_run_by_sees_code_run_in_a_forked_child(cmr: Any, tmp_path: Pa
         "inference_perf.m.x_in_child",
         "inference_perf.m.x_in_parent",
     }
+
+
+# tests/test_m.py imports a module that does not exist, so the node id tests/test_m.py::test_f
+# cannot be collected and pytest exits 4 with no report. functions_run_by raises with the exit code
+# and the ModuleNotFoundError line instead of the bare "produced no report".
+def test_functions_run_by_names_a_collection_failure(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    write_tree(
+        tmp_path,
+        {
+            "inference_perf/__init__.py": "",
+            "inference_perf/m.py": "def f():\n    return 1\n",
+            "tests/test_m.py": "import nothere_xyz\n\n\ndef test_f():\n    assert nothere_xyz\n",
+        },
+    )
+
+    with pytest.raises(cmr.MutationRunError, match=r"exited 4\n(.*\n)*.*ModuleNotFoundError.*nothere_xyz"):
+        cmr.functions_run_by(tmp_path, ["tests/test_m.py::test_f"])
 
 
 F = "inference_perf.m.x_f__mutmut_"
