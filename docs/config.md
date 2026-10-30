@@ -212,6 +212,7 @@ load:
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
+      stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds; may read measured terms, see Stop Conditions (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
   num_workers: 4                    # Concurrent worker threads (default: cgroup-aware CPU count: min(CPU affinity, cgroup CPU quota when present, host CPUs))
@@ -229,6 +230,57 @@ load:
 ```
 
 **Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
+
+#### Stop Conditions
+
+A constant or Poisson stage ends after exactly one of `duration` (seconds) or `stop_condition`, a condition over stage time `t`. `duration: N` means `stop_condition: "t >= N"`, and existing configs are unchanged. The condition is solved when the config loads, so the stage ends at an exact time, fractional seconds included. See [Conditions](./expressions.md#conditions) for what a condition may contain and what is rejected.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: poisson
+  stages:
+  - rate: 5
+    duration: 30                              # ends at 30s
+  - rate: 20
+    stop_condition: "t > 90.5"                # ends at 90.5s
+  - rate: 40
+    stop_condition: "(t >= 300) | (t >= 60)"  # whichever first: 60s
+```
+
+A condition can also read what the stage measures: window functions over finished requests such as `quantile_over_time(0.99, ttft[30s])` or `avg_over_last(error, 100)`, and the signals `completed`, `errors`, `in_flight` and `since_last_completion`. **Series use short names:** `ttft`, not the report's `time_to_first_token`. See [Measured terms](./expressions.md#measured-terms) for the full list and the rules. A condition must still end on time alone, so a measured term only ever ends a stage before its deadline.
+
+The condition is evaluated on every finished request, and once a second while none finish, so a stalled server still ends the stage. The object form adds `hold`, the number of consecutive evaluations the condition must hold on before it ends the stage. A string holds once.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: constant
+  stages:
+  - rate: 20
+    stop_condition: "(t >= 300) | (errors >= 10)"   # the tenth failure ends it; 300s at the latest
+  - rate: 40
+    stop_condition:
+      condition: "((t >= 30) & (quantile_over_time(0.99, ttft[30s]) > 2)) | (t >= 600)"   # after 30s, once p99 TTFT over the last 30s exceeds 2s
+      hold: 3                                                                              # on 3 consecutive evaluations
+  - rate: 10
+    stop_condition: "(t >= 600) | ((in_flight > 0) & (since_last_completion > 30))"   # nothing has finished for 30s
+```
+
+A stage ended this way is COMPLETED. The load generator logs the stage second the condition held at and the value of each term it read, and the requests it had scheduled after that point are reported as dropped.
+
+A `trace_session_replay` stage takes `stop_condition` too, in place of `duration` or `num_sessions`. At most one of the three is set. Reaching the condition stops admitting sessions and ends the stage COMPLETED, and sessions still running are recorded as truncated, the same as at a `duration` deadline. `_over_sent` windows are rejected on these stages, since a session's events are sent as the requests they wait on finish, not in the order they are queued.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: trace_session_replay
+  stages:
+  - concurrent_sessions: 16
+    stop_condition: "(t >= 1800) | (errors >= 10)"   # the tenth failure ends it, 1800s at the latest
+```
+
+Under `load.type: trace_replay` the trace sets when each request is sent, so `stop_condition` is rejected there.
 
 #### Retrying Transport Faults
 
@@ -718,9 +770,13 @@ load:
 - Whether the window is filled depends on the data generator. `otel_trace_replay` and `synthetic_agentic` replay their corpus once it is used up, each replay under its own session ID, so the corpus need not be sized by hand — and `duplicate_sessions_target` is rejected with `duration` for these two, since both would mint the same `_dupN` IDs. `weka_trace_replay` builds every session up front and so ends when its corpus does; raise its `duplicate_sessions_target` to cover the window. Either way a stage that falls short logs a warning saying by how much
 - Wall-clock time is `duration` plus teardown, since in-flight requests are given a chance to finish
 
+**`stop_condition`** (optional): End the stage on a condition rather than a fixed `duration`, e.g. `"(t >= 1800) | (errors >= 10)"`
+- `duration: N` means `stop_condition: "t >= N"`, and everything above about `duration` applies to the time the condition holds by
+- At most one of `num_sessions`, `duration` and `stop_condition`. See [Stop Conditions](#stop-conditions)
+
 **`max_stage_duration`** (optional): Wall-clock safety limit
 - If exceeded, in-flight sessions are cancelled and stage exits as FAILED
-- Distinct from `duration`: this is the fault signal, `duration` is the planned stop. Must be longer than `duration` when both are set
+- Distinct from `duration`: this is the fault signal, `duration` is the planned stop. Must be longer than `duration`, or the time `stop_condition` holds by, when both are set
 
 #### Trace File Format
 
