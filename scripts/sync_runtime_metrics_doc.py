@@ -21,7 +21,37 @@ Every metric declares a stability level, and that level is prepended to the metr
 
 {levels}
 
-**Every metric below is `ALPHA` today, and nothing is promoted before v1.0.0.** These names, labels and buckets are a first cut that we expect to refine while the endpoint gets used; promotion is per metric, one `stability=` in its spec, not a blanket graduation of the set. The level appears only in the HELP text, never in a metric name and never in a label, so promoting a metric later does not break the queries or dashboards written against it.
+Promotion is per metric, one `stability=` on its spec, never a blanket graduation of the set. The level appears only in the HELP text, never in a metric name and never in a label, so promoting a metric does not break the queries or dashboards written against it.
+
+### Promotion
+
+A promotion is an ordinary PR. It changes `stability=` on the spec, adds the metric to the promoted list in `tests/required/observability/test_metric_sets.py`, regenerates this doc, and says in its description what reads the metric. It is reviewed like any other change and ships in the next minor release, named in the release notes. A promotion never lands in a patch release, and nothing is promoted before v1.0.0.
+
+The evidence for promotion is use, not age:
+
+- `ALPHA` to `BETA`: something outside this repo reads the metric by name from a released version. A dashboard, an alert rule, a recording rule, a benchmark harness. The PR links to it.
+- `BETA` to `STABLE`: the metric has been `BETA` for at least one minor release with no change to its name, type or labels, and is still read.
+
+Nothing is demoted. A `STABLE` metric that needs a different shape is added under a new name beside the old one, and the old one is removed only in the next major version. A `BETA` metric that needs renaming or removal keeps the old name exported for one more release, as its promise says.
+
+## Queries
+
+The endpoint is up only while the run is, so a scrape interval short relative to the stage length matters more than usual. See [config.md](./config.md#observability) for turning the endpoint on and the Helm chart README for scrape configs. A few starting points, all per stage:
+
+```promql
+# request throughput, successes and failures together
+sum by (stage) (rate(inference_perf_requests_total[1m]))
+
+# failure ratio
+sum by (stage) (rate(inference_perf_requests_total{{status="failure"}}[1m]))
+  / sum by (stage) (rate(inference_perf_requests_total[1m]))
+
+# failures by class, the same string the report shortens into its by_label keys
+sum by (stage, error_type) (increase(inference_perf_request_errors_total[5m]))
+
+# p99 time to first token, streaming runs only
+histogram_quantile(0.99, sum by (stage, le) (rate(inference_perf_time_to_first_token_seconds_bucket[1m])))
+```
 
 ## Metrics
 

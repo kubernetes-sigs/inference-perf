@@ -19,7 +19,7 @@ same derivation the report uses.
 """
 
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import pytest
 from prometheus_client import Counter, Gauge, Histogram  # noqa: TID251 (throwaway metrics for these tests)
@@ -319,11 +319,27 @@ def test_all_specs_follow_naming_and_label_conventions() -> None:
         assert spec.documentation.strip()
 
 
-# Reads the stability level off every spec in ALL_SPECS. Expects all of them to be
-# ALPHA: the set ships changeable, so promoting one to BETA or STABLE is a release
-# decision that has to come here and say so.
-def test_no_metric_is_promoted_yet() -> None:
+# Metrics promoted past ALPHA, by spec name, with the level each one holds. The PR
+# that changes stability= on a spec also adds the metric here, so a promotion cannot
+# slip in through a spec edit alone. The policy is the Stability section of
+# docs/runtime_metrics.md.
+PROMOTED: Dict[str, MetricStability] = {}
+
+
+# Reads the stability level off every spec in ALL_SPECS. Expects every spec not in
+# PROMOTED to be ALPHA and every promoted one to hold exactly the level listed, so a
+# spec edit that promotes or demotes a metric fails until this list says so too.
+def test_promotions_are_listed_here() -> None:
     for spec in ALL_SPECS:
-        assert spec.stability is MetricStability.ALPHA, (
-            f"{spec.name}: promotion is a release decision, and nothing is promoted before v1.0.0"
+        expected = PROMOTED.get(spec.name, MetricStability.ALPHA)
+        assert spec.stability is expected, (
+            f"{spec.name}: stability={spec.stability.value}, the promoted list says {expected.value}. "
+            "Promotion is a release decision, see the Stability section of docs/runtime_metrics.md."
         )
+
+
+# Builds the set of spec names and checks PROMOTED against it. Expects no entry for
+# a metric that no longer exists, so a removed or renamed metric cannot leave a
+# stale promotion behind.
+def test_promoted_list_names_only_real_metrics() -> None:
+    assert set(PROMOTED) <= {spec.name for spec in ALL_SPECS}

@@ -98,6 +98,15 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 - **`load_summary`**: Details about the requested vs achieved load.
 - **`successes`**: Metrics for successful requests.
 - **`failures`**: Metrics for failed requests, including the per-label error breakdown.
+
+  The `by_label` keys and the `error_type` label on the runtime counter
+  `inference_perf_request_errors_total` ([runtime_metrics.md](./runtime_metrics.md)) start from
+  the same string on each failed request: the client's exception class, or `HTTP Error <status>`.
+  The counter exports that string unchanged. The report shortens it: an HTTP error becomes
+  `<code> - <label>`, with the label taken from the status code, else from patterns in the
+  message text, else `other`. A non-HTTP error becomes a short label matched from the message,
+  else the lowercased exception class. So `HTTP Error 504` on the endpoint is
+  `504 - Gateway Timeout` here, and the per-stage counts agree once the labels are mapped.
 - **`goodput_metrics`**: (Optional) Goodput statistics if constraints were configured.
 
 ### Token Counts

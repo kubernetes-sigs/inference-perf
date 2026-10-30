@@ -59,8 +59,10 @@ class MetricStability(StrEnum):
     the generated ``docs/runtime_metrics.md``. It is deliberately per metric, not
     per set, so a metric can graduate on its own without moving modules.
 
-    Nothing here is ``STABLE`` before v1.0.0; ``ALPHA`` is the default so a
-    new metric cannot become a promise by omission.
+    ``ALPHA`` is the default so a new metric cannot become a promise by
+    omission. The promotion policy is the Stability section of
+    ``docs/runtime_metrics.md``, and the promoted list in
+    ``tests/required/observability/test_metric_sets.py`` enforces it.
     """
 
     ALPHA = "ALPHA"
