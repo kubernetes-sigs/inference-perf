@@ -346,14 +346,13 @@ def _per_request_latencies(
         # rather than folding in a fabricated 0.0.
         ntpot.append((m.end_time - m.start_time) / output_tokens if output_tokens > 0 else None)
 
-        if len(token_times) > 1:
-            ttft.append(token_times[0] - m.start_time)
+        ttft.append(token_times[0] - m.start_time if token_times else None)
+        if any(t != token_times[0] for t in token_times):
             duration = token_times[-1] - token_times[0]
             tpot.append(duration / (output_tokens - 1) if output_tokens > 1 else None)
             for a, b in zip(token_times, token_times[1:], strict=False):
                 itl.append(b - a)
         else:
-            ttft.append(None)
             tpot.append(None)
 
     return request_latency, ttft, tpot, itl, ntpot
@@ -370,7 +369,7 @@ def _resolve_token_times(
     if info.output_token_times:
         return list(info.output_token_times)
 
-    if not (info.response_chunks or info.reasoning_chunks) or tokenizer is None:
+    if not (info.response_chunks or info.reasoning_chunks or info.tool_chunks) or tokenizer is None:
         return []
 
     return retokenize_output_token_times(info, tokenizer)
