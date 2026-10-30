@@ -1003,6 +1003,8 @@ def build_per_request_lifecycle_entry(
         entry["session_id"] = metric.session_id
     if metric.request_session_id is not None:
         entry["request_session_id"] = metric.request_session_id
+    if metric.request_id is not None:
+        entry["request_id"] = metric.request_id
 
     if fields.request:
         entry["request"] = metric.request_data

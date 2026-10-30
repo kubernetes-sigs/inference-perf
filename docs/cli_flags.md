@@ -27,6 +27,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.rerank.top_n` | int | Optional top_n sent to the server to limit the number of results returned. 0 means all results. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
+| `--api.request_id_header_key` | str | Header used to send a client-generated ID with each request, reported as request_id in per-request entries. An empty string sends no ID. |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |
 | `--data.path` | str | Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type. |
 | `--data.load_timeout` | float | Deadline in seconds for Hub dataset initialization, including startup row reads. Does not bound later streaming iteration. Null disables the deadline. |
