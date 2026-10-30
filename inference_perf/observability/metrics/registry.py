@@ -38,13 +38,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Callable, Generic, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, Generic, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram  # noqa: TID251 (instantiates the declared specs)
 
 from inference_perf.apis.base import RequestLifecycleMetric
 from inference_perf.config import Config
 from inference_perf.observability.context import RunContext, StageContext
+from inference_perf.reportgen.base import effective_output_tokens, series_values
+from inference_perf.utils.numeric.expression import SERIES, SIGNALS
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +119,20 @@ def help_text(spec: "MetricSpec[Any]") -> str:
 
 
 @dataclass(frozen=True)
+class ObservedRequest:
+    """One finished request as every ``on_request`` hook sees it, valued once.
+
+    ``series`` holds the request's value for each expression series it has one
+    for, from the report's own formulas (``series_values``). ``output_tokens`` is
+    the count the report uses under ``use_server_output_tokens``, 0 for a failure.
+    """
+
+    metric: RequestLifecycleMetric
+    series: Mapping[str, float]
+    output_tokens: int
+
+
+@dataclass(frozen=True)
 class MetricSpec(Generic[MetricT]):
     """Declares one exported metric and how it reacts to run lifecycle events.
 
@@ -125,8 +141,12 @@ class MetricSpec(Generic[MetricT]):
     the live ``metric_type`` instance, typed via ``MetricT``, so a spec whose
     hook expects a different metric type than it declares fails type checking.
     Anything a hook needs to know about a request must travel on the
-    ``RequestLifecycleMetric`` it is passed; anything it needs about the run
+    :class:`ObservedRequest` it is passed; anything it needs about the run
     travels on the :class:`RunContext`.
+
+    ``series`` and ``signal`` name the expression term this metric is the
+    runtime form of (see docs/expressions.md). Each term is backed by exactly
+    one metric, which test_metric_sets pins.
 
     ``stability`` is the compatibility promise for this one metric; leaving it
     at the default keeps the metric changeable.
@@ -139,14 +159,20 @@ class MetricSpec(Generic[MetricT]):
     buckets: Optional[Tuple[float, ...]] = None  # histograms only
     stability: MetricStability = MetricStability.ALPHA
     enabled: Callable[[Config], bool] = always
+    series: Optional[str] = None
+    signal: Optional[str] = None
     on_run_start: Optional[Callable[[MetricT, RunContext], None]] = None
     on_stage_start: Optional[Callable[[MetricT, StageContext], None]] = None
     on_stage_end: Optional[Callable[[MetricT, StageContext], None]] = None
-    on_request: Optional[Callable[[MetricT, RequestLifecycleMetric], None]] = None
+    on_request: Optional[Callable[[MetricT, ObservedRequest], None]] = None
 
     def __post_init__(self) -> None:
         if self.buckets is not None and self.metric_type is not Histogram:
             raise ValueError(f"metric {self.name!r}: buckets are only valid for Histogram metrics")
+        if self.series is not None and self.series not in SERIES:
+            raise ValueError(f"metric {self.name!r}: unknown series {self.series!r}; known: {sorted(SERIES)}")
+        if self.signal is not None and self.signal not in SIGNALS:
+            raise ValueError(f"metric {self.name!r}: unknown signal {self.signal!r}; known: {sorted(SIGNALS)}")
 
 
 class MetricsHub:
@@ -171,6 +197,9 @@ class MetricsHub:
         self.registry = registry
         self._bindings = tuple(bindings)
         self._config = config
+        self._use_server_output_tokens = (
+            config.report.request_lifecycle.use_server_output_tokens if config is not None else False
+        )
         self._failed_request_hooks: set[str] = set()
 
     def on_run_start(self, context: Optional[RunContext] = None) -> None:
@@ -195,11 +224,26 @@ class MetricsHub:
                 logger.exception("%s hook for metric %r failed", event, spec.name)
 
     def observe_request(self, metric: RequestLifecycleMetric) -> None:
+        try:
+            request = ObservedRequest(
+                metric=metric,
+                series=series_values(metric, self._use_server_output_tokens),
+                output_tokens=(
+                    effective_output_tokens(metric.info.response_metrics, self._use_server_output_tokens)
+                    if metric.error is None
+                    else 0
+                ),
+            )
+        except Exception:
+            if "<values>" not in self._failed_request_hooks:
+                self._failed_request_hooks.add("<values>")
+                logger.exception("valuing a request for the runtime metrics failed; suppressing further logs")
+            return
         for spec, prom_metric in self._bindings:
             if spec.on_request is None:
                 continue
             try:
-                spec.on_request(prom_metric, metric)
+                spec.on_request(prom_metric, request)
             except Exception:
                 # Log once per spec: this runs per request, and a hook that
                 # fails once will usually fail on every request.

@@ -123,14 +123,16 @@ def test_per_request_fields_computed_metrics_disabled_by_default() -> None:
     assert "computed_metrics" not in entry
 
 
+# One streamed chunk at 1.5 on a request from 1.0 to 2.0, with computed_metrics on.
+# The entry has latency 1.0, NTPOT 0.5 (1.0 over 2 tokens) and TTFT 0.5. TPOT and ITL need two timestamps.
 def test_per_request_fields_computed_metrics_can_be_enabled() -> None:
     entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig(computed_metrics=True))
 
     assert entry["computed_metrics"] == {
         "request_latency": 1.0,
         "normalized_time_per_output_token": 0.5,
-        "time_to_first_token": None,
-        "time_to_first_output_token": None,
+        "time_to_first_token": 0.5,
+        "time_to_first_output_token": 0.5,
         "time_per_output_token": None,
         "inter_token_latency": None,
         "inter_token_latencies": [],
