@@ -28,6 +28,7 @@ from pydantic import BaseModel, model_serializer
 
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.apis.chat import reasoning_field
+from inference_perf.payloads import Audios, Images, Videos
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageRuntimeInfo, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
@@ -205,6 +206,35 @@ def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str
         key = "median" if p == 50 else f"p{p:g}"
         result[key] = float(np.percentile(items, p))
     return result
+
+
+# Per-instance fields each modality's report block summarizes after its count.
+MEDIA_FIELDS: dict[str, tuple[str, ...]] = {
+    "image": ("pixels", "bytes", "aspect_ratio"),
+    "video": ("frames", "pixels", "bytes", "aspect_ratio", "seconds"),
+    "audio": ("seconds", "bytes"),
+}
+
+
+def summarize_media(
+    payloads: List[Optional[Union[Images, Videos, Audios]]], modality: str, percentiles: List[float]
+) -> dict[str, Any]:
+    """One modality's report block: media per request, then each field over the instances that measured it."""
+    instances = [instance for payload in payloads if payload is not None for instance in payload.instances]
+    block: dict[str, Any] = {
+        "count": summarize([float(payload.count) if payload is not None else 0.0 for payload in payloads], percentiles)
+    }
+    for field in MEDIA_FIELDS[modality]:
+        # None means the client never saw the bytes, so it stays out rather than counting as 0.
+        block[field] = summarize(
+            [float(value) for instance in instances if (value := getattr(instance, field)) is not None], percentiles
+        )
+    return block
+
+
+def media_rate(payloads: List[Optional[Union[Images, Videos, Audios]]], total_time: float) -> float:
+    """Media instances per second over the run window."""
+    return sum(payload.count for payload in payloads if payload is not None) / total_time if total_time > 0 else 0.0
 
 
 def extract_cached_prompt_tokens(server_usage: Optional[dict[str, Any]]) -> Optional[tuple[int, int]]:
@@ -864,26 +894,12 @@ def summarize_requests(
     valid_ttfo = [v for v in ttfo_values if v is not None]
 
     request_sizes = [len(x.request_data.encode("utf-8")) for x in all_successful]
-    all_images = []
-    all_videos = []
-    all_audios = []
-    for success in all_successful:
-        if success.info.request_metrics.image:
-            all_images.extend(success.info.request_metrics.image.instances)
-        if success.info.request_metrics.video:
-            all_videos.extend(success.info.request_metrics.video.instances)
-        if success.info.request_metrics.audio:
-            all_audios.extend(success.info.request_metrics.audio.instances)
-
-    image_counts = [
-        safe_float(s.info.request_metrics.image.count if s.info.request_metrics.image else 0) for s in all_successful
-    ]
-    video_counts = [
-        safe_float(s.info.request_metrics.video.count if s.info.request_metrics.video else 0) for s in all_successful
-    ]
-    audio_counts = [
-        safe_float(s.info.request_metrics.audio.count if s.info.request_metrics.audio else 0) for s in all_successful
-    ]
+    request_media = {
+        modality: [getattr(s.info.request_metrics, modality) for s in all_successful] for modality in MEDIA_FIELDS
+    }
+    response_media = {
+        modality: [getattr(s.info.response_metrics, modality, None) for s in all_successful] for modality in MEDIA_FIELDS
+    }
 
     successes_dict: dict[str, Any] = {
         "count": len(all_successful),
@@ -918,29 +934,14 @@ def summarize_requests(
                 else 0.0
             ),
             "requests_per_sec": (len(all_successful) / total_time if total_time > 0 else 0.0),
-            "images_per_sec": (sum(image_counts) / total_time if total_time > 0 else 0.0),
-            "videos_per_sec": (sum(video_counts) / total_time if total_time > 0 else 0.0),
-            "audios_per_sec": (sum(audio_counts) / total_time if total_time > 0 else 0.0),
+            "images_per_sec": media_rate(request_media["image"], total_time),
+            "videos_per_sec": media_rate(request_media["video"], total_time),
+            "audios_per_sec": media_rate(request_media["audio"], total_time),
         },
         "request_size_bytes": summarize([float(x) for x in request_sizes], percentiles),
-        "image": {
-            "count": summarize(image_counts, percentiles),
-            "pixels": summarize([safe_float(inst.pixels) for inst in all_images], percentiles),
-            "bytes": summarize([safe_float(inst.bytes) for inst in all_images], percentiles),
-            "aspect_ratio": summarize([safe_float(inst.aspect_ratio) for inst in all_images], percentiles),
-        },
-        "video": {
-            "count": summarize(video_counts, percentiles),
-            "frames": summarize([safe_float(inst.frames) for inst in all_videos], percentiles),
-            "pixels": summarize([safe_float(inst.pixels) for inst in all_videos], percentiles),
-            "bytes": summarize([safe_float(inst.bytes) for inst in all_videos], percentiles),
-            "aspect_ratio": summarize([safe_float(inst.aspect_ratio) for inst in all_videos], percentiles),
-        },
-        "audio": {
-            "count": summarize(audio_counts, percentiles),
-            "seconds": summarize([safe_float(inst.seconds) for inst in all_audios], percentiles),
-            "bytes": summarize([safe_float(inst.bytes) for inst in all_audios], percentiles),
-        },
+        "image": summarize_media(request_media["image"], "image", percentiles),
+        "video": summarize_media(request_media["video"], "video", percentiles),
+        "audio": summarize_media(request_media["audio"], "audio", percentiles),
         "prompt_tokens": summarize_prompt_token_usage(all_successful, percentiles),
         "output_len": summarize(
             [
@@ -961,6 +962,12 @@ def summarize_requests(
     }
     if goodput_metrics:
         successes_dict["goodput_metrics"] = goodput_metrics
+    # Response media is reported only when some response returned it, so a text
+    # run's report keeps its shape.
+    for modality, payloads in response_media.items():
+        if any(payload is not None for payload in payloads):
+            successes_dict[f"output_{modality}"] = summarize_media(payloads, modality, percentiles)
+            successes_dict["throughput"][f"output_{modality}s_per_sec"] = media_rate(payloads, total_time)
 
     return ResponsesSummary(
         retries=summarize_retries(all_successful + all_failed, percentiles),

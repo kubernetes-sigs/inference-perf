@@ -76,11 +76,11 @@ def test_local_file_image_trusts_declared_dims() -> None:
     assert spec.get_metrics(wire_bytes=4096) == Image(pixels=256, bytes=4096, aspect_ratio=1.0)
 
 
-def test_remote_image_reports_zeros_regardless_of_declared_dims() -> None:
-    # ``width``/``height`` populated but considered unverified caller hints —
-    # the remote contract makes "we never saw the bytes" visible in reports.
+# A remote image declaring 999x999, with 42 bytes of URL on the wire. Expects every
+# field None: the declared dims are unverified hints and the client never saw the image.
+def test_remote_image_measures_nothing_regardless_of_declared_dims() -> None:
     spec = RemoteImageSpec(width=999, height=999, insertion_point=0.0, url="https://example/x.png")
-    assert spec.get_metrics(wire_bytes=42) == Image()
+    assert spec.get_metrics(wire_bytes=42) == Image(pixels=None, bytes=None, aspect_ratio=None)
 
 
 # --- semantics: audio -----------------------------------------------------
@@ -101,9 +101,11 @@ def test_local_file_audio_trusts_declared_duration() -> None:
     assert spec.get_metrics(wire_bytes=8192) == Audio(bytes=8192, seconds=7.5)
 
 
-def test_remote_audio_reports_zeros() -> None:
+# A remote clip declaring 999s, with 42 bytes of URL on the wire. Expects bytes and
+# seconds None, not 0, so the report leaves the clip out of both distributions.
+def test_remote_audio_measures_nothing() -> None:
     spec = RemoteAudioSpec(duration=999.0, insertion_point=0.0, url="https://example/x.mp3")
-    assert spec.get_metrics(wire_bytes=42) == Audio()
+    assert spec.get_metrics(wire_bytes=42) == Audio(bytes=None, seconds=None)
 
 
 # --- semantics: video -----------------------------------------------------
@@ -140,9 +142,11 @@ def test_local_file_video_trusts_declared_geometry() -> None:
     )
 
 
-def test_remote_video_reports_zeros() -> None:
+# A remote video declaring 999x999 and 999 frames, with 42 bytes of URL on the wire.
+# Expects every field None, including the new seconds.
+def test_remote_video_measures_nothing() -> None:
     spec = RemoteVideoSpec(width=999, height=999, frames=999, insertion_point=0.0, url="https://example/x.mp4")
-    assert spec.get_metrics(wire_bytes=42) == Video()
+    assert spec.get_metrics(wire_bytes=42) == Video(pixels=None, bytes=None, aspect_ratio=None, frames=None, seconds=None)
 
 
 # --- contract enforcement -------------------------------------------------

@@ -16,7 +16,7 @@ from abc import abstractmethod
 from typing import Any, List, Optional
 from aiohttp import ClientResponse
 from pydantic import BaseModel, Field, SerializeAsAny, computed_field, model_serializer
-from inference_perf.payloads import RequestBody, RequestMetrics
+from inference_perf.payloads import Audios, Images, RequestBody, RequestMetrics, Videos
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 
@@ -26,6 +26,24 @@ class ResponseMetrics(BaseModel):
     # Last-seen `usage` dict reported by the server (streaming: the trailing
     # usage chunk; non-streaming: the response body's `usage`).
     server_usage: Optional[dict[str, Any]] = None
+    # Media the response returned, with the same per-modality records
+    # RequestMetrics keeps for what the request sent. None on a text response.
+    image: Optional[Images] = None
+    video: Optional[Videos] = None
+    audio: Optional[Audios] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_media(self, handler: Any) -> dict[str, Any]:
+        """Drop the media fields from a response that returned no media.
+
+        Keeps per_request_lifecycle_metrics.json byte-identical for text runs,
+        which would otherwise carry three nulls on every request.
+        """
+        dumped: dict[str, Any] = handler(self)
+        for key in ("image", "video", "audio"):
+            if dumped.get(key) is None:
+                dumped.pop(key, None)
+        return dumped
 
 
 class UnaryResponseMetrics(ResponseMetrics):

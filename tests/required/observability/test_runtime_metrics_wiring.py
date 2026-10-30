@@ -33,7 +33,7 @@ import yaml
 from prometheus_client import Counter, Gauge  # noqa: TID251 (throwaway metrics for these tests)
 
 from inference_perf.apis import InferenceAPIData
-from inference_perf.apis.base import InferenceInfo, RequestLifecycleMetric
+from inference_perf.apis.base import InferenceInfo, RequestLifecycleMetric, UnaryResponseMetrics
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.client.modelserver.mock_client import MockModelServerClient
 from inference_perf.config import (
@@ -60,7 +60,8 @@ from inference_perf.metrics.request_collector import (
 )
 from inference_perf.observability.metrics import MetricSpec, RunContext, StageContext, build_metrics
 from inference_perf.observability.metrics.prometheus import DEFAULT_PORT
-from inference_perf.payloads import RequestMetrics, Text
+from inference_perf.payloads import Image, Images, RequestMetrics, Text
+from inference_perf.reportgen.base import summarize_requests
 from inference_perf.utils.cli_parser import add_global_args, add_pydantic_args, unflatten_dict
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -344,6 +345,46 @@ class TestLoadGeneratorStageObserver(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hub.registry.get_sample_value(counter, {"stage": "0", "status": "success"}), float(num_requests))
         self.assertEqual(hub.registry.get_sample_value(counter, {"stage": "1", "status": "success"}), float(num_requests))
         self.assertEqual(loadgen.in_flight_requests(), 0)
+
+    # 4 requests through 2 worker processes against a mock server whose every response
+    # returns one 1 MP, 2000-byte image. Expects the collected records, the summary
+    # report and /metrics to agree: 4 output images, count 1 per request, 2000 bytes each.
+    async def test_mock_response_media_reaches_report_and_metrics(self) -> None:
+        num_requests = 4
+        api_config = APIConfig(type=APIType.Completion, streaming=False)
+        data_config = DataConfig(
+            type=DataGenType.Random,
+            input_distribution=Distribution(min=10, max=10, mean=10.0, std_dev=0.0, total_count=num_requests),
+            output_distribution=Distribution(min=5, max=5, mean=5.0, std_dev=0.0, total_count=num_requests),
+        )
+        datagen = RandomDataGenerator(api_config, data_config, _DummyCustomTokenizer())
+        image = Images(count=1, instances=[Image(pixels=1024 * 1024, bytes=2000, aspect_ratio=1.0)])
+
+        collector = MultiprocessRequestMetricCollector()
+        hub = build_metrics(Config())
+        collector.add_observer(hub.observe_request)
+        client = MockModelServerClient(
+            collector, api_config, mock_latency=0, response_metrics=UnaryResponseMetrics(output_tokens=0, image=image)
+        )
+        load_config = LoadConfig(
+            type=LoadType.CONSTANT,
+            num_workers=2,
+            worker_max_concurrency=10,
+            stages=[StandardLoadStage(rate=num_requests, duration=1)],
+            base_seed=42,
+        )
+        loadgen = LoadGenerator(datagen, load_config)
+
+        async with collector.start():
+            await loadgen.mp_run(client)
+
+        successes = summarize_requests(collector.get_metrics(), [50]).successes
+        self.assertEqual(successes["count"], num_requests)
+        self.assertEqual(successes["output_image"]["count"]["mean"], 1.0)
+        self.assertEqual(successes["output_image"]["bytes"]["mean"], 2000.0)
+        labels = {"stage": "0", "modality": "image"}
+        self.assertEqual(hub.registry.get_sample_value("inference_perf_output_media_total", labels), float(num_requests))
+        self.assertEqual(hub.registry.get_sample_value("inference_perf_output_media_bytes_sum", labels), 2000.0 * num_requests)
 
 
 class _DummyHFTokenizer:

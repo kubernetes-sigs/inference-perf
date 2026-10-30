@@ -285,9 +285,9 @@ def _build_multimodal(successful: List[RequestLifecycleMetric]) -> Optional[Mult
     if any(images):
         image = ImagePayloadStats(
             count=_statistics((group.count if group else 0 for group in images), Units.COUNT),
-            filesize=_statistics((instance.bytes for instance in all_images), Units.BYTES),
-            pixels=_statistics((instance.pixels for instance in all_images), Units.PIXELS),
-            aspect_ratio=_statistics(
+            filesize=_media_statistics((instance.bytes for instance in all_images), Units.BYTES),
+            pixels=_media_statistics((instance.pixels for instance in all_images), Units.PIXELS),
+            aspect_ratio=_media_statistics(
                 (instance.aspect_ratio for instance in all_images),
                 Units.RATIO,
             ),
@@ -296,21 +296,27 @@ def _build_multimodal(successful: List[RequestLifecycleMetric]) -> Optional[Mult
     if any(videos):
         video = VideoPayloadStats(
             count=_statistics((group.count if group else 0 for group in videos), Units.COUNT),
-            filesize=_statistics((instance.bytes for instance in all_videos), Units.BYTES),
+            filesize=_media_statistics((instance.bytes for instance in all_videos), Units.BYTES),
             # BR counts pixels across frames; native Video.pixels is per-frame.
-            pixels=_statistics((instance.pixels * instance.frames for instance in all_videos), Units.PIXELS),
-            aspect_ratio=_statistics(
+            pixels=_media_statistics(
+                (
+                    instance.pixels * instance.frames if instance.pixels is not None and instance.frames is not None else None
+                    for instance in all_videos
+                ),
+                Units.PIXELS,
+            ),
+            aspect_ratio=_media_statistics(
                 (instance.aspect_ratio for instance in all_videos),
                 Units.RATIO,
             ),
-            frames=_statistics((instance.frames for instance in all_videos), Units.COUNT),
+            frames=_media_statistics((instance.frames for instance in all_videos), Units.COUNT),
         )
     audio = None
     if any(audios):
         audio = AudioPayloadStats(
             count=_statistics((group.count if group else 0 for group in audios), Units.COUNT),
-            filesize=_statistics((instance.bytes for instance in all_audios), Units.BYTES),
-            duration=_statistics((instance.seconds for instance in all_audios), Units.S),
+            filesize=_media_statistics((instance.bytes for instance in all_audios), Units.BYTES),
+            duration=_media_statistics((instance.seconds for instance in all_audios), Units.S),
         )
     return MultiModalRequests(image=image, video=video, audio=audio)
 
@@ -394,6 +400,15 @@ def _statistics(values: Iterable[float], units: Units) -> Optional[Statistics]:
         max=float(arr.max()),
         **{key: float(p) for key, p in zip(_PERCENTILE_KEYS, pcts, strict=True)},
     )
+
+
+def _media_statistics(values: Iterable[Optional[float]], units: Units) -> Optional[Statistics]:
+    """Statistics over the media instances that measured this field.
+
+    None means the client never saw the bytes, so it stays out of the
+    distribution rather than counting as 0.
+    """
+    return _statistics((value for value in values if value is not None), units)
 
 
 def _scalar_statistics(value: float, units: Units) -> Statistics:

@@ -17,7 +17,7 @@ Stub: in :data:`ImageSpecUnion` (construction works) but not yet wired into
 the chat.py materializer — passing one through ``to_request_body`` raises
 ``TypeError`` until that branch lands. The materializer will emit the URL
 verbatim in an ``image_url`` wire block and
-record ``bytes=0`` on the realized metric (we send a URL, not pixels; the
+record nothing measured on the realized metric (we send a URL, not pixels; the
 server does the fetch). Private buckets are expected to use signed URLs —
 no auth-headers field on the spec.
 """
@@ -39,8 +39,8 @@ class RemoteImageSpec(ImageSpec):
         # length — meaningless as an image size — and we can't claim pixels
         # because we never saw the content. ``width``/``height`` on the spec
         # are unverified caller hints, deliberately not surfaced as
-        # measurements. Returning zeros makes "remote means no measurement"
-        # visible in aggregate reports rather than silently faking signal.
+        # measurements. Every field stays None, so reports leave the instance
+        # out of the size distributions instead of averaging in a fake zero.
         return Image()
 
 

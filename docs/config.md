@@ -172,7 +172,7 @@ Its `min` and `max` must be within `[0, 1]`; for distributions other than
 throughout the prompt. Token and media count distributions continue to produce
 integers.
 
-The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`.
+The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio,seconds}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`. A field the client never measured, such as the size of media sent as a URL, is left out of its distribution rather than counted as 0. Media a response returns is reported the same way under `output_image`, `output_video`, `output_audio` and `throughput.output_{images,videos,audios}_per_sec`, present only when some response returned media. The same counts and sizes are exported on `/metrics`, see [runtime_metrics.md](runtime_metrics.md).
 
 ##### Wire formats
 
