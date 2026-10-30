@@ -877,6 +877,10 @@ def test_ids(source: str, path: str | None = None) -> dict[str, tuple[int, int]]
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and sub.name.startswith("test_"):
                     found[f"{node.name}::{sub.name}"] = _span(sub)
+            if node.bases:
+                # inherited tests cannot be listed statically. The class's own node id runs them all, so a
+                # changed line anywhere in the class, or a symbol it reads, selects the class after its methods
+                found[node.name] = _span(node)
     return found
 
 
@@ -940,7 +944,7 @@ def _touched_tests_and_symbols(source: str, lines: set[int], path: str | None) -
         elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             symbols.add(stmt.name)
         elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
-            continue  # compared whole-file by bound name, since a reformatted import binds the same names
+            continue  # compared whole-file per alias, since a reformatted import keeps the same aliases
         elif isinstance(stmt, (ast.Assign, ast.AnnAssign)):
             targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
             names = {t.id for t in targets if isinstance(t, ast.Name)}
@@ -1002,11 +1006,28 @@ def _tests_using_symbols(source: str, symbols: set[str], path: str | None) -> se
     }
     for node in module.body:
         if isinstance(node, ast.ClassDef):
+            siblings = {s.name for s in node.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))}
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    # a method reads its class's attributes and decorators, not its sibling methods
+                    # a method reads its class's attributes and decorators, the siblings it calls through
+                    # `self` and the sibling fixtures it requests by argument, not every sibling method
+                    called = {
+                        f"{node.name}::{a.attr}"
+                        for a in ast.walk(sub)
+                        if isinstance(a, ast.Attribute)
+                        and isinstance(a.value, ast.Name)
+                        and a.value.id == "self"
+                        and a.attr in siblings
+                    }
+                    requested = {f"{node.name}::{a.arg}" for a in sub.args.args if a.arg in siblings}
                     uses[f"{node.name}::{sub.name}"] = (
-                        _names_used(sub) | _class_level_names(node) | implicit | _usefixtures(node) | _usefixtures(sub)
+                        _names_used(sub)
+                        | called
+                        | requested
+                        | _class_level_names(node)
+                        | implicit
+                        | _usefixtures(node)
+                        | _usefixtures(sub)
                     )
     changed = True
     while changed:
@@ -1022,9 +1043,10 @@ def _tests_using_symbols(source: str, symbols: set[str], path: str | None) -> se
 def changed_tests_in(base_src: str, head_src: str, old_lines: set[int], new_lines: set[int], path: str) -> set[str] | None:
     """Node ids (below the file) of the tests on the base this change edits or deletes, or None for the whole file.
 
-    A test the change adds only adds kills, so it cannot raise the survivor count and is not here. A changed
-    helper, fixture, class, constant or import reaches the tests that read it, autouse fixtures and
-    `usefixtures` marks included. Any other changed line, such as module-level code, reaches every test.
+    A test the change adds only adds kills, so it cannot raise the survivor count and is not here, unless it
+    overrides a test its class inherits, which maps to the class's own id. A changed helper, fixture, class,
+    constant or import reaches the tests that read it, autouse fixtures and `usefixtures` marks included.
+    Any other changed line, such as module-level code, reaches every test.
     """
     try:
         head_tests, head_symbols = _touched_tests_and_symbols(head_src, new_lines, path)
@@ -1039,7 +1061,9 @@ def changed_tests_in(base_src: str, head_src: str, old_lines: set[int], new_line
     touched = (
         head_tests | base_tests | _tests_using_symbols(head_src, symbols, path) | _tests_using_symbols(base_src, symbols, path)
     )
-    return {t for t in touched if t in test_ids(base_src, path)}
+    on_base = test_ids(base_src, path)
+    # a method the head adds to a class that inherits its tests may override one of them: the class id runs them all
+    return {t if t in on_base else t.split("::")[0] for t in touched if t in on_base or t.split("::")[0] in on_base}
 
 
 def tests_in_scope(base: str, base_tree: Path, head_tree: Path) -> tuple[list[str], list[str]]:

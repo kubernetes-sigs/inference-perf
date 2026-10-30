@@ -771,6 +771,82 @@ def test_a_symbol_read_by_one_method_reaches_only_that_method(cmr: Any) -> None:
     assert selected({5}, {5}) == {"TestC::test_g"}
 
 
+# tests/test_x.py has constant TOL, constant LIMIT, and class TestC with helper _close reading TOL,
+# fixture thing reading LIMIT, test_a calling self._close, test_b requesting thing, and test_c using
+# neither. Editing TOL reaches test_a only. Editing LIMIT reaches test_b only. Editing _close's body
+# or thing's body is a class line and reaches all three.
+def test_a_symbol_reaches_a_test_through_a_sibling_helper_or_fixture(cmr: Any) -> None:
+    base = (
+        "import pytest\n"  # 1
+        "\n"  # 2
+        "TOL = 1\n"  # 3
+        "LIMIT = 2\n"  # 4
+        "\n"  # 5
+        "\n"  # 6
+        "class TestC:\n"  # 7
+        "    def _close(self, x):\n"  # 8
+        "        return x < TOL\n"  # 9
+        "\n"  # 10
+        "    @pytest.fixture\n"  # 11
+        "    def thing(self):\n"  # 12
+        "        return LIMIT\n"  # 13
+        "\n"  # 14
+        "    def test_a(self):\n"  # 15
+        "        assert self._close(0)\n"  # 16
+        "\n"  # 17
+        "    def test_b(self, thing):\n"  # 18
+        "        assert thing\n"  # 19
+        "\n"  # 20
+        "    def test_c(self):\n"  # 21
+        "        assert True\n"  # 22
+    )
+
+    def selected(old: set[int], new: set[int]) -> set[str] | None:
+        result: set[str] | None = cmr.changed_tests_in(base, base, old, new, "tests/test_x.py")
+        return result
+
+    everything = {"TestC::test_a", "TestC::test_b", "TestC::test_c"}
+    assert selected({3}, {3}) == {"TestC::test_a"}
+    assert selected({4}, {4}) == {"TestC::test_b"}
+    assert selected({9}, {9}) == everything
+    assert selected({13}, {13}) == everything
+
+
+# tests/test_x.py imports Suite and has class TestV(Suite) with attribute url and own test_a, plus class
+# TestO with test_o. TestV inherits its other tests, so pytest's id for the class itself is listed after
+# TestV::test_a. Editing url or adding an override to TestV selects the class id, the test_a line
+# selects test_a, and swapping the import's source selects both. Editing test_o selects test_o only.
+def test_a_class_with_inherited_tests_is_selected_by_its_own_node_id(cmr: Any) -> None:
+    base = (
+        "from suite import Suite\n"  # 1
+        "\n"  # 2
+        "\n"  # 3
+        "class TestV(Suite):\n"  # 4
+        '    url = "http://x"\n'  # 5
+        "\n"  # 6
+        "    def test_a(self):\n"  # 7
+        "        assert self.url\n"  # 8
+        "\n"  # 9
+        "\n"  # 10
+        "class TestO:\n"  # 11
+        "    def test_o(self):\n"  # 12
+        "        assert True\n"  # 13
+    )
+
+    def selected(head: str, old: set[int], new: set[int]) -> set[str] | None:
+        result: set[str] | None = cmr.changed_tests_in(base, head, old, new, "tests/test_x.py")
+        return result
+
+    assert list(cmr.test_ids(base)) == ["TestV::test_a", "TestV", "TestO::test_o"]
+    assert "TestO" not in cmr.test_ids(base)  # no bases, so every test it runs has its own id
+    assert selected(base, {5}, {5}) == {"TestV"}
+    assert selected(base, {8}, {8}) == {"TestV::test_a"}
+    assert selected(base, {13}, {13}) == {"TestO::test_o"}
+    assert selected(base.replace("from suite import", "from other import"), {1}, {1}) == {"TestV", "TestV::test_a"}
+    override = base.replace("        assert self.url\n", "        assert self.url\n\n    def test_z(self):\n        pass\n")
+    assert selected(override, set(), {10, 11}) == {"TestV"}
+
+
 # tests/test_x.py has an autouse fixture clock, a plain fixture value, test_a naming no fixture,
 # test_b(value), and class TestC marked usefixtures("value") holding test_c. Editing clock's body
 # reaches all three tests. Editing value's body reaches test_b and TestC::test_c, not test_a.
