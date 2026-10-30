@@ -17,6 +17,13 @@ adds `request_session_id` for the wire identity sent through
 `api.session_id_header_key`. Parent requests omit `request_session_id` because their
 wire identity is already the enclosing `session_id`.
 
+Each per-request entry also carries `request_id`, the ID sent through
+`api.request_id_header_key` (`x-request-id` by default), so the request can be matched
+to server logs. Failed requests carry it too, including those that never got a
+response. Entries omit `request_id` when `api.request_id_header_key` is empty, since
+no ID is generated then. An ID set through `api.headers` is still sent, but not
+reported.
+
 ## Understanding the Report Structure
 
 Here is an example snippet from a `summary_lifecycle_metrics.json` report:

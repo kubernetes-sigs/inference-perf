@@ -41,6 +41,7 @@ import time
 import logging
 import requests
 import ssl
+import uuid
 
 
 logger = logging.getLogger(__name__)
@@ -339,6 +340,23 @@ def _update_headers_case_insensitive(target: dict[str, str], source: dict[str, s
         for mk in matching_keys:
             del target[mk]
         target[k] = v
+
+
+def _ensure_request_id(headers: dict[str, str], header_key: Optional[str]) -> Optional[str]:
+    """Return the request ID sent under ``header_key``, generating one if the headers lack it.
+
+    An ID already in the headers (set through ``api.headers`` or the data's own headers)
+    is kept and returned, so the report matches what went on the wire. An empty or None
+    ``header_key`` generates no ID and returns None.
+    """
+    if not header_key:
+        return None
+    for name, value in headers.items():
+        if name.lower() == header_key.lower():
+            return value
+    request_id = uuid.uuid4().hex
+    headers[header_key] = request_id
+    return request_id
 
 
 def _build_request_headers(api_config: APIConfig, api_key: Optional[str]) -> dict[str, str]:
@@ -653,6 +671,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
             if session_token:
                 headers[session_token_header] = session_token
 
+        # Generated before the attempt loop, so every retry of this request carries the same ID.
+        request_id = _ensure_request_id(headers, self.client.api_config.request_id_header_key)
+
         request_data = json.dumps(payload)
 
         # Determine operation name based on API type
@@ -916,6 +937,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
             stage_id=stage_id,
             session_id=data.session_id if isinstance(data.session_id, str) else None,
             request_session_id=data.request_session_id if isinstance(data.request_session_id, str) else None,
+            request_id=request_id,
             request_data=request_data,
             response_data=response_content,
             info=info,

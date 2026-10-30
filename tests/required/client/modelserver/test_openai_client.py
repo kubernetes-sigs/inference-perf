@@ -14,6 +14,7 @@
 import json
 import logging
 import random
+import re
 import ssl
 from types import SimpleNamespace
 from typing import FrozenSet, Sequence
@@ -1360,3 +1361,146 @@ async def test_retry_ending_in_http_error_is_not_recovered(mock_client: MagicMoc
     assert metric.error is not None
     assert metric.info.retries_attempted == 1
     assert metric.info.retries_recovered is False
+
+
+# --- Client-generated request ID (#685) ---
+#
+# Each request carries a client-generated ID under api.request_id_header_key and its
+# metric reports the same value as request_id, so a request can be found in server logs.
+
+
+# With request_id_header_key "x-request-id" and a 200 response, the POST carries a
+# 32-character hex x-request-id and metric.request_id holds that same value.
+@pytest.mark.asyncio
+async def test_request_id_sent_and_reported(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    sent = _post(session).call_args.kwargs["headers"]["x-request-id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", sent)
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is None
+    assert metric.request_id == sent
+
+
+# A request that times out never gets a response, but metric.request_id still holds
+# the x-request-id that was sent.
+@pytest.mark.asyncio
+async def test_request_id_reported_when_request_times_out(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_failing_ctx(asyncio.TimeoutError())]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    sent = _post(session).call_args.kwargs["headers"]["x-request-id"]
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is not None
+    assert metric.error.error_type == "TimeoutError"
+    assert metric.request_id == sent
+
+
+# Two requests sent through the same session carry two different x-request-id values.
+@pytest.mark.asyncio
+async def test_request_id_differs_between_requests(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx(), _ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    first, second = (call.kwargs["headers"]["x-request-id"] for call in _post(session).call_args_list)
+    assert first != second
+
+
+# A dropped connection retried once makes two POSTs; both carry the same x-request-id,
+# and metric.request_id holds that one value.
+@pytest.mark.asyncio
+async def test_request_id_kept_across_retries(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=1)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()), _ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    first, second = (call.kwargs["headers"]["x-request-id"] for call in _post(session).call_args_list)
+    assert first == second
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.request_id == first
+
+
+# With request_id_header_key set to None or "", the POST carries no x-request-id
+# header and metric.request_id is None.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header_key", [None, ""])
+async def test_request_id_not_sent_when_header_key_is_empty(
+    mock_client: MagicMock, mock_data: MagicMock, header_key: Optional[str]
+) -> None:
+    mock_client.api_config.request_id_header_key = header_key
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    headers = _post(session).call_args.kwargs["headers"]
+    assert not any(name.lower() == "x-request-id" for name in headers)
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.request_id is None
+
+
+# When api.headers already sets X-Request-Id to "fixed-id", the POST carries that header
+# once, unchanged, and metric.request_id is "fixed-id".
+@pytest.mark.asyncio
+async def test_request_id_from_api_headers_is_kept(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    mock_client.api_config.headers = {"X-Request-Id": "fixed-id"}
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    headers = _post(session).call_args.kwargs["headers"]
+    assert [value for name, value in headers.items() if name.lower() == "x-request-id"] == ["fixed-id"]
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.request_id == "fixed-id"
+
+
+# With request_id_header_key "" and api.headers setting X-Request-Id to "fixed-id", the
+# POST still carries X-Request-Id "fixed-id", but metric.request_id is None.
+@pytest.mark.asyncio
+async def test_request_id_from_api_headers_sent_but_not_reported_when_header_key_is_empty(
+    mock_client: MagicMock, mock_data: MagicMock
+) -> None:
+    mock_client.api_config.request_id_header_key = ""
+    mock_client.api_config.headers = {"X-Request-Id": "fixed-id"}
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    headers = _post(session).call_args.kwargs["headers"]
+    assert [value for name, value in headers.items() if name.lower() == "x-request-id"] == ["fixed-id"]
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.request_id is None
+
+
+# When the data's own headers set x-request-id to "trace-42" and the configured key is
+# "X-Request-ID", the lowercase header is sent unchanged with no second copy added, and
+# metric.request_id is "trace-42".
+@pytest.mark.asyncio
+async def test_request_id_from_data_headers_is_kept(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "X-Request-ID"
+    mock_data.headers = {"x-request-id": "trace-42"}
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    headers = _post(session).call_args.kwargs["headers"]
+    assert [value for name, value in headers.items() if name.lower() == "x-request-id"] == ["trace-42"]
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.request_id == "trace-42"
