@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 import numpy as np
 from pydantic import BaseModel, model_serializer
 
+from inference_perf.apis.base import is_stage_teardown_cancelled
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.apis.chat import reasoning_field
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
@@ -397,6 +398,23 @@ def summarize_retries(metrics: List[RequestLifecycleMetric], percentiles: List[f
     return summary
 
 
+def summarize_cancelled(metrics: List[RequestLifecycleMetric], percentiles: List[float]) -> Optional[dict[str, Any]]:
+    """Roll up the requests the load generator cancelled at stage teardown.
+
+    Returns None when nothing was cancelled, so a stage that drained cleanly carries
+    no block at all. ``in_flight_sec`` is how long each request had been waiting when
+    it was cancelled: a lower bound on its latency, not a latency, which is why it is
+    not called one and why these requests stay out of every latency distribution.
+    """
+    if not metrics:
+        return None
+    return {
+        "count": len(metrics),
+        "in_flight_sec": summarize([m.end_time - m.start_time for m in metrics], percentiles),
+        "prompt_tokens": summarize_prompt_token_usage(metrics, percentiles),
+    }
+
+
 class ResponsesSummary(BaseModel):
     benchmark_time_seconds: float
     load_summary: dict[str, Any]
@@ -406,19 +424,25 @@ class ResponsesSummary(BaseModel):
     # request ever retried. A sibling of successes/failures rather than a key
     # inside either, because retried requests land on both sides.
     retries: Optional[dict[str, Any]] = None
+    # Requests cancelled in flight at stage teardown, or None when there were none.
+    # A third outcome beside successes and failures: the server neither answered
+    # nor refused these, so counting them as failures would report a stage that
+    # ended on schedule as if the server had broken.
+    cancelled: Optional[dict[str, Any]] = None
 
     @model_serializer(mode="wrap")
-    def _omit_absent_retries(self, handler: Any) -> dict[str, Any]:
-        """Drop `retries` entirely when it is None.
+    def _omit_absent_blocks(self, handler: Any) -> dict[str, Any]:
+        """Drop `retries` and `cancelled` entirely when they are None.
 
-        A run that never retried must serialize byte-identically to one built before
-        retries existed, so the default config's report gains no key at all -- not a
-        `"retries": null`. Enforced on the model rather than at the ~6 model_dump()
-        call sites so a new caller cannot reintroduce the key by omission.
+        A run that never retried or cancelled must serialize byte-identically to one
+        built before those blocks existed, so the default config's report gains no key
+        at all -- not a `"retries": null`. Enforced on the model rather than at the ~6
+        model_dump() call sites so a new caller cannot reintroduce the key by omission.
         """
         dumped: dict[str, Any] = handler(self)
-        if dumped.get("retries") is None:
-            dumped.pop("retries", None)
+        for key in ("retries", "cancelled"):
+            if dumped.get(key) is None:
+                dumped.pop(key, None)
         return dumped
 
 
@@ -794,7 +818,10 @@ def summarize_requests(
     max_error_messages: int = 100,
 ) -> ResponsesSummary:
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
-    all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
+    all_cancelled: List[RequestLifecycleMetric] = [x for x in metrics if is_stage_teardown_cancelled(x.error)]
+    all_failed: List[RequestLifecycleMetric] = [
+        x for x in metrics if x.error is not None and not is_stage_teardown_cancelled(x.error)
+    ]
 
     total_time = max(x.end_time for x in metrics) - min(x.start_time for x in metrics)
 
@@ -963,7 +990,10 @@ def summarize_requests(
         successes_dict["goodput_metrics"] = goodput_metrics
 
     return ResponsesSummary(
+        # A cancelled request fits neither recovered nor failed_after_retry, so it
+        # is left out rather than break that partition.
         retries=summarize_retries(all_successful + all_failed, percentiles),
+        cancelled=summarize_cancelled(all_cancelled, percentiles),
         benchmark_time_seconds=total_time,
         load_summary=load_summary,
         successes=successes_dict,
@@ -1520,7 +1550,9 @@ class ReportGenerator:
                     inp + m.info.request_metrics.text.input_tokens,
                     out + effective_output_tokens(m.info.response_metrics, use_server_output_tokens),
                 )
-                if m.session_id not in error_by_session and m.error is not None:
+                # A cancellation is the stage's doing, not a server fault, so it
+                # never makes the session a failure.
+                if m.session_id not in error_by_session and m.error is not None and not is_stage_teardown_cancelled(m.error):
                     error_by_session[m.session_id] = m.error
                 if m.info.retries_attempted:
                     prev_attempted, prev_recovered = retry_by_session[m.session_id]

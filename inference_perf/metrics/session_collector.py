@@ -17,6 +17,7 @@
 from collections import defaultdict
 from typing import Any, List, Optional
 from inference_perf.apis import SessionLifecycleMetric, RequestLifecycleMetric
+from inference_perf.apis.base import is_stage_teardown_cancelled
 
 
 class SessionMetricsCollector:
@@ -78,7 +79,9 @@ class SessionMetricsCollector:
                     inp + m.info.request_metrics.text.input_tokens,
                     out + (m.info.response_metrics.output_tokens if m.info.response_metrics else 0),
                 )
-                if m.session_id not in error_by_session and m.error is not None:
+                # A cancellation is the stage's doing, not a server fault, so it
+                # never makes the session a failure.
+                if m.session_id not in error_by_session and m.error is not None and not is_stage_teardown_cancelled(m.error):
                     error_by_session[m.session_id] = m.error
 
         # Enrich each session metric with aggregated data
