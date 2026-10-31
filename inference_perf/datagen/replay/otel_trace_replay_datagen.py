@@ -83,6 +83,7 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     WIRE_FORMATS,
     convert_wire_file,
     detect_trace_format,
+    drop_compressed_duplicates,
     iter_otel_jsonl_traces,
     trace_stem,
     trace_suffix,
@@ -444,7 +445,9 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             if not trace_dir.is_dir():
                 raise ValueError(f"Trace directory path is not a directory: {trace_dir}")
 
-            trace_files = sorted(p for p in trace_dir.glob("*.json*") if trace_suffix(p) in TRACE_FILE_SUFFIXES)
+            trace_files = drop_compressed_duplicates(
+                sorted(p for p in trace_dir.glob("*.json*") if trace_suffix(p) in TRACE_FILE_SUFFIXES)
+            )
             if not trace_files:
                 raise ValueError(f"No .json or .jsonl files (optionally .zst) found in {trace_dir}")
 
@@ -462,7 +465,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                     if not Path(path).is_file():
                         raise ValueError(f"Trace file does not exist: {path}")
 
-            trace_files = resolve_trace_files(self.otel_config.trace_files)
+            trace_files = drop_compressed_duplicates(resolve_trace_files(self.otel_config.trace_files))
             if not trace_files:
                 raise ValueError(f"No trace files resolved from {self.otel_config.trace_files}")
 
