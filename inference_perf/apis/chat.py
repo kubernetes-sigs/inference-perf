@@ -34,6 +34,7 @@ from inference_perf.payloads import (
     SyntheticImageSpec,
     SyntheticMp4VideoSpec,
 )
+from inference_perf.apis.response_errors import EmptyResponseError, InBandError, in_band_error
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.mediagen.pool import get_video_pool
@@ -598,6 +599,10 @@ class ChatCompletionAPIData(InferenceAPIData):
                 # first output token can skip it (#559).
                 extract_reasoning=lambda data: reasoning_field(data.get("choices", [{}])[0].get("delta", {})),
             )
+            # A stream that carried neither generated text nor usage is not a completion
+            # (an error page or an empty stream behind a 200), not a zero-token one.
+            if not parsed.output_text and not parsed.reasoning_text and parsed.server_usage is None:
+                raise EmptyResponseError(parsed.raw_content)
             prompt_len = self._resolve_prompt_tokens(parsed.server_usage, tokenizer)
             # Generated text is a continuation, not a sequence start: counting it
             # with special tokens would add a BOS the server's completion_tokens
@@ -619,16 +624,23 @@ class ChatCompletionAPIData(InferenceAPIData):
             )
 
         data = await response.json()
+        # A 200 whose body is an error payload is that error, not a success.
+        if (error_payload := in_band_error(data)) is not None:
+            raise InBandError(error_payload)
         server_usage = data.get("usage")
-        prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
         choices = data.get("choices", [])
+        # A reasoning-only message (max_tokens ran out mid-reasoning) has content null.
+        output_text = "".join(choice.get("message", {}).get("content") or "" for choice in choices)
+        reasoning_text = "".join(reasoning_field(choice.get("message", {})) or "" for choice in choices)
+        # No generated text and no usage means the body is not a completion at all.
+        if not output_text and not reasoning_text and server_usage is None:
+            raise EmptyResponseError()
+        prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
         if len(choices) == 0:
             return InferenceInfo(
                 request_metrics=self._build_request_metrics(prompt_len, 0),
                 lora_adapter=lora_adapter,
             )
-        output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
-        reasoning_text = "".join(reasoning_field(choice.get("message", {})) or "" for choice in choices)
         output_len = _count_generated_tokens(tokenizer, output_text, reasoning_text)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
