@@ -102,13 +102,16 @@ class LocalUserSession:
 
     def update_context(self, response: str) -> None:
         if self._accumulates_history and self.tokenizer and self.max_model_len:
-            history_context = "".join(self.history) if self._preserves_initial_prompt_boundary else " ".join(self.history)
-            base_len = len(self.system_prompt)
-            if history_context:
-                base_len += len(history_context) if self._preserves_initial_prompt_boundary else len(history_context) + 1
-            turn_content = response[base_len:]
-            if not self._preserves_initial_prompt_boundary:
-                turn_content = turn_content.strip()
+            if self._preserves_initial_prompt_boundary:
+                turn_content = response[len(self.system_prompt + "".join(self.history)) :]
+            else:
+                # The request joined the system prompt, the history and this turn's prompt with
+                # single spaces. Drop only the space before this turn; stripping more would cut a
+                # leading space of the prompt or a trailing newline the server generated.
+                prefix = " ".join(part for part in (self.system_prompt, " ".join(self.history)) if part)
+                turn_content = response[len(prefix) :]
+                if prefix and turn_content.startswith(" "):
+                    turn_content = turn_content[1:]
             if turn_content:
                 self.history.append(turn_content)
 
@@ -298,7 +301,9 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     ) -> InferenceInfo:
         inference_info = await super().process_response(response, config, tokenizer)
         self.update_inference_info(inference_info)
-        self.user_session.update_context(self.prompt + " " + self.model_response)
+        # The response text continues the prompt as generated, including any leading space.
+        # Adding a separator puts a token the server never generated into the next turn.
+        self.user_session.update_context(self.prompt + self.model_response)
         return inference_info
 
     async def process_failure(
