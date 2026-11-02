@@ -55,17 +55,18 @@ logger = logging.getLogger(__name__)
 # is old" warning without any network access.
 #
 # The case files (cases/*/vllm-bench.args) were written by reading this exact
-# tag (commit 6d8d0a24c02bfd84d46b3016b865a44f048ae84b). What each flag means is
-# defined in vllm/benchmarks/serve.py and vllm/benchmarks/datasets.py and has
-# changed between vllm versions, so re-read both files when bumping.
-VLLM_PINNED_REF = "v0.10.0"
+# tag (commit 5df63a7203cdb9328d824a27b682e77c7b9928be). What each flag means is
+# defined in vllm/benchmarks/serve.py, vllm/benchmarks/datasets/datasets.py
+# and vllm/benchmarks/lib/endpoint_request_func.py and has changed between
+# vllm versions, so re-read all three when bumping.
+VLLM_PINNED_REF = "v0.32.0"
 # Extra packages to pip-install next to the pinned vllm (space-separated).
-# vllm does not cap its transformers version, and transformers 5 removed a
-# tokenizer attribute (all_special_tokens_extended) that this vllm reads at
-# bench startup, so without this pin the run crashes before sending a
-# request. Review when bumping the vllm pin.
-VLLM_COMPAT_PINS = "transformers<5"
-VLLM_PIN_DATE = datetime.date(2026, 1, 15)
+# Empty at this pin: it requires transformers>=5.16.1,<5.20.0 itself and no
+# longer reads the all_special_tokens_extended attribute that transformers 5
+# removed, which is what "transformers<5" covered for v0.10.0. Review when
+# bumping the vllm pin.
+VLLM_COMPAT_PINS = ""
+VLLM_PIN_DATE = datetime.date(2026, 11, 2)
 VLLM_STALENESS_WARN_DAYS = 180
 
 # Where the provisioned vllm venv lives. Outside the repo by default; set
@@ -117,12 +118,17 @@ def warn_if_pin_stale() -> None:
 # imports just the bench serve code and calls it the same way the CLI would
 # (see vllm/entrypoints/cli/benchmark/serve.py: add_cli_args + main), skipping
 # the broken parts.
+# FlexibleArgumentParser moved from vllm.utils to vllm.utils.argparse_utils
+# between v0.10.0 and v0.32.0, so both homes are tried before plain argparse.
 _BENCH_SERVE_SHIM = (
     "import argparse\n"
     "try:\n"
-    "    from vllm.utils import FlexibleArgumentParser as Parser\n"
+    "    from vllm.utils.argparse_utils import FlexibleArgumentParser as Parser\n"
     "except Exception:\n"
-    "    Parser = argparse.ArgumentParser\n"
+    "    try:\n"
+    "        from vllm.utils import FlexibleArgumentParser as Parser\n"
+    "    except Exception:\n"
+    "        Parser = argparse.ArgumentParser\n"
     "from vllm.benchmarks.serve import add_cli_args, main\n"
     "parser = Parser(description='vllm bench serve (direct module invocation)')\n"
     "add_cli_args(parser)\n"
@@ -208,16 +214,16 @@ def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
 
     Tried in order:
       1. $VLLM_BENCH_BIN set -> use it as is, for example a vllm installed
-         under a separate Python 3.12. Nothing to install.
+         under a separate Python. Nothing to install.
       2. $VLLM_BENCH_PROVISION set -> pip-install the pinned vllm from PyPI
          (with torch, so a multi-GB download) into a venv under cache_dir.
          Reused if it already exists.
       3. neither -> raise VllmUnavailable, so the tests skip.
 
     The default is to skip rather than silently start a multi-GB install during
-    an ordinary `pdm run test:e2e`. The pinned vllm needs Python <=3.12 and
-    this repo's environment is usually newer, so option 2 also needs
-    $VLLM_PYTHON pointed at a 3.12 interpreter. Option 1 avoids that.
+    an ordinary `pdm run test:e2e`. The pinned vllm needs Python 3.11 to
+    3.14, so option 2 needs $VLLM_PYTHON pointed at one of those when the
+    `python` on PATH is outside that range. Option 1 avoids that.
 
     PyPI rather than a clone of the tag: PyPI has a prebuilt wheel for Linux
     x86_64, while installing a clone is a source build that needs nvcc there
@@ -235,7 +241,7 @@ def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
         raise VllmUnavailable(
             "no vllm available: set $VLLM_BENCH_BIN to a vllm executable, or "
             "$VLLM_BENCH_PROVISION=1 to pip-install the pinned vllm (heavy; "
-            "needs a Python <=3.12 interpreter via $VLLM_PYTHON)"
+            "needs a Python 3.11 to 3.14 interpreter, via $VLLM_PYTHON if not on PATH)"
         )
 
     cache = cache_dir or _DEFAULT_CACHE
@@ -246,7 +252,7 @@ def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
     if vllm_bin.exists():
         return str(vllm_bin)
 
-    # The pinned vllm needs Python <=3.12, so the venv is created with
+    # The pinned vllm needs Python 3.11 to 3.14, so the venv is created with
     # $VLLM_PYTHON (e.g. python3.12) when set.
     venv_python = os.environ.get("VLLM_PYTHON", "python")
 

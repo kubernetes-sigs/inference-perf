@@ -81,7 +81,7 @@ def test_pinned_version_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 
     assert not caplog.records
 
 
-# The pinned version with a local build label (0.10.0+cpu) still counts as
+# The pinned version with a local build label (0.32.0+cpu) still counts as
 # pinned, even with VLLM_REQUIRED=1.
 def test_local_build_label_counts_as_pinned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VLLM_REQUIRED", "1")

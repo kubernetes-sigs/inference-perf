@@ -28,16 +28,13 @@ tools:
   vllm-bench:
     # vllm bench spaces requests randomly (Poisson) at any --request-rate.
     arrival: poisson
-    # vllm bench always sends one test request before the real run (there is
-    # no flag to turn it off at the pinned version; see benchmark() in its
-    # vllm/benchmarks/serve.py), then sends all --num-prompts requests. So the
-    # absorber records num_requests + 1, and the first one is ignored.
-    leading_extra_requests: 1
-    # vllm bench builds each random prompt from consecutive token ids, then
-    # decodes and re-encodes it. A few id ranges in the gemma tokenizer
-    # (<unusedN>, control characters) collapse under that round trip, down to
-    # 17 tokens. Replaying the pinned sampler for these 600 prompts gives none
-    # at the default --seed 0 and 1 or 2 at seeds 1 to 4. So up to 1% of its
-    # prompts may miss the 128 +-15% bound. inference-perf declares nothing
-    # here, so every one of its prompts must be in range.
-    prompt_outlier_frac: 0.01
+    # No leading_extra_requests: at the pinned version benchmark() in
+    # vllm/benchmarks/serve.py sends its test request only when
+    # --ready-check-timeout-sec is above 0 and its warmups only when
+    # --num-warmups is, and both default to 0. So the absorber records exactly
+    # num_requests.
+    # No prompt_outlier_frac either: the pinned sampler re-encodes each random
+    # prompt and pads or trims it until it hits the target token count (up to
+    # 10 tries, gen_prompt_decode_to_target_len), so the round-trip collapses
+    # that needed a 1% allowance at v0.10.0 are corrected. A run at the default
+    # --seed 0 put all 600 prompts inside 128 +-15%.
