@@ -91,3 +91,64 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           file: coverage.lcov
           format: lcov
+
+  # Mutation ratchet over the functions a PR touches (#872). A job of its own
+  # so it runs beside `coverage` rather than after it. Push events have no
+  # diff to scope it to, so it only runs on PRs. A lock or pyproject change
+  # runs it too, so the mutmut pin and [tool.mutmut] are checked on the PR
+  # that changes them rather than on every PR after it.
+  mutation:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        python-version: ['3.13']
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0 # the script diffs against the merge base with the base branch
+      - name: Check for source changes
+        id: changes
+        run: |
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qE '^(inference_perf|tests)/.*\.py$|^(pdm\.lock|pyproject\.toml)$|^scripts/check_mutation_regression\.py$|^\.github/workflows/coverage\.yml$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "No Python changes under inference_perf/ or tests/, no change to pdm.lock or pyproject.toml, and no change to the mutation check itself; skipping mutation testing."
+          fi
+      - name: Set up Python
+        if: steps.changes.outputs.code == 'true'
+        id: setup-python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Set up PDM
+        if: steps.changes.outputs.code == 'true'
+        uses: pdm-project/setup-pdm@c6081998a653693a457d93c70b8007d979bc6741 # v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Same key and install set as the coverage job, so the two share one cache.
+      - name: Restore pdm venv
+        if: steps.changes.outputs.code == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-dev-analysis-otel-${{ hashFiles('pdm.lock') }}
+      - name: Install dependencies
+        if: steps.changes.outputs.code == 'true'
+        run: |
+          pdm sync -d -G analysis -G otel
+      # The budget sits 10 minutes under the job's timeout-minutes, which also covers setup and the
+      # upload, so a slow run fails with a summary instead of being cancelled without one.
+      - name: Run mutation ratchet
+        if: steps.changes.outputs.code == 'true'
+        run: pdm run check:mutation --base "origin/${{ github.base_ref }}" --budget-minutes 80
+      - name: Upload mutation results
+        if: always() && steps.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutation-results
+          path: mutation.json
+          if-no-files-found: ignore

@@ -54,6 +54,8 @@ from inference_perf.observability.metrics.registry import MetricSpec, always, ex
 from inference_perf.observability.metrics.sets import ALL_SPECS
 from inference_perf.observability.metrics.sets.core import STAGES
 from inference_perf.observability.metrics.sets.progress import (
+    STAGE_DURATION_PLANNED,
+    STAGE_ELAPSED,
     STAGE_REQUESTS_FINISHED,
     STAGE_REQUESTS_PLANNED,
     STAGE_SESSIONS_FINISHED,
@@ -106,7 +108,17 @@ STAGE_SESSIONS_BAR = BarSpec(
     total=STAGE_SESSIONS_PLANNED,
 )
 
-BAR_SPECS: Tuple[BarSpec, ...] = (OVERALL_BAR, STAGE_REQUESTS_BAR, STAGE_SESSIONS_BAR)
+# A duration-bounded stage replays its corpus, so it plans no session count and a
+# sessions bar would read "18/0" for the whole window. Its window is what it is
+# progressing towards, so it gets this bar instead.
+STAGE_ELAPSED_BAR = BarSpec(
+    name="stage_elapsed",
+    description="Stage {stage} Elapsed",
+    completed=STAGE_ELAPSED,
+    total=STAGE_DURATION_PLANNED,
+)
+
+BAR_SPECS: Tuple[BarSpec, ...] = (OVERALL_BAR, STAGE_REQUESTS_BAR, STAGE_SESSIONS_BAR, STAGE_ELAPSED_BAR)
 
 
 def _sample_key(name: str, labels: Dict[str, str]) -> SampleKey:

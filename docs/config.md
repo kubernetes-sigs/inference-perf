@@ -106,6 +106,17 @@ data:
       std_dev: 5
 ```
 
+ShareGPT downloads and caches the original
+`anon8231489123/ShareGPT_Vicuna_unfiltered/ShareGPT_V3_unfiltered_cleaned_split.json`
+file within `data.load_timeout`, then reads it incrementally from disk without
+changing its record order or startup priming. Local `.json` files (JSON arrays or
+JSON Lines) use the same incremental reader. Each pass reopens the file instead
+of retaining decoded records, so memory is bounded by the read buffer and
+individual records. Repeat passes and later runs reuse the Hugging Face cache;
+request generation does not depend on a network connection staying open between
+stages. Parsed turns remain JSON objects, allowing Chat and Anthropic Messages
+to consume the default dataset as well as Completion.
+
 `data.load_timeout` bounds Hub dataset initialization for ShareGPT, CNN/DailyMail,
 VisionArena, and OTel trace replay (300 seconds by default). For ShareGPT and
 CNN/DailyMail, this includes loading and reading the first row, when streaming
@@ -279,11 +290,48 @@ Configures connection to the model serving backend:
 
 ```yaml
 server:
-  type: vllm                                          # Currently only vLLM supported
-  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"   # Required model identifier
+  type: vllm                                          # Server type (vllm|sglang|tgi|mock); vLLM, SGLang and TGI verified
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"   # Optional; auto-detected from /v1/models if unset
   base_url: "http://0.0.0.0:8000"                     # Required server endpoint
   ignore_eos: true                                    # Whether to ignore End-of-Sequence tokens
   api_key: ""                                         # Optional API key for authenticated endpoints
+  cert_path: ""                                       # Optional path to a client TLS certificate (mutual TLS)
+  key_path: ""                                        # Optional path to the private key for cert_path
+```
+
+`server.type` selects the model server (vLLM by default). Verified servers are vLLM,
+SGLang, and TGI; the `mock` type runs against a built-in client that needs no network.
+
+`server.model_name` is optional. When it is unset, the client queries
+`GET {base_url}/v1/models` and uses the first entry's `id` as the model name, so
+servers that serve exactly one model need no model identifier at all. The lookup:
+
+- Reuses the connection settings of the benchmark: `api_key`, and `cert_path`/`key_path`
+  when the endpoint requires mutual TLS.
+- Uses `load.request_timeout` when set, falling back to a bounded 30-second probe so an
+  unresponsive server fails startup instead of hanging it.
+- When the tokenizer path is also unset, the tokenizer is loaded under the resolved
+  model name, falling back to the entry's `root` (the real model path that vLLM reports
+  when `--served-model-name` is a route alias). This fallback also applies when
+  `server.model_name` is set explicitly: if that name cannot load a tokenizer, the
+  client probes `/v1/models` and the entry whose `id` matches the configured name
+  supplies `root`. A name that loads its own tokenizer triggers no probe, so pinning a
+  real model path costs nothing. If neither loads, the error names
+  `tokenizer.pretrained_model_name_or_path` so the setting can be pinned explicitly.
+- The `root` fallback relies on vLLM reporting the model path there. SGLang reports the
+  served name instead, so behind `--served-model-name` there is no path to fall back to
+  and the tokenizer cannot be auto-detected: pin
+  `tokenizer.pretrained_model_name_or_path` when serving an SGLang alias.
+
+The same `/v1/models` lookup validates LoRA adapter names when
+`load.lora_traffic_split` is configured.
+
+Example — let both the model name and the tokenizer be auto-detected:
+
+```yaml
+server:
+  type: vllm
+  base_url: "http://0.0.0.0:8000"
 ```
 
 ### Metrics Collection
@@ -418,13 +466,23 @@ Optional tokenizer configuration for specialized tokenization:
 
 ```yaml
 tokenizer:
-  pretrained_model_name_or_path: "model-id"   # Required model path
+  pretrained_model_name_or_path: "model-id"   # Optional; defaults to server.model_name, then that model's root
   trust_remote_code: true                     # Whether to trust custom tokenizer code
   token: ""                                   # HuggingFace access token for private models
   load_timeout: 300.0                         # Deadline in seconds for loading the tokenizer,
                                               # including any download from Hugging Face Hub.
                                               # Set to null to disable. Default: 300.
 ```
+
+`tokenizer.pretrained_model_name_or_path` is optional. When it is unset, the tokenizer
+is loaded under the resolved `server.model_name` -- configured or detected; if that name
+is a server-side route alias the tokenizer has no files for, the client probes
+`/v1/models` and falls back to the `root` of the matching entry (the real model path). When neither loads,
+the error names this setting so it can be pinned explicitly. The path that resolved is
+written back into the run config, so the report bundle's `config.yaml` shows it and
+report generation counts tokens with the same tokenizer the run measured with -- note
+that a resolved `root` is a path on the model server, so the bundled config describes
+that server's environment rather than a portable one.
 
 `load_timeout: null` can only be set in a YAML config file; the `--tokenizer.load_timeout` CLI flag parses a float and rejects `null`. The deadline applies to each tokenizer construction independently; a run constructs a tokenizer in several stages (data generation, the model server client, report generation), so the worst-case total wait is a small multiple of `load_timeout`.
 
@@ -631,9 +689,10 @@ load:
   type: trace_session_replay                      # Required for otel_trace_replay
   stages:
     - concurrent_sessions: 4                      # Max sessions active simultaneously
-      num_sessions: 20                            # Run 20 sessions in this stage
+      num_sessions: 20                            # Run 20 sessions in this stage (omit when using duration)
       session_rate: 2.0                           # Optional: start max 2 sessions/sec
-      max_stage_duration: 300                     # Optional: Max stage duration in seconds, session exceeding it are aborted
+      duration: 1800                              # Optional: planned stop after 30 min; stage reports COMPLETED
+      max_stage_duration: 2100                    # Optional: safety limit; reports FAILED. Must exceed duration
   num_workers: 4                                  # Worker processes
   worker_max_concurrency: 10                      # Max concurrent requests per worker
 ```
@@ -652,8 +711,16 @@ load:
 - Omit for no rate limiting
 - Useful for controlled ramp-up scenarios
 
+**`duration`** (optional): Planned stage length in seconds — bound the stage by time rather than by session count
+- At the deadline the stage stops dispatching and exits as COMPLETED
+- Sessions still running are recorded as truncated: counted under `num_sessions_not_completed_active`, and left out of the session success/failure counts and duration percentiles. The requests they completed still count
+- Each truncated session still reports its own split — `num_events_completed` plus `num_events_cancelled` adds up to `num_events`, with `success: null` — so being excluded from the aggregates does not mean being unaccounted for
+- Whether the window is filled depends on the data generator. `otel_trace_replay` and `synthetic_agentic` replay their corpus once it is used up, each replay under its own session ID, so the corpus need not be sized by hand — and `duplicate_sessions_target` is rejected with `duration` for these two, since both would mint the same `_dupN` IDs. `weka_trace_replay` builds every session up front and so ends when its corpus does; raise its `duplicate_sessions_target` to cover the window. Either way a stage that falls short logs a warning saying by how much
+- Wall-clock time is `duration` plus teardown, since in-flight requests are given a chance to finish
+
 **`max_stage_duration`** (optional): Wall-clock safety limit
 - If exceeded, in-flight sessions are cancelled and stage exits as FAILED
+- Distinct from `duration`: this is the fault signal, `duration` is the planned stop. Must be longer than `duration` when both are set
 
 #### Trace File Format
 

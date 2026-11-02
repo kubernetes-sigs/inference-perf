@@ -20,12 +20,16 @@ import typing
 import signal
 import sys
 import numpy as np
-from typing import Any
+from typing import Any, Iterator
 
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData
 from inference_perf.config import LoadConfig, LoadType, TraceConfig, TraceFormat, StandardLoadStage
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.apis import InferenceAPIData
+from inference_perf.apis.base import ErrorResponseInfo, InferenceInfo, RequestLifecycleMetric
+from inference_perf.circuit_breaker.simple_breaker import SimpleCircuitBreaker
+from inference_perf.config.circuit_breaker import CircuitBreakerConfig, MetricsSpec, TriggerConsecutive
+from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils.request_queue import Drained, RequestQueue
 
 # Patch asyncio.TaskGroup for Python < 3.11
@@ -254,6 +258,56 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         cancel_signal.set.assert_called_once()
         self.assertEqual(self.load_generator.stage_runtime_info[0].status.name, "TIMED_OUT")
 
+    async def test_run_stage_circuit_breaker_open(self) -> None:
+        # A real, already-tripped breaker (not a mocked get_circuit_breaker) exercising the
+        # actual is_open() integration point in run_stage's wait loop.
+        breaker_config = CircuitBreakerConfig(
+            name="test-breaker",
+            metrics=MetricsSpec(matches=["error != `null`"]),
+            triggers=[TriggerConsecutive(type="consecutive", threshold=1)],
+        )
+        breaker = SimpleCircuitBreaker(breaker_config)
+        breaker.feed(
+            RequestLifecycleMetric(
+                scheduled_time=0.0,
+                start_time=0.0,
+                end_time=1.0,
+                request_data="prompt",
+                info=InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=10))),
+                error=ErrorResponseInfo(error_type="timeout", error_msg="boom"),
+            )
+        )
+        self.assertTrue(breaker.is_open())
+        self.load_generator.circuit_breakers = [breaker]
+
+        request_queue = MagicMock(spec=RequestQueue)
+        request_queue.drain = MagicMock(return_value=Drained(0, True))
+        active_counter = MagicMock()
+        active_counter.value = 0
+        finished_counter = MagicMock()
+        finished_counter.value = 0
+        skipped_counter = MagicMock()
+        skipped_counter.value = 0
+        request_phase = MagicMock()
+        cancel_signal = MagicMock()
+
+        # The circuit-breaker check runs before the loop's sleep, so a pre-tripped breaker
+        # exits on the first iteration -- no need to mock time or sleep to reach it.
+        await self.load_generator.run_stage(
+            stage_id=0,
+            rate=10,
+            duration=1,
+            request_queue=request_queue,
+            active_requests_counter=active_counter,
+            finished_requests_counter=finished_counter,
+            skipped_requests_counter=skipped_counter,
+            request_phase=request_phase,
+            cancel_signal=cancel_signal,
+        )
+
+        cancel_signal.set.assert_called_once()
+        self.assertEqual(self.load_generator.stage_runtime_info[0].status.name, "FAILED")
+
     @patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock)
     async def test_run_single_worker_mode(self, mock_sleep: AsyncMock) -> None:
         # Setup for num_workers = 0 (single worker loop)
@@ -288,6 +342,56 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
             for call in mock_tg.create_task.call_args_list:
                 call.args[0].close()
             self.assertEqual(self.load_generator.stage_runtime_info[0].status.name, "COMPLETED")
+
+    # Stage rate=2 duration=1 with the loop already past the stage end (now=1.5) and a timer whose last
+    # request is scheduled exactly at the end (0.5, 1.0): both requests are sent, as the mp path does.
+    @patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock)
+    async def test_run_single_worker_mode_sends_request_scheduled_at_stage_end(self, mock_sleep: AsyncMock) -> None:
+        sent = await self._run_single_worker_stage(iter([0.5, 1.0]))
+        self.assertEqual(sent, 2)
+
+    # Same stage, but the timer yields a request at 1.5, past the stage end (1.0): only the 0.5 one is sent
+    # and the loop stops at the late one without drawing 1.6, so an endless timer such as the Poisson one still ends the stage.
+    @patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock)
+    async def test_run_single_worker_mode_drops_request_scheduled_after_stage_end(self, mock_sleep: AsyncMock) -> None:
+        times = iter([0.5, 1.5, 1.6])
+        sent = await self._run_single_worker_stage(times)
+        self.assertEqual(sent, 1)
+        # The loop stopped at 1.5 instead of skipping it, so 1.6 was never drawn from the timer.
+        self.assertEqual(next(times), 1.6)
+
+    async def _run_single_worker_stage(self, times: Iterator[float]) -> int:
+        self.load_generator.num_workers = 0
+        self.load_config.num_workers = 0
+        self.load_generator.stages = [StandardLoadStage(rate=2, duration=1)]
+
+        mock_data = MagicMock(spec=InferenceAPIData)
+        mock_data.preferred_worker_id = -1
+        self.mock_datagen.get_data.return_value = repeat(mock_data)
+
+        # The stage starts at 0.0, every later reading is past the stage end.
+        clock = iter([0.0])
+
+        def perf_counter() -> float:
+            return next(clock, 1.5)
+
+        with (
+            patch("inference_perf.loadgen.load_generator.LazyLoadDataMixin.get_request", return_value=mock_data),
+            patch("inference_perf.loadgen.load_generator.TaskGroup") as MockTaskGroup,
+            patch("inference_perf.loadgen.load_generator.time.perf_counter", side_effect=perf_counter),
+        ):
+            mock_tg = MagicMock()
+            MockTaskGroup.return_value.__aenter__.return_value = mock_tg
+            self.mock_client.process_request = AsyncMock()
+
+            mock_timer = MagicMock()
+            mock_timer.start_timer.return_value = times
+            with patch.object(self.load_generator, "get_timer", return_value=mock_timer):
+                await self.load_generator.run(self.mock_client)
+
+            for call in mock_tg.create_task.call_args_list:
+                call.args[0].close()
+            return int(mock_tg.create_task.call_count)
 
     async def test_drain(self) -> None:
         from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage

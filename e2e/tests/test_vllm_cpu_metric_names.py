@@ -14,10 +14,10 @@
 """Declared vLLM Prometheus metric names exist on the servers we gate on (#669).
 
 A stale metric name never errors: the PromQL query matches nothing and the
-report field comes back empty (#382 hand-caught exactly such a rename, #698
-tracks five more). A pinned release's metric names never change, so for pins
-the live server is only needed to prove the committed snapshot is honest;
-``latest`` floats with upstream, so only a live server can vouch for it.
+report field comes back empty (#382 hand-caught exactly such a rename). A
+pinned release's metric names never change, so for pins the live server is
+only needed to prove the committed snapshot is honest; ``latest`` floats with
+upstream, so only a live server can vouch for it.
 That splits the invariant into three checks, each in the cheapest tier that
 can catch its failure mode:
 
@@ -79,19 +79,15 @@ ENV_UPDATE_GOLDENS = "E2E_UPDATE_METRIC_GOLDENS"
 # name declarations are read from it, never the tokenizer itself.
 GEMMA_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"
 
-# Declared names that a STOCK vLLM does not expose. All five arrived in #348
-# ("vLLM latest (0.15.0) production metrics") and are absent from a default
-# v0.26.0 server, seemingly gated on optional features (KV offloading and
-# similar) whose components never register their metric families on a stock
-# configuration. Kept out of the strict checks rather than deleted so the
-# declarations can be triaged: each is either config-gated (then this list
-# documents the gate) or stale (then it should be removed from vllm_client).
+# Declared names a stock vLLM does not expose because a server flag gates
+# them (#698). vllm:corrupted_requests needs VLLM_COMPUTE_NANS_IN_LOGITS=1.
+# The three vllm:kv_block_*_seconds histograms need --kv-cache-metrics.
+# A name only belongs here with its gate stated.
 CONDITIONALLY_EXPOSED = {
     "vllm:corrupted_requests",
     "vllm:kv_block_idle_before_evict_seconds",
     "vllm:kv_block_lifetime_seconds",
     "vllm:kv_block_reuse_gap_seconds",
-    "vllm:prompt_tokens_recomputed",
 }
 
 GOLDEN_FILES = sorted(GOLDEN_DIR.glob("*.txt"))

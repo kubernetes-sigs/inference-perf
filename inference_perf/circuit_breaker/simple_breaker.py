@@ -58,3 +58,5 @@ class SimpleCircuitBreaker(CircuitBreaker):
 
     def reset(self) -> None:
         self._open = False
+        for t in self._triggers:
+            t.reset()

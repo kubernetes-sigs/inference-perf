@@ -38,7 +38,7 @@ from inference_perf.observability.context import RunContext, StageContext
 from inference_perf.observability.metrics.registry import MetricSpec
 
 
-def _freeze(gauge: Gauge, label: str, value: int) -> None:
+def _freeze(gauge: Gauge, label: str, value: float) -> None:
     """Pin a stage's series to its final value.
 
     Rebinding ``set_function`` is the only way to do this. Once a labelled
@@ -56,7 +56,7 @@ def _freeze(gauge: Gauge, label: str, value: int) -> None:
     gauge.labels(label).set_function(pinned)
 
 
-def _bind(gauge: Gauge, label: str, probe: Callable[[], int]) -> None:
+def _bind(gauge: Gauge, label: str, probe: Callable[[], float]) -> None:
     gauge.labels(label).set_function(probe)
 
 
@@ -108,6 +108,21 @@ def _bind_sessions_skipped(gauge: Gauge, context: StageContext) -> None:
 def _freeze_sessions_skipped(gauge: Gauge, context: StageContext) -> None:
     if context.planned_sessions is not None:
         _freeze(gauge, context.stage_label, context.sessions_skipped())
+
+
+def _set_planned_duration(gauge: Gauge, context: StageContext) -> None:
+    if context.planned_duration_seconds is not None:
+        gauge.labels(context.stage_label).set(context.planned_duration_seconds)
+
+
+def _bind_elapsed(gauge: Gauge, context: StageContext) -> None:
+    if context.planned_duration_seconds is not None:
+        _bind(gauge, context.stage_label, context.elapsed_seconds)
+
+
+def _freeze_elapsed(gauge: Gauge, context: StageContext) -> None:
+    if context.planned_duration_seconds is not None:
+        _freeze(gauge, context.stage_label, context.elapsed_seconds())
 
 
 def _zero_stages_completed(gauge: Gauge, context: RunContext) -> None:
@@ -184,6 +199,29 @@ STAGE_SESSIONS_SKIPPED = MetricSpec[Gauge](
     on_stage_end=_freeze_sessions_skipped,
 )
 
+STAGE_DURATION_PLANNED = MetricSpec[Gauge](
+    name="inference_perf_stage_duration_planned_seconds",
+    documentation=(
+        "Window a duration-bounded stage runs for. Only present for stages bounded by duration, which replay "
+        "their corpus rather than working through a fixed session count."
+    ),
+    metric_type=Gauge,
+    labelnames=("stage",),
+    on_stage_start=_set_planned_duration,
+)
+
+STAGE_ELAPSED = MetricSpec[Gauge](
+    name="inference_perf_stage_elapsed_seconds",
+    documentation=(
+        "Time a duration-bounded stage has been dispatching, capped at its window. "
+        "Read against inference_perf_stage_duration_planned_seconds for stage completion."
+    ),
+    metric_type=Gauge,
+    labelnames=("stage",),
+    on_stage_start=_bind_elapsed,
+    on_stage_end=_freeze_elapsed,
+)
+
 STAGES_COMPLETED = MetricSpec[Gauge](
     name="inference_perf_stages_completed",
     documentation="Stages that have ended, whether they completed or were cut short. Read against inference_perf_stages.",
@@ -199,5 +237,7 @@ PROGRESS_SPECS: tuple[MetricSpec[Any], ...] = (
     STAGE_SESSIONS_PLANNED,
     STAGE_SESSIONS_FINISHED,
     STAGE_SESSIONS_SKIPPED,
+    STAGE_DURATION_PLANNED,
+    STAGE_ELAPSED,
     STAGES_COMPLETED,
 )

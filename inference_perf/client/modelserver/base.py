@@ -13,12 +13,16 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
-from inference_perf.config import APIConfig, APIType
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
 from inference_perf.apis import InferenceAPIData
 from .metrics import BaseMetrics
 
 
 class ModelServerClient(ABC):
+    # The tokenizer config the client resolved, set by the clients that load one; main.py
+    # copies it into the run config so report generation rebuilds the same tokenizer.
+    tokenizer_config: Optional[CustomTokenizerConfig] = None
+
     @abstractmethod
     def __init__(
         self,

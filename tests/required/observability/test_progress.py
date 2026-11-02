@@ -24,9 +24,10 @@ from inference_perf.config import APIConfig, APIType, Config, LoadConfig, Standa
 from inference_perf.observability.context import StageContext
 from inference_perf.observability.metrics.registry import MetricSpec, build_metrics, exposition_name
 from inference_perf.observability.metrics.sets import ALL_SPECS
-from inference_perf.observability.metrics.sets.progress import STAGE_REQUESTS_FINISHED
+from inference_perf.observability.metrics.sets.progress import STAGE_DURATION_PLANNED, STAGE_ELAPSED, STAGE_REQUESTS_FINISHED
 from inference_perf.observability.progress import (
     BAR_SPECS,
+    STAGE_ELAPSED_BAR,
     STAGE_REQUESTS_BAR,
     BarSpec,
     ProgressBars,
@@ -226,3 +227,70 @@ def test_finished_series_is_pinned_when_its_stage_ends() -> None:
     finished = exposition_name(STAGE_REQUESTS_FINISHED)
     assert values[(finished, (("stage", "0"),))] == 5.0
     assert values[(finished, (("stage", "1"),))] == 2.0
+
+
+# --- duration-bounded stages ------------------------------------------------
+
+
+def _hub() -> Any:
+    config = Config(
+        api=APIConfig(type=APIType.Completion),
+        load=LoadConfig(stages=[StandardLoadStage(rate=1, duration=1)] * 2),
+    )
+    hub = build_metrics(config)
+    hub.on_run_start()
+    return hub
+
+
+def test_duration_stage_exports_its_window_and_live_elapsed_time() -> None:
+    # A duration-bounded stage has no session count to finish, so the elapsed time
+    # against the planned window is what it progresses towards. Expects the planned
+    # duration as set and the elapsed seconds read live from the probe.
+    hub = _hub()
+    clock = {"elapsed": 0.0}
+    stage = StageContext(stage_id=0, planned_duration_seconds=150.0, elapsed_seconds=lambda: clock["elapsed"])
+    hub.on_stage_start(stage)
+    clock["elapsed"] = 42.5
+
+    values = snapshot(hub.registry)
+    label = (("stage", "0"),)
+    assert values[(exposition_name(STAGE_DURATION_PLANNED), label)] == 150.0
+    assert values[(exposition_name(STAGE_ELAPSED), label)] == 42.5
+
+
+def test_elapsed_time_is_pinned_when_its_stage_ends() -> None:
+    # Same freeze hazard as the finished counters: the next stage's clock must not
+    # show up under this stage's label once it has ended.
+    hub = _hub()
+    clock = {"elapsed": 0.0}
+    stage_0 = StageContext(stage_id=0, planned_duration_seconds=10.0, elapsed_seconds=lambda: clock["elapsed"])
+    hub.on_stage_start(stage_0)
+    clock["elapsed"] = 10.0
+    hub.on_stage_end(stage_0)
+
+    clock["elapsed"] = 3.0  # stage 1 has started its own clock
+    stage_1 = StageContext(stage_id=1, planned_duration_seconds=10.0, elapsed_seconds=lambda: clock["elapsed"])
+    hub.on_stage_start(stage_1)
+
+    values = snapshot(hub.registry)
+    elapsed = exposition_name(STAGE_ELAPSED)
+    assert values[(elapsed, (("stage", "0"),))] == 10.0
+    assert values[(elapsed, (("stage", "1"),))] == 3.0
+
+
+def test_stage_without_a_duration_exports_no_elapsed_series() -> None:
+    # A count-bounded stage has no window, so it must not create a series at all,
+    # as with any planned count that is None.
+    hub = _hub()
+    hub.on_stage_start(StageContext(stage_id=0, planned_sessions=4))
+
+    values = snapshot(hub.registry)
+    names = {name for name, _ in values}
+    assert exposition_name(STAGE_DURATION_PLANNED) not in names
+    assert exposition_name(STAGE_ELAPSED) not in names
+
+
+def test_elapsed_bar_reads_the_duration_metrics() -> None:
+    assert STAGE_ELAPSED_BAR.completed is STAGE_ELAPSED
+    assert STAGE_ELAPSED_BAR.total is STAGE_DURATION_PLANNED
+    assert STAGE_ELAPSED_BAR in BAR_SPECS

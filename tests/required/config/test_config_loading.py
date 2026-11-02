@@ -22,6 +22,7 @@ defined on ``Config`` itself.
 
 import os
 import tempfile
+from typing import Any
 
 import pytest
 import yaml
@@ -35,6 +36,7 @@ from inference_perf.config import (
     deep_merge,
     read_config,
 )
+from inference_perf.config.loadgen import TraceSessionReplayLoadStage
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
@@ -163,3 +165,129 @@ def test_otel_trace_replay_with_session_replay_load_ok() -> None:
     )
     assert config.data.type == DataGenType.OTelTraceReplay
     assert config.load.type == LoadType.TRACE_SESSION_REPLAY
+
+
+# --- duration-bounded stages vs datagen settings -------------------------
+#
+# A duration-bounded session-replay stage replays the corpus once it runs out, which
+# turns two datagen settings into silent contradictions. Both settings live under
+# ``data`` and ``duration`` lives under ``load``, so neither surface's own validator
+# can see the conflict — it has to be caught here.
+
+_OTEL_SOURCE = {"hf_dataset_path": "org/dataset"}
+
+
+def _replay_config(
+    datagen_overrides: dict[str, Any], stage: dict[str, Any], data_type: str = "otel_trace_replay"
+) -> dict[str, Any]:
+    """A minimal session-replay config, parameterized on the bits under test."""
+    source = _OTEL_SOURCE if data_type == "otel_trace_replay" else {"trace_directory": "/traces"}
+    return {
+        "data": {"type": data_type, data_type: {**source, **datagen_overrides}},
+        "load": {"type": "trace_session_replay", "stages": [stage]},
+    }
+
+
+def test_duration_stage_rejects_duplicate_sessions_target_for_otel_replay() -> None:
+    """Padding the corpus and replaying it mint colliding ``_dupN`` session IDs.
+
+    ``duplicate_sessions_target`` numbers its copies with one global counter, while
+    corpus cycling numbers per source trace, so the two independently produce the same
+    ID — and session state, completion tracking and cleanup are all keyed by ID.
+    Cycling makes the padding redundant, so the fix is to drop it.
+    """
+    with pytest.raises(ValueError, match="duplicate_sessions_target cannot be combined with"):
+        Config.model_validate(_replay_config({"duplicate_sessions_target": 100}, {"concurrent_sessions": 4, "duration": 1800}))
+
+
+def test_duration_stage_rejects_disable_output_substitution() -> None:
+    """A replayed session triggers the substitution this setting asks to turn off.
+
+    ``OTelTraceReplayConfig`` already rejects ``disable_output_substitution`` alongside
+    the two other ways of producing duplicate sessions. Corpus cycling is a third way,
+    and it is switched on from ``load``, where that validator cannot see it.
+    """
+    with pytest.raises(ValueError, match="disable_output_substitution=True cannot be combined with"):
+        Config.model_validate(
+            _replay_config({"disable_output_substitution": True}, {"concurrent_sessions": 4, "duration": 1800})
+        )
+
+
+def test_count_bounded_stage_still_allows_duplicate_sessions_target() -> None:
+    """Guard: the rejection is about cycling, not about the setting itself."""
+    config = Config.model_validate(
+        _replay_config({"duplicate_sessions_target": 100}, {"concurrent_sessions": 4, "num_sessions": 50})
+    )
+    assert config.data.otel_trace_replay is not None
+    assert config.data.otel_trace_replay.duplicate_sessions_target == 100
+
+
+def test_duration_stage_allows_duplicate_sessions_target_for_weka_replay() -> None:
+    """Guard: weka_trace_replay cannot cycle, so padding is how duration covers a window.
+
+    Weka builds every session up front (the eager path), so it has no way to resolve an
+    index past its corpus. A duration-bounded weka stage ends when its corpus does, which
+    makes ``duplicate_sessions_target`` the only way to fill the window — the opposite of
+    the otel case above.
+    """
+    config = Config.model_validate(
+        _replay_config(
+            {"duplicate_sessions_target": 100},
+            {"concurrent_sessions": 4, "duration": 1800},
+            data_type="weka_trace_replay",
+        )
+    )
+    assert config.data.weka_trace_replay is not None
+    assert config.data.weka_trace_replay.duplicate_sessions_target == 100
+
+
+def test_disable_output_substitution_without_duration_still_allowed() -> None:
+    """Guard: verbatim replay is fine on its own; only cycling contradicts it."""
+    config = Config.model_validate(
+        _replay_config({"disable_output_substitution": True}, {"concurrent_sessions": 4, "num_sessions": 50})
+    )
+    assert config.data.otel_trace_replay is not None
+    assert config.data.otel_trace_replay.disable_output_substitution is True
+
+
+def test_duration_stage_rejects_unlimited_concurrency_without_a_rate() -> None:
+    """Nothing would bound admission: an unlimited pool drawing from a replaying corpus.
+
+    ``concurrent_sessions: 0`` means "start everything at once", which is well defined
+    for a fixed corpus and meaningless for one that replays -- "everything" is unbounded.
+    The dispatch loop admits sessions until something says stop, and with no concurrency
+    cap and no rate the only thing left is the deadline, so a single loop iteration starts
+    sessions as fast as the process can build them for the whole window. Measured at ~120k
+    sessions/second against a scripted generator, each one permanently growing the
+    generator's index tables: a 30-minute stage would try for hundreds of millions.
+    """
+    with pytest.raises(ValueError, match="concurrent_sessions: 0 cannot be combined with"):
+        Config.model_validate(_replay_config({}, {"concurrent_sessions": 0, "duration": 1800}))
+
+
+def test_duration_stage_allows_unlimited_concurrency_with_a_rate() -> None:
+    """Guard: session_rate bounds admission on its own, so the pool need not.
+
+    This is a legitimate open-loop shape -- offer N sessions per second for the window and
+    let the pool grow to whatever that implies -- so it must keep working.
+    """
+    config = Config.model_validate(_replay_config({}, {"concurrent_sessions": 0, "duration": 1800, "session_rate": 10}))
+    stage = config.load.stages[0]
+    assert isinstance(stage, TraceSessionReplayLoadStage)
+    assert stage.concurrent_sessions == 0
+
+
+def test_count_bounded_stage_still_allows_unlimited_concurrency() -> None:
+    """Guard: the documented stress mode is untouched. A fixed corpus bounds itself."""
+    config = Config.model_validate(_replay_config({}, {"concurrent_sessions": 0, "num_sessions": 50}))
+    stage = config.load.stages[0]
+    assert isinstance(stage, TraceSessionReplayLoadStage)
+    assert stage.concurrent_sessions == 0
+
+
+def test_duration_stage_allows_unlimited_concurrency_for_weka_replay() -> None:
+    """Guard: weka cannot replay, so its corpus still bounds admission by itself."""
+    config = Config.model_validate(
+        _replay_config({}, {"concurrent_sessions": 0, "duration": 1800}, data_type="weka_trace_replay")
+    )
+    assert config.data.weka_trace_replay is not None

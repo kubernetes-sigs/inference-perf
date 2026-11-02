@@ -1,0 +1,29 @@
+# Case b, vllm side: keep exactly 8 requests in flight until 48 have finished,
+# every prompt 128 tokens, every request asking for 64 output tokens. Same
+# workload as inference-perf.yaml next to this file. Flags are for the vllm
+# version pinned in e2e/utils/vllm_bench.py; see a_fixed_rate/vllm-bench.args
+# for notes on the shared flags. The two that are specific to this case:
+#   --max-concurrency 8 caps how many requests can be open at once (an
+#     asyncio.Semaphore). Because the absorber replies slowly enough for 8 to
+#     pile up, the peak in flight is exactly 8.
+#   --request-rate is left at its default (infinite), so vllm tries to send
+#     everything at once and only the cap above shapes the traffic.
+# The parity test adds --base-url/--model/--tokenizer/--save-result/
+# --result-filename at the end.
+--endpoint-type
+openai
+--endpoint
+/v1/completions
+--dataset-name
+random
+--num-prompts
+48
+--random-input-len
+128
+--random-output-len
+64
+--random-range-ratio
+0
+--max-concurrency
+8
+--ignore-eos

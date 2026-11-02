@@ -32,13 +32,21 @@ that have nothing to do with aggregation.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
 import pytest
 
+if sys.version_info >= (3, 14):
+    from compression import zstd
+else:
+    from backports import zstd
+
 import inference_perf.datagen.replay.trace_source as trace_source_module
+from inference_perf.config import APIConfig, APIType, DataConfig, OTelTraceReplayConfig
 from inference_perf.datagen.replay.otel_trace_replay_datagen import (
+    OTelTraceReplayDataGenerator,
     _normalize_file_trace,
     _rows_for_file,
 )
@@ -46,6 +54,8 @@ from inference_perf.datagen.replay.trace_source import (
     InvalidTraceError,
     LocalTraceFormat,
     LocalTraceSource,
+    TraceReadError,
+    UnsupportedTraceFormatError,
     validate_record_schema,
 )
 from inference_perf.datagen.replay.wire_trace_converter import derive_trace_id
@@ -661,3 +671,75 @@ def test_wire_event_ids_are_stable_across_reloads(tmp_path: Path) -> None:
 
     assert parent_events == worker_events, "event ids diverged between builds"
     assert parent_user_facing == worker_user_facing, "user-facing event ids diverged between builds"
+
+
+def zst(path: Path) -> Path:
+    compressed = path.with_name(path.name + ".zst")
+    compressed.write_bytes(zstd.compress(path.read_bytes()))
+    return compressed
+
+
+@pytest.mark.parametrize(
+    "name, text",
+    [
+        ("a.json", json.dumps(otel_trace())),
+        ("a.json", json.dumps(otel_trace(), indent=2)),  # pretty-printed: parsed whole, not by line
+        ("a.json", json.dumps(otel_trace(trace_id=None))),  # no ids: the session is named after the file
+        ("calls.jsonl", "".join(json.dumps(r) + "\n" for r in [chat_record("s-1"), chat_record("s-1")])),
+    ],
+)
+def test_zst_file_loads_the_same_records_as_the_file_it_compresses(tmp_path: Path, name: str, text: str) -> None:
+    plain = tmp_path / name
+    plain.write_text(text, encoding="utf-8")
+    plain_source, zst_source = source_for([plain]), source_for([zst(plain)])
+
+    assert [r.trace_format for r in zst_source.records] == [r.trace_format for r in plain_source.records]
+    assert [r.session_id_suffix for r in zst_source.records] == [r.session_id_suffix for r in plain_source.records]
+    for i in range(len(plain_source.records)):
+        assert {**scrub(zst_source.load_record(i)), "source_id": None} == {
+            **scrub(plain_source.load_record(i)),
+            "source_id": None,
+        }
+
+
+def test_zst_otel_jsonl_is_refused(tmp_path: Path) -> None:
+    path = zst(write_jsonl(tmp_path / "traces.jsonl", [otel_trace(f"t{i}") for i in range(3)]))
+    with pytest.raises(UnsupportedTraceFormatError, match="decompress it first"):
+        source_for([path])
+
+
+def test_unreadable_zst_is_a_trace_read_error(tmp_path: Path) -> None:
+    truncated = tmp_path / "calls.jsonl.zst"
+    truncated.write_bytes(zstd.compress(write_jsonl(tmp_path / "calls.jsonl", [chat_record("s-1")] * 50).read_bytes())[:-20])
+    not_zstd = tmp_path / "a.json.zst"
+    not_zstd.write_bytes(b"not zstd")
+    for path in (truncated, not_zstd):
+        with pytest.raises(TraceReadError):
+            source_for([path])
+
+
+@pytest.mark.parametrize("via", ["trace_directory", "trace_files"])
+@pytest.mark.parametrize(
+    "name, accepted",
+    [("a.json.zst", True), ("calls.jsonl.zst", True), ("foo.zst", False), ("foo.txt.zst", False), ("a.json.gz", False)],
+)
+def test_zst_of_json_and_jsonl_only_is_taken(tmp_path: Path, name: str, accepted: bool, via: str) -> None:
+    doc = chat_record("s-1") if name.startswith("calls") else otel_trace()
+    (tmp_path / name).write_bytes(zstd.compress((json.dumps(doc) + "\n").encode()))
+    replay = (
+        OTelTraceReplayConfig(trace_directory=str(tmp_path))
+        if via == "trace_directory"
+        else OTelTraceReplayConfig(trace_files=[str(tmp_path / name)])
+    )
+    config = DataConfig(type="otel_trace_replay", otel_trace_replay=replay)
+
+    def generator() -> OTelTraceReplayDataGenerator:
+        return OTelTraceReplayDataGenerator(
+            api_config=APIConfig(type=APIType.Chat, streaming=False), config=config, tokenizer=None, num_workers=1
+        )
+
+    if accepted:
+        assert len(generator().sessions) == 1
+    else:
+        with pytest.raises(ValueError, match=r"\.json or \.jsonl file"):
+            generator()
