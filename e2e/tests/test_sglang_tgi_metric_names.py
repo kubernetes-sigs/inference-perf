@@ -46,7 +46,7 @@ when unset. Nothing here starts a server.
 
 Regenerating a fixture is ``scripts/capture_server_metric_names.py``, which
 the scheduled workflow (``.github/workflows/metric_name_drift.yml``) runs
-against the latest upstream release and turns into a pull request when the
+against the latest upstream release and turns into an issue when the
 result differs. Capture and check share ``utils.server_metric_names``, so a
 committed fixture is by construction what these checks would have parsed.
 """

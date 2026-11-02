@@ -9,11 +9,15 @@
 #
 # This job starts the LATEST release of each server, scrapes /metrics once,
 # and rewrites e2e/testdata/server_metric_families/<server>.txt. If the family
-# list changed it opens a pull request; if not it exits quietly. The pull
-# request then runs the normal checks in
-# e2e/tests/test_sglang_tgi_metric_names.py, so a name we still declare but
-# the server no longer exposes goes red on one attributable PR that somebody
-# owns, rather than on every open PR at once.
+# list changed it opens an issue with the diff and the verdict of the
+# serverless checks in e2e/tests/test_sglang_tgi_metric_names.py; if not it
+# exits quietly. A name we still declare but the server no longer exposes
+# shows up on one attributable issue that somebody owns, rather than on every
+# open PR at once.
+#
+# An issue, not a pull request: a commit authored by github-actions has no
+# CNCF CLA, so a bot PR would carry cncf-cla: no and tide would never merge
+# it. A maintainer lands the refresh in their own commit.
 #
 # Deliberately NOT merge blocking, and deliberately not on `pull_request`.
 # `latest` is a moving external dependency: if it gated merges, one upstream
@@ -28,8 +32,7 @@
 # queued forever, not failing every week) until somebody sets
 # METRIC_DRIFT_RUNNER to the label of a GPU runner with the NVIDIA container
 # toolkit installed. Setting that variable is the only step needed to turn
-# this on. Opening the refresh PR also needs the repository setting "Allow
-# GitHub Actions to create and approve pull requests".
+# this on.
 name: Metric-name drift (SGLang, TGI)
 
 on:
@@ -45,17 +48,17 @@ on:
         default: Qwen/Qwen2.5-0.5B-Instruct
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  issues: write
 
 jobs:
   capture:
     # Never on forks (a fork has neither the runner nor anywhere useful to
-    # send the PR), and never before a runner exists (#641).
+    # file the issue), and never before a runner exists (#641).
     if: github.repository == 'kubernetes-sigs/inference-perf' && vars.METRIC_DRIFT_RUNNER != ''
     runs-on: ${{ vars.METRIC_DRIFT_RUNNER }}
     timeout-minutes: 60
-    # One job, one server, one pull request: a TGI rename must not be held up
+    # One job, one server, one issue: a TGI rename must not be held up
     # behind an SGLang server that failed to boot.
     strategy:
       fail-fast: false
@@ -149,10 +152,8 @@ jobs:
           pdm run python scripts/capture_server_metric_names.py \
             --server "${SERVER}" --base-url http://127.0.0.1:8080
 
-      # A pull request opened with github.token starts no workflows, so nothing
-      # would check the refresh PR on its own. The serverless checks need no
-      # server, so run them here against the fixture just captured and put the
-      # verdict in the PR body instead.
+      # The serverless checks need no server, so run them here against the
+      # fixture just captured and put the verdict in the issue.
       - name: Check declared names against the new fixture
         id: check
         run: |
@@ -183,12 +184,21 @@ jobs:
         if: always()
         run: docker rm -f drift 2>/dev/null || true
 
-      # A refresh PR, not a test failure: the diff is the finding, and the
-      # check step above says whether it breaks anything we declare.
-      - name: Open a fixture-refresh pull request
+      # The issue carries a capped diff. The artifact is the whole fixture, so
+      # whoever lands the refresh does not need a GPU to regenerate it.
+      - name: Upload captured fixture
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.server }}-fixture
+          path: ${{ env.FIXTURE }}
+
+      # An issue, not a test failure: the diff is the finding, and the check
+      # step above says whether it breaks anything we declare.
+      - name: File or update the drift issue
         env:
           GH_TOKEN: ${{ github.token }}
           CHECK_RESULT: ${{ steps.check.outputs.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
 
@@ -198,39 +208,34 @@ jobs:
           fi
 
           VERSION="$(sed -n 's/^# version: //p' "${FIXTURE}")"
-          BRANCH="metric-drift/${SERVER}"
+          TITLE="Metric-name drift: ${SERVER}"
+          # Written to a file so head cannot SIGPIPE git under pipefail.
+          git diff -- "${FIXTURE}" > drift.diff
 
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git switch -c "${BRANCH}"
-          git add "${FIXTURE}"
-          git commit -m "test: refresh ${SERVER} metric-name fixture (${VERSION})"
-          # Force push: the branch is a rolling snapshot of latest, so a
-          # second drift before the first PR merges should update that PR
-          # rather than stack a second one.
-          git push --force origin "${BRANCH}"
-
-          if gh pr view "${BRANCH}" --json state --jq .state 2>/dev/null | grep -q OPEN; then
-            echo "Existing PR for ${BRANCH} updated in place."
-            exit 0
-          fi
-
-          cat > pr-body.md <<EOF
+          cat > issue-body.md <<EOF
           Automated by .github/workflows/metric_name_drift.yml (#669).
 
           The /metrics exposition of ${SERVER} ${VERSION} no longer matches the checked-in
           fixture. The diff is the drift.
 
-          Declared names against this fixture: **${CHECK_RESULT}** (the serverless checks in
-          e2e/tests/test_sglang_tgi_metric_names.py, run by the workflow before opening this PR).
+          Declared names against the new fixture: ${CHECK_RESULT} (the serverless checks in
+          e2e/tests/test_sglang_tgi_metric_names.py, run by the workflow before filing this).
 
-          On **fail**, a name inference-perf declares in get_prometheus_metric_metadata()
+          On fail, a name inference-perf declares in get_prometheus_metric_metadata()
           disappeared, and the declaration in inference_perf/client/modelserver/${SERVER}_client.py
-          needs updating in the same change. On **pass**, upstream added or removed metrics this
-          project does not query and the refresh can merge as is.
+          needs updating in the same change as the refresh. On pass, upstream added or removed
+          metrics this project does not query and the refresh can land as is.
 
-          GitHub starts no workflows for a PR opened by github.token, so this PR has no checks
-          of its own until someone closes and reopens it.
+          To land it, download the \`${SERVER}-fixture\` artifact from ${RUN_URL}, copy it over
+          ${FIXTURE} and open a PR from your own fork. The workflow does not open the PR itself
+          because a commit authored by github-actions cannot pass EasyCLA.
+
+          <details><summary>fixture diff (first 400 lines)</summary>
+
+          \`\`\`diff
+          $(head -n 400 drift.diff)
+          \`\`\`
+          </details>
 
           <details><summary>check output</summary>
 
@@ -240,7 +245,12 @@ jobs:
           </details>
           EOF
 
-          gh pr create \
-            --base main --head "${BRANCH}" \
-            --title "test: refresh ${SERVER} metric-name fixture (${VERSION})" \
-            --body-file pr-body.md
+          # One open issue per server. A second drift before the first is
+          # handled lands as a comment, not a second issue.
+          EXISTING="$(gh issue list --state open --limit 200 --json number,title \
+            --jq "[.[] | select(.title == \"${TITLE}\")][0].number // empty")"
+          if [ -n "${EXISTING}" ]; then
+            gh issue comment "${EXISTING}" --body-file issue-body.md
+          else
+            gh issue create --title "${TITLE}" --body-file issue-body.md
+          fi
