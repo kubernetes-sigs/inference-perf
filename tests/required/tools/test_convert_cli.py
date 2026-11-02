@@ -167,3 +167,34 @@ def test_malformed_header_name_exits_2(tmp_path: Path, capsys: pytest.CaptureFix
     err = capsys.readouterr().err
     assert "REFUSE --header:" in err
     assert "'{\"X-C\"'" in err
+
+
+# One --header occurrence carrying two tokens (aiperf's consume_multiple): the
+# credential in the second token is scrubbed from the recorded argv and
+# dropped from the emitted config, exit 0.
+def test_multi_token_header_credential_never_reaches_the_emitted_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--", "--model", "m", "--osl", "64"]
+    argv += ["--header", "X-Team: infra", "Authorization: Bearer sk-y"]
+    assert run(argv) == 0
+    out = capsys.readouterr().out
+    assert "sk-y" not in out
+    assert "'Authorization: <redacted>'" in out
+    saved = tmp_path / "aiperf.yaml"
+    saved.write_text(out)
+    config = read_config(str(saved))
+    assert config.api.headers == {"X-Team": "infra"}
+
+
+# A mistyped header entry (= where : belongs) exits 1 with a usage error that
+# names the occurrence and keeps the credential out of stderr.
+def test_header_usage_error_keeps_the_credential_out_of_stderr(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out_path = tmp_path / "converted.yaml"
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "-o", str(out_path), "--"]
+    argv += ["--model", "m", "--osl", "64", "-H", "Authorization=Bearer sk-live-123"]
+    assert run(argv) == 1
+    assert not out_path.exists()
+    err = capsys.readouterr().err
+    assert "sk-live-123" not in err
+    assert "--header #1" in err

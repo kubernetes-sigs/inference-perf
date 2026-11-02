@@ -72,13 +72,18 @@ def is_value_token(token: str) -> bool:
 REDACTED = "<redacted>"
 
 
-def rewrite_values(argv: List[str], rewriters: Mapping[str, Callable[[str], str]]) -> List[str]:
+def rewrite_values(
+    argv: List[str], rewriters: Mapping[str, Callable[[str], str]], multi_flags: FrozenSet[str] = frozenset()
+) -> List[str]:
     """A copy of ``argv`` with the value of every flag in ``rewriters`` passed through its rewriter.
 
     The emitted comment block records the source argv verbatim, so a credential
     passed on the peer CLI has to be scrubbed there as well as from the config
     body. Both the ``--flag value`` and ``--flag=value`` spellings are covered;
-    a trailing flag with no value left is copied as is.
+    a trailing flag with no value left is copied as is. A flag in
+    ``multi_flags`` keeps taking value tokens until the next flag (the
+    ``consume_multiple`` reading), so every one of its tokens is rewritten,
+    the inline ``=`` value included.
     """
     out: List[str] = []
     i = 0
@@ -89,13 +94,20 @@ def rewrite_values(argv: List[str], rewriters: Mapping[str, Callable[[str], str]
         rewrite = rewriters.get(name)
         if rewrite is None:
             out.append(token)
-        elif eq:
+            continue
+        multi = name in multi_flags
+        if eq:
             out.append(f"{name}={rewrite(inline)}")
         else:
             out.append(token)
-            if i < len(argv):
-                out.append(rewrite(argv[i]))
-                i += 1
+            if not multi:
+                if i < len(argv):
+                    out.append(rewrite(argv[i]))
+                    i += 1
+                continue
+        while multi and i < len(argv) and is_value_token(argv[i]):
+            out.append(rewrite(argv[i]))
+            i += 1
     return out
 
 

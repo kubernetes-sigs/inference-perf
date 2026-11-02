@@ -567,3 +567,104 @@ def test_malformed_header_name_refuses(entry: str, bad_name: str) -> None:
     conversion = convert(_HEADER_BASE + ["--header", entry])
     assert conversion.config is None
     assert any(item.startswith("--header:") and f"'{bad_name}'" in item for item in conversion.refusals), conversion.refusals
+
+
+# --header X-A:a X-B:b --streaming: one consume_multiple occurrence carries
+# both tokens at v0.12.0, so api.headers is {"X-A": "a", "X-B": "b"} and
+# --streaming is read as the next flag, not as a third header.
+def test_header_consumes_value_tokens_until_the_next_flag() -> None:
+    conversion = convert(_HEADER_BASE + ["--header", "X-A:a", "X-B:b", "--streaming"])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert conversion.config.api.headers == {"X-A": "a", "X-B": "b"}
+    assert conversion.config.api.streaming is True
+
+
+# --header=X-A:a X-B:b: the `=` spelling takes its inline value and keeps
+# consuming the bare tokens after it, so both headers are read.
+def test_header_equals_spelling_keeps_consuming() -> None:
+    conversion = convert(_HEADER_BASE + ["--header=X-A:a", "X-B:b"])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert conversion.config.api.headers == {"X-A": "a", "X-B": "b"}
+
+
+# --header directly followed by the next flag carries no tokens: aiperf leaves
+# the field at its default, so the conversion emits no headers and no error.
+def test_header_with_no_value_tokens_is_inert() -> None:
+    conversion = convert(_HEADER_BASE + ["--header", "--streaming"])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert conversion.config.api.headers is None
+
+
+# --header X-A:a -1: the negative number is consumed as a header token the way
+# aiperf consumes it; "-1" has no colon, so the usage error names occurrence
+# #2 and does not echo the token.
+def test_negative_number_is_consumed_and_the_error_names_the_occurrence() -> None:
+    with pytest.raises(PeerUsageError) as exc_info:
+        convert(_HEADER_BASE + ["--header", "X-A:a", "-1"])
+    message = str(exc_info.value)
+    assert "--header #2" in message
+    assert "-1" not in message
+
+
+# -H 'Authorization=Bearer sk-live-123' (an = typo for :): the key:value usage
+# error names --header #1 and the credential never reaches the message.
+def test_header_usage_error_does_not_echo_a_credential() -> None:
+    with pytest.raises(PeerUsageError) as exc_info:
+        convert(_HEADER_BASE + ["-H", "Authorization=Bearer sk-live-123"])
+    message = str(exc_info.value)
+    assert "--header #1" in message
+    assert "sk-live-123" not in message
+
+
+# --header '{"X-A": ' is unparsable JSON: the usage error names occurrence #1
+# instead of echoing the (possibly credential-bearing) entry.
+def test_header_json_usage_error_names_the_occurrence() -> None:
+    with pytest.raises(PeerUsageError) as exc_info:
+        convert(_HEADER_BASE + ["--header", '{"X-A": '])
+    message = str(exc_info.value)
+    assert "--header #1" in message
+    assert "X-A" not in message
+
+
+# --header X-Team:infra Authorization:tok-9: the credential in the second
+# consumed token is dropped from api.headers and scrubbed from the recorded
+# argv, exactly as a second --header occurrence would be.
+def test_redacted_argv_covers_every_consumed_header_token() -> None:
+    conversion = convert(_HEADER_BASE + ["--header", "X-Team:infra", "Authorization:tok-9"])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert conversion.config.api.headers == {"X-Team": "infra"}
+    assert "tok-9" not in " ".join(conversion.argv)
+    assert "Authorization: <redacted>" in conversion.argv
+    assert any("set api.headers Authorization" in item for item in conversion.assumptions), conversion.assumptions
+
+
+# --url http://a:8000 http://b:8000: both tokens are consumed as URLs, so the
+# refusal is the multi-URL one and nothing refuses as a positional argument.
+def test_multiple_url_tokens_refuse_as_multiple_urls() -> None:
+    conversion = convert(["--model", "m", "--osl", "64", "--url", "http://a:8000", "http://b:8000"])
+    assert conversion.config is None
+    assert any(item.startswith("--url:") and "load balancing" in item for item in conversion.refusals), conversion.refusals
+    assert not any("positional" in item for item in conversion.refusals), conversion.refusals
+
+
+# --extra-inputs temperature:0.7 top_p:0.9 (the flag's own help example): both
+# tokens are consumed as entries, so both sampling keys refuse by name.
+def test_extra_inputs_consumes_multiple_tokens() -> None:
+    conversion = convert(["--model", "m", "--osl", "64", "--extra-inputs", "temperature:0.7", "top_p:0.9"])
+    assert conversion.config is None
+    assert any(item.startswith("--extra-inputs temperature:") for item in conversion.refusals), conversion.refusals
+    assert any(item.startswith("--extra-inputs top_p:") for item in conversion.refusals), conversion.refusals
+
+
+# An --extra-inputs entry with no colon: the usage error names the entry
+# position and does not echo the entry, which may carry an injected secret.
+def test_extra_inputs_usage_error_names_the_position() -> None:
+    with pytest.raises(PeerUsageError) as exc_info:
+        convert(["--model", "m", "--osl", "64", "--extra-inputs", "oops-no-colon"])
+    message = str(exc_info.value)
+    assert "--extra-inputs #1" in message
+    assert "oops-no-colon" not in message
