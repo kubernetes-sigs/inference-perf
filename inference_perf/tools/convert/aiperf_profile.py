@@ -11,19 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""``aiperf profile`` argv -> inference-perf config, keyed to AIPerf v0.12.0.
+"""``aiperf profile`` argv -> inference-perf config, keyed to AIPerf v0.12.0 and v0.13.0.
 
-The flag surface is the 252 CLI-named fields of AIPerf's ``CLIConfig``
-(``src/aiperf/config/flags/cli_config.py`` at the pinned tag), mirrored below
-as a flat table so an unknown flag is a refusal rather than a silent drop.
-Aliases (``--isl``/``--synthetic-input-tokens-mean``) resolve to one field.
+The flag surface is the CLI-named fields of AIPerf's ``CLIConfig``
+(``src/aiperf/config/flags/cli_config.py``): 252 at v0.12.0 and 264 at
+v0.13.0, which adds twelve and changes none. They are mirrored below as a flat
+table so an unknown flag is a refusal rather than a silent drop. A field a
+later tag adds is unknown at an earlier one. Aliases
+(``--isl``/``--synthetic-input-tokens-mean``) resolve to one field.
 AIPerf's ``CLIParameter`` defaults ``negative=False``, so no boolean flag
 grows an automatic ``--no-`` spelling: the only negations are the nine
 ``negative=`` declarations mirrored in the rows below, plus four fields whose
-own primary name starts with ``--no-``. Any other ``--no-`` token whose
-positive spelling is a known flag is a usage error here, as it is for aiperf.
+own primary name starts with ``--no-``, the same at both tags. Any other
+``--no-`` token whose positive spelling is a known flag at the tag is a usage
+error here, as it is for aiperf.
 
-Verified v0.12.0 behavior the rows rely on:
+Verified behavior the rows rely on, the same at both tags unless the v0.13.0
+list below says otherwise:
 
 - Synthetic lengths sample a positive normal (ceiling, floor 1, no upper
   clamp); ``stddev <= 0`` returns a true fixed length.
@@ -65,7 +69,8 @@ Verified v0.12.0 behavior the rows rely on:
   included, until the next flag, so ``--header X-A:a X-B:b`` is two headers.
   The ``=`` spelling keeps consuming after its inline value, and an occurrence
   with no value tokens leaves the field at its default (verified against
-  cyclopts 4.25.3, the current resolution of the pin's ``cyclopts>=4,<5``).
+  cyclopts 4.25.3, the current resolution of the pin's ``cyclopts>=4,<5``.
+  The 4.23.2 that v0.13.0's ``uv.lock`` pins has the same consume loop).
 - ``--num-dataset-entries`` (default 100) is a pool of unique entries reused
   across requests, a false friend of vllm's ``--num-prompts``. An explicit
   ``--request-count`` sizes the pool to itself when the entry count is not
@@ -85,7 +90,25 @@ Verified v0.12.0 behavior the rows rely on:
   prompt instead of reproducing that length compensation.
 - ``--isl`` is content tokens on the wire and a BOS-prepending server reads
   one more; inference-perf counts the BOS inside the input length, so the
-  converted prompts run one token shorter on such servers.
+  converted prompts run one token shorter on such servers. v0.13.0 changes this.
+
+What v0.13.0 changes (``AiperfProfileFacts`` carries each difference):
+
+- ``_get_turn_sequence_lengths`` subtracts the tokenizer's
+  ``num_special_tokens_to_add()`` from the ``--isl`` mean, so ``--isl`` is the
+  length the server sees, which is how ``data.input_distribution`` counts. The
+  emitted distribution is the same at both tags. Each tag records its own
+  reading, and only v0.12.0 runs one token shorter on a BOS server.
+- ``build_headers`` also sends ``X-Session-Affinity`` with the correlation id
+  on every request (``AIPERF_HTTP_X_SESSION_AFFINITY_FROM_CORRELATION_ID``
+  defaults to true) and replaces a ``--header`` of that name.
+- ``audio_transcription`` joins the endpoint registry.
+- New flags: ``--per-chunk-usage`` (adds ``continuous_usage_stats`` to chat
+  requests and changes the ITL divisor) refuses, as do ``--random-range-ratio``
+  (a ratio-window length sampler) and ``--system-prompt``/``--system-prompt-file``.
+  ``--reset-kv-cache`` and ``--server-profiler`` act on the server outside
+  the request stream and drop with a note. ``--random-corpus-style`` only picks
+  the random corpus token pool and the ratio formula, and drops.
 
 Whole subsystems inference-perf does not have (multi-run sweeps and searches,
 accuracy evaluation, trace and file datasets, rankings endpoints, agentic
@@ -159,9 +182,10 @@ class _F(NamedTuple):
     negative: Optional[str] = None
 
 
-# The verified v0.12.0 surface: field name, CLI aliases, arity kind, and the
-# CLIParameter group. Generated from the pinned tag's cli_config.py; edits
-# here mean the pin moved and every affected table row was re-verified.
+# The verified surface: field name, CLI aliases, arity kind, and the
+# CLIParameter group, in v0.13.0 cli_config.py order. v0.12.0 is the same
+# table minus the fields AiperfProfileFacts.added_fields names for v0.13.0.
+# Edits here mean the pin moved and every affected table row was re-verified.
 _FIELDS: Tuple[_F, ...] = (
     _F(
         "model_names",
@@ -200,6 +224,13 @@ _FIELDS: Tuple[_F, ...] = (
     _F("wait_for_model_timeout", ("--wait-for-model-timeout",), "value", "ENDPOINT"),
     _F("wait_for_model_mode", ("--wait-for-model-mode",), "value", "ENDPOINT"),
     _F("wait_for_model_interval", ("--wait-for-model-interval",), "value", "ENDPOINT"),
+    _F("reset_kv_cache", ("--reset-kv-cache",), "flag", "ENDPOINT"),
+    _F("reset_kv_cache_timeout_seconds", ("--reset-kv-cache-timeout-seconds",), "value", "ENDPOINT"),
+    _F("reset_kv_cache_path", ("--reset-kv-cache-path",), "value", "ENDPOINT"),
+    _F("server_profiler", ("--server-profiler",), "flag", "ENDPOINT"),
+    _F("server_profiler_timeout_seconds", ("--server-profiler-timeout-seconds",), "value", "ENDPOINT"),
+    _F("server_profiler_start_path", ("--server-profiler-start-path",), "value", "ENDPOINT"),
+    _F("server_profiler_stop_path", ("--server-profiler-stop-path",), "value", "ENDPOINT"),
     _F("api_key", ("--api-key",), "value", "ENDPOINT"),
     _F(
         "transport",
@@ -212,6 +243,7 @@ _FIELDS: Tuple[_F, ...] = (
     ),
     _F("use_legacy_max_tokens", ("--use-legacy-max-tokens",), "flag", "ENDPOINT"),
     _F("use_server_token_count", ("--use-server-token-count",), "flag", "ENDPOINT"),
+    _F("per_chunk_usage", ("--per-chunk-usage",), "flag", "ENDPOINT"),
     _F("connection_reuse_strategy", ("--connection-reuse-strategy",), "value", "ENDPOINT"),
     _F("download_video_content", ("--download-video-content",), "flag", "ENDPOINT"),
     _F("request_content_type", ("--request-content-type",), "value", "ENDPOINT"),
@@ -344,6 +376,8 @@ _FIELDS: Tuple[_F, ...] = (
     ),
     _F("prompt_corpus", ("--prompt-corpus",), "value", "PROMPT"),
     _F("cache_bust", ("--cache-bust",), "value", "CACHE_BUST"),
+    _F("system_prompt", ("--system-prompt",), "value", "PREFIX_PROMPT"),
+    _F("system_prompt_file", ("--system-prompt-file",), "value", "PREFIX_PROMPT"),
     _F(
         "prompt_prefix_pool_size",
         (
@@ -404,6 +438,8 @@ _FIELDS: Tuple[_F, ...] = (
         "value",
         "ISL",
     ),
+    _F("prompt_random_range_ratio", ("--random-range-ratio",), "value", "ISL"),
+    _F("prompt_random_corpus_style", ("--random-corpus-style",), "value", "ISL"),
     _F(
         "prompt_output_tokens_mean",
         (
@@ -788,10 +824,18 @@ _BESPOKE: Set[str] = {
     "wait_for_model_timeout",
     "wait_for_model_mode",
     "wait_for_model_interval",
+    "reset_kv_cache",
+    "reset_kv_cache_timeout_seconds",
+    "reset_kv_cache_path",
+    "server_profiler",
+    "server_profiler_timeout_seconds",
+    "server_profiler_start_path",
+    "server_profiler_stop_path",
     "api_key",
     "transport",
     "use_legacy_max_tokens",
     "use_server_token_count",
+    "per_chunk_usage",
     "connection_reuse_strategy",
     "download_video_content",
     "request_content_type",
@@ -835,6 +879,8 @@ _BESPOKE: Set[str] = {
     "prompt_batch_size",
     "prompt_corpus",
     "cache_bust",
+    "system_prompt",
+    "system_prompt_file",
     "prompt_prefix_pool_size",
     "prompt_prefix_length",
     "prompt_prefix_shared_system_length",
@@ -843,6 +889,8 @@ _BESPOKE: Set[str] = {
     "prompt_input_tokens_stddev",
     "prompt_input_tokens_block_size",
     "prompt_sequence_distribution",
+    "prompt_random_range_ratio",
+    "prompt_random_corpus_style",
     "prompt_output_tokens_mean",
     "prompt_output_tokens_stddev",
     "benchmark_duration",
@@ -969,7 +1017,7 @@ def _alias_index() -> Dict[str, Tuple[_F, bool]]:
     """CLI alias -> (field, is_negation). Only the negations cli_config.py
 
     declares exist: ``CLIParameter`` defaults ``negative=False``, so cyclopts
-    generates no ``--no-`` spelling of its own at v0.12.0.
+    generates no ``--no-`` spelling of its own at either verified tag.
     """
     index: Dict[str, Tuple[_F, bool]] = {}
     for spec in _FIELDS:
@@ -982,8 +1030,15 @@ def _alias_index() -> Dict[str, Tuple[_F, bool]]:
 
 _ALIASES: Dict[str, Tuple[_F, bool]] = _alias_index()
 
+# A field one tag adds has to refuse as unknown at every tag that lacks it.
+_ADDED_FIELDS: FrozenSet[str] = frozenset().union(*(facts.added_fields for facts in AIPERF_PROFILE_VERSIONS.values()))
 
-def _parse(argv: List[str], conversion: Conversion) -> _Parsed:
+
+def _known_at(spec: _F, facts: AiperfProfileFacts) -> bool:
+    return spec.field not in _ADDED_FIELDS or spec.field in facts.added_fields
+
+
+def _parse(argv: List[str], conversion: Conversion, facts: AiperfProfileFacts) -> _Parsed:
     parsed = _Parsed()
     i = 0
     while i < len(argv):
@@ -994,16 +1049,19 @@ def _parse(argv: List[str], conversion: Conversion) -> _Parsed:
             continue
         name, eq, inline = token.partition("=")
         entry = _ALIASES.get(name)
+        if entry is not None and not _known_at(entry[0], facts):
+            entry = None
         if entry is None:
-            if name.startswith("--no-") and "--" + name[len("--no-") :] in _ALIASES:
-                # The positive spelling exists, so this is an attempted
-                # negation; aiperf declares none for it (CLIParameter
+            positive = _ALIASES.get("--" + name[len("--no-") :]) if name.startswith("--no-") else None
+            if positive is not None and _known_at(positive[0], facts):
+                # The positive spelling exists at this tag, so this is an
+                # attempted negation; aiperf declares none for it (CLIParameter
                 # defaults negative=False) and rejects the token.
                 raise PeerUsageError(
-                    f"{name} is not an aiperf flag at v0.12.0: boolean flags take no automatic --no-"
+                    f"{name} is not an aiperf flag at {facts.version}: boolean flags take no automatic --no-"
                     f" negation there, and cli_config.py declares none for --{name[len('--no-') :]}"
                 )
-            conversion.refuse(name, f"not in the verified {TOOL_NAME} v0.12.0 flag surface")
+            conversion.refuse(name, f"not in the verified {TOOL_NAME} {facts.version} flag surface")
             # Consume the flag's one value, a negative number included, so an
             # unknown flag refuses once rather than once per token.
             if not eq and i < len(argv) and is_value_token(argv[i]):
@@ -1059,7 +1117,7 @@ def _parse(argv: List[str], conversion: Conversion) -> _Parsed:
 def _refuse_sweeps(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileFacts) -> None:
     """Refuse the magic-list sweep spelling on the fields that parse it.
 
-    At v0.12.0 ``parse_int_or_int_list`` and ``parse_float_or_float_list``
+    At both verified tags ``parse_int_or_int_list`` and ``parse_float_or_float_list``
     turn ``--concurrency 8,16`` into a parameter sweep, one run per value, and
     collapse a lone value with a trailing comma to that value. The converter
     emits one config for one run, and the peer accepts the argv, so a sweep is
@@ -1112,7 +1170,7 @@ def _convert_api_type(conversion: Conversion, parsed: _Parsed, facts: AiperfProf
             f"endpoint type '{endpoint}' has no API type (only completions converts with random data)",
         )
     else:
-        conversion.refuse("--endpoint-type", f"'{endpoint}' is not in the verified v0.12.0 endpoint registry")
+        conversion.refuse("--endpoint-type", f"'{endpoint}' is not in the verified {facts.version} endpoint registry")
     return None
 
 
@@ -1221,15 +1279,17 @@ def _redact_argv(argv: List[str]) -> List[str]:
     return rewrite_values(argv, rewriters, multi_flags=_MULTI_VALUE_FLAGS)
 
 
-def _convert_headers(conversion: Conversion, parsed: _Parsed) -> Optional[Dict[str, str]]:
+def _convert_headers(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileFacts) -> Optional[Dict[str, str]]:
     """``api.headers`` from every ``--header`` occurrence, minus the credentials.
 
     Each occurrence is read the way AIPerf reads it (``_header_pairs``). A
     value AIPerf's ``headers`` map would reject is a usage error, a name that
     is not an HTTP token refuses, and a credential header is dropped with an
-    assumption to set it on the run host, as ``--api-key`` is.
+    assumption to set it on the run host, as ``--api-key`` is. A header AIPerf
+    overwrites with the correlation id never reaches its server, so it drops.
     """
     headers: Dict[str, str] = {}
+    affinity = facts.session_affinity_header
     for occurrence, entry in enumerate(parsed.items("headers"), start=1):
         is_json, pairs = _header_pairs(entry, occurrence)
         for name, value in pairs:
@@ -1249,6 +1309,10 @@ def _convert_headers(conversion: Conversion, parsed: _Parsed) -> Optional[Dict[s
                 raise PeerUsageError(
                     f"--header {name}: aiperf reads this value as {coerced} and its headers map takes strings"
                 )
+            # build_headers strips a caller's copy case-insensitively before adding its own.
+            if affinity is not None and name.lower() == affinity.lower():
+                conversion.drop(f"--header {name} (aiperf {facts.version} replaces it with the correlation id)")
+                continue
             if _is_credential_header(name):
                 conversion.assume(
                     f"--header {name} is not written: the converted file is meant to be checked in, so set"
@@ -1261,6 +1325,59 @@ def _convert_headers(conversion: Conversion, parsed: _Parsed) -> Optional[Dict[s
                 return None
             headers[name] = value
     return headers or None
+
+
+_RESET_KV_CACHE_OPTIONS = (
+    ("reset_kv_cache_path", "--reset-kv-cache-path"),
+    ("reset_kv_cache_timeout_seconds", "--reset-kv-cache-timeout-seconds"),
+)
+_SERVER_PROFILER_OPTIONS = (
+    ("server_profiler_start_path", "--server-profiler-start-path"),
+    ("server_profiler_stop_path", "--server-profiler-stop-path"),
+    ("server_profiler_timeout_seconds", "--server-profiler-timeout-seconds"),
+)
+
+
+def _hook_path(parsed: _Parsed, field: str, flag: str, default: str) -> str:
+    """A control-hook path as aiperf's ``require_relative_path`` accepts it, or its default."""
+    path = parsed.raw(field)
+    if path is None:
+        return default
+    if "://" in path or not path.startswith("/"):
+        raise PeerUsageError(f"{flag} must be a relative path starting with '/', got '{path}'")
+    return path
+
+
+def _convert_control_hooks(conversion: Conversion, parsed: _Parsed) -> None:
+    """Note the server-side hooks aiperf fires outside the request stream.
+
+    A hook is on when its switch is set or any of its options is
+    (``_maybe_build_reset_kv_cache`` and ``_maybe_build_server_profiler`` in
+    ``_converter_endpoint.py``). Neither changes the requests sent, so the
+    flags drop with a note on what the converted run leaves undone.
+    """
+    if parsed.flag("reset_kv_cache") or any(parsed.present(field) for field, _ in _RESET_KV_CACHE_OPTIONS):
+        path = _hook_path(parsed, "reset_kv_cache_path", "--reset-kv-cache-path", "/reset_prefix_cache")
+        conversion.no_equivalent(
+            f"KV-cache reset: aiperf POSTs {path} to the server once before the run starts. The converted run"
+            " sends no reset, so reset the server's prefix cache on the run host first"
+        )
+    if parsed.flag("server_profiler") or any(parsed.present(field) for field, _ in _SERVER_PROFILER_OPTIONS):
+        start = _hook_path(parsed, "server_profiler_start_path", "--server-profiler-start-path", "/start_profile")
+        stop = _hook_path(parsed, "server_profiler_stop_path", "--server-profiler-stop-path", "/stop_profile")
+        conversion.no_equivalent(
+            f"server profiler: aiperf POSTs {start} before each profiling phase and {stop} after it, and a"
+            " profiled server runs slower. The converted run leaves the profiler off"
+        )
+    hooks = (
+        ("reset_kv_cache", "--reset-kv-cache"),
+        *_RESET_KV_CACHE_OPTIONS,
+        ("server_profiler", "--server-profiler"),
+        *_SERVER_PROFILER_OPTIONS,
+    )
+    for field, flag in hooks:
+        if parsed.present(field):
+            conversion.drop(flag)
 
 
 def _convert_goodput(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileFacts) -> Optional[GoodputConfig]:
@@ -1453,6 +1570,16 @@ def _convert_data(
             "--seq-dist",
             "a correlated (ISL, OSL) pair mixture is not expressible with independent input and output distributions",
         )
+    if parsed.present("prompt_random_range_ratio"):
+        conversion.refuse(
+            "--random-range-ratio",
+            "a uniform ratio window around the ISL and OSL means (vllm or sglang formula) has no verified mapping",
+        )
+    if parsed.present("prompt_random_corpus_style"):
+        conversion.drop(
+            "--random-corpus-style (picks the random corpus token pool and the ratio-window formula,"
+            " and prompt text never transfers between tools)"
+        )
 
     osl_mean = parsed.floating("prompt_output_tokens_mean", "--osl")
     osl_stddev = parsed.floating("prompt_output_tokens_stddev", "--osl-stddev") or 0.0
@@ -1466,11 +1593,18 @@ def _convert_data(
         return None, None
 
     conversion.no_equivalent(SYNTHETIC_NOTE)
-    conversion.assume(
-        f"--isl {isl_mean:g}: aiperf puts that many content tokens on the wire and a BOS-prepending server"
-        " reads one more, while inference-perf counts the BOS inside the input length, so the converted"
-        " prompts run one token shorter on such servers; mapped verbatim"
-    )
+    if facts.isl_counts_special_tokens:
+        conversion.assume(
+            f"--isl {isl_mean:g}: aiperf {facts.version} subtracts the tokenizer's special tokens"
+            " (num_special_tokens_to_add, 1 for a BOS tokenizer) from the mean, so --isl is the length the"
+            " server sees, the length data.input_distribution targets. The tokenizer has to match the server's"
+        )
+    else:
+        conversion.assume(
+            f"--isl {isl_mean:g}: aiperf puts that many content tokens on the wire and a BOS-prepending server"
+            " reads one more, while inference-perf counts the BOS inside the input length, so the converted"
+            " prompts run one token shorter on such servers; mapped verbatim"
+        )
     if isl_stddev <= 0:
         input_dist = fixed_dist(int(round(isl_mean)))
     else:
@@ -1516,7 +1650,7 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
         return conversion
     conversion.source_version = facts.version
 
-    parsed = _parse(argv, conversion)
+    parsed = _parse(argv, conversion, facts)
     _refuse_sweeps(conversion, parsed, facts)
     # The comment block records the argv; no key or credential header value
     # may survive there either.
@@ -1608,6 +1742,9 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
     ):
         if parsed.present(field):
             conversion.refuse(flag, "structured shared or per-session context has no verified equivalent")
+    for field, flag in (("system_prompt", "--system-prompt"), ("system_prompt_file", "--system-prompt-file")):
+        if parsed.present(field):
+            conversion.refuse(flag, "a verbatim system prompt shared by every request has no verified equivalent")
 
     # Endpoint block.
     api_type = _convert_api_type(conversion, parsed, facts)
@@ -1656,7 +1793,16 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
     if parsed.flag("uuid_and_strip"):
         conversion.refuse("--uuid-and-strip", "the multimodal processor-cache stripping protocol has no equivalent")
     if parsed.present("transport"):
-        conversion.drop("--transport (only http is registered at v0.12.0)")
+        conversion.drop(f"--transport (only http is registered at {facts.version})")
+    if parsed.flag("per_chunk_usage"):
+        conversion.refuse(
+            "--per-chunk-usage",
+            "it adds stream_options.continuous_usage_stats to every chat request and divides inter-token"
+            " latency by the server's first-chunk token count, and neither has a counterpart",
+        )
+    elif parsed.present("per_chunk_usage"):
+        conversion.drop("--per-chunk-usage (explicitly disabled; inert)")
+    _convert_control_hooks(conversion, parsed)
     for field, flag in (
         ("wait_for_model_timeout", "--wait-for-model-timeout"),
         ("wait_for_model_mode", "--wait-for-model-mode"),
@@ -1690,7 +1836,7 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
             "server.ignore_eos: false is emitted explicitly: inference-perf defaults it to true, while"
             " aiperf sends ignore_eos only when injected via --extra-inputs"
         )
-    headers = _convert_headers(conversion, parsed)
+    headers = _convert_headers(conversion, parsed, facts)
     goodput = _convert_goodput(conversion, parsed, facts)
 
     load_shape = _convert_load(conversion, parsed, facts)
@@ -1698,7 +1844,7 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
 
     # The dataset-entry pool must cover the converted request count, since the
     # generated data pool is unique per request and never reused. aiperf sizes
-    # the pool itself (_resolve_entries in _converter_dataset.py at v0.12.0):
+    # the pool itself (_resolve_entries in _converter_dataset.py, the same at both tags):
     # an explicit --num-dataset-entries wins, else an explicit --request-count
     # sizes the pool to itself, else the SyntheticDataset default applies.
     # --num-conversations sits between the two there, but it refuses above.
@@ -1742,6 +1888,14 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
         conversion.no_equivalent(
             "session header: aiperf sends its default X-Correlation-ID header on every request; the"
             " converted run sends no session header"
+        )
+    affinity = facts.session_affinity_header
+    # --session-header naming the affinity header already maps it to api.session_id_header_key.
+    if affinity is not None and (parsed.raw("session_header") or "").lower() != affinity.lower():
+        conversion.no_equivalent(
+            f"{affinity}: aiperf {facts.version} also sends the correlation id under {affinity} on every request"
+            " (AIPERF_HTTP_X_SESSION_AFFINITY_FROM_CORRELATION_ID defaults to true), so a session-affinity router"
+            f" pins each conversation to one replica. The converted run sends no {affinity} header"
         )
 
     if parsed.present("api_key"):

@@ -102,12 +102,12 @@ batching, which shows up as a client-side latency difference that no client caus
 ## Flag and setting map
 
 **Checked on 2026-08-21 against `vllm bench serve` from vLLM v0.10.0 and `aiperf profile` from
-AIPerf v0.12.0.** Both tools have changed what these flags mean between releases, so
+AIPerf v0.13.0 on 2026-11-02.** Both tools have changed what these flags mean between releases, so
 treat a row as unverified against any other version and re-read the tool's own `--help` before
 relying on it. The version of vLLM the parity harness (#481) pins is the one these rows were
 read from.
 
-| What you are pinning | inference-perf | `vllm bench serve` v0.10.0 | `aiperf profile` v0.12.0 |
+| What you are pinning | inference-perf | `vllm bench serve` v0.10.0 | `aiperf profile` v0.13.0 |
 | :--- | :--- | :--- | :---
 | Evenly spaced arrivals at a rate | `load.type: constant`, `stages[].rate` (random gaps rescaled to the exact stage duration) | `--request-rate` (random gaps rescaled to exactly `--num-prompts`/rate, the same construction) | `--request-rate` with `--arrival-pattern constant` (perfectly even) |
 | Poisson arrivals at a rate | `load.type: poisson`, `stages[].rate` | no equivalent at v0.10.0: every finite-rate schedule is rescaled to an anchored total, not a Poisson process | `--request-rate` (default `--arrival-pattern poisson`) |
@@ -142,11 +142,12 @@ a converted config still needs reading:
 - **Count against duration.** `--num-prompts` and `--request-count` are counts; a `constant`
   inference-perf stage is a rate for a duration, so the count is `rate * duration` and only
   matches when the rate is actually achieved.
-- **Special tokens count differently in AIPerf.** vLLM subtracts the tokenizer's special
+- **Special tokens count differently in AIPerf v0.12.0.** vLLM subtracts the tokenizer's special
   tokens before constructing the prompt, and inference-perf counts them inside the input
-  length too, so their realized lengths match after the server adds BOS. AIPerf's `--isl`
-  counts content tokens; a BOS-prepending server reads one more, so the converted AIPerf
-  prompts run one token shorter on such servers.
+  length too, so their realized lengths match after the server adds BOS. AIPerf v0.12.0's `--isl`
+  counts content tokens; a BOS-prepending server reads one more, so prompts converted at
+  v0.12.0 run one token shorter on such servers. AIPerf v0.13.0 subtracts the special tokens
+  the way vLLM does, so its `--isl` matches.
 - **One range ratio covers both directions.** `--random-range-ratio` widens input and output
   together, while inference-perf configures each distribution separately. At v0.10.0 the range
   is `[len * (1 - r), len * (1 + r)]` and the tool asserts `r < 1.0`, so the pre-v0.8.4
@@ -166,13 +167,13 @@ a converted config still needs reading:
 
 `inference-perf-convert` (#755) turns a `vllm bench serve` or `aiperf profile` argument list into
 a config. The peer version is an argument, and only versions whose flag surface was verified
-against source convert: `vllm bench serve` v0.10.0 and `aiperf profile` v0.12.0 today. Everything
-after `--` is the peer's own argument list, verbatim.
+against source convert: `vllm bench serve` v0.10.0 and `aiperf profile` v0.12.0 and v0.13.0
+today. Everything after `--` is the peer's own argument list, verbatim.
 
 ```bash
 inference-perf-convert vllm-bench --peer-version v0.10.0 -o config.yaml -- \
     --model m --dataset-name random --num-prompts 600 --request-rate 40 --ignore-eos
-inference-perf-convert aiperf-profile --peer-version v0.12.0 -o config.yaml -- \
+inference-perf-convert aiperf-profile --peer-version v0.13.0 -o config.yaml -- \
     --model m --endpoint-type completions --streaming --osl 64 --concurrency 8 --request-count 48
 ```
 
