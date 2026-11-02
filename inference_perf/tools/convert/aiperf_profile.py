@@ -54,6 +54,15 @@ Verified v0.12.0 behavior the rows rely on:
   config (string values only) then rejects, so such a value is a usage error
   here. A name that is not an HTTP token (a JSON object with a leading space,
   say, whose name would come out as ``{"X-C"``) refuses.
+- Twelve fields are ``consume_multiple`` flags (``--url``, ``--extra-inputs``,
+  ``--header``, ``--dataset-filter``, ``--stream``,
+  ``--otel-resource-attributes``, ``--mlflow-tag``, ``--mlflow-artifact-glob``,
+  ``--wandb-tag``, ``--server-metrics``, ``--server-metrics-formats``,
+  ``--gpu-telemetry``): each keeps taking value tokens, negative numbers
+  included, until the next flag, so ``--header X-A:a X-B:b`` is two headers.
+  The ``=`` spelling keeps consuming after its inline value, and an occurrence
+  with no value tokens leaves the field at its default (verified against
+  cyclopts 4.25.3, the current resolution of the pin's ``cyclopts>=4,<5``).
 - ``--num-dataset-entries`` (default 100) is a pool of unique entries reused
   across requests, a false friend of vllm's ``--num-prompts``.
 
@@ -127,6 +136,9 @@ class _F(NamedTuple):
     # per occurrence, kept whole for a parser of its own).
     kind: str
     group: str
+    # ``consume_multiple=True`` in cli_config.py: the flag keeps taking value
+    # tokens until the next flag, so ``--header X-A:a X-B:b`` is two entries.
+    multi: bool = False
 
 
 # The verified v0.12.0 surface: field name, CLI aliases, arity kind, and the
@@ -163,6 +175,7 @@ _FIELDS: Tuple[_F, ...] = (
         ),
         "list",
         "ENDPOINT",
+        multi=True,
     ),
     _F("url_selection_strategy", ("--url-strategy",), "value", "ENDPOINT"),
     _F("timeout_seconds", ("--request-timeout-seconds",), "value", "ENDPOINT"),
@@ -190,7 +203,7 @@ _FIELDS: Tuple[_F, ...] = (
     _F("tokenizer_revision", ("--tokenizer-revision",), "value", "TOKENIZER"),
     _F("trust_remote_code", ("--tokenizer-trust-remote-code",), "flag", "TOKENIZER"),
     _F("apply_chat_template", ("--apply-chat-template",), "flag", "TOKENIZER"),
-    _F("extra_inputs", ("--extra-inputs",), "list", "INPUT"),
+    _F("extra_inputs", ("--extra-inputs",), "list", "INPUT", multi=True),
     _F(
         "headers",
         (
@@ -199,12 +212,13 @@ _FIELDS: Tuple[_F, ...] = (
         ),
         "entries",
         "INPUT",
+        multi=True,
     ),
     _F("input_file", ("--input-file",), "value", "INPUT"),
     _F("public_dataset", ("--public-dataset",), "value", "INPUT"),
     _F("hf_dataset_subset", ("--hf-subset",), "value", "INPUT"),
     _F("hf_weka_dataset", ("--hf-weka-dataset",), "value", "INPUT"),
-    _F("dataset_filters", ("--dataset-filter",), "list", "INPUT"),
+    _F("dataset_filters", ("--dataset-filter",), "list", "INPUT", multi=True),
     _F("custom_dataset_type", ("--custom-dataset-type",), "value", "INPUT"),
     _F("ignore_trace_delays", ("--ignore-trace-delays",), "flag", "INPUT"),
     _F("use_think_time_only", ("--use-think-time-only",), "flag", "INPUT"),
@@ -556,28 +570,28 @@ _FIELDS: Tuple[_F, ...] = (
     _F("plot_required", ("--plot-required",), "flag", "OUTPUT"),
     _F("export_outputs_json", ("--export-outputs-json",), "flag", "OUTPUT"),
     _F("otel_url", ("--otel-url",), "value", "OUTPUT"),
-    _F("stream", ("--stream",), "list", "OUTPUT"),
-    _F("otel_resource_attributes", ("--otel-resource-attributes",), "list", "OUTPUT"),
+    _F("stream", ("--stream",), "list", "OUTPUT", multi=True),
+    _F("otel_resource_attributes", ("--otel-resource-attributes",), "list", "OUTPUT", multi=True),
     _F("gen_ai_provider", ("--gen-ai-provider",), "value", "OUTPUT"),
     _F("mlflow_tracking_uri", ("--mlflow-tracking-uri",), "value", "OUTPUT"),
     _F("mlflow_experiment", ("--mlflow-experiment",), "value", "OUTPUT"),
     _F("mlflow_run_name", ("--mlflow-run-name",), "value", "OUTPUT"),
-    _F("mlflow_tags", ("--mlflow-tag",), "list", "OUTPUT"),
+    _F("mlflow_tags", ("--mlflow-tag",), "list", "OUTPUT", multi=True),
     _F("mlflow_parent_run_id", ("--mlflow-parent-run-id",), "value", "OUTPUT"),
-    _F("mlflow_artifact_globs", ("--mlflow-artifact-glob",), "list", "OUTPUT"),
+    _F("mlflow_artifact_globs", ("--mlflow-artifact-glob",), "list", "OUTPUT", multi=True),
     _F("wandb_project", ("--wandb-project",), "value", "OUTPUT"),
     _F("wandb_entity", ("--wandb-entity",), "value", "OUTPUT"),
     _F("wandb_run_name", ("--wandb-run-name",), "value", "OUTPUT"),
-    _F("wandb_tags", ("--wandb-tag",), "list", "OUTPUT"),
+    _F("wandb_tags", ("--wandb-tag",), "list", "OUTPUT", multi=True),
     _F("export_http_trace", ("--export-http-trace",), "flag", "HTTP_TRACE"),
     _F("show_trace_timing", ("--show-trace-timing",), "flag", "HTTP_TRACE"),
-    _F("server_metrics", ("--server-metrics",), "list", "SERVER_METRICS"),
+    _F("server_metrics", ("--server-metrics",), "list", "SERVER_METRICS", multi=True),
     _F("no_server_metrics", ("--no-server-metrics",), "flag", "SERVER_METRICS"),
-    _F("server_metrics_formats", ("--server-metrics-formats",), "list", "SERVER_METRICS"),
+    _F("server_metrics_formats", ("--server-metrics-formats",), "list", "SERVER_METRICS", multi=True),
     _F("network_latency_automatic", ("--network-latency-automatic",), "flag", "NETWORK_LATENCY"),
     _F("network_latency_mean", ("--network-latency-mean",), "value", "NETWORK_LATENCY"),
     _F("network_latency_ping_interval", ("--network-latency-ping-interval",), "value", "NETWORK_LATENCY"),
-    _F("gpu_telemetry", ("--gpu-telemetry",), "list", "GPU_TELEMETRY"),
+    _F("gpu_telemetry", ("--gpu-telemetry",), "list", "GPU_TELEMETRY", multi=True),
     _F("no_gpu_telemetry", ("--no-gpu-telemetry",), "flag", "GPU_TELEMETRY"),
     _F(
         "ui_type",
@@ -850,6 +864,9 @@ _WARMUP_AGENTIC: Set[str] = {"agentic_cache_warmup_duration", "agentic_warmup_gr
 _SECRET_FLAGS = frozenset(alias for spec in _FIELDS if spec.field == "api_key" for alias in spec.aliases)
 # Flags whose value may carry a credential under a header name: scrubbed by name.
 _HEADER_FLAGS = frozenset(alias for spec in _FIELDS if spec.field == "headers" for alias in spec.aliases)
+# Flags that keep taking value tokens until the next flag; the argv scrubber
+# must walk the same tokens the parser consumed.
+_MULTI_VALUE_FLAGS = frozenset(alias for spec in _FIELDS if spec.multi for alias in spec.aliases)
 
 WARMUP_NOTE = (
     "warmup: aiperf excludes its warmup phase from the measured window; inference-perf measures every"
@@ -982,23 +999,35 @@ def _parse(argv: List[str], conversion: Conversion) -> _Parsed:
                 parsed.negated.add(spec.field)
             parsed.values[spec.field] = state
             continue
-        if eq:
-            value_str = inline
+        tokens: List[str] = []
+        if spec.multi:
+            # A consume_multiple flag keeps taking value tokens, negative
+            # numbers included, until the next flag; the ``=`` spelling takes
+            # its inline value and keeps consuming; an occurrence with no
+            # tokens leaves the field as it was, the no-op it is for aiperf.
+            if eq:
+                tokens.append(inline)
+            while i < len(argv) and is_value_token(argv[i]):
+                tokens.append(argv[i])
+                i += 1
+        elif eq:
+            tokens.append(inline)
         else:
             if i >= len(argv):
                 raise PeerUsageError(f"{name} expects a value")
-            value_str = argv[i]
+            tokens.append(argv[i])
             i += 1
         if spec.kind in ("list", "entries"):
             existing = parsed.values.get(spec.field)
             items: List[str] = list(existing) if isinstance(existing, list) else []
-            if spec.kind == "list":
-                items.extend(part.strip() for part in value_str.split(",") if part.strip())
-            else:
-                items.append(value_str)
+            for value_str in tokens:
+                if spec.kind == "list":
+                    items.extend(part.strip() for part in value_str.split(",") if part.strip())
+                else:
+                    items.append(value_str)
             parsed.values[spec.field] = items
         else:
-            parsed.values[spec.field] = value_str
+            parsed.values[spec.field] = tokens[-1]
     return parsed
 
 
@@ -1066,11 +1095,13 @@ def _convert_extra_inputs(conversion: Conversion, parsed: _Parsed) -> Optional[b
     """Returns the ignore_eos value carried in --extra-inputs (None: absent)."""
     ignore_eos: Optional[bool] = None
     sampling_keys = {"temperature", "top_p", "top_k", "min_p", "repetition_penalty", "frequency_penalty", "presence_penalty"}
-    for entry in parsed.items("extra_inputs"):
+    for occurrence, entry in enumerate(parsed.items("extra_inputs"), start=1):
         key, sep, value = entry.partition(":")
         key = key.strip()
         if not sep:
-            raise PeerUsageError(f"--extra-inputs entry '{entry}' is not key:value")
+            # The entry is not echoed: an injected payload value can carry a
+            # credential, and a usage error lands in CI logs.
+            raise PeerUsageError(f"--extra-inputs #{occurrence} is not in 'key:value' format")
         if key == "ignore_eos":
             ignore_eos = value.strip().lower() in ("true", "1")
             continue
@@ -1099,24 +1130,27 @@ def _is_credential_header(name: str) -> bool:
     return any(fragment in lowered for fragment in CREDENTIAL_HEADER_FRAGMENTS)
 
 
-def _header_pairs(entry: str) -> Tuple[bool, List[Tuple[str, Any]]]:
+def _header_pairs(entry: str, occurrence: int) -> Tuple[bool, List[Tuple[str, Any]]]:
     """One ``--header`` occurrence as AIPerf's ``_parse_str_as_tuple_list`` reads it.
 
     Returns whether the entry was a JSON object and its (name, value) pairs.
     JSON values come back as parsed; ``key:value`` values come back stripped
-    and before ``coerce_value``. Raises ``PeerUsageError`` where AIPerf raises.
+    and before ``coerce_value``. Raises ``PeerUsageError`` where AIPerf
+    raises, naming the occurrence (``--header #2``) instead of quoting the
+    entry: a mistyped entry can carry a credential, and a usage error lands in
+    CI logs.
     """
     if entry.startswith("{"):
         try:
             loaded = json.loads(entry)
         except json.JSONDecodeError as exc:
-            raise PeerUsageError(f"--header {entry!r} must be a valid JSON string") from exc
+            raise PeerUsageError(f"--header #{occurrence} must be a valid JSON string") from exc
         return True, [(str(name), value) for name, value in loaded.items()]
     pairs: List[Tuple[str, Any]] = []
     for item in entry.split(","):
         name, sep, value = item.partition(":")
         if not sep:
-            raise PeerUsageError(f"--header {entry!r}: each item must be in 'key:value' format")
+            raise PeerUsageError(f"--header #{occurrence}: each item must be in 'key:value' format")
         pairs.append((name.strip(), value.strip()))
     return False, pairs
 
@@ -1143,7 +1177,8 @@ def _scrub_header_entry(entry: str) -> str:
     credential sits in it.
     """
     try:
-        is_json, pairs = _header_pairs(entry)
+        # The occurrence is unknown here and the message is swallowed anyway.
+        is_json, pairs = _header_pairs(entry, occurrence=0)
     except PeerUsageError:
         return REDACTED
     if not any(_is_credential_header(name) for name, _ in pairs):
@@ -1158,7 +1193,7 @@ def _redact_argv(argv: List[str]) -> List[str]:
     """The argv for the comment block: api key values and credential header values gone."""
     rewriters: Dict[str, Callable[[str], str]] = {flag: (lambda _value: REDACTED) for flag in _SECRET_FLAGS}
     rewriters.update({flag: _scrub_header_entry for flag in _HEADER_FLAGS})
-    return rewrite_values(argv, rewriters)
+    return rewrite_values(argv, rewriters, multi_flags=_MULTI_VALUE_FLAGS)
 
 
 def _convert_headers(conversion: Conversion, parsed: _Parsed) -> Optional[Dict[str, str]]:
@@ -1170,8 +1205,8 @@ def _convert_headers(conversion: Conversion, parsed: _Parsed) -> Optional[Dict[s
     assumption to set it on the run host, as ``--api-key`` is.
     """
     headers: Dict[str, str] = {}
-    for entry in parsed.items("headers"):
-        is_json, pairs = _header_pairs(entry)
+    for occurrence, entry in enumerate(parsed.items("headers"), start=1):
+        is_json, pairs = _header_pairs(entry, occurrence)
         for name, value in pairs:
             if not _HEADER_NAME.match(name):
                 conversion.refuse(
