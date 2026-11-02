@@ -1,6 +1,6 @@
 # The vLLM releases the live-oracle e2e slice gates against: tags of
 # docker.io/vllm/vllm-openai-cpu, one per line; comments and blank lines are
-# ignored. Use the multi-arch tags (v0.26.0, latest), not the -x86_64 or
+# ignored. Use the multi-arch tags (v0.33.0, latest), not the -x86_64 or
 # -arm64 forms: they resolve to the same per-arch images, so one table serves
 # CI (ARM runners) and local repro on any host. The e2e-tests CI job starts a real server of every listed release
 # (via e2e/vllm_cpu_server.sh) and runs the full live-oracle slice
@@ -22,5 +22,5 @@
 # that is broken upstream is a different case: list it in
 # e2e/vllm_known_bad.txt and latest routes around it until it moves on.
 
-v0.26.0
+v0.33.0
 latest

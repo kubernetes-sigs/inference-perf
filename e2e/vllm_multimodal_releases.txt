@@ -1,7 +1,7 @@
 # The vLLM releases the multimodal acceptance slice
 # (e2e/tests/test_vllm_cpu_multimodal.py) runs against: tags of
 # docker.io/vllm/vllm-openai-cpu, one per line; comments and blank lines are
-# ignored. Use the multi-arch tags (v0.27.1, latest), not the -x86_64 or
+# ignored. Use the multi-arch tags (v0.33.0, latest), not the -x86_64 or
 # -arm64 forms: they resolve to the same per-arch images, so one table serves
 # CI (ARM runners) and local repro on any host. The multimodal-e2e job in
 # the E2E Test on change workflow starts a vision-language server and a
@@ -19,5 +19,5 @@
 # that is broken upstream goes in e2e/vllm_known_bad.txt, and latest routes
 # around it until it moves on.
 
-v0.27.1
+v0.33.0
 latest

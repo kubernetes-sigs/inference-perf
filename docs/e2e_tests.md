@@ -80,11 +80,11 @@ registration anywhere.
 ```sh
 # Start a real vLLM CPU server (the same script CI uses). Release tags
 # come from e2e/vllm_releases.txt:
-e2e/vllm_cpu_server.sh start v0.26.0
+e2e/vllm_cpu_server.sh start v0.33.0
 
 # Run the slice against it. The base URL selects the external server; the
 # version selects the committed metric-families golden to check against:
-E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION=v0.26.0 \
+E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION=v0.33.0 \
   pdm run test:e2e:live
 
 e2e/vllm_cpu_server.sh stop
