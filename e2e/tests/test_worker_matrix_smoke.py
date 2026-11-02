@@ -109,8 +109,9 @@ async def test_multi_stage_run_at_pinned_worker_count() -> None:
 
     async with LLMDInferenceSimRunner(
         TEST_MODEL_NAME,
-        *("--time-to-first-token", str(int(TTFT_SEC * 1000))),
-        *("--inter-token-latency", str(int(ITL_SEC * 1000))),
+        # The sim parses latencies as Go durations. A bare number fails to start it.
+        *("--time-to-first-token", f"{TTFT_SEC}s"),
+        *("--inter-token-latency", f"{ITL_SEC}s"),
         *("--time-to-first-token-std-dev", "0"),
         *("--inter-token-latency-std-dev", "0"),
         # PINNED_N workers each dispatch concurrently; the default
