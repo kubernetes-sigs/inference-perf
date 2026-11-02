@@ -51,34 +51,38 @@ class VllmBenchFacts:
     stream_forced: bool = True
 
 
+# The ``endpoint:`` section of src/aiperf/plugin/plugins.yaml at v0.12.0.
+_AIPERF_V0_12_0_ENDPOINT_TYPES: FrozenSet[str] = frozenset(
+    {
+        "chat",
+        "completions",
+        "messages",
+        "cohere_rankings",
+        "responses",
+        "chat_embeddings",
+        "embeddings",
+        "hf_tei_rankings",
+        "huggingface_generate",
+        "image_generation",
+        "image_edit",
+        "video_generation",
+        "image_retrieval",
+        "nim_embeddings",
+        "nim_rankings",
+        "solido_rag",
+        "raw",
+        "template",
+    }
+)
+
+
 @dataclass(frozen=True)
 class AiperfProfileFacts:
     """Verified behavior of ``aiperf profile`` at one tag."""
 
     version: str
     # Endpoint types registered in the plugin registry at this tag.
-    endpoint_types: FrozenSet[str] = frozenset(
-        {
-            "chat",
-            "completions",
-            "messages",
-            "cohere_rankings",
-            "responses",
-            "chat_embeddings",
-            "embeddings",
-            "hf_tei_rankings",
-            "huggingface_generate",
-            "image_generation",
-            "image_edit",
-            "video_generation",
-            "image_retrieval",
-            "nim_embeddings",
-            "nim_rankings",
-            "solido_rag",
-            "raw",
-            "template",
-        }
-    )
+    endpoint_types: FrozenSet[str] = _AIPERF_V0_12_0_ENDPOINT_TYPES
     arrival_patterns: FrozenSet[str] = frozenset({"constant", "poisson", "gamma"})
     # An unbounded run (no --request-count, --benchmark-duration or session
     # bound, and not a fixed schedule) sends exactly this many requests:
@@ -119,6 +123,16 @@ class AiperfProfileFacts:
         ("inter_token_latency", "itl"),
         ("request_latency", "request_latency"),
     )
+    # CLIConfig fields this tag adds to the v0.12.0 surface. A field another
+    # tag adds is an unknown flag at every tag that does not list it.
+    added_fields: FrozenSet[str] = frozenset()
+    # The composer subtracts the tokenizer's num_special_tokens_to_add() from
+    # the --isl mean (_get_turn_sequence_lengths), so --isl is the length the
+    # server sees. At v0.12.0 the server saw --isl plus those tokens.
+    isl_counts_special_tokens: bool = False
+    # Header build_headers sends with the correlation id on every request by
+    # default (base_transports.py), replacing any --header of the same name.
+    session_affinity_header: Optional[str] = None
 
     @property
     def goodput_tag_map(self) -> Dict[str, str]:
@@ -129,14 +143,37 @@ class AiperfProfileFacts:
 # parity harness; tests/required/tools/test_convert_parity.py asserts the two
 # stay equal whenever that file is present in the tree.
 VLLM_BENCH_PINNED = "v0.10.0"
-AIPERF_PROFILE_PINNED = "v0.12.0"
+AIPERF_PROFILE_PINNED = "v0.13.0"
 
 VLLM_BENCH_VERSIONS: Dict[str, VllmBenchFacts] = {
     VLLM_BENCH_PINNED: VllmBenchFacts(version=VLLM_BENCH_PINNED),
 }
 
+# v0.12.0 stays verified so an argv written for it still converts as it did.
 AIPERF_PROFILE_VERSIONS: Dict[str, AiperfProfileFacts] = {
-    AIPERF_PROFILE_PINNED: AiperfProfileFacts(version=AIPERF_PROFILE_PINNED),
+    "v0.12.0": AiperfProfileFacts(version="v0.12.0"),
+    "v0.13.0": AiperfProfileFacts(
+        version="v0.13.0",
+        endpoint_types=_AIPERF_V0_12_0_ENDPOINT_TYPES | {"audio_transcription"},
+        added_fields=frozenset(
+            {
+                "per_chunk_usage",
+                "prompt_random_corpus_style",
+                "prompt_random_range_ratio",
+                "reset_kv_cache",
+                "reset_kv_cache_path",
+                "reset_kv_cache_timeout_seconds",
+                "server_profiler",
+                "server_profiler_start_path",
+                "server_profiler_stop_path",
+                "server_profiler_timeout_seconds",
+                "system_prompt",
+                "system_prompt_file",
+            }
+        ),
+        isl_counts_special_tokens=True,
+        session_affinity_header="X-Session-Affinity",
+    ),
 }
 
 

@@ -17,7 +17,7 @@ Usage::
 
     inference-perf-convert vllm-bench --peer-version v0.10.0 -o config.yaml -- \\
         --dataset-name random --num-prompts 600 --request-rate 40 ...
-    inference-perf-convert aiperf-profile --peer-version v0.12.0 -- \\
+    inference-perf-convert aiperf-profile --peer-version v0.13.0 -- \\
         --model m --endpoint-type completions --streaming --osl 64 ...
 
 Exit codes: 0 converted; 2 refused, with every ``REFUSE <flag>: <reason>``
