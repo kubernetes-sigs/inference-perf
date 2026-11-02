@@ -15,7 +15,7 @@
 
 Usage::
 
-    inference-perf-convert vllm-bench --peer-version v0.10.0 -o config.yaml -- \\
+    inference-perf-convert vllm-bench --peer-version v0.32.0 -o config.yaml -- \\
         --dataset-name random --num-prompts 600 --request-rate 40 ...
     inference-perf-convert aiperf-profile --peer-version v0.12.0 -- \\
         --model m --endpoint-type completions --streaming --osl 64 ...
