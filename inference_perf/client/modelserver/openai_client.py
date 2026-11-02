@@ -681,8 +681,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
         response_content = ""
         caught_exception: Optional[Exception] = None
         # Set when the load generator cancels this request at stage teardown. The
-        # request is still recorded below, as a failure, and the cancellation is
-        # re-raised once it has been.
+        # request is still recorded below, with its own cancelled outcome rather
+        # than as a failure, and the cancellation is re-raised once it has been.
         cancelled = False
         retries_attempted = 0
         retries_recovered = False

@@ -445,11 +445,15 @@ class ResponsesSummary(BaseModel):
         at all -- not a `"retries": null`. Enforced on the model rather than at the ~6
         model_dump() call sites so a new caller cannot reintroduce the key by omission.
         """
-        dumped: dict[str, Any] = handler(self)
-        for key in ("retries", "cancelled"):
-            if dumped.get(key) is None:
-                dumped.pop(key, None)
-        return dumped
+        return _drop_absent_blocks(handler(self))
+
+
+# Outside the decorated serializer so tests are checked against the loop itself.
+def _drop_absent_blocks(dumped: dict[str, Any]) -> dict[str, Any]:
+    for key in ("retries", "cancelled"):
+        if dumped.get(key) is None:
+            dumped.pop(key, None)
+    return dumped
 
 
 def calculate_goodput_metrics(
