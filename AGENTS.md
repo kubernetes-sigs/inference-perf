@@ -71,7 +71,7 @@ pdm run setup          # one-time: install deps + pre-commit + pre-push hooks
 pdm run test:picked    # run only tests for files you changed (fast inner loop)
 pdm check              # fast: ruff format + ruff lint
 pdm run validate       # full gate: format + lint + mypy --strict + CLI-flags doc sync
-pdm test               # full suite: pytest tests
+pdm run test           # full suite: pytest tests
 pdm run check:cov      # coverage-regression check (fails if you lower coverage)
 ```
 
@@ -88,6 +88,16 @@ inference-perf --server.type vllm --server.base_url http://localhost:8000 \
 
 > `pdm run validate` runs `check:cli-flags` — if you added or renamed any config field,
 > run `pdm run update:cli-flags` and commit the regenerated `docs/cli_flags.md`, or CI fails.
+
+## Done means
+
+Read `CONTRIBUTING.md` first. This section is the done-condition for a change.
+
+1. `pdm run validate` is green: format, lint, strict mypy, generated-doc sync.
+2. `pdm run test:picked` is green while iterating. `pdm run test` before opening a PR.
+3. A change under `inference_perf/datagen`, `loadgen`, `client` or `reportgen` also passes `pdm run test:e2e` with `llm-d-inference-sim` on `PATH`. A skipped sim test is not a pass. `nix develop` provides the sim, Prometheus, pdm and Python. Without Nix, install the sim from its README.
+4. A bug fix includes a test that fails on main before the fix. Quote the failing output in the PR.
+5. `docs/cli_flags.md` and `docs/runtime_metrics.md` are generated. Run `pdm run update:cli-flags` or `pdm run update:runtime-metrics`. Do not edit them by hand.
 
 ## Tech Stack (with versions)
 
@@ -184,6 +194,8 @@ Every contribution ships with tests. No exceptions for behavior changes.
   (see `tests/required/datagen/test_datagen_fuzz.py`).
 - Use `unittest.mock.Mock` for clients/collectors so unit tests stay offline
   (see the `_make_generator()` helper in `test_failure_reporting.py`).
+- **Comment every test**: every test function and helper gets a `#` block directly above the `def`, no blank line between:
+  concrete inputs and expected outputs in one to three lines, written for someone who has not read the code.
 
 Every test file starts with the Apache 2.0 license header (copy it from any existing file),
 then a module docstring describing what is under test:
@@ -215,7 +227,7 @@ then a module docstring describing what is under test:
 
 - Run every command inside the project's PDM-managed env (`pdm run ...`); create it with `pdm run setup` if missing (see [Environment](#environment-always-work-inside-the-project-env)).
 - Add tests under `tests/` for every behavior change and keep coverage from regressing (`pdm run check:cov`).
-- Run `pdm run validate` and `pdm test` before pushing.
+- Run `pdm run validate` and `pdm run test` before pushing.
 - Keep the tool **engine-agnostic** — new features should work across model servers, or be clearly opt-in.
 - Register new plugin types in **all three** places (enum, implementation, `main.py` factory).
 - Update the relevant `docs/*.md` (and regenerate `docs/cli_flags.md`) when behavior or config changes.
@@ -231,10 +243,14 @@ then a module docstring describing what is under test:
 ### Never do
 
 - Never merge a behavior change **without accompanying tests**.
-- Never bypass the tooling — don't disable ruff/mypy rules or add blanket `# type: ignore` to silence errors instead of fixing them.
+- Never bypass the tooling — don't disable ruff/mypy rules, and don't add `# type: ignore`, `cast` or `Any` to get past mypy. Fix the type.
+- Never edit or delete an existing test to make it pass. A test is pinned behavior. Say in the PR which behavior changed and why.
+- Never regenerate a golden without saying which output changed.
+- Never touch `scripts/`, `.github/`, `[tool.*]` in `pyproject.toml` or a golden directory in a PR about something else.
 - Never hardcode engine-specific assumptions into shared code paths.
 - Never commit generated run artifacts (the `reports-*/` directories) or secrets/credentials.
-- Never edit `docs/cli_flags.md` by hand — regenerate it with `pdm run update:cli-flags`.
+- Never edit `docs/cli_flags.md` or `docs/runtime_metrics.md` by hand — regenerate them with `pdm run update:cli-flags` /
+  `pdm run update:runtime-metrics`.
 - Never skip the CLA — Kubernetes projects require a signed [CLA](https://git.k8s.io/community/CLA.md).
 
 ## Contribution Flow (summary of CONTRIBUTING.md)
@@ -243,7 +259,11 @@ then a module docstring describing what is under test:
 2. Open an **issue** describing the change; get it assigned before opening a PR.
 3. `pdm run setup` to install deps and hooks.
 4. Implement + **add tests**; verify manually with a real benchmark run.
-5. `pdm run test:picked` → `pdm check` → `pdm run validate` → `pdm test` → `pdm run check:cov`.
-6. Rebase onto latest `origin/main`, then open a PR using the template.
+5. `pdm run test:picked` → `pdm check` → `pdm run validate` → `pdm run test` → `pdm run check:cov`.
+6. Rebase onto latest `origin/main`, then open a PR (see [PR body](#pr-body)).
+
+## PR body
+
+`Part of #N` or `Fixes #N` on the first line. Old behavior, then new behavior. `Changes:` as bullets. Under 600 words.
 
 Community: [#inference-perf](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf) on Kubernetes Slack. Governed by the [Kubernetes Code of Conduct](code-of-conduct.md).
