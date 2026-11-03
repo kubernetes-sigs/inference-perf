@@ -96,7 +96,9 @@ jobs:
   # so it runs beside `coverage` rather than after it. Push events have no
   # diff to scope it to, so it only runs on PRs. A lock or pyproject change
   # runs it too, so the mutmut pin and [tool.mutmut] are checked on the PR
-  # that changes them rather than on every PR after it.
+  # that changes them rather than on every PR after it. Advisory since Nov
+  # 2026: the step below reports but cannot fail the job, see the docs page
+  # for what flips it back.
   mutation:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -142,8 +144,12 @@ jobs:
           pdm sync -d -G analysis -G otel
       # The budget sits 10 minutes under the job's timeout-minutes, which also covers setup and the
       # upload, so a slow run fails with a summary instead of being cancelled without one.
+      # continue-on-error keeps the job green on a FAIL verdict, a budget
+      # overrun or a script error. The summary and the inline annotations
+      # still land, only the merge gate stops seeing them.
       - name: Run mutation ratchet
         if: steps.changes.outputs.code == 'true'
+        continue-on-error: true
         run: pdm run check:mutation --base "origin/${{ github.base_ref }}" --budget-minutes 80
       - name: Upload mutation results
         if: always() && steps.changes.outputs.code == 'true'
