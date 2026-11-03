@@ -24,6 +24,13 @@ response. Entries omit `request_id` when `api.request_id_header_key` is empty, s
 no ID is generated then. An ID set through `api.headers` is still sent, but not
 reported.
 
+Entries also carry `server_request_id`, the ID the server reported (`chatcmpl-...`
+from vLLM), so the request can be matched to the logs of a server that ignores
+`api.request_id_header_key`. It is the `id` of the response body, or the
+`x-request-id` response header when the body has none. Entries omit
+`server_request_id` when the server reported no ID, including when no response came
+back.
+
 ## Understanding the Report Structure
 
 Here is an example snippet from a `summary_lifecycle_metrics.json` report:

@@ -156,7 +156,7 @@ class APIConfig(StrictBaseModel):
         description="Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity.",
     )
     # Request header carrying a client-generated request ID (x-request-id by default,
-    # which vLLM uses to build its own request id and proxies such as Envoy can log).
+    # which vLLM uses to build its own request ID and proxies such as Envoy can log).
     # The ID is generated before the request is sent, so a request that timed out or
     # never got a response can still be found in server logs.
     request_id_header_key: Optional[str] = Field(

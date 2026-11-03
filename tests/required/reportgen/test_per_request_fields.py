@@ -247,6 +247,25 @@ def test_per_request_fields_omit_request_id_when_absent() -> None:
     assert "request_id" not in entry
 
 
+# A metric with server_request_id "chatcmpl-abc", written with info, request and
+# response all turned off, carries server_request_id "chatcmpl-abc" at the top level.
+def test_per_request_fields_include_server_request_id_with_info_off() -> None:
+    metric = _metric()
+    metric.server_request_id = "chatcmpl-abc"
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(request=False, response=False, info=False))
+
+    assert entry["server_request_id"] == "chatcmpl-abc"
+
+
+# A metric with no server_request_id, as when no response came back, writes no
+# server_request_id key.
+def test_per_request_fields_omit_server_request_id_when_absent() -> None:
+    entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig())
+
+    assert "server_request_id" not in entry
+
+
 @pytest.mark.parametrize("include_raw", [True, False])
 @pytest.mark.parametrize("failed", [True, False])
 def test_per_request_entries_preserve_stage_and_schedule(include_raw: bool, failed: bool) -> None:

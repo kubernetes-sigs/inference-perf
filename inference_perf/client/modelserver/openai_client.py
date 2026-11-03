@@ -31,10 +31,11 @@ from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession
 from .metrics import Metric, BaseMetrics
 from .otel_instrumentation import get_otel_instrumentation, summarize_media
-from typing import Iterator, List, Optional, Any, Dict, Tuple
+from typing import Iterator, List, Mapping, Optional, Any, Dict, Tuple
 import aiohttp
 import asyncio
 import random
+import re
 from asyncio import sleep
 import json
 import time
@@ -57,6 +58,14 @@ _READINESS_POLL_INTERVAL_SEC = 1.0
 _READINESS_PROBE_TIMEOUT_SEC = 5.0
 # Probed when a profile names no readiness route of its own.
 _READINESS_FALLBACK_ROUTE = "/v1/models"
+
+# An SSE line may end in CRLF or a lone CR as well as LF. Normalizing to LF first lets
+# events split on a blank line, and the pattern below anchor on ``^`` with
+# ``re.MULTILINE``, which only breaks at LF.
+_SSE_LINE_ENDING = re.compile(r"\r\n?")
+# An event's payload is its ``data`` fields joined with newlines. Comments and other
+# fields may sit between them, since only a blank line ends the event.
+_SSE_DATA_FIELD = re.compile(r"^data: ?(.*)", re.MULTILINE)
 
 
 class OpenAIMetrics(BaseMetrics):
@@ -357,6 +366,55 @@ def _ensure_request_id(headers: dict[str, str], header_key: Optional[str]) -> Op
     request_id = uuid.uuid4().hex
     headers[header_key] = request_id
     return request_id
+
+
+def _iter_response_objects(body: str) -> Iterator[dict[str, object]]:
+    """Yield a response body parsed as a JSON object, or each event of a streamed one that is.
+
+    A body that parses as JSON is not searched for events, so a large unary body is
+    scanned once. Events are parsed one at a time, so a caller that stops at the first
+    one it needs leaves the rest of the stream unparsed.
+    """
+    try:
+        data = json.loads(body)
+    except ValueError:
+        for event in _SSE_LINE_ENDING.sub("\n", body).split("\n\n"):
+            try:
+                data = json.loads("\n".join(_SSE_DATA_FIELD.findall(event)))
+            except ValueError:
+                continue
+            if isinstance(data, dict):
+                yield data
+    else:
+        if isinstance(data, dict):
+            yield data
+
+
+def _as_request_id(candidate: object) -> Optional[str]:
+    """Return ``candidate`` as a request ID, or None unless it is a non-blank string or integer.
+
+    An integer ID is kept as a string rather than failing the metric's validation.
+    """
+    # bool is a subclass of int, so True would otherwise be reported as "True".
+    if isinstance(candidate, bool) or not isinstance(candidate, (str, int)):
+        return None
+    return str(candidate).strip() or None
+
+
+def _read_server_request_id(headers: Mapping[str, str], body: str) -> Optional[str]:
+    """Read the request ID the server reported, for servers that ignore the one sent.
+
+    Takes the top-level ``id`` of the response body (``chatcmpl-...`` from vLLM), or of
+    the first streamed event that carries one, nested under ``message`` in Anthropic's
+    ``message_start``. Falls back to the ``x-request-id`` response header.
+    """
+    for data in _iter_response_objects(body):
+        message = data.get("message")
+        nested_id = message.get("id") if isinstance(message, dict) else None
+        request_id = _as_request_id(data.get("id")) or _as_request_id(nested_id)
+        if request_id is not None:
+            return request_id
+    return _as_request_id(headers.get("x-request-id"))
 
 
 def _build_request_headers(api_config: APIConfig, api_key: Optional[str]) -> dict[str, str]:
@@ -928,6 +986,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if data.graph_event_id:
             info.graph_event_id = data.graph_event_id
 
+        # Read before the embeddings body is stripped below, which drops its `id`.
+        server_request_id = _read_server_request_id(response.headers, response_content) if response is not None else None
+
         # Only a successful body is stripped. A failed one is kept whole because it
         # carries the server's error message, including a 200 recorded as a failure.
         if self.client.api_config.type == APIType.Embeddings and error is None:
@@ -938,6 +999,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
             session_id=data.session_id if isinstance(data.session_id, str) else None,
             request_session_id=data.request_session_id if isinstance(data.request_session_id, str) else None,
             request_id=request_id,
+            server_request_id=server_request_id,
             request_data=request_data,
             response_data=response_content,
             info=info,
