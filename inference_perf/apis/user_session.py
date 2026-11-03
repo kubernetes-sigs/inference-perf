@@ -103,7 +103,8 @@ class LocalUserSession:
     def update_context(self, response: str) -> None:
         if self._accumulates_history and self.tokenizer and self.max_model_len:
             if self._preserves_initial_prompt_boundary:
-                turn_content = response[len(self.system_prompt + "".join(self.history)) :]
+                prefix = self.system_prompt + "".join(self.history)
+                turn_content = response[len(prefix) :]
             else:
                 # The request joined the system prompt, the history and this turn's prompt with
                 # single spaces. Drop only the space before this turn; stripping more would cut a
