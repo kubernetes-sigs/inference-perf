@@ -517,9 +517,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     f"overwriting with replay-enforced value."
                 )
             names = self.expected_output_tool_names or []
-            # Build available set from self.tool_definitions (the raw list). The name
-            # field is set explicitly in to_request_body and is NOT passed through
-            # _clean_parameters, so it survives schema cleaning unchanged.
+            # Build available set from self.tool_definitions (the raw list).
             available = {t["name"] for t in self.tool_definitions if "name" in t}
             if len(names) == 1 and names[0] in available:
                 # Force the exact function the original trace recorded. This maximises
