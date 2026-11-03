@@ -50,6 +50,11 @@ logger = logging.getLogger(__name__)
 # the probe falls back to this bounded deadline.
 _SUPPORTED_MODELS_TIMEOUT_SEC = 30.0
 
+# Readiness wait: the pause between probes of the readiness route, and the cap on a
+# single probe so one hung connection cannot eat the whole readiness_timeout.
+_READINESS_POLL_INTERVAL_SEC = 1.0
+_READINESS_PROBE_TIMEOUT_SEC = 5.0
+
 
 class OpenAIMetrics(BaseMetrics):
     def __init__(
@@ -84,6 +89,9 @@ class OpenAIMetrics(BaseMetrics):
 class openAIModelServerClient(ModelServerClient):
     _session: "Optional[openAIModelServerClientSession]" = None
     _session_lock = asyncio.Lock()
+    # Route that answers 200 once the server can take requests; set by the server
+    # profiles that have one. None: readiness_timeout is ignored with a warning.
+    readiness_route: Optional[str] = None
 
     def __init__(
         self,
@@ -102,6 +110,7 @@ class openAIModelServerClient(ModelServerClient):
         lora_config: Optional[List[MultiLoRAConfig]] = None,
         request_retries: int = 0,
         request_retry_backoff_sec: float = 0.5,
+        readiness_timeout: Optional[float] = None,
     ) -> None:
         super().__init__(
             api_config,
@@ -128,6 +137,11 @@ class openAIModelServerClient(ModelServerClient):
         # object (main.py copies it back into the run config).
         tokenizer_config = tokenizer_config if tokenizer_config is not None else CustomTokenizerConfig()
         self.tokenizer_config = tokenizer_config
+
+        # Before the /v1/models probe below, so a server still loading its weights is
+        # waited for instead of failing model auto-detection.
+        if readiness_timeout is not None:
+            self.wait_until_ready(readiness_timeout)
 
         supported_models: Optional[List[dict[str, Any]]] = None
         inferred_entry: Optional[dict[str, Any]] = None
@@ -261,6 +275,35 @@ class openAIModelServerClient(ModelServerClient):
     @abstractmethod
     def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         raise NotImplementedError
+
+    def wait_until_ready(self, timeout: float) -> None:
+        """Poll the readiness route until it answers 200, for at most ``timeout`` seconds.
+
+        Any other status and any transport error count as not ready yet; the error raised
+        at the deadline names the last one seen.
+        """
+        if self.readiness_route is None:
+            logger.warning(f"{type(self).__name__} has no readiness route, starting without waiting for the server")
+            return
+        url = f"{self.uri}{self.readiness_route}"
+        headers = _build_request_headers(self.api_config, self.api_key)
+        cert = (self.cert_path, self.key_path) if self.cert_path and self.key_path else None
+        deadline = time.monotonic() + timeout
+        last_seen = "no response"
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Exception(f"Server not ready: {url} did not answer 200 within {timeout}s (last: {last_seen})")
+            try:
+                response = requests.get(url, headers=headers, timeout=min(remaining, _READINESS_PROBE_TIMEOUT_SEC), cert=cert)
+                if response.status_code == 200:
+                    logger.info(f"Server ready: {url} answered 200")
+                    return
+                last_seen = f"HTTP {response.status_code}"
+            except requests.RequestException as e:
+                last_seen = f"{type(e).__name__}: {e}"
+            logger.debug(f"Waiting for {url}: {last_seen}")
+            time.sleep(min(_READINESS_POLL_INTERVAL_SEC, max(0.0, deadline - time.monotonic())))
 
     def get_supported_models(self) -> List[dict[str, Any]]:
         try:

@@ -261,6 +261,7 @@ def main_cli() -> None:
                 cert_path=config.server.cert_path,
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
+                readiness_timeout=config.server.readiness_timeout,
             )
             # vllm_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -281,6 +282,7 @@ def main_cli() -> None:
                 cert_path=config.server.cert_path,
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
+                readiness_timeout=config.server.readiness_timeout,
             )
             # sglang_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -301,6 +303,7 @@ def main_cli() -> None:
                 cert_path=config.server.cert_path,
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
+                readiness_timeout=config.server.readiness_timeout,
             )
             # tgi_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer

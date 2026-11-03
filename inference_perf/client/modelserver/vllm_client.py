@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 
 class vLLMModelServerClient(openAIModelServerClient):
+    # 200 once the engine is up; 503 while it is dead (vllm/entrypoints/serve/instrumentator/health.py).
+    readiness_route = "/health"
+
     def __init__(
         self,
         metrics_collector: RequestMetricCollector,
@@ -40,6 +43,7 @@ class vLLMModelServerClient(openAIModelServerClient):
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
         lora_config: Optional[List[MultiLoRAConfig]] = None,
+        readiness_timeout: Optional[float] = None,
     ) -> None:
         super().__init__(
             metrics_collector,
@@ -57,6 +61,7 @@ class vLLMModelServerClient(openAIModelServerClient):
             lora_config=lora_config,
             request_retries=request_retries,
             request_retry_backoff_sec=request_retry_backoff_sec,
+            readiness_timeout=readiness_timeout,
         )
         self.metric_filters = [f"model_name='{self.model_name}'", *additional_filters]
 
