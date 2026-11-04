@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 class CustomTokenizer:
     def __init__(self, config: CustomTokenizerConfig) -> None:
         self.tokenizer: PreTrainedTokenizerBase = _load_tokenizer_with_deadline(config)
+        # A tokenizer.json may ship with truncation enabled. Every call that passes no
+        # truncation would switch it off on first use anyway; doing it here, before any
+        # thread uses the tokenizer, means no call ever reconfigures the backend (see
+        # count_tokens).
+        backend = getattr(self.tokenizer, "backend_tokenizer", None)
+        if backend is not None and backend.truncation is not None:
+            backend.no_truncation()
 
     def count_tokens(self, text: str, add_special_tokens: bool = True) -> int:
         if text == "":
@@ -37,15 +44,17 @@ class CustomTokenizer:
 
         # add_special_tokens=False is for counting a fragment of a larger sequence (e.g. a single
         # streamed chunk), where prepending a BOS per call would over-count by one token per fragment.
-        # Some tokenizers don't set model_max_length which defaults to VERY_LARGE_INTEGER.
-        # Prevent overflow and log spam by skipping truncation.
-        if self.tokenizer.model_max_length == VERY_LARGE_INTEGER:
-            return len(self.tokenizer(text, add_special_tokens=add_special_tokens).input_ids)
-        return len(
-            self.tokenizer(
-                text, truncation=True, max_length=self.tokenizer.model_max_length, add_special_tokens=add_special_tokens
-            ).input_ids
-        )
+        #
+        # The count is capped at model_max_length, as truncating to it would, but without passing
+        # truncation settings: a fast tokenizer applies them to its backend before encoding, and the
+        # backend is shared by every thread using this tokenizer. With open loop, payloads are built on
+        # a datagen thread (encoding with truncation=False) while responses are counted here on the
+        # event loop; a truncating call would let one thread encode under the other's setting and
+        # silently cut a prompt to model_max_length. verbose=False skips the long-sequence warning.
+        # Tokenizers that don't set model_max_length default to VERY_LARGE_INTEGER, so nothing is capped.
+        n = len(self.tokenizer(text, add_special_tokens=add_special_tokens, verbose=False).input_ids)
+        max_length = self.tokenizer.model_max_length
+        return min(n, max_length) if 0 < max_length < VERY_LARGE_INTEGER else n
 
     def has_chat_template(self) -> bool:
         return getattr(self.tokenizer, "chat_template", None) is not None

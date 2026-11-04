@@ -173,6 +173,15 @@ Check `load_summary.schedule_delay` (send time minus scheduled time) and
 delay stays in the milliseconds and the achieved rate matches the requested one,
 however slow the server is.
 
+In open-loop mode each worker builds request payloads (for `random` data,
+generating a prompt that tokenizes to exactly the requested length) on its own
+thread, so a long prompt being built does not hold back a request that is
+already due. Building still costs client CPU, though: a long random prompt takes
+on the order of 100 ms of one core, so with long prompts the rate one worker can
+sustain is limited, and a rate above `num_workers` times that limit shows up as a
+growing schedule delay. Give the load generator enough workers, and cores for
+them, for the highest rate in the sweep.
+
 ### Run with specific concurrency instead of QPS (Legacy approach)
 
 **Note: This approach is deprecated. Use the `concurrent` load type instead for better concurrency control.**

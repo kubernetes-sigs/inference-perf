@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
-from inference_perf.datagen import DataGenerator
+from inference_perf.datagen import DataGenerator, LazyLoadDataMixin
 from inference_perf.loadgen.load_generator import RequestQueueData, Worker
 from inference_perf.utils.request_queue import RequestQueue
 
@@ -63,6 +63,31 @@ class _ProbeClient:
                 await asyncio.sleep(self.latency)
         finally:
             self.active -= 1
+
+
+class _TimingProbeClient(_ProbeClient):
+    """_ProbeClient that also records when each request reached the client."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: List[float] = []
+
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
+        self.sent.append(time.perf_counter())
+        await super().process_request(data, stage_id, scheduled_time, lora_adapter)
+
+
+class _SlowLazyGenerator(LazyLoadDataMixin):
+    """Lazy-load generator whose payloads take build_seconds of blocking work."""
+
+    def __init__(self, build_seconds: float) -> None:
+        self.build_seconds = build_seconds
+
+    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
+        time.sleep(self.build_seconds)
+        return _make_data()
 
 
 class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
@@ -274,6 +299,28 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
         await self._end_stage(task)
 
         self.assertEqual([round(c[2] - now, 1) for c in client.calls], [0.5, 1.0, 2.0])
+
+    # Open loop, request A due in 0.3 s, then a lazy request B due in 0.5 s whose
+    # payload takes 0.4 s to build. The worker takes B right after A (both within
+    # the 0.25 s lookahead) and builds it while A waits for its due time. Built on
+    # the event loop, B would hold A until about 0.45 s; built on the datagen
+    # thread, A still goes out on time.
+    async def test_open_loop_builds_lazy_requests_off_the_event_loop(self) -> None:
+        client = _TimingProbeClient()
+        self.datagen = cast(Any, _SlowLazyGenerator(build_seconds=0.4))
+        worker = self._make_worker(client, open_loop=True)
+        self.request_phase.set()
+        now = time.perf_counter()
+        self.request_queue.put(RequestQueueData(0, _make_data(), now + 0.3, None), 0)
+        self.request_queue.put(RequestQueueData(0, LazyLoadInferenceAPIData(data_index=0), now + 0.5, None), 0)
+
+        task = asyncio.get_event_loop().create_task(worker.loop())
+        await self._wait_until(lambda: self.finished_counter.value == 2)
+        await self._end_stage(task)
+
+        self.assertEqual(len(client.calls), 2)
+        first_delay = client.sent[0] - client.calls[0][2]
+        self.assertLess(first_delay, 0.08, f"request A was sent {first_delay * 1000:.0f} ms late")
 
     # 2 requests that would each run 30 s, then a stage end with cancel and force set.
     # Expects both cancelled right away (active=0, finished=2) and the boundary acked.

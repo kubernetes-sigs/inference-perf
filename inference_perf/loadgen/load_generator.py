@@ -66,7 +66,7 @@ import multiprocessing as mp
 from queue import Empty
 from multiprocessing.synchronize import Event as SyncEvent
 from multiprocessing.sharedctypes import Synchronized
-from concurrent.futures import TimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from functools import partial
 import logging
 import uvloop
@@ -332,6 +332,15 @@ class Worker(PreloadedForkServerProcess):
         event_loop = get_event_loop()
         item = None
         timeout = 0.5
+        # Open loop: build each request's payload (e.g. tokenizing a long random
+        # prompt) on a dedicated thread. Inline, that CPU work blocks the event
+        # loop and delays requests already due, which shows up as schedule delay
+        # and caps the achievable rate. The tokenizers release the GIL, and a
+        # single thread keeps generation sequential, so requests and their
+        # random draws come out in the same order as inline.
+        datagen_executor: Optional[ThreadPoolExecutor] = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"datagen-{self.id}") if self.open_loop else None
+        )
 
         while not self.stop_signal.is_set():
             # Check if max_concurrency has been updated and recreate semaphore if needed (concurrent load type)
@@ -513,7 +522,12 @@ class Worker(PreloadedForkServerProcess):
 
                 try:
                     stage_id, request, request_time, lora_adapter = item
-                    request_data = LazyLoadDataMixin.get_request(self.datagen, request)
+                    if datagen_executor is not None:
+                        request_data = await event_loop.run_in_executor(
+                            datagen_executor, LazyLoadDataMixin.get_request, self.datagen, request
+                        )
+                    else:
+                        request_data = LazyLoadDataMixin.get_request(self.datagen, request)
                 except Exception as e:
                     logger.error(f"[Worker {self.id}] Failed to get request: {e}", exc_info=True)
                     with self.skipped_requests_counter.get_lock():
@@ -578,6 +592,8 @@ class Worker(PreloadedForkServerProcess):
                     while not self.request_phase.is_set() and not self.stop_signal.is_set():
                         self.request_phase.wait(timeout=0.5)
 
+        if datagen_executor is not None:
+            datagen_executor.shutdown(wait=False, cancel_futures=True)
         logger.debug(f"[Worker {self.id}] stopped")
 
     async def _wait_until(self, when: float) -> None:
