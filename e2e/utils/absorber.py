@@ -62,6 +62,10 @@ class AbsorbedRequest:
     arrival_s: float  # when the request arrived (before its body was read)
     body: Dict[str, Any]  # the request's JSON body, as sent
     done_s: Optional[float] = None  # when the last byte of the reply was sent; None while the reply is still going
+    # When the client closed the connection before the reply finished; None if it
+    # never did. Reliable only with AbsorberServer(record_disconnects=True); without
+    # it a disconnect is noticed only if a later write fails.
+    disconnect_s: Optional[float] = None
 
     # The (start_time, end_time) pair in the shape e2e/utils/load_shape.py reads,
     # so a list of these can go straight into its rate and concurrency helpers.
@@ -131,6 +135,12 @@ class AbsorberServer:
     itl_s: float = 0.005
     default_output_tokens: int = 16
     host: str = "127.0.0.1"
+    # Never answer: accept each request and hold it open until the client leaves.
+    stall: bool = False
+    # Stamp AbsorbedRequest.disconnect_s when a client abandons a request mid-reply.
+    # Turns on aiohttp handler cancellation, so a handler waiting before its first
+    # chunk notices the disconnect at once instead of on its next write.
+    record_disconnects: bool = False
     requests: List[AbsorbedRequest] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -147,7 +157,7 @@ class AbsorberServer:
         app.router.add_get("/v1/models", self._handle_models)
         app.router.add_get("/health", self._handle_health)
         app.router.add_get("/metrics", self._handle_metrics)
-        self._runner = web.AppRunner(app)
+        self._runner = web.AppRunner(app, handler_cancellation=self.record_disconnects)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.host, self.port)
         await site.start()
@@ -206,6 +216,8 @@ class AbsorberServer:
         body = await request.json()
         absorbed = self._absorb(route, body, arrival_s)
         try:
+            if self.stall:
+                await asyncio.Event().wait()
             n_out = absorbed.max_tokens or self.default_output_tokens
             chunks = self._chunk_texts(n_out)
             usage = {
@@ -217,6 +229,11 @@ class AbsorberServer:
                 return await self._stream(request, route, chunks, body, usage)
             await asyncio.sleep(self.ttft_s + self.itl_s * max(0, len(chunks) - 1))
             return web.json_response(self._unary_body(route, chunks, usage))
+        except (asyncio.CancelledError, ConnectionResetError):
+            # aiohttp cancels the handler (record_disconnects) or fails the next write
+            # when the client goes away before the reply is complete.
+            absorbed.disconnect_s = time.perf_counter()
+            raise
         finally:
             absorbed.done_s = time.perf_counter()
 
