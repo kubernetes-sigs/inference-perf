@@ -1671,7 +1671,8 @@ class LoadGenerator:
 
         stop_after, when set, is the stage's planned end in seconds after its schedule
         start: the stage stops there as COMPLETED even if requests are still pending
-        (load.hard_stop), unlike timeout, which reports TIMED_OUT.
+        (load.hard_stop, or a concurrent stage's max_duration), unlike timeout, which
+        reports TIMED_OUT.
         """
         logger.info("Stage %d - run started", stage_id)
 
@@ -2078,6 +2079,7 @@ class LoadGenerator:
                             cancel_signal,
                             concurrency_level=concurrency_level,
                             progress_ctx=progress,
+                            stop_after=stage.max_duration,
                         ),
                     )
                 elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
