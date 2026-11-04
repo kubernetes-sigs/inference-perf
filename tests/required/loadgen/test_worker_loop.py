@@ -96,6 +96,7 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
         client: Any,
         max_concurrency: int = 4,
         shared_max_concurrency: Optional[Any] = None,
+        open_loop: bool = False,
     ) -> Worker:
         return Worker(
             0,
@@ -114,6 +115,7 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
             force_stop_signal=self.force_stop_signal,
             stage_done_counter=self.stage_done_counter,
             stage_boundary_seq=self.stage_boundary_seq,
+            open_loop=open_loop,
         )
 
     # Queues n requests on channel 0, scheduled at time 0.0, so they dispatch at once.
@@ -237,6 +239,41 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(client.calls), 6)
         self.assertLessEqual(client.max_active, 2)
+
+    # The same 6 requests (all due now, 0.3 s each) and max_concurrency=2, but in
+    # open-loop mode: no permit is taken, so all 6 are in flight at once.
+    async def test_open_loop_ignores_the_concurrency_permit(self) -> None:
+        client = _ProbeClient(latency=0.3)
+        worker = self._make_worker(client, max_concurrency=2, open_loop=True)
+        self.request_phase.set()
+        self._put(6)
+
+        task = asyncio.get_event_loop().create_task(worker.loop())
+        await self._wait_until(lambda: self.finished_counter.value == 6)
+        await self._end_stage(task)
+
+        self.assertEqual(len(client.calls), 6)
+        self.assertEqual(client.max_active, 6)
+
+    # Open loop, requests due 0.5 s, 1.0 s and 2.0 s from now. A worker stops taking
+    # requests while it holds one due more than 0.25 s ahead, so it takes the 1.0 s
+    # request at 0.25 s and the 2.0 s one at 0.75 s: at 0.5 s the last is still on
+    # the shared queue for other workers. All three are sent at their due times.
+    async def test_open_loop_takes_requests_only_shortly_before_they_are_due(self) -> None:
+        client = _ProbeClient()
+        worker = self._make_worker(client, open_loop=True)
+        self.request_phase.set()
+        now = time.perf_counter()
+        for due in (now + 0.5, now + 1.0, now + 2.0):
+            self.request_queue.put(RequestQueueData(0, _make_data(), due, None), 0)
+
+        task = asyncio.get_event_loop().create_task(worker.loop())
+        await asyncio.sleep(0.5)
+        self.assertFalse(self.channel.empty(), "the request due in 2 s was taken 1.5 s early")
+        await self._wait_until(lambda: self.finished_counter.value == 3)
+        await self._end_stage(task)
+
+        self.assertEqual([round(c[2] - now, 1) for c in client.calls], [0.5, 1.0, 2.0])
 
     # 2 requests that would each run 30 s, then a stage end with cancel and force set.
     # Expects both cancelled right away (active=0, finished=2) and the boundary acked.

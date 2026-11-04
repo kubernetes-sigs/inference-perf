@@ -105,6 +105,15 @@ _WIND_DOWN_REAP_SECONDS = 10.0
 _TEARDOWN_MARGIN_SECONDS = 15.0
 _FORCE_REAP_SECONDS = 20.0
 
+# In open-loop mode a worker stops taking requests from the shared queue while it
+# holds one due more than this far ahead. Requests are queued in schedule order, so
+# this spreads them over the workers instead of letting the first worker to poll
+# take the whole stage.
+_OPEN_LOOP_LOOKAHEAD_SECONDS = 0.25
+# Longest single sleep of a worker waiting on the lookahead, so it notices the end of
+# a stage promptly even when requests are far apart.
+_OPEN_LOOP_POLL_SECONDS = 0.05
+
 # ConstantLoadTimer scales its gaps to sum to the stage duration, so its last request is scheduled at the stage end
 # up to float rounding. A request scheduled within this many seconds past the end still belongs to the stage.
 _STAGE_END_TOLERANCE = 1e-6
@@ -279,6 +288,7 @@ class Worker(PreloadedForkServerProcess):
         teardown_grace_seconds: float = 120.0,
         crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"] = None,
         ready_event: Optional[SyncEvent] = None,
+        open_loop: bool = False,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id
@@ -300,6 +310,9 @@ class Worker(PreloadedForkServerProcess):
         self.stage_boundary_seq = stage_boundary_seq
         self.teardown_grace_seconds = teardown_grace_seconds
         self.crash_queue = crash_queue
+        # Open loop (LoadConfig.open_loop): requests are dispatched on schedule with
+        # no concurrency permit, so in-flight requests are not capped.
+        self.open_loop = open_loop
         # Stage this worker is currently serving, reported alongside a crash so the
         # failure can be attributed to a stage rather than to the run as a whole.
         self._current_stage_id: Optional[int] = None
@@ -349,7 +362,7 @@ class Worker(PreloadedForkServerProcess):
                 and not self.stop_signal.is_set()
             ):
                 permit_preacquired = False
-                if not isinstance(self.datagen, SessionGenerator):
+                if not isinstance(self.datagen, SessionGenerator) and not self.open_loop:
                     # Preserve bounded queue admission for ordinary request
                     # loads. The timeout lets a worker saturated with hung
                     # requests re-check the loop condition, reach the stage
@@ -433,9 +446,12 @@ class Worker(PreloadedForkServerProcess):
 
                         # Dependency and schedule waits do not consume request
                         # concurrency. Poll so stage teardown can stop tasks that
-                        # are waiting for a permit without dispatching them.
+                        # are waiting for a permit without dispatching them. An
+                        # open-loop request takes no permit at all.
+                        needs_permit = not self.open_loop
                         while (
-                            not permit_acquired
+                            needs_permit
+                            and not permit_acquired
                             and not draining.is_set()
                             and self.request_phase.is_set()
                             and not self.cancel_signal.is_set()
@@ -448,7 +464,7 @@ class Worker(PreloadedForkServerProcess):
                         # The stage signals may change while acquire() is
                         # pending, before the worker loop observes teardown.
                         if (
-                            not permit_acquired
+                            (needs_permit and not permit_acquired)
                             or draining.is_set()
                             or not self.request_phase.is_set()
                             or self.cancel_signal.is_set()
@@ -523,6 +539,8 @@ class Worker(PreloadedForkServerProcess):
                 )
                 tasks.append(task)
                 await sleep(0)
+                if self.open_loop:
+                    await self._wait_until(request_time - _OPEN_LOOP_LOOKAHEAD_SECONDS)
 
             # Reset skip
             self.skip = False
@@ -561,6 +579,14 @@ class Worker(PreloadedForkServerProcess):
                         self.request_phase.wait(timeout=0.5)
 
         logger.debug(f"[Worker {self.id}] stopped")
+
+    async def _wait_until(self, when: float) -> None:
+        """Sleep until perf_counter() reaches `when`, waking early when the stage ends."""
+        while self.request_phase.is_set() and not self.cancel_signal.is_set() and not self.stop_signal.is_set():
+            remaining = when - time.perf_counter()
+            if remaining <= 0:
+                return
+            await sleep(min(remaining, _OPEN_LOOP_POLL_SECONDS))
 
     async def _wind_down_stage(self, tasks: List["Task[None]"], draining: Event) -> None:
         """Bounded end-of-stage wind-down; always returns.
@@ -721,6 +747,7 @@ class LoadGenerator:
         self.stage_runtime_info = dict[int, StageRuntimeInfo]()
         self.num_workers = load_config.num_workers
         self.worker_max_concurrency = load_config.worker_max_concurrency
+        self.open_loop = load_config.open_loop
         self.workers: List[Worker] = []
         # Set once the workers are up and load is about to start; the reported
         # run window is measured from here rather than from process startup.
@@ -1620,6 +1647,7 @@ class LoadGenerator:
             teardown_grace_seconds=dead.teardown_grace_seconds,
             crash_queue=dead.crash_queue,
             ready_event=MP_CONTEXT.Event(),
+            open_loop=dead.open_loop,
         )
 
     async def run_stage(
@@ -1963,6 +1991,7 @@ class LoadGenerator:
                     teardown_grace_seconds=self.teardown_grace_seconds,
                     crash_queue=self.worker_crash_queue,
                     ready_event=MP_CONTEXT.Event(),
+                    open_loop=self.open_loop,
                 )
             )
             self.workers[-1].start()

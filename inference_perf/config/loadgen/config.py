@@ -279,6 +279,20 @@ class LoadConfig(StrictBaseModel):
             "is already dropping connections. Ignored when request_retries is 0."
         ),
     )
+    open_loop: bool = Field(
+        default=False,
+        description=(
+            "Send constant, poisson and trace_replay requests at their scheduled times however many are "
+            "already in flight. By default a worker takes a worker_max_concurrency permit before it waits "
+            "for a request's scheduled time and holds it until the request finishes, so once that many "
+            "requests are outstanding later sends go out late and the load turns closed-loop. With "
+            "open_loop no permit is taken (worker_max_concurrency does not apply), and a worker stops taking "
+            "requests from the queue while it holds one due more than a quarter second ahead, so the "
+            "schedule stays spread over the workers. The connection pool still applies: set worker_max_tcp_connections to at least the "
+            "expected in-flight requests per worker, or 0 for no limit, or sends wait for a connection "
+            "after they are timestamped. Not valid for the concurrent and trace_session_replay load types."
+        ),
+    )
     hard_stop: bool = Field(
         default=False,
         description=(
@@ -320,6 +334,12 @@ class LoadConfig(StrictBaseModel):
         # Validate that sweep is not used with concurrent or trace session replay load types
         if self.type in (LoadType.CONCURRENT, LoadType.TRACE_SESSION_REPLAY) and self.sweep is not None:
             raise ValueError(f"Cannot have sweep config with {self.type.value.upper()} load type")
+
+        if self.open_loop and self.type in (LoadType.CONCURRENT, LoadType.TRACE_SESSION_REPLAY):
+            raise ValueError(
+                f"open_loop is not supported for the {self.type.value.upper()} load type; "
+                "it applies to constant, poisson and trace_replay loads"
+            )
 
         if self.hard_stop and self.type == LoadType.TRACE_SESSION_REPLAY:
             raise ValueError(
