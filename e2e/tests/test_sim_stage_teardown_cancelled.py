@@ -97,7 +97,8 @@ async def test_requests_cancelled_at_stage_teardown_are_reported_as_cancelled():
 
     async with LLMDInferenceSimRunner(
         model_name,
-        *("--time-to-first-token", str(SIM_RESPONSE_DELAY_MS)),
+        # The sim parses latencies as Go durations. A bare number fails to start it.
+        *("--time-to-first-token", f"{SIM_RESPONSE_DELAY_MS}ms"),
         port=port,
     ):
         result = await run_benchmark_minimal(config)
