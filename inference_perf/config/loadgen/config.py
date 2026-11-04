@@ -279,6 +279,18 @@ class LoadConfig(StrictBaseModel):
             "is already dropping connections. Ignored when request_retries is 0."
         ),
     )
+    hard_stop: bool = Field(
+        default=False,
+        description=(
+            "End every constant, poisson and trace_replay stage at its planned end, start + duration, "
+            "instead of waiting for all of its requests to finish. At that moment nothing more is sent, "
+            "every request still in flight is cancelled at once (stage_teardown_grace_seconds is not "
+            "applied), and each cancelled request is reported under cancelled (error type "
+            "StageTeardownCancelled), beside successes and failures: it is listed in the per-request "
+            "output and kept out of latency statistics. Not valid for trace_session_replay, whose stages take a "
+            "duration of their own."
+        ),
+    )
     stage_teardown_grace_seconds: float = Field(
         default=120.0,
         ge=0,
@@ -308,6 +320,11 @@ class LoadConfig(StrictBaseModel):
         # Validate that sweep is not used with concurrent or trace session replay load types
         if self.type in (LoadType.CONCURRENT, LoadType.TRACE_SESSION_REPLAY) and self.sweep is not None:
             raise ValueError(f"Cannot have sweep config with {self.type.value.upper()} load type")
+
+        if self.hard_stop and self.type == LoadType.TRACE_SESSION_REPLAY:
+            raise ValueError(
+                "hard_stop is not supported for the TRACE_SESSION_REPLAY load type; bound its stages with duration instead"
+            )
 
         # Validate stage types match load type
         if self.type == LoadType.CONCURRENT:

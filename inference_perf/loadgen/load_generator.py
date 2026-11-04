@@ -729,7 +729,10 @@ class LoadGenerator:
         self.sweep_config = load_config.sweep
         self.interrupt_sig = False
         self.session_metrics_collector = session_metrics_collector
-        self.teardown_grace_seconds = load_config.stage_teardown_grace_seconds
+        # A hard stop ends a stage at its planned end and cancels whatever is still in
+        # flight immediately (reported as cancelled), so no teardown grace applies.
+        self.hard_stop = load_config.hard_stop
+        self.teardown_grace_seconds = 0.0 if self.hard_stop else load_config.stage_teardown_grace_seconds
         # Set by mp_run; broadcast to workers when the teardown grace expires
         # so they cancel whatever is still in flight.
         self._force_stop_signal: Optional[SyncEvent] = None
@@ -1634,7 +1637,14 @@ class LoadGenerator:
         concurrency_level: Optional[int] = None,
         progress_ctx: Optional[ProgressBars] = None,
         report_stage: bool = True,
+        stop_after: Optional[float] = None,
     ) -> None:
+        """Run one constant/poisson/trace_replay/concurrent stage on the worker pool.
+
+        stop_after, when set, is the stage's planned end in seconds after its schedule
+        start: the stage stops there as COMPLETED even if requests are still pending
+        (load.hard_stop), unlike timeout, which reports TIMED_OUT.
+        """
         logger.info("Stage %d - run started", stage_id)
 
         if timeout is not None and cancel_signal is None:
@@ -1700,7 +1710,11 @@ class LoadGenerator:
             stage_task = progress_ctx.open(STAGE_REQUESTS_BAR, stage=str(stage_id))
 
         stage_status = StageStatus.RUNNING
+        deadline = start_time + stop_after if stop_after is not None else None
         while finished_requests_counter.value < num_requests:
+            if deadline is not None and time.perf_counter() >= deadline:
+                logger.info(f"Stage {stage_id} reached its planned end after {stop_after:0.2f}s")
+                break
             if timeout and start_time + timeout < time.perf_counter():
                 logger.info(f"Loadgen timed out after {timeout:0.2f}s")
                 stage_status = StageStatus.TIMED_OUT
@@ -1722,7 +1736,8 @@ class LoadGenerator:
                     logger.error("A worker process died unexpectedly and left no exit status behind!")
                 stage_status = StageStatus.FAILED  # Trigger cleanup
                 break
-            await sleep(1)
+            # Poll once a second, but wake exactly at a planned end so it is not overshot.
+            await sleep(1.0 if deadline is None else min(1.0, max(0.0, deadline - time.perf_counter())))
             if progress_ctx:
                 progress_ctx.refresh()
 
@@ -2054,6 +2069,7 @@ class LoadGenerator:
                             cancel_signal,
                             concurrency_level=concurrency_level,
                             progress_ctx=progress,
+                            stop_after=duration if self.hard_stop else None,
                         ),
                     )
                 else:
@@ -2119,6 +2135,7 @@ class LoadGenerator:
         if not isinstance(self.datagen, DataGenerator):
             raise TypeError("Non-multiprocessing run() requires DataGenerator")
 
+        tasks: List["Task[None]"] = []
         async with TaskGroup() as tg:
             time_generator = timer.start_timer(start_time)
             for data, time_index in zip(self.datagen.get_data(), time_generator, strict=False):
@@ -2142,12 +2159,16 @@ class LoadGenerator:
                         break
                     if time_index > now:
                         await sleep(time_index - time.perf_counter())
-                    tg.create_task(
-                        self._track_in_flight(client.process_request(request_data, stage_id, time_index, lora_adapter))
+                    tasks.append(
+                        tg.create_task(
+                            self._track_in_flight(client.process_request(request_data, stage_id, time_index, lora_adapter))
+                        )
                     )
                     continue
                 else:
                     break
+            if self.hard_stop:
+                await self._cancel_in_flight_at(end_time, tasks)
 
         progress.refresh(force=True)
         stage_task.close()  # Clean up after completion
@@ -2163,6 +2184,25 @@ class LoadGenerator:
             status=stage_status,
             concurrency_level=None,
         )
+
+    async def _cancel_in_flight_at(self, end_time: float, tasks: List["Task[None]"]) -> None:
+        """Hard stop for the in-process path: at end_time, cancel every request still in flight.
+
+        Cancelled requests record themselves as cancelled (see process_request).
+        Returns early if everything finished or the run was interrupted.
+        """
+        while not self.interrupt_sig and any(not t.done() for t in tasks):
+            remaining = end_time - time.perf_counter()
+            if remaining <= 0:
+                break
+            # The 50 ms only bounds how soon an early finish or an interrupt is noticed: the last sleep is cut to
+            # `remaining`, so the cancellation itself lands at end_time.
+            await sleep(min(0.05, remaining))
+        pending = [t for t in tasks if not t.done()]
+        if pending:
+            logger.info(f"Hard stop: cancelling {len(pending)} in-flight request(s)")
+            for task in pending:
+                task.cancel()
 
     async def stop(self) -> None:
         for worker in self.workers:
