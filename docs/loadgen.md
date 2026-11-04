@@ -182,6 +182,9 @@ sustain is limited, and a rate above `num_workers` times that limit shows up as 
 growing schedule delay. Give the load generator enough workers, and cores for
 them, for the highest rate in the sweep.
 
+With `hard_stop`, workers check for the end of a stage at least every 20 ms, so
+requests in flight at the end are cancelled within about that much of it.
+
 ### Run with specific concurrency instead of QPS (Legacy approach)
 
 **Note: This approach is deprecated. Use the `concurrent` load type instead for better concurrency control.**

@@ -113,6 +113,11 @@ _OPEN_LOOP_LOOKAHEAD_SECONDS = 0.25
 # Longest single sleep of a worker waiting on the lookahead, so it notices the end of
 # a stage promptly even when requests are far apart.
 _OPEN_LOOP_POLL_SECONDS = 0.05
+# Longest single wait of a worker for a concurrency permit when the stage has no
+# teardown grace (load.hard_stop, or a concurrent stage's max_duration under it):
+# requests in flight at the stage end are cancelled when the worker notices the
+# end, so it must notice within this bound rather than the usual 0.5 s.
+_NO_GRACE_POLL_SECONDS = 0.02
 
 # ConstantLoadTimer scales its gaps to sum to the stage duration, so its last request is scheduled at the stage end
 # up to float rounding. A request scheduled within this many seconds past the end still belongs to the stage.
@@ -331,7 +336,7 @@ class Worker(PreloadedForkServerProcess):
         tasks = []
         event_loop = get_event_loop()
         item = None
-        timeout = 0.5
+        timeout = _NO_GRACE_POLL_SECONDS if self.teardown_grace_seconds <= 0 else 0.5
         # Open loop: build each request's payload (e.g. tokenizing a long random
         # prompt) on a dedicated thread. Inline, that CPU work blocks the event
         # loop and delays requests already due, which shows up as schedule delay

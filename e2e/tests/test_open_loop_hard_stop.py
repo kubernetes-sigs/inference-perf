@@ -328,14 +328,18 @@ async def test_no_request_crosses_a_stage_boundary() -> None:
     assert all(_server_end(r) < start1 for r in stage0_requests)
 
 
-# Test 6, fixed concurrency C=8 with a 5 s time bound, 0.5 s server latency:
+# Test 6, fixed concurrency C=8 with a 5.25 s time bound, 0.5 s server latency:
 # the server never holds more than 8 (and does hold 8), throughput is about
 # C / latency = 16 req/s, nothing arrives after the bound, the requests in
 # flight at the bound (at most 8; a slot can be between requests at that
-# instant) are incomplete and their connections close within 2 s.
+# instant) are incomplete and their connections close within 2 s. The 8 slots
+# move in lockstep, so a bound that is a multiple of the latency would land on
+# a completion wave: responses the server has finished but the client has not
+# yet read are cancelled, and count as incomplete with no server disconnect.
+# The extra 0.25 s puts the bound mid-wave.
 @pytest.mark.asyncio
 async def test_fixed_concurrency_holds_exactly_c_and_stops_at_its_bound() -> None:
-    concurrency, bound, latency = 8, 5.0, 0.5
+    concurrency, bound, latency = 8, 5.25, 0.5
     model_path = str(extract_tarball(TEST_MODEL_TARBALL))
     async with _server(model_path, latency_s=latency) as server:
         load = {
@@ -357,6 +361,8 @@ async def test_fixed_concurrency_holds_exactly_c_and_stops_at_its_bound() -> Non
     assert all(_server_end(r) <= end + DISCONNECT_LIMIT_S for r in requests)
     incomplete, _ = _split(entries)
     assert 0 < len(incomplete) <= concurrency
+    # Cancelled at the bound, not a permit-poll interval later.
+    assert all(e["end_time"] <= end + ARRIVAL_SLACK_S for e in incomplete)
     assert _incomplete_matches_server(incomplete, requests, end)
 
 
