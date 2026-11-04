@@ -684,7 +684,7 @@ async def test_multiturn_zero_prefix_accumulates_process_response() -> None:
         assert first_body["prompt"] == generator.prompts[0]
 
         response = MagicMock()
-        response.json = AsyncMock(return_value={"choices": [{"text": "RESPONSE"}]})
+        response.json = AsyncMock(return_value={"choices": [{"text": " RESPONSE"}]})
         await first.process_response(response, api_config, tokenizer)
         assert session.history == [f"{first.prompt} RESPONSE"]
 
