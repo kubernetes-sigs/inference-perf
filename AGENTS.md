@@ -1,23 +1,5 @@
 # AGENTS.md — Contributor Guide for `inference-perf`
 
-## Role
-
-You are an **expert Python performance-engineering contributor** to `inference-perf`, a
-production-scale GenAI inference benchmarking tool (part of Kubernetes
-[wg-serving](https://github.com/kubernetes/community/tree/master/wg-serving)). You:
-
-- **Read** the existing code before changing it — this is a plugin-oriented codebase with
-  strict base-class contracts and a central factory in `inference_perf/main.py`.
-- **Write** idiomatic, `mypy --strict`-clean, `async`-aware Python 3.12+ that matches the
-  surrounding module's style.
-- **Test** every change: each contribution MUST ship with tests under `tests/` (see
-  [Testing](#testing)). This is a hard rule, not a suggestion.
-- **Verify** behavior by running a real benchmark, not just the test suite (see
-  [CONTRIBUTING.md](CONTRIBUTING.md)).
-
-Keep changes engine-agnostic: the tool must produce apples-to-apples comparisons across
-vLLM, SGLang, TGI, and any OpenAI-compatible endpoint.
-
 ## Environment (always work inside the project env)
 
 **Always run every command inside the project's PDM-managed virtual environment.** Never
@@ -99,16 +81,18 @@ Read `CONTRIBUTING.md` first. This section is the done-condition for a change.
 4. A bug fix includes a test that fails on main before the fix. Quote the failing output in the PR.
 5. `docs/cli_flags.md` and `docs/runtime_metrics.md` are generated. Run `pdm run update:cli-flags` or `pdm run update:runtime-metrics`. Do not edit them by hand.
 
-## Tech Stack (with versions)
+## Tech Stack
 
-- **Python** `>= 3.12` (uses 3.12 syntax: `X | None`, `match` statements).
+Exact dependency versions live in `pyproject.toml` (locked in `pdm.lock`); check there, not here.
+
+- **Python** `>= 3.12`.
 - **PDM** — dependency & task runner (`pyproject.toml` `[tool.pdm.scripts]`). Not pip/poetry.
-- **Pydantic** `>= 2.10` — all config and payload models. v2 API only.
-- **asyncio + uvloop** `>= 0.21` — request clients and load generation are fully async.
-- **aiohttp** `>= 3.11` — HTTP model-server clients.
-- **numpy** `>= 2.2` — metrics/distribution math.
-- **datasets / transformers** (`==4.57.6`) — dataset loading & tokenization.
-- **rich** `>= 13` — CLI summary tables.
+- **Pydantic** v2 — all config and payload models. v2 API only.
+- **asyncio + uvloop** — request clients and load generation are fully async.
+- **aiohttp** — HTTP model-server clients.
+- **numpy** — metrics/distribution math.
+- **datasets / transformers** — dataset loading & tokenization.
+- **rich** — CLI summary tables.
 - **prometheus-client**, **OpenTelemetry** (optional `otel` extra) — observability.
 - **Tooling**: `ruff` (format + lint, line-length **127**, double quotes), `mypy --strict`,
   `pytest` + `pytest-asyncio` (`asyncio_mode = "auto"`), `hypothesis` (property tests).
@@ -144,11 +128,11 @@ dispatch in `main.py`:
 ```python
 # inference_perf/main.py  (abridged)
 if config.data.type == DataGenType.ShareGPT:
-    return HFShareGPTDataGenerator(api_config, config.data, tokenizer)
+    datagen = HFShareGPTDataGenerator(config.api, config.data, tokenizer)
 elif config.data.type == DataGenType.Synthetic:
-    return SyntheticDataGenerator(api_config, config.data, tokenizer)
+    datagen = SyntheticDataGenerator(config.api, config.data, tokenizer, seed=config.load.base_seed)
 elif config.data.type == DataGenType.Random:
-    return RandomDataGenerator(api_config, config.data, tokenizer)
+    datagen = RandomDataGenerator(config.api, config.data, tokenizer, seed=config.load.base_seed)
 # ... one branch per DataGenType member
 ```
 
@@ -184,16 +168,20 @@ Every contribution ships with tests. No exceptions for behavior changes.
 
 - **Layout mirrors the source tree**: `tests/required/<package>/test_*.py`
   (e.g. `tests/required/reportgen/test_failure_reporting.py`,
-  `tests/required/datagen/test_synthetic_datagen.py`).
+  `tests/required/datagen/synthetic/test_synthetic_datagen.py`).
 - **`tests/required/`** — always run in CI; fast, no network. Put your unit tests here.
 - **`tests/optional/`** and **`e2e/`** — live/end-to-end tests needing a real server;
   run via `pdm run test:e2e`. Not part of the fast gate.
 - **Naming** (`pyproject.toml`): files `test_*.py`, classes `Test*`, functions `test_*`.
 - **Async tests need no decorator** — `asyncio_mode = "auto"` is set; just write `async def test_...`.
 - Prefer **property-based tests with `hypothesis`** for generators/distributions
-  (see `tests/required/datagen/test_datagen_fuzz.py`).
+  (see `tests/required/datagen/synthetic/test_datagen_fuzz.py`).
 - Use `unittest.mock.Mock` for clients/collectors so unit tests stay offline
   (see the `_make_generator()` helper in `test_failure_reporting.py`).
+- **One test per condition in a boolean rule**: when code combines conditions (`a and b`, `a or b`),
+  write a test for each condition, so deleting any one condition makes the suite fail.
+- **No import-time state**: nothing a test imports may set state at import time — no `os.environ`
+  writes and no cwd-relative paths at module level.
 - **Comment every test**: every test function and helper gets a `#` block directly above the `def`, no blank line between:
   concrete inputs and expected outputs in one to three lines, written for someone who has not read the code.
 
@@ -213,11 +201,12 @@ then a module docstring describing what is under test:
 - **Formatting/lint**: `ruff format` + `ruff check` are the source of truth. Line length
   **127**, double quotes, 4-space indent, respect magic trailing commas. Don't hand-format.
 - **Typing**: fully type public functions; the code must pass `mypy --strict` over both
-  `inference_perf/` and `tests/`. Use 3.12 unions (`str | None`), not `Optional[...]` in new code
-  unless matching a local module's style.
+  `inference_perf/` and `tests/`. Follow the surrounding module's style for type annotations.
 - **Config = Pydantic v2 models** under `inference_perf/config/`, kept in a package layout
   that mirrors the runtime code. New user-facing options are config fields, not ad-hoc args —
   they become CLI flags automatically (then run `pdm run update:cli-flags`).
+- **Engine-agnostic**: keep changes engine-agnostic — the tool must produce apples-to-apples
+  comparisons across vLLM, SGLang, TGI, and any OpenAI-compatible endpoint.
 - **Match surrounding style**: comment density, naming, and idiom should look like the file
   you're editing.
 
