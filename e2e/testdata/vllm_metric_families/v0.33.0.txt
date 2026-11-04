@@ -1,9 +1,10 @@
-# vllm:* metric families exposed by vllm-openai-cpu:v0.26.0 under the
+# vllm:* metric families exposed by vllm-openai-cpu:v0.33.0 under the
 # e2e launch config (e2e/vllm_cpu_server.sh), captured after one warmup
 # request. Regenerate against a freshly started server of this release:
 #   e2e/vllm_cpu_server.sh start <release-tag>
 #   E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION=<release-tag> \
 #     E2E_UPDATE_METRIC_GOLDENS=1 pdm run test:e2e:live -k metric_names
+vllm:admission_rejections_total counter
 vllm:cache_config_info gauge
 vllm:e2e_request_latency_seconds histogram
 vllm:engine_sleep_state gauge
@@ -25,12 +26,14 @@ vllm:num_requests_waiting_by_reason gauge
 vllm:prefix_cache_hits_total counter
 vllm:prefix_cache_queries_total counter
 vllm:prompt_tokens_by_source_total counter
+vllm:prompt_tokens_cached_by_source_total counter
 vllm:prompt_tokens_cached_total counter
 vllm:prompt_tokens_total counter
 vllm:request_decode_time_seconds histogram
 vllm:request_generation_tokens histogram
 vllm:request_inference_time_seconds histogram
 vllm:request_max_num_generation_tokens histogram
+vllm:request_num_preemptions histogram
 vllm:request_params_max_tokens histogram
 vllm:request_params_n histogram
 vllm:request_prefill_kv_computed_tokens histogram
