@@ -195,6 +195,14 @@ class WorkerFailure(NamedTuple):
                 f"with {self.crash.in_flight} request(s) in flight run-wide: {self.crash.message}\n"
                 f"{self.crash.traceback_text.rstrip()}"
             )
+        if self.exitcode is not None and self.exitcode > 0:
+            # Worker.run() reports every exception it catches, so a nonzero exit with no
+            # record means the process failed before run(), while it was being rebuilt.
+            return (
+                f"Worker {self.worker_id} {cause} without reporting a Python traceback. It failed during "
+                f"startup, before Worker.run(), for example on a payload that does not unpickle. "
+                f"The traceback is on stderr"
+            )
         return (
             f"Worker {self.worker_id} {cause} without reporting a Python traceback (segfault, OOM kill, or forced termination)"
         )
