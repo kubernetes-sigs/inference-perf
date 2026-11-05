@@ -302,8 +302,8 @@ def test_prompt_len_outlier_allowance() -> None:
 # requests (after dropping warmup), every max_tokens == 64, every request has
 # stream=true and ignore_eos=true, every prompt is 128 tokens +-15% (vllm
 # bench may miss on 1%, its tools.vllm-bench.prompt_outlier_frac), and the
-# average arrival rate is 40/s within rate_tolerance(600, arrival): +-5% for
-# inference-perf (constant), +-16% for vllm bench (poisson). For a
+# average arrival rate is 40/s within rate_tolerance(600, arrival) for the
+# tool's declared pattern (+-5% for constant, +-16% for poisson). For a
 # concurrency case, load_shape.assert_delivered_concurrency applies: never more
 # than the configured number in flight, and on average within half a slot of it
 # over the steady-state window. Runs once per (case, tool); the vllm side skips
@@ -351,8 +351,9 @@ async def test_offered_load_matches_expected(case_dir: Path, tool: str) -> None:
 # no reference numbers involved: same request count, same multiset of
 # max_tokens, same stream/ignore_eos flags, mean prompt length within
 # prompt_tokens_rel_tol, and by load mode either average rates within the
-# looser of the two tools' rate tolerances (the constant tool adds almost no
-# wobble of its own, so the poisson tool's tolerance covers the difference),
+# looser of the two tools' rate tolerances (a constant tool adds almost no
+# wobble of its own, so when the patterns differ the poisson tolerance covers
+# the difference),
 # or the same peak in flight and steady-state averages within half
 # a slot of each other. Skips when the vllm side is unavailable.
 @pytest.mark.parametrize("case_dir", CASE_DIRS, ids=lambda p: p.name)
@@ -384,7 +385,7 @@ async def test_tools_offer_the_same_workload(case_dir: Path) -> None:
         assert ip.realized_rate == pytest.approx(vb.realized_rate, rel=tol), (
             f"realized arrival rates differ: inference-perf {ip.realized_rate:.2f}/s "
             f"vs vllm-bench {vb.realized_rate:.2f}/s (±{tol:.0%}; the average should agree even though "
-            f"the spacing between requests differs on purpose: constant vs poisson)"
+            f"the spacing between requests may differ by tool, see tools.<tool>.arrival in expected.yaml)"
         )
     elif load["mode"] == "concurrency":
         level = int(load["concurrency"])
