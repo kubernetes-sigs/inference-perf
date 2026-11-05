@@ -168,8 +168,7 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
             patch("inference_perf.loadgen.load_generator._FORCE_REAP_SECONDS", 0.0),
             patch.object(self.load_generator, "_respawn_worker") as respawn,
         ):
-            # Teardown waits on the replacement's ready_counter, so this one starts ready.
-            respawn.return_value = MagicMock(ready_counter=mp.Value("i", 1))
+            respawn.return_value = MagicMock()
             await self.load_generator.run_stage(
                 stage_id=0,
                 rate=5,

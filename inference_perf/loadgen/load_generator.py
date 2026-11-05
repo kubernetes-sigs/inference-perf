@@ -245,6 +245,11 @@ def collect_worker_failures(
     return failures
 
 
+def _worker_ready(worker: "Worker") -> bool:
+    """True once the worker has signalled the end of its startup, or if it has no ready event."""
+    return worker.ready_event is None or worker.ready_event.is_set()
+
+
 class Worker(ForkServerProcess):
     def __init__(
         self,
@@ -266,7 +271,7 @@ class Worker(ForkServerProcess):
         stage_boundary_seq: Optional["Synchronized[int]"] = None,
         teardown_grace_seconds: float = 120.0,
         crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"] = None,
-        ready_counter: Optional["Synchronized[int]"] = None,
+        ready_event: Optional[SyncEvent] = None,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id
@@ -291,7 +296,7 @@ class Worker(ForkServerProcess):
         # Stage this worker is currently serving, reported alongside a crash so the
         # failure can be attributed to a stage rather than to the run as a whole.
         self._current_stage_id: Optional[int] = None
-        self.ready_counter = ready_counter
+        self.ready_event = ready_event
         # Snapshot the parent's effective root log level so the worker
         # interpreter (which under forkserver/spawn does not inherit the
         # parent's basicConfig) can configure its own handler to surface
@@ -640,9 +645,8 @@ class Worker(ForkServerProcess):
         # Announce that startup is done: the payload has been unpickled and the
         # queue is about to be consumed. The parent waits on this so worker
         # startup is not billed as benchmark time (see _await_workers_ready).
-        if self.ready_counter is not None:
-            with self.ready_counter.get_lock():
-                self.ready_counter.value += 1
+        if self.ready_event is not None:
+            self.ready_event.set()
 
         run(self.loop())
 
@@ -1566,8 +1570,7 @@ class LoadGenerator:
                 # A forkserver replacement is not ready when start() returns.
                 # Without this the next stage dispatches into a queue nobody is
                 # reading yet and drops its first requests undispatched.
-                if replacement.ready_counter is not None:
-                    await self._await_workers_ready(replacement.ready_counter, workers=[replacement], expected=1)
+                await self._await_workers_ready([replacement])
         return TeardownResult(clean=clean, dropped_requests=dropped.removed, dropped_requests_exact=dropped.exact)
 
     def _respawn_worker(
@@ -1579,11 +1582,10 @@ class LoadGenerator:
         interpreter, and its stage-done counter starts at the current expected
         value so it is considered up to date at the next rendezvous.
         request_channel, when given, replaces the dead worker's queue channel
-        (see _teardown_stage). The caller must await its ready_counter before
+        (see _teardown_stage). The caller must await _await_workers_ready before
         dispatching again.
         """
         stage_done_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", self._expected_stage_done)
-        ready_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
         return Worker(
             dead.id,
             dead.client,
@@ -1603,7 +1605,7 @@ class LoadGenerator:
             stage_boundary_seq=dead.stage_boundary_seq,
             teardown_grace_seconds=dead.teardown_grace_seconds,
             crash_queue=dead.crash_queue,
-            ready_counter=ready_counter,
+            ready_event=MP_CONTEXT.Event(),
         )
 
     async def run_stage(
@@ -1835,12 +1837,7 @@ class LoadGenerator:
         self.stages = [StandardLoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
         logger.info(f"Generated load stages: {[s.rate for s in self.stages]}")
 
-    async def _await_workers_ready(
-        self,
-        ready_counter: "Synchronized[int]",
-        workers: Optional[List[Worker]] = None,
-        expected: Optional[int] = None,
-    ) -> None:
+    async def _await_workers_ready(self, workers: Optional[List[Worker]] = None) -> None:
         """Wait until every worker has finished starting up.
 
         ``Process.start()`` returns as soon as the child exists, well before it
@@ -1855,28 +1852,28 @@ class LoadGenerator:
         before still proceeds.
         """
         watched = self.workers if workers is None else workers
-        want = self.num_workers if expected is None else expected
         deadline = time.monotonic() + WORKER_STARTUP_TIMEOUT_SEC
         while True:
-            with ready_counter.get_lock():
-                ready = ready_counter.value
-            if ready >= want:
-                logger.debug(f"all {want} workers ready")
-                return
-            exited = [w for w in watched if w.exitcode is not None]
-            # A dead worker never signals, so stop on it only once the live ones have.
-            if ready + len(exited) >= want:
-                logger.error(
-                    f"{len(exited)} of {want} workers exited during startup "
-                    f"(exit codes {[w.exitcode for w in exited]}); starting load with {ready} ready"
-                )
+            # Readiness is per worker: one that signalled and then died is done
+            # starting, but must not stand in for a live one still importing.
+            starting = [w for w in watched if w.exitcode is None and not _worker_ready(w)]
+            if not starting:
+                dead = [w for w in watched if not _worker_ready(w)]
+                if dead:
+                    logger.error(
+                        f"{len(dead)} of {len(watched)} workers exited during startup "
+                        f"(exit codes {[w.exitcode for w in dead]}); starting load with {len(watched) - len(dead)} ready"
+                    )
+                else:
+                    logger.debug(f"all {len(watched)} workers ready")
                 return
             if self.interrupt_sig:
-                logger.warning(f"interrupted with {ready} of {want} workers ready")
+                logger.warning(f"interrupted with {len(starting)} of {len(watched)} workers still starting")
                 return
             if time.monotonic() >= deadline:
                 logger.warning(
-                    f"only {ready} of {want} workers became ready within {WORKER_STARTUP_TIMEOUT_SEC}s; starting load anyway"
+                    f"{len(starting)} of {len(watched)} workers did not become ready within "
+                    f"{WORKER_STARTUP_TIMEOUT_SEC}s; starting load anyway"
                 )
                 return
             await sleep(0.05)
@@ -1903,9 +1900,6 @@ class LoadGenerator:
         self._stage_boundary_seq = stage_boundary_seq
         # Channel a dying worker uses to hand its traceback to the parent.
         self.worker_crash_queue = MP_CONTEXT.SimpleQueue()
-        # Synchronize workers and main at stage boundaries so workers finish
-        # in-flight requests and clear session state before the next stage begins.
-        workers_ready: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
         # start workers in the request phase
         request_phase.set()
 
@@ -1942,14 +1936,14 @@ class LoadGenerator:
                     stage_boundary_seq=stage_boundary_seq,
                     teardown_grace_seconds=self.teardown_grace_seconds,
                     crash_queue=self.worker_crash_queue,
-                    ready_counter=workers_ready,
+                    ready_event=MP_CONTEXT.Event(),
                 )
             )
             self.workers[-1].start()
 
         # Keep worker startup out of the measured window: wait for the workers
         # to come up, then treat that moment as the start of the run.
-        await self._await_workers_ready(workers_ready)
+        await self._await_workers_ready()
         self.load_start_time = time.time()
 
         if self.sweep_config:

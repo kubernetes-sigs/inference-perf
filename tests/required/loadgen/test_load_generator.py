@@ -20,7 +20,7 @@ import typing
 import signal
 import sys
 import numpy as np
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData
 from inference_perf.config import LoadConfig, LoadType, TraceConfig, TraceFormat, StandardLoadStage
@@ -30,6 +30,7 @@ from inference_perf.apis.base import ErrorResponseInfo, InferenceInfo, RequestLi
 from inference_perf.circuit_breaker.simple_breaker import SimpleCircuitBreaker
 from inference_perf.config.circuit_breaker import CircuitBreakerConfig, MetricsSpec, TriggerConsecutive
 from inference_perf.payloads import RequestMetrics, Text
+from inference_perf.utils.mp_context import MP_CONTEXT
 from inference_perf.utils.request_queue import Drained, RequestQueue
 
 # Patch asyncio.TaskGroup for Python < 3.11
@@ -52,6 +53,15 @@ if sys.version_info < (3, 10):
     typing.TypeAlias = typing.Any
 
 from inference_perf.datagen import DataGenerator
+
+
+# A worker as the startup gate sees it: exitcode None while alive, 1 once dead, and
+# a ready event that is set when ready=True.
+def _starting_worker(exitcode: Optional[int], ready: bool) -> MagicMock:
+    event = MP_CONTEXT.Event()
+    if ready:
+        event.set()
+    return MagicMock(exitcode=exitcode, ready_event=event)
 
 
 class MockWorker:
@@ -416,49 +426,69 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(drained, (2, True))
         self.assertTrue(q.get_channel(0).empty())
 
+    # 2 live workers that have both signalled ready. The gate returns at once.
     async def test_await_workers_ready_returns_once_workers_signal(self) -> None:
-        ready = mp.Value("i", self.load_generator.num_workers)
-        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=None)])
+        self.load_generator.workers = typing.cast(
+            Any, [_starting_worker(exitcode=None, ready=True), _starting_worker(exitcode=None, ready=True)]
+        )
 
-        await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
+        await asyncio.wait_for(self.load_generator._await_workers_ready(), timeout=5)
 
     # 2 workers: one dies at startup, the other has not signalled yet. The gate keeps
-    # waiting, then returns once the live one signals (1 ready + 1 dead = 2).
+    # waiting, then returns once the live one signals.
     async def test_await_workers_ready_waits_for_live_workers_after_one_exits(self) -> None:
-        ready = mp.Value("i", 0)
-        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=1)])
+        live = _starting_worker(exitcode=None, ready=False)
+        self.load_generator.workers = typing.cast(Any, [live, _starting_worker(exitcode=1, ready=False)])
 
-        wait = asyncio.create_task(self.load_generator._await_workers_ready(ready))
+        wait = asyncio.create_task(self.load_generator._await_workers_ready())
         await asyncio.sleep(0.2)
         self.assertFalse(wait.done())
 
-        ready.value = 1
+        live.ready_event.set()
+        await asyncio.wait_for(wait, timeout=5)
+
+    # 2 workers: one signals ready and then dies, the other is still starting. A shared
+    # counter read that as 1 ready + 1 dead = 2 and let load start early. The gate must
+    # keep waiting until the live one signals.
+    async def test_await_workers_ready_does_not_count_a_ready_then_dead_worker_twice(self) -> None:
+        live = _starting_worker(exitcode=None, ready=False)
+        self.load_generator.workers = typing.cast(Any, [_starting_worker(exitcode=1, ready=True), live])
+
+        wait = asyncio.create_task(self.load_generator._await_workers_ready())
+        await asyncio.sleep(0.2)
+        self.assertFalse(wait.done())
+
+        live.ready_event.set()
         await asyncio.wait_for(wait, timeout=5)
 
     # Both workers die at startup and neither ever signals. The gate returns
     # instead of blocking the run until its 300s timeout.
     async def test_await_workers_ready_gives_up_when_every_worker_exits(self) -> None:
-        ready = mp.Value("i", 0)
-        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=1), MagicMock(exitcode=1)])
+        self.load_generator.workers = typing.cast(
+            Any, [_starting_worker(exitcode=1, ready=False), _starting_worker(exitcode=1, ready=False)]
+        )
 
-        await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
+        await asyncio.wait_for(self.load_generator._await_workers_ready(), timeout=5)
 
     # 2 live workers, neither has signalled, and SIGINT has arrived. The gate
     # returns instead of holding Ctrl-C until its 300s timeout.
     async def test_await_workers_ready_returns_on_sigint(self) -> None:
-        ready = mp.Value("i", 0)
-        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=None)])
+        self.load_generator.workers = typing.cast(
+            Any, [_starting_worker(exitcode=None, ready=False), _starting_worker(exitcode=None, ready=False)]
+        )
         self.load_generator.interrupt_sig = True
 
-        await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
+        await asyncio.wait_for(self.load_generator._await_workers_ready(), timeout=5)
 
+    # 2 live workers that never signal, with the startup timeout cut to 0.1s. The gate
+    # expires and returns so load starts anyway.
     async def test_await_workers_ready_gives_up_on_timeout(self) -> None:
-        # Workers still alive but silent: the gate expires and load starts anyway.
-        ready = mp.Value("i", 0)
-        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=None)])
+        self.load_generator.workers = typing.cast(
+            Any, [_starting_worker(exitcode=None, ready=False), _starting_worker(exitcode=None, ready=False)]
+        )
 
         with patch("inference_perf.loadgen.load_generator.WORKER_STARTUP_TIMEOUT_SEC", 0.1):
-            await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
+            await asyncio.wait_for(self.load_generator._await_workers_ready(), timeout=5)
 
     def test_sigint_and_sigterm_interrupt_the_run(self) -> None:
         for signum in (signal.SIGINT, signal.SIGTERM):
