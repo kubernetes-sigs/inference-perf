@@ -133,10 +133,6 @@ class Conversion:
     dropped: List[str] = field(default_factory=list)
     refusals: List[str] = field(default_factory=list)
 
-    @property
-    def ok(self) -> bool:
-        return not self.refusals and self.config is not None
-
     def refuse(self, subject: str, reason: str) -> None:
         self.refusals.append(f"{subject}: {reason}")
 

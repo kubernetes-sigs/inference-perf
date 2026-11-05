@@ -117,7 +117,8 @@ def test_sweep_list_is_a_refusal_not_a_usage_error(tmp_path: Path, capsys: pytes
 
 
 def test_api_key_never_reaches_the_emitted_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--", "--model", "m", "--osl", "64", "--api-key", "sk-test"]
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--"]
+    argv += ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--api-key", "sk-test"]
     assert run(argv) == 0
     out = capsys.readouterr().out
     assert "sk-test" not in out
@@ -134,7 +135,8 @@ def test_api_key_never_reaches_the_emitted_file(tmp_path: Path, capsys: pytest.C
 
 
 def test_api_key_equals_spelling_is_redacted(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--", "--model", "m", "--osl", "64", "--api-key=sk-test"]
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--"]
+    argv += ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--api-key=sk-test"]
     assert run(argv) == 0
     out = capsys.readouterr().out
     assert "sk-test" not in out
@@ -142,8 +144,8 @@ def test_api_key_equals_spelling_is_redacted(tmp_path: Path, capsys: pytest.Capt
 
 
 def test_credential_header_never_reaches_the_emitted_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--", "--model", "m", "--osl", "64"]
-    argv += ["-H", "Authorization: Bearer sk-x", "--header", "X-Team: infra"]
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--", "--model", "m", "--endpoint-type", "completions"]
+    argv += ["--osl", "64", "-H", "Authorization: Bearer sk-x", "--header", "X-Team: infra"]
     assert run(argv) == 0
     out = capsys.readouterr().out
     assert "sk-x" not in out
@@ -176,7 +178,7 @@ def test_multi_token_header_credential_never_reaches_the_emitted_file(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--", "--model", "m", "--osl", "64"]
-    argv += ["--header", "X-Team: infra", "Authorization: Bearer sk-y"]
+    argv += ["--header", "X-Team: infra", "Authorization: Bearer sk-y", "--endpoint-type", "completions"]
     assert run(argv) == 0
     out = capsys.readouterr().out
     assert "sk-y" not in out
@@ -192,7 +194,7 @@ def test_multi_token_header_credential_never_reaches_the_emitted_file(
 def test_header_usage_error_keeps_the_credential_out_of_stderr(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     out_path = tmp_path / "converted.yaml"
     argv = ["aiperf-profile", "--peer-version", "v0.12.0", "-o", str(out_path), "--"]
-    argv += ["--model", "m", "--osl", "64", "-H", "Authorization=Bearer sk-live-123"]
+    argv += ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "-H", "Authorization=Bearer sk-live-123"]
     assert run(argv) == 1
     assert not out_path.exists()
     err = capsys.readouterr().err

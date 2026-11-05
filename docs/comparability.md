@@ -109,8 +109,8 @@ read from.
 
 | What you are pinning | inference-perf | `vllm bench serve` v0.10.0 | `aiperf profile` v0.12.0 |
 | :--- | :--- | :--- | :---
-| Evenly spaced arrivals at a rate | `load.type: constant`, `stages[].rate` | `--request-rate` with `--burstiness` above 1 (approximate) | `--request-rate` with `--arrival-pattern constant` |
-| Poisson arrivals at a rate | `load.type: poisson`, `stages[].rate` | `--request-rate` (default `--burstiness 1.0`) | `--request-rate` (default `--arrival-pattern poisson`) |
+| Evenly spaced arrivals at a rate | `load.type: constant`, `stages[].rate` (random gaps rescaled to the exact stage duration) | `--request-rate` (random gaps rescaled to exactly `--num-prompts`/rate, the same construction) | `--request-rate` with `--arrival-pattern constant` (perfectly even) |
+| Poisson arrivals at a rate | `load.type: poisson`, `stages[].rate` | no equivalent at v0.10.0: every finite-rate schedule is rescaled to an anchored total, not a Poisson process | `--request-rate` (default `--arrival-pattern poisson`) |
 | Fixed requests in flight | `load.type: concurrent`, `stages[].concurrency_level` | `--max-concurrency` | `--concurrency` |
 | How much load to send | `stages[].duration`, or `num_requests` under `concurrent` | `--num-prompts` | `--request-count`, or `--benchmark-duration` |
 | Input length | `data.input_distribution` (`type: fixed`, `mean`) | `--random-input-len` with `--random-range-ratio 0` | `--isl` with `--isl-stddev 0` |
@@ -127,11 +127,14 @@ read from.
 These are the rows that cannot be translated by substituting a value, and they are the reason
 a converted config still needs reading:
 
-- **Arrival spacing defaults disagree.** Both peers default to Poisson at a given rate
-  (`--burstiness 1.0`, `--arrival-pattern poisson`), so "rate 40" on either side is not the
-  evenly spaced stimulus `load.type: constant` produces. Set the pattern explicitly on both
-  sides or compare only average offered rate. vLLM has no exactly even setting: burstiness
-  above 1 draws intervals from a gamma distribution that only approaches even spacing.
+- **Arrival spacing defaults disagree.** AIPerf defaults to Poisson at a given rate
+  (`--arrival-pattern poisson`), an unanchored process whose total time drifts. vLLM v0.10.0
+  draws random gaps and rescales them so the last request lands at exactly
+  `--num-prompts / --request-rate` (`get_request` in `vllm/benchmarks/serve.py`), which is the
+  construction of `load.type: constant`, so "rate 40" means a different stimulus on each side.
+  Set `--arrival-pattern` explicitly on the AIPerf side or compare only average offered rate;
+  vLLM has no unanchored Poisson setting, and burstiness values other than 1 draw gamma
+  intervals that are still rescaled.
 - **vLLM sends everything at once unless you ask otherwise.** `--request-rate` defaults to
   `inf`, which also disables `--burstiness`, so the default run offers all `--num-prompts`
   immediately. The nearest inference-perf equivalent is `load.type: concurrent` with
@@ -176,9 +179,12 @@ The emitted file starts with a comment block recording the source argv, every as
 every workload-neutral flag dropped. Each break listed above either refuses with a named reason or
 is recorded as an assumption (the warmup window, for one); nothing is translated silently. A
 refusal exits 2 and writes nothing, so a config that looks converted but changes the workload
-cannot come out of it; an argument list the peer itself would reject exits 1. Two AIPerf defaults
-refuse on their own: an unset `--osl` (AIPerf then sends no `max_tokens`) and a
-`--num-dataset-entries` pool smaller than the request count (prompt reuse). A comma-separated
+cannot come out of it; an argument list the peer itself would reject exits 1. Three AIPerf
+defaults refuse on their own: the default `chat` endpoint (the emitted `data.type: random` serves
+the completions path only, so pass `--endpoint-type completions`), an unset `--osl` (AIPerf then
+sends no `max_tokens`), and an entry pool smaller than the converted request count (prompt reuse;
+AIPerf sizes the pool to an explicit `--request-count`, so this trips on `--num-dataset-entries`
+set low or on a `--benchmark-duration` run past the default pool of 100). A comma-separated
 value such as `--concurrency 8,16` is an AIPerf parameter sweep, one run per value, and refuses as
 well. `--api-key` is never written into the file, which is meant to be checked in, and neither is a
 `--header` whose name carries a credential (the `CREDENTIAL_HEADER_FRAGMENTS` rule in

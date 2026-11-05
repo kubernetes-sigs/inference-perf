@@ -31,7 +31,7 @@ from inference_perf.config import (
     StandardLoadStage,
 )
 from inference_perf.tools.convert import convert_vllm_bench
-from inference_perf.tools.convert.model import Conversion
+from inference_perf.tools.convert.model import Conversion, PeerUsageError
 
 VERSION = "v0.10.0"
 
@@ -87,9 +87,11 @@ def test_case_a_fixed_rate_converts() -> None:
     assert config.data.input_distribution.min == config.data.input_distribution.max == 128
     assert config.data.output_distribution is not None
     assert config.data.output_distribution.mean == 64
-    # A finite rate at burstiness 1.0 is Poisson; the parity fixture's
-    # `constant` is harness-declared arrival, not derived from the args.
-    assert config.load.type == LoadType.POISSON
+    # v0.10.0 draws exponential gaps at burstiness 1.0 and rescales them so
+    # the last request lands at exactly --num-prompts / --request-rate
+    # (get_request in vllm/benchmarks/serve.py): the constant timer's own
+    # construction, so the emitted load type matches the parity fixture.
+    assert config.load.type == LoadType.CONSTANT
     stage = config.load.stages[0]
     assert isinstance(stage, StandardLoadStage)
     assert stage.rate == 40
@@ -104,6 +106,23 @@ def test_case_a_fixed_rate_converts() -> None:
     # Harness-appended reporting flags must never abort a conversion.
     assert any("--save-result" in item for item in conversion.dropped)
     assert any("--result-filename" in item for item in conversion.dropped)
+
+
+# vllm itself falls over on nonpositive load values (an empty request list, a
+# zero rate dividing the schedule); the converter turns them into usage errors
+# instead of a stage-model traceback or a division by zero.
+@pytest.mark.parametrize(
+    ("argv", "flag"),
+    [
+        (["--num-prompts", "0"], "--num-prompts"),
+        (["--num-prompts", "-5"], "--num-prompts"),
+        (["--request-rate", "0"], "--request-rate"),
+        (["--max-concurrency", "0"], "--max-concurrency"),
+    ],
+)
+def test_nonpositive_load_values_are_usage_errors(argv: List[str], flag: str) -> None:
+    with pytest.raises(PeerUsageError, match=rf"{flag} expects a positive"):
+        convert(["--model", "m", "--dataset-name", "random"] + argv)
 
 
 def test_case_b_fixed_concurrency_converts() -> None:

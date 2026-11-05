@@ -13,10 +13,13 @@
 # limitations under the License.
 """Row coverage for the ``aiperf profile`` converter frontend.
 
-Includes the two default traps that make a bare aiperf run refuse loudly: an
-unset ``--osl`` (aiperf sends no max_tokens field, inference-perf always
-does) and a ``--num-dataset-entries`` pool smaller than the request count
-(prompt reuse is not expressible).
+Includes the three default traps that make a bare aiperf run refuse loudly:
+the default ``chat`` endpoint (the emitted ``data.type: random`` serves the
+completions path only), an unset ``--osl`` (aiperf sends no max_tokens field,
+inference-perf always does), and an entry pool smaller than the converted
+request count (prompt reuse is not expressible; aiperf sizes the pool to an
+explicit ``--request-count``, so only a pool set smaller on purpose or a
+``--benchmark-duration`` run past the default pool trips it).
 """
 
 from typing import List
@@ -96,7 +99,8 @@ def test_case_a_fixed_rate_converts() -> None:
     assert config is not None
     assert config.api.type == APIType.Completion
     assert config.api.streaming is True
-    # aiperf's constant arrival is evenly spaced: exactly load.type constant.
+    # aiperf's constant arrival is perfectly even spacing; load.type constant
+    # matches its total time while jittering individual gaps.
     assert config.load.type == LoadType.CONSTANT
     stage = config.load.stages[0]
     assert isinstance(stage, StandardLoadStage)
@@ -126,18 +130,17 @@ def test_case_b_fixed_concurrency_converts() -> None:
 
 
 def test_streaming_default_false_is_emitted_explicitly() -> None:
-    conversion = convert(["--model", "m", "--osl", "64", "--num-dataset-entries", "10"])
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--num-dataset-entries", "10"])
     assert conversion.refusals == []
     config = conversion.config
     assert config is not None
     assert config.api.streaming is False
     assert config.model_dump(exclude_unset=True)["api"]["streaming"] is False
-    # A bare run is a chat run: the default endpoint type differs from vllm.
-    assert config.api.type == APIType.Chat
+    assert config.api.type == APIType.Completion
 
 
 def test_default_load_is_concurrency_one_with_derived_count() -> None:
-    conversion = convert(["--model", "m", "--osl", "64"])
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64"])
     assert conversion.refusals == []
     config = conversion.config
     assert config is not None
@@ -154,7 +157,7 @@ def test_unbounded_run_sends_ten_requests_whatever_the_concurrency(concurrency: 
     # prof.setdefault("requests", 10) when no bound is given, and nothing
     # re-derives it from the concurrency, whatever the --request-count help
     # string says.
-    conversion = convert(["--model", "m", "--osl", "64", "--concurrency", concurrency])
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--concurrency", concurrency])
     assert conversion.refusals == []
     config = conversion.config
     assert config is not None
@@ -166,7 +169,7 @@ def test_unbounded_run_sends_ten_requests_whatever_the_concurrency(concurrency: 
 
 
 def test_unbounded_rate_run_sends_ten_requests() -> None:
-    conversion = convert(["--model", "m", "--osl", "64", "--request-rate", "5"])
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--request-rate", "5"])
     assert conversion.refusals == []
     config = conversion.config
     assert config is not None
@@ -209,7 +212,7 @@ def test_sweep_lists_refuse_with_a_named_reason(argv: List[str], flag: str) -> N
 def test_trailing_comma_collapses_to_the_single_value() -> None:
     # "8," is the single value 8 at v0.12.0: parse_int_or_int_list drops the
     # empty part, so neither a sweep nor a usage error.
-    conversion = convert(["--model", "m", "--osl", "64", "--concurrency", "8,"])
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--concurrency", "8,"])
     assert conversion.refusals == []
     config = conversion.config
     assert config is not None
@@ -220,9 +223,85 @@ def test_trailing_comma_collapses_to_the_single_value() -> None:
 
 @pytest.mark.parametrize("tail", [["--bogus", "-1"], ["--bogus", "x"], ["--bogus=x"], ["--bogus"]])
 def test_unknown_flag_refuses_once(tail: List[str]) -> None:
-    conversion = convert(["--model", "m", "--osl", "64"] + tail)
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64"] + tail)
     assert conversion.config is None
     assert conversion.refusals == ["--bogus: not in the verified aiperf profile v0.12.0 flag surface"]
+
+
+# --no-streaming: --streaming exists but declares no negation, and aiperf's
+# CLIParameter defaults negative=False, so aiperf rejects the token; a usage
+# error, not a refusal.
+@pytest.mark.parametrize("flag", ["--no-streaming", "--no-tokenizer-trust-remote-code", "--no-stream"])
+def test_undeclared_negation_is_a_usage_error(flag: str) -> None:
+    with pytest.raises(PeerUsageError, match="no automatic --no-"):
+        convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", flag])
+
+
+# --no-foo where --foo is not a flag either: the plain unknown-flag refusal,
+# since the token could be a later version's own --no- field.
+def test_unknown_negation_refuses_as_an_unknown_flag() -> None:
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--no-foo"])
+    assert conversion.config is None
+    assert conversion.refusals == ["--no-foo: not in the verified aiperf profile v0.12.0 flag surface"]
+
+
+# --no-open-loop-replay is one of the nine negations cli_config.py declares:
+# it parses, turns the field off, and the flag drops as inert for a
+# single-turn synthetic run.
+def test_declared_negation_parses_and_drops_as_inert() -> None:
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--no-open-loop-replay"])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert any("--open-loop-replay" in item for item in conversion.dropped), conversion.dropped
+
+
+# --accuracy-no-enable-cot is the one declared negation without a --no-
+# prefix; it reads as accuracy_enable_cot=False, which is inert, so the flag
+# drops instead of tripping the ACCURACY group refusal.
+def test_accuracy_negation_drops_as_explicitly_disabled() -> None:
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--accuracy-no-enable-cot"])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert any("--accuracy-enable-cot" in item and "disabled" in item for item in conversion.dropped), conversion.dropped
+
+
+# --auto-plot invokes `aiperf plot` after the run, outside the measured
+# window, so it drops with an annotation and the conversion emits.
+def test_auto_plot_drops_as_reporting_plumbing() -> None:
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--auto-plot"])
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert any("--auto-plot" in item for item in conversion.dropped), conversion.dropped
+
+
+# --set-consistent-seed rides the multi-run subsystem, so setting it refuses
+# with the group reason while its declared --no- spelling is inert and drops.
+def test_multi_run_seed_flag_refuses_and_its_negation_drops() -> None:
+    base = ["--model", "m", "--endpoint-type", "completions", "--osl", "64"]
+    refused = convert(base + ["--set-consistent-seed"])
+    assert refused.config is None
+    assert any("one config for one run" in refusal for refusal in refused.refusals), refused.refusals
+    dropped = convert(base + ["--no-set-consistent-seed"])
+    assert dropped.refusals == []
+    assert dropped.config is not None
+    assert any("--set-consistent-seed" in item and "disabled" in item for item in dropped.dropped), dropped.dropped
+
+
+# aiperf rejects nonpositive load values in its own validation; the converter
+# turns them into usage errors instead of a stage-model traceback (zero or
+# negative counts) or a division by zero (zero rate).
+@pytest.mark.parametrize(
+    ("argv", "flag"),
+    [
+        (["--concurrency", "0"], "--concurrency"),
+        (["--concurrency", "-1"], "--concurrency"),
+        (["--request-count", "0"], "--request-count"),
+        (["--request-rate", "0"], "--request-rate"),
+    ],
+)
+def test_nonpositive_load_values_are_usage_errors(argv: List[str], flag: str) -> None:
+    with pytest.raises(PeerUsageError, match=rf"{flag} expects a positive"):
+        convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64"] + argv)
 
 
 def test_unset_osl_refuses() -> None:
@@ -231,14 +310,65 @@ def test_unset_osl_refuses() -> None:
     assert any("max_tokens" in refusal for refusal in conversion.refusals)
 
 
-def test_dataset_entry_pool_smaller_than_request_count_refuses() -> None:
-    conversion = convert(["--model", "m", "--osl", "64", "--concurrency", "8", "--request-count", "200"])
+# A bare conversion runs on aiperf's default chat endpoint, and the emitted
+# data.type random serves the completions path only, so it refuses and the
+# reason names the default and the fix.
+def test_default_chat_endpoint_refuses_with_random_data() -> None:
+    conversion = convert(["--model", "m", "--osl", "64"])
     assert conversion.config is None
-    assert any("prompt reuse" in refusal and "default pool is 100" in refusal for refusal in conversion.refusals)
+    reason = next(refusal for refusal in conversion.refusals if refusal.startswith("--endpoint-type:"))
+    assert "chat" in reason
+    assert "default" in reason
+    assert "--endpoint-type completions" in reason
+
+
+# --endpoint-type chat and messages map to API types the random datagen
+# refuses to load, so both refuse at conversion instead of emitting a config
+# that fails with "Unsupported API type".
+@pytest.mark.parametrize("endpoint", ["chat", "messages"])
+def test_non_completions_endpoint_refuses_with_random_data(endpoint: str) -> None:
+    conversion = convert(["--model", "m", "--osl", "64", "--endpoint-type", endpoint])
+    assert conversion.config is None
+    assert any(
+        refusal.startswith("--endpoint-type:") and "completions path only" in refusal for refusal in conversion.refusals
+    ), conversion.refusals
+
+
+# --request-count 200 with no entry count: aiperf sizes the synthetic pool to
+# the explicit request count (_resolve_entries at v0.12.0), so no entry is
+# reused and the conversion emits, with the sizing recorded as an assumption.
+def test_explicit_request_count_sizes_the_entry_pool() -> None:
+    argv = ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--concurrency", "8", "--request-count", "200"]
+    conversion = convert(argv)
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert any("sizes aiperf's synthetic entry pool" in item for item in conversion.assumptions), conversion.assumptions
+
+
+# --num-dataset-entries 100 against --request-count 200: the explicitly set
+# pool wins over the request count in aiperf's resolution order, so 200
+# requests reuse 100 entries and the conversion refuses.
+def test_explicit_entry_pool_smaller_than_request_count_refuses() -> None:
+    argv = ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--request-count", "200"]
+    conversion = convert(argv + ["--num-dataset-entries", "100"])
+    assert conversion.config is None
+    assert any("prompt reuse" in refusal and "pool of 100" in refusal for refusal in conversion.refusals), conversion.refusals
+
+
+# --request-rate 20 --benchmark-duration 10 derives 200 requests with no
+# explicit --request-count, so the pool stays at the 100-entry default and the
+# conversion refuses, naming the default.
+def test_duration_derived_count_past_the_default_pool_refuses() -> None:
+    argv = ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--request-rate", "20"]
+    conversion = convert(argv + ["--benchmark-duration", "10"])
+    assert conversion.config is None
+    assert any("prompt reuse" in refusal and "default pool is 100" in refusal for refusal in conversion.refusals), (
+        conversion.refusals
+    )
 
 
 def test_poisson_rate_with_count() -> None:
-    argv = ["--model", "m", "--osl", "64", "--request-rate", "10", "--request-count", "100", "--num-dataset-entries", "100"]
+    argv = ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--request-rate", "10", "--request-count", "100"]
     conversion = convert(argv)
     assert conversion.refusals == []
     config = conversion.config
@@ -253,6 +383,8 @@ def test_benchmark_duration_bounds_a_rate_stage() -> None:
     argv = [
         "--model",
         "m",
+        "--endpoint-type",
+        "completions",
         "--osl",
         "64",
         "--request-rate",
@@ -272,7 +404,7 @@ def test_benchmark_duration_bounds_a_rate_stage() -> None:
 
 
 def test_normal_isl_gets_wide_clamps_and_assumption() -> None:
-    argv = ["--model", "m", "--osl", "64", "--isl", "500", "--isl-stddev", "50", "--num-dataset-entries", "10"]
+    argv = ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--isl", "500", "--isl-stddev", "50"]
     conversion = convert(argv)
     assert conversion.refusals == []
     config = conversion.config
@@ -286,10 +418,24 @@ def test_normal_isl_gets_wide_clamps_and_assumption() -> None:
     assert any("no upper clamp" in item for item in conversion.assumptions)
 
 
+# At v0.12.0 --isl is content tokens on the wire and the server's BOS rides on
+# top, while inference-perf counts BOS inside the input length; the one-token
+# skew is recorded as an assumption, mirroring the vllm converter's
+# --random-input-len note.
+def test_isl_bos_accounting_assumption_is_recorded() -> None:
+    argv = ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--isl", "128"]
+    conversion = convert(argv)
+    assert conversion.refusals == []
+    assert conversion.config is not None
+    assert any("--isl 128" in item and "BOS" in item for item in conversion.assumptions), conversion.assumptions
+
+
 def test_mapped_reporting_and_server_fields() -> None:
     argv = [
         "--model",
         "m",
+        "--endpoint-type",
+        "completions",
         "--osl",
         "64",
         "--use-server-token-count",
@@ -337,7 +483,7 @@ def test_mapped_reporting_and_server_fields() -> None:
 
 
 def test_warmup_flags_annotate_with_the_stage_workaround() -> None:
-    argv = ["--model", "m", "--osl", "64", "--warmup-request-count", "50"]
+    argv = ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--warmup-request-count", "50"]
     conversion = convert(argv)
     assert conversion.refusals == []
     assert any(item.startswith("warmup:") and "first stage" in item for item in conversion.no_equivalents)
@@ -345,7 +491,20 @@ def test_warmup_flags_annotate_with_the_stage_workaround() -> None:
 
 
 def test_reporting_flags_drop_without_aborting() -> None:
-    argv = ["--model", "m", "--osl", "64", "--ui", "dashboard", "--export-level", "records", "--gpu-telemetry", "dcgm"]
+    argv = [
+        "--model",
+        "m",
+        "--endpoint-type",
+        "completions",
+        "--osl",
+        "64",
+        "--ui",
+        "dashboard",
+        "--export-level",
+        "records",
+        "--gpu-telemetry",
+        "dcgm",
+    ]
     conversion = convert(argv)
     assert conversion.refusals == []
     dropped = "\n".join(conversion.dropped)
@@ -417,6 +576,8 @@ def test_multimodal_image_maps_when_pointlike() -> None:
     argv = [
         "--model",
         "m",
+        "--endpoint-type",
+        "completions",
         "--osl",
         "64",
         "--image-width-mean",
@@ -443,6 +604,8 @@ def test_video_mp4_maps_with_frame_derivation() -> None:
     argv = [
         "--model",
         "m",
+        "--endpoint-type",
+        "completions",
         "--osl",
         "64",
         "--video-width",
@@ -476,7 +639,7 @@ def test_unverified_version_refuses() -> None:
 # with { is a JSON object, anything else is a comma-separated list of
 # key:value items split at the first colon. A header whose name carries a
 # credential is dropped the way --api-key is.
-_HEADER_BASE = ["--model", "m", "--osl", "64", "--num-dataset-entries", "10"]
+_HEADER_BASE = ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--num-dataset-entries", "10"]
 
 
 def test_credential_header_is_dropped_and_assumed() -> None:
@@ -645,7 +808,9 @@ def test_redacted_argv_covers_every_consumed_header_token() -> None:
 # --url http://a:8000 http://b:8000: both tokens are consumed as URLs, so the
 # refusal is the multi-URL one and nothing refuses as a positional argument.
 def test_multiple_url_tokens_refuse_as_multiple_urls() -> None:
-    conversion = convert(["--model", "m", "--osl", "64", "--url", "http://a:8000", "http://b:8000"])
+    conversion = convert(
+        ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--url", "http://a:8000", "http://b:8000"]
+    )
     assert conversion.config is None
     assert any(item.startswith("--url:") and "load balancing" in item for item in conversion.refusals), conversion.refusals
     assert not any("positional" in item for item in conversion.refusals), conversion.refusals

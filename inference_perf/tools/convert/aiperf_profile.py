@@ -13,12 +13,15 @@
 # limitations under the License.
 """``aiperf profile`` argv -> inference-perf config, keyed to AIPerf v0.12.0.
 
-The flag surface is the 247 CLI-named fields of AIPerf's ``CLIConfig``
+The flag surface is the 252 CLI-named fields of AIPerf's ``CLIConfig``
 (``src/aiperf/config/flags/cli_config.py`` at the pinned tag), mirrored below
 as a flat table so an unknown flag is a refusal rather than a silent drop.
-Aliases (``--isl``/``--synthetic-input-tokens-mean``) resolve to one field and
-boolean ``--no-<flag>`` negations are honored where AIPerf does not already
-define ``--no-...`` as its own flag.
+Aliases (``--isl``/``--synthetic-input-tokens-mean``) resolve to one field.
+AIPerf's ``CLIParameter`` defaults ``negative=False``, so no boolean flag
+grows an automatic ``--no-`` spelling: the only negations are the nine
+``negative=`` declarations mirrored in the rows below, plus four fields whose
+own primary name starts with ``--no-``. Any other ``--no-`` token whose
+positive spelling is a known flag is a usage error here, as it is for aiperf.
 
 Verified v0.12.0 behavior the rows rely on:
 
@@ -64,7 +67,18 @@ Verified v0.12.0 behavior the rows rely on:
   with no value tokens leaves the field at its default (verified against
   cyclopts 4.25.3, the current resolution of the pin's ``cyclopts>=4,<5``).
 - ``--num-dataset-entries`` (default 100) is a pool of unique entries reused
-  across requests, a false friend of vllm's ``--num-prompts``.
+  across requests, a false friend of vllm's ``--num-prompts``. An explicit
+  ``--request-count`` sizes the pool to itself when the entry count is not
+  set (``_resolve_entries`` in ``_converter_dataset.py``), so the pool only
+  falls short of the converted request count when it is set smaller on
+  purpose or a ``--benchmark-duration`` run derives a count past the default.
+- The default endpoint is ``chat``, and the emitted ``data.type: random``
+  serves only the completions path (``RandomDataGenerator`` refuses any other
+  API type at load), so chat and messages conversions refuse rather than
+  emit a config inference-perf cannot run.
+- ``--isl`` is content tokens on the wire and a BOS-prepending server reads
+  one more; inference-perf counts the BOS inside the input length, the same
+  one-token skew the vllm converter records on ``--random-input-len``.
 
 Whole subsystems inference-perf does not have (multi-run sweeps and searches,
 accuracy evaluation, trace and file datasets, rankings endpoints, agentic
@@ -76,7 +90,7 @@ annotation instead, since an inert flag cannot change the offered workload.
 import json
 import math
 import re
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple, Union
 
 from inference_perf.config import (
     APIConfig,
@@ -139,6 +153,10 @@ class _F(NamedTuple):
     # ``consume_multiple=True`` in cli_config.py: the flag keeps taking value
     # tokens until the next flag, so ``--header X-A:a X-B:b`` is two entries.
     multi: bool = False
+    # The ``negative=`` spelling cli_config.py declares for this field, when
+    # it declares one. ``CLIParameter`` defaults ``negative=False``, so no
+    # other flag has a negation.
+    negative: Optional[str] = None
 
 
 # The verified v0.12.0 surface: field name, CLI aliases, arity kind, and the
@@ -224,7 +242,7 @@ _FIELDS: Tuple[_F, ...] = (
     _F("use_think_time_only", ("--use-think-time-only",), "flag", "INPUT"),
     _F("max_context_length", ("--max-context-length",), "value", "INPUT"),
     _F("dataset_sampling_strategy", ("--dataset-sampling-strategy",), "value", "INPUT"),
-    _F("allow_dataset_wrap", ("--allow-dataset-wrap",), "flag", "INPUT"),
+    _F("allow_dataset_wrap", ("--allow-dataset-wrap",), "flag", "INPUT", negative="--no-allow-dataset-wrap"),
     _F("random_seed", ("--random-seed",), "value", "INPUT"),
     _F("trace_session_sample_ratio", ("--trace-session-sample-ratio",), "value", "INPUT"),
     _F(
@@ -309,10 +327,10 @@ _FIELDS: Tuple[_F, ...] = (
     _F("inter_turn_delay_cap_seconds", ("--inter-turn-delay-cap-seconds",), "value", "CONVERSATION_INPUT"),
     _F("max_idle_gap_cap_seconds", ("--max-idle-gap-cap-seconds",), "value", "CONVERSATION_INPUT"),
     _F("replay_speedup", ("--replay-speedup",), "value", "CONVERSATION_INPUT"),
-    _F("open_loop_replay", ("--open-loop-replay",), "flag", "CONVERSATION_INPUT"),
+    _F("open_loop_replay", ("--open-loop-replay",), "flag", "CONVERSATION_INPUT", negative="--no-open-loop-replay"),
     _F("open_loop_strict", ("--open-loop-strict",), "flag", "CONVERSATION_INPUT"),
     _F("omit_kv_hints", ("--omit-kv-hints",), "flag", "CONVERSATION_INPUT"),
-    _F("force_min_tokens", ("--force-min-tokens",), "flag", "CONVERSATION_INPUT"),
+    _F("force_min_tokens", ("--force-min-tokens",), "flag", "CONVERSATION_INPUT", negative="--no-force-min-tokens"),
     _F(
         "prompt_batch_size",
         (
@@ -567,6 +585,7 @@ _FIELDS: Tuple[_F, ...] = (
         "OUTPUT",
     ),
     _F("slice_duration", ("--slice-duration",), "value", "OUTPUT"),
+    _F("auto_plot", ("--auto-plot",), "flag", "OUTPUT", negative="--no-auto-plot"),
     _F("plot_required", ("--plot-required",), "flag", "OUTPUT"),
     _F("export_outputs_json", ("--export-outputs-json",), "flag", "OUTPUT"),
     _F("otel_url", ("--otel-url",), "value", "OUTPUT"),
@@ -605,11 +624,27 @@ _FIELDS: Tuple[_F, ...] = (
     _F("num_profile_runs", ("--num-profile-runs",), "value", "MULTI_RUN"),
     _F("profile_run_cooldown_seconds", ("--profile-run-cooldown-seconds",), "value", "MULTI_RUN"),
     _F("confidence_level", ("--confidence-level",), "value", "MULTI_RUN"),
+    _F(
+        "profile_run_disable_warmup_after_first",
+        ("--profile-run-disable-warmup-after-first",),
+        "flag",
+        "MULTI_RUN",
+        negative="--no-profile-run-disable-warmup-after-first",
+    ),
+    _F("set_consistent_seed", ("--set-consistent-seed",), "flag", "MULTI_RUN", negative="--no-set-consistent-seed"),
+    _F("vary_seed_per_trial", ("--vary-seed-per-trial",), "flag", "MULTI_RUN", negative="--no-vary-seed-per-trial"),
     _F("convergence_metric", ("--convergence-metric",), "value", "MULTI_RUN"),
     _F("convergence_stat", ("--convergence-stat",), "value", "MULTI_RUN"),
     _F("convergence_threshold", ("--convergence-threshold",), "value", "MULTI_RUN"),
     _F("convergence_mode", ("--convergence-mode",), "value", "MULTI_RUN"),
     _F("parameter_sweep_cooldown_seconds", ("--parameter-sweep-cooldown-seconds",), "value", "MULTI_RUN"),
+    _F(
+        "parameter_sweep_same_seed",
+        ("--parameter-sweep-same-seed",),
+        "flag",
+        "MULTI_RUN",
+        negative="--no-parameter-sweep-same-seed",
+    ),
     _F("parameter_sweep_mode", ("--parameter-sweep-mode",), "value", "MULTI_RUN"),
     _F("sweep_type", ("--sweep-type",), "value", "MULTI_RUN"),
     _F("no_sweep_table", ("--no-sweep-table",), "flag", "MULTI_RUN"),
@@ -661,7 +696,7 @@ _FIELDS: Tuple[_F, ...] = (
     _F("accuracy_benchmark", ("--accuracy-benchmark",), "value", "ACCURACY"),
     _F("accuracy_tasks", ("--accuracy-tasks",), "list", "ACCURACY"),
     _F("accuracy_n_shots", ("--accuracy-n-shots",), "value", "ACCURACY"),
-    _F("accuracy_enable_cot", ("--accuracy-enable-cot",), "flag", "ACCURACY"),
+    _F("accuracy_enable_cot", ("--accuracy-enable-cot",), "flag", "ACCURACY", negative="--accuracy-no-enable-cot"),
     _F("accuracy_grader", ("--accuracy-grader",), "value", "ACCURACY"),
     _F("accuracy_system_prompt", ("--accuracy-system-prompt",), "value", "ACCURACY"),
     _F("accuracy_verbose", ("--accuracy-verbose",), "flag", "ACCURACY"),
@@ -709,8 +744,6 @@ _FIELDS: Tuple[_F, ...] = (
     _F("zmq_ipc_path", ("--zmq-ipc-path",), "value", "ZMQ_COMMUNICATION"),
     _F("zmq_dual_bind", ("--zmq-dual-bind",), "flag", "ZMQ_COMMUNICATION"),
 )
-
-_FIELD_BY_NAME: Dict[str, _F] = {f.field: f for f in _FIELDS}
 
 _GROUP_REFUSALS: Dict[str, str] = {
     "FIXED_SCHEDULE": "timestamp replay of trace datasets is not convertible"
@@ -860,13 +893,25 @@ _BESPOKE: Set[str] = {
 
 _WARMUP_AGENTIC: Set[str] = {"agentic_cache_warmup_duration", "agentic_warmup_grace_period"}
 
+
+def _field_aliases(field: str) -> FrozenSet[str]:
+    """Every CLI alias of ``field``, for the argv scrubbers."""
+    return frozenset(alias for spec in _FIELDS if spec.field == field for alias in spec.aliases)
+
+
+def _multi_value_aliases() -> FrozenSet[str]:
+    """Every alias that keeps taking value tokens until the next flag; the
+
+    argv scrubber must walk the same tokens the parser consumed.
+    """
+    return frozenset(alias for spec in _FIELDS if spec.multi for alias in spec.aliases)
+
+
 # Flags whose value is a credential: scrubbed from the recorded argv.
-_SECRET_FLAGS = frozenset(alias for spec in _FIELDS if spec.field == "api_key" for alias in spec.aliases)
+_SECRET_FLAGS = _field_aliases("api_key")
 # Flags whose value may carry a credential under a header name: scrubbed by name.
-_HEADER_FLAGS = frozenset(alias for spec in _FIELDS if spec.field == "headers" for alias in spec.aliases)
-# Flags that keep taking value tokens until the next flag; the argv scrubber
-# must walk the same tokens the parser consumed.
-_MULTI_VALUE_FLAGS = frozenset(alias for spec in _FIELDS if spec.multi for alias in spec.aliases)
+_HEADER_FLAGS = _field_aliases("headers")
+_MULTI_VALUE_FLAGS = _multi_value_aliases()
 
 WARMUP_NOTE = (
     "warmup: aiperf excludes its warmup phase from the measured window; inference-perf measures every"
@@ -942,24 +987,17 @@ class _Parsed:
 
 
 def _alias_index() -> Dict[str, Tuple[_F, bool]]:
-    """CLI alias -> (field, is_negation). Negations are generated for boolean
+    """CLI alias -> (field, is_negation). Only the negations cli_config.py
 
-    fields the cyclopts way, except where AIPerf defines the ``--no-...``
-    spelling as its own field.
+    declares exist: ``CLIParameter`` defaults ``negative=False``, so cyclopts
+    generates no ``--no-`` spelling of its own at v0.12.0.
     """
     index: Dict[str, Tuple[_F, bool]] = {}
     for spec in _FIELDS:
         for alias in spec.aliases:
             index[alias] = (spec, False)
-    for spec in _FIELDS:
-        if spec.kind != "flag":
-            continue
-        for alias in spec.aliases:
-            if not alias.startswith("--") or alias.startswith("--no-"):
-                continue
-            negation = "--no-" + alias[2:]
-            if negation not in index:
-                index[negation] = (spec, True)
+        if spec.negative is not None:
+            index[spec.negative] = (spec, True)
     return index
 
 
@@ -978,6 +1016,14 @@ def _parse(argv: List[str], conversion: Conversion) -> _Parsed:
         name, eq, inline = token.partition("=")
         entry = _ALIASES.get(name)
         if entry is None:
+            if name.startswith("--no-") and "--" + name[len("--no-") :] in _ALIASES:
+                # The positive spelling exists, so this is an attempted
+                # negation; aiperf declares none for it (CLIParameter
+                # defaults negative=False) and rejects the token.
+                raise PeerUsageError(
+                    f"{name} is not an aiperf flag at v0.12.0: boolean flags take no automatic --no-"
+                    f" negation there, and cli_config.py declares none for --{name[len('--no-') :]}"
+                )
             conversion.refuse(name, f"not in the verified {TOOL_NAME} v0.12.0 flag surface")
             # Consume the flag's one value, a negative number included, so an
             # unknown flag refuses once rather than once per token.
@@ -1273,6 +1319,14 @@ def _convert_load(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileF
     rate = parsed.floating("request_rate", "--request-rate")
     request_count = parsed.integer("request_count", "--request-count")
     duration = parsed.floating("benchmark_duration", "--benchmark-duration")
+    # aiperf rejects nonpositive load values in its own validation; here they
+    # would otherwise end in a stage-model error or a division by zero.
+    if concurrency is not None and concurrency <= 0:
+        raise PeerUsageError(f"--concurrency expects a positive integer, got '{concurrency}'")
+    if rate is not None and rate <= 0:
+        raise PeerUsageError(f"--request-rate expects a positive rate, got '{rate:g}'")
+    if request_count is not None and request_count <= 0:
+        raise PeerUsageError(f"--request-count expects a positive integer, got '{request_count}'")
     arrival = _norm(parsed.raw("arrival_pattern")) if parsed.present("arrival_pattern") else "poisson"
 
     for field, flag in (
@@ -1326,7 +1380,9 @@ def _convert_load(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileF
         load_type = LoadType.CONSTANT if arrival == "constant" else LoadType.POISSON
         if arrival == "constant":
             conversion.assume(
-                "aiperf's constant arrival is evenly spaced requests, exactly inference-perf's constant load type"
+                "aiperf's constant arrival is perfectly even spacing (period 1/rate); inference-perf's"
+                " constant timer draws random gaps and rescales them to the stage duration, so the total"
+                " time matches while individual gaps jitter"
             )
         if duration is not None and request_count is not None:
             conversion.refuse(
@@ -1392,6 +1448,17 @@ def _convert_load(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileF
 def _convert_data(
     conversion: Conversion, parsed: _Parsed, facts: AiperfProfileFacts, api_type: Optional[APIType]
 ) -> Tuple[Optional[Distribution], Optional[Distribution]]:
+    if api_type is not None and api_type is not APIType.Completion:
+        # The emitted synthetic twin is data.type random, and
+        # RandomDataGenerator serves only the completions path, so the
+        # emitted config would refuse to load with "Unsupported API type".
+        endpoint = _norm(parsed.raw("endpoint_type")) if parsed.present("endpoint_type") else "chat"
+        default_note = "" if parsed.present("endpoint_type") else ", aiperf's default when the flag is not given,"
+        conversion.refuse(
+            "--endpoint-type",
+            f"the {endpoint} endpoint{default_note} cannot run on the converted synthetic data:"
+            " data.type random serves the completions path only, so pass --endpoint-type completions",
+        )
     isl_mean = parsed.floating("prompt_input_tokens_mean", "--isl")
     if isl_mean is None:
         isl_mean = float(facts.default_isl_mean)
@@ -1416,6 +1483,12 @@ def _convert_data(
         return None, None
 
     conversion.no_equivalent(SYNTHETIC_NOTE)
+    conversion.assume(
+        f"--isl {isl_mean:g}: aiperf puts that many content tokens on the wire and a BOS-prepending server"
+        " reads one more, while inference-perf counts the BOS inside the input length, so the converted"
+        " prompts run one token shorter on such servers; mapped verbatim, the same skew the vllm converter"
+        " records on --random-input-len"
+    )
     if isl_stddev <= 0:
         input_dist = fixed_dist(int(round(isl_mean)))
     else:
@@ -1795,10 +1868,27 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
     multimodal = _convert_multimodal(conversion, parsed)
 
     # The dataset-entry pool must cover the converted request count, since the
-    # generated data pool is unique per request and never reused.
+    # generated data pool is unique per request and never reused. aiperf sizes
+    # the pool itself (_resolve_entries in _converter_dataset.py at v0.12.0):
+    # an explicit --num-dataset-entries wins, else an explicit --request-count
+    # sizes the pool to itself, else the SyntheticDataset default applies.
+    # --num-conversations sits between the two there, but it refuses above.
     entries = parsed.integer("conversation_num_dataset_entries", "--num-dataset-entries")
-    pool_size = entries if entries is not None else facts.default_num_dataset_entries
+    explicit_count = parsed.integer("request_count", "--request-count")
+    if entries is not None:
+        pool_size = entries
+    elif explicit_count is not None:
+        # _convert_load already raised on a nonpositive --request-count.
+        pool_size = explicit_count
+    else:
+        pool_size = facts.default_num_dataset_entries
     if load_shape is not None:
+        if entries is None and explicit_count is not None:
+            conversion.assume(
+                f"--request-count {explicit_count} sizes aiperf's synthetic entry pool to itself when"
+                " --num-dataset-entries is not set (_resolve_entries in _converter_dataset.py), so every"
+                " request reads a unique entry on both sides"
+            )
         if pool_size < load_shape.request_count:
             default_note = (
                 "" if entries is not None else f" (the untouched default pool is {facts.default_num_dataset_entries})"

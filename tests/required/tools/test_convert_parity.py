@@ -28,19 +28,12 @@ Harness-owned fields (fixture values the peer args cannot produce):
 - ``report``: report shape is harness policy, not a workload property.
 - ``data.*.total_count``: the runtime raises it to the request count when
   unset, so the converter leaves it unset.
-- ``load.type`` between ``constant`` and ``poisson`` when ``expected.yaml``
-  declares per-tool ``arrival`` spacing: vllm bench cannot produce even
-  spacing at any finite rate, so the fixture pair intentionally differs in
-  arrival while the offered average rate matches. The converter emits the
-  arrival the args actually mean; the load-shape comparison in the harness
-  is tolerance-based per declared arrival.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import pytest
-import yaml
 
 from inference_perf.config import read_config
 from inference_perf.tools.convert import convert_vllm_bench
@@ -102,19 +95,6 @@ def _prune(tree: Dict[str, Any], path: Tuple[str, ...]) -> None:
         node.pop(path[-1], None)
 
 
-def _declared_arrivals(case_dir: Path) -> Optional[Dict[str, str]]:
-    expected_path = case_dir / "expected.yaml"
-    if not expected_path.is_file():
-        return None
-    expected = yaml.safe_load(expected_path.read_text()) or {}
-    tools = expected.get("tools") or {}
-    arrivals: Dict[str, str] = {}
-    for name, spec in tools.items():
-        if isinstance(spec, dict) and isinstance(spec.get("arrival"), str):
-            arrivals[str(name)] = str(spec["arrival"])
-    return arrivals or None
-
-
 @pytest.mark.parametrize("case_dir", _discover_cases(), ids=lambda path: path.name if isinstance(path, Path) else str(path))
 def test_convert_reproduces_fixture(case_dir: Path) -> None:
     argv = _read_args(case_dir / "vllm-bench.args") + HARNESS_TAIL
@@ -129,13 +109,6 @@ def test_convert_reproduces_fixture(case_dir: Path) -> None:
     for path in HARNESS_OWNED:
         _prune(got, path)
         _prune(want, path)
-
-    arrivals = _declared_arrivals(case_dir)
-    if arrivals and {got["load"]["type"], want["load"]["type"]} <= set(arrivals.values()) | {"constant", "poisson"}:
-        if got["load"]["type"] != want["load"]["type"]:
-            assert got["load"]["type"] in ("constant", "poisson")
-            assert want["load"]["type"] in ("constant", "poisson")
-            got["load"]["type"] = want["load"]["type"]
 
     assert got == want
 

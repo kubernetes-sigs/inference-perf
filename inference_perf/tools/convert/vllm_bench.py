@@ -23,8 +23,12 @@ Verified v0.10.0 behavior the rows below rely on:
 - The request payload always streams and always carries ``temperature 0.0``
   and ``repetition_penalty 1.0`` when the user passed no sampling flags.
 - ``benchmark()`` sends one untunable test request before the run.
-- ``--request-rate`` defaults to ``inf`` (all prompts offered at t=0); a
-  finite rate with the default ``--burstiness 1.0`` gives Poisson spacing.
+- ``--request-rate`` defaults to ``inf`` (all prompts offered at t=0). A
+  finite rate draws gamma gaps (exponential at the default ``--burstiness
+  1.0``) and, with no ramp-up set, rescales them so the last request lands at
+  exactly ``--num-prompts / --request-rate`` (``get_request`` in
+  ``vllm/benchmarks/serve.py``): the same construction as the ``constant``
+  load timer, not a Poisson process.
 - ``RandomDataset`` draws lengths uniform on ``[len*(1-r), len*(1+r)]`` and
   subtracts the tokenizer's special tokens from the requested input length.
 """
@@ -205,6 +209,16 @@ def _convert_load(
     burstiness: float = ns.burstiness
     max_concurrency: Optional[int] = ns.max_concurrency
 
+    # vllm itself falls over on nonpositive load values (an empty request list
+    # or a zero rate); here they would otherwise end in a stage-model error or
+    # a division by zero.
+    if num_prompts <= 0:
+        raise PeerUsageError(f"--num-prompts expects a positive integer, got '{num_prompts}'")
+    if rate <= 0:
+        raise PeerUsageError(f"--request-rate expects a positive rate, got '{rate:g}'")
+    if max_concurrency is not None and max_concurrency <= 0:
+        raise PeerUsageError(f"--max-concurrency expects a positive integer, got '{max_concurrency}'")
+
     if ns.ramp_up_strategy is not None:
         conversion.refuse("--ramp-up-strategy", "a continuous per-request rate ramp is not expressible with stepwise stages")
         return None, None, None
@@ -243,7 +257,8 @@ def _convert_load(
         conversion.refuse(
             "--burstiness",
             f"burstiness {burstiness} means gamma-spaced arrivals, which no load type produces"
-            " (only burstiness 1.0, Poisson, converts)",
+            " (only burstiness 1.0 converts: its rescaled exponential gaps are the constant timer's"
+            " own construction)",
         )
         return None, None, None
     duration = num_prompts / rate
@@ -260,10 +275,12 @@ def _convert_load(
         ' (docs/comparability.md "Count against duration")'
     )
     conversion.assume(
-        "a finite --request-rate with --burstiness 1.0 is Poisson arrivals, emitted as load.type: poisson;"
-        " the parity fixtures declare each tool's arrival spacing in expected.yaml"
+        "a finite --request-rate draws exponential gaps at --burstiness 1.0 and rescales them so the last"
+        " request lands at exactly --num-prompts / --request-rate (get_request in vllm/benchmarks/serve.py"
+        " when no ramp-up is set); that is the constant timer's construction, random gaps normalized to the"
+        " stage duration, so load.type: constant, not poisson"
     )
-    return LoadType.POISSON, StandardLoadStage(rate=rate, duration=int(duration)), None
+    return LoadType.CONSTANT, StandardLoadStage(rate=rate, duration=int(duration)), None
 
 
 def _convert_data(conversion: Conversion, ns: argparse.Namespace, present: Set[str]) -> Optional[DataConfig]:
