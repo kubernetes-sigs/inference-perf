@@ -114,6 +114,8 @@ SKIPPED = CONDITIONALLY_EXPOSED | set(KNOWN_UNRESOLVED)
 GOLDEN_FILES = sorted(GOLDEN_DIR.glob("*.txt"))
 
 
+# _declared("http://127.0.0.1:1", DEFAULT_MODEL) -> {"vllm:num_requests_waiting": GaugeMetric(...), ...},
+# read from vLLMModelServerClient's metadata. The base URL is never contacted.
 def _declared(base_url: str, model_name: str) -> dict[str, Metric[Any]]:
     """Declared metric name -> the metric object, as declared by the vLLM client."""
     client = vLLMModelServerClient(
@@ -144,6 +146,8 @@ def test_goldens_are_committed() -> None:
     assert GOLDEN_FILES, f"no metric-family goldens committed under {GOLDEN_DIR}"
 
 
+# Every name the vLLM client declares resolves against each golden in e2e/testdata/vllm_metric_families/,
+# except the SKIPPED allowlists. A declaration renamed to a family the golden lacks turns this red.
 @pytest.mark.parametrize("golden_file", GOLDEN_FILES, ids=lambda p: p.stem)
 def test_declared_names_resolve_against_goldens(golden_file: Path) -> None:
     golden = load_golden(golden_file)
@@ -158,13 +162,10 @@ def test_declared_names_resolve_against_goldens(golden_file: Path) -> None:
     )
 
 
+# Each KNOWN_UNRESOLVED name is still declared and still fails to resolve against every golden.
+# Once a fix makes one resolve, this goes red until the entry is deleted (#568 emptied the list).
 @pytest.mark.parametrize("golden_file", GOLDEN_FILES, ids=lambda p: p.stem)
 def test_known_unresolved_still_do_not_resolve(golden_file: Path) -> None:
-    # Guards the allowlist above. Each KNOWN_UNRESOLVED name must still be declared
-    # and must still fail to resolve; the moment its fix lands and the name starts
-    # resolving, this goes red and the entry has to be deleted. That is how
-    # vllm:prompt_tokens and vllm:generation_tokens left the list when #568 landed.
-    # An allowlist that quietly stops applying is how a gate rots.
     golden = load_golden(golden_file)
     declared = _declared("http://127.0.0.1:1", DEFAULT_MODEL)
 
@@ -178,16 +179,10 @@ def test_known_unresolved_still_do_not_resolve(golden_file: Path) -> None:
     )
 
 
+# vllm:corrupted_requests is declared by the client and absent from every golden (stock server, no
+# VLLM_COMPUTE_NANS_IN_LOGITS), so it passes. Dropping the declaration or a golden listing it fails.
 @pytest.mark.parametrize("golden_file", GOLDEN_FILES, ids=lambda p: p.stem)
 def test_conditionally_exposed_still_apply(golden_file: Path) -> None:
-    # Guards the other allowlist the same way. CONDITIONALLY_EXPOSED shrinks the
-    # strict checks, so each entry has to still be earning that: still declared by
-    # vllm_client, and still absent from a stock server's golden. Feeding it
-    # {"vllm:corrupted_requests"} against v0.26.0.txt passes, because the client
-    # declares it and the golden (captured from a stock server, which does not run
-    # with VLLM_COMPUTE_NANS_IN_LOGITS) does not list it. Dropping the declaration
-    # or a release starting to expose it both fail here, which is what stops the
-    # list quietly widening the hole it opens.
     golden = load_golden(golden_file)
     declared = _declared("http://127.0.0.1:1", DEFAULT_MODEL)
 
@@ -230,19 +225,12 @@ async def test_exposed_families_match_golden() -> None:
     )
 
 
+# Every declared name is present in a live vLLM exposition and carries the type its query assumes.
+# Given `# TYPE vllm:prefix_cache_hits gauge`, CounterMetric("vllm:prefix_cache_hits") is present
+# but fails as wrong_type, since increase() over a gauge is nonsense and raises nothing.
 @pytest.mark.asyncio
 @pytest.mark.skipif(not VLLMServerRunner.is_available(), reason="no vLLM server or executable available")
 async def test_declared_metric_names_exist() -> None:
-    # Two oracles over one exposition, both driven by the metric's own
-    # candidate_names(): every series a query selects must be present
-    # (is_exposed, over sample and family names), and the family behind it must
-    # carry the type the query assumes (resolves, over the `# TYPE` map).
-    # Presence alone is not enough, and that gap is the same shape as the bug
-    # this module exists for. Given `# TYPE vllm:prefix_cache_hits gauge` and a
-    # sample line `vllm:prefix_cache_hits{...} 3`, a declared
-    # CounterMetric("vllm:prefix_cache_hits") is_exposed -> True on the bare-name
-    # candidate group, while the query it emits, increase(...[60s]), is nonsense
-    # over a gauge and reports no error. resolves -> False catches it.
     async with VLLMServerRunner(port=get_free_port()) as server:
         exposition = await _warmed_up_exposition(server)
         declared = _declared(server.base_url, server.model)

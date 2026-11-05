@@ -18,9 +18,8 @@ to the server itself, and writes them to
 ``e2e/testdata/server_metric_families/<server>.txt`` with a header recording
 the release it came from. The scheduled drift workflow
 (``.github/workflows/metric_name_drift.yml``) runs this against the latest
-upstream release of SGLang and TGI and opens a pull request when the file
-changes; run it by hand against your own server to refresh a fixture out of
-band.
+upstream release of SGLang and TGI and files an issue when the file changes;
+run it by hand against your own server to refresh a fixture out of band.
 
 Exits 0 whether or not the file changed. ``--check`` instead exits 1 on a
 difference without writing, for callers that only want to know.
@@ -107,7 +106,7 @@ def main() -> int:
     # The header carries a capture date and a source URL that move on every
     # run, so comparing whole files would report a change every week. Compare
     # the family list and the reported version instead: those are the two
-    # things a reviewer of a refresh PR is being asked about.
+    # things a drift issue reports.
     previous = parse_fixture(path.read_text(encoding="utf-8")) if path.is_file() else None
     changed = previous is None or previous.families != families or previous.version != version
 

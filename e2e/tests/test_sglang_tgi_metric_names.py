@@ -98,6 +98,8 @@ KNOWN_UNRESOLVED: Dict[str, Dict[str, str]] = {
 }
 
 
+# SERVERS["sglang"] -> {"sglang:num_queue_reqs": GaugeMetric(...), ...}, read from the client's
+# get_prometheus_metric_metadata() with the tokenizer patched out so nothing touches the network.
 def declared_for(spec: ServerSpec) -> Dict[str, Metric[Any]]:
     """Declared metric name -> the metric object, as the server's client subclass declares them.
 
@@ -123,6 +125,8 @@ def declared_for(spec: ServerSpec) -> Dict[str, Metric[Any]]:
     return declared
 
 
+# With E2E_SGLANG_BASE_URL=http://host:30000 set, returns the text of http://host:30000/metrics.
+# Unset, the calling test skips.
 def live_metrics_text(spec: ServerSpec) -> str:
     base_url = external_base_url(spec)
     if not base_url:
@@ -130,11 +134,10 @@ def live_metrics_text(spec: ServerSpec) -> str:
     return fetch_text(f"{base_url}/metrics")
 
 
+# sglang.txt and tgi.txt each carry server, version, provenance, source and captured in the header,
+# a known provenance, a server key matching the file, and at least one family.
 @pytest.mark.parametrize("server", SERVER_IDS)
 def test_fixture_header_is_complete(server: str) -> None:
-    # A fixture that does not say where it came from cannot be reviewed, and
-    # an unattributed fixture is exactly how a hand-written guess becomes a
-    # pinned expectation.
     fixture = load_fixture(server)
     missing = [key for key in REQUIRED_HEADER_KEYS if not fixture.header.get(key)]
     assert not missing, f"{fixture_path(server).name} header is missing {missing}"
@@ -145,6 +148,8 @@ def test_fixture_header_is_complete(server: str) -> None:
     assert fixture.families, f"{fixture_path(server).name} lists no metric families"
 
 
+# Every name the sglang or tgi client declares resolves against its fixture, except KNOWN_UNRESOLVED.
+# Renaming sglang:num_queue_reqs in the fixture turns this red.
 @pytest.mark.parametrize("server", SERVER_IDS)
 def test_declared_names_resolve_against_fixture(server: str) -> None:
     spec = SERVERS[server]
@@ -163,6 +168,8 @@ def test_declared_names_resolve_against_fixture(server: str) -> None:
     )
 
 
+# sglang:time_per_output_token_seconds is still declared and still missing from sglang.txt.
+# Fixing the declaration, or the fixture gaining the name, turns this red. tgi skips (empty list).
 @pytest.mark.parametrize("server", SERVER_IDS)
 def test_known_unresolved_are_still_unresolved(server: str) -> None:
     spec = SERVERS[server]
@@ -182,6 +189,8 @@ def test_known_unresolved_are_still_unresolved(server: str) -> None:
     )
 
 
+# A live server's family -> type map equals the fixture's: no added, removed or retyped family.
+# Skips while the fixture is derived from source, which lists more than any live server exposes.
 @pytest.mark.parametrize("server", SERVER_IDS)
 def test_exposed_families_match_fixture(server: str) -> None:
     spec = SERVERS[server]
@@ -206,16 +215,11 @@ def test_exposed_families_match_fixture(server: str) -> None:
     )
 
 
+# Every declared name is present in a live exposition and carries the type its query assumes.
+# Given `# TYPE sglang:prefix_cache_hit gauge`, CounterMetric("sglang:prefix_cache_hit") is present
+# but fails as wrong_type, since increase() over a gauge is nonsense and raises nothing.
 @pytest.mark.parametrize("server", SERVER_IDS)
 def test_declared_metric_names_exist(server: str) -> None:
-    # Two oracles over one exposition, both driven by the metric's own
-    # candidate_names(): every series a query selects must be present
-    # (is_exposed, over sample and family names), and the family behind it must
-    # carry the type the query assumes (resolves, over the `# TYPE` map).
-    # Presence alone is not enough. Given `# TYPE sglang:prefix_cache_hit gauge`
-    # and a matching sample line, a declared CounterMetric("sglang:prefix_cache_hit")
-    # is_exposed -> True on the bare-name candidate group, while the increase()
-    # it emits is nonsense over a gauge and reports no error. resolves -> False.
     spec = SERVERS[server]
     exposition = live_metrics_text(spec)
     names = exposed_names(exposition)

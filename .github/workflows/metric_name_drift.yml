@@ -67,6 +67,7 @@ jobs:
           - server: sglang
             image: docker.io/lmsysorg/sglang:latest
             port: 30000
+            host_port: 8080
             # SGLang exports nothing at all without --enable-metrics. The
             # model flag comes last so the model name is appended as its own
             # argument, never spliced into this string.
@@ -75,12 +76,18 @@ jobs:
           - server: tgi
             image: ghcr.io/huggingface/text-generation-inference:latest
             port: 80
+            host_port: 8081
             launch_args: --model-id
             warmup_body: '{"inputs":"1 2 3","parameters":{"max_new_tokens":4}}'
     env:
       MODEL: ${{ inputs.model || 'Qwen/Qwen2.5-0.5B-Instruct' }}
       SERVER: ${{ matrix.server }}
       FIXTURE: e2e/testdata/server_metric_families/${{ matrix.server }}.txt
+      # Per server, so two matrix jobs on one host never remove each other's
+      # container or contend for one port.
+      CONTAINER: metric-drift-${{ matrix.server }}
+      HOST_PORT: ${{ matrix.host_port }}
+      BASE_URL: http://127.0.0.1:${{ matrix.host_port }}
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -108,13 +115,13 @@ jobs:
 
           # GPU runners are usually persistent, so never inherit a container
           # from a previous run.
-          docker rm -f drift 2>/dev/null || true
+          docker rm -f "${CONTAINER}" 2>/dev/null || true
           docker pull "${IMAGE}"
 
           # LAUNCH_ARGS is unquoted on purpose so it word-splits into
           # arguments; it is a literal from this workflow file, not input.
-          docker run -d --name drift --gpus all --shm-size 8g \
-            -p "127.0.0.1:8080:${PORT}" \
+          docker run -d --name "${CONTAINER}" --gpus all --shm-size 8g \
+            -p "127.0.0.1:${HOST_PORT}:${PORT}" \
             -v "${HOME}/hf-cache:/data" -e HF_HOME=/data \
             "${IMAGE}" ${LAUNCH_ARGS} "${MODEL}"
 
@@ -122,7 +129,7 @@ jobs:
           # boot, so this deadline is generous. It is also what stands between
           # a wedged boot and the job timeout.
           for _ in $(seq 1 120); do
-            if curl -sf http://127.0.0.1:8080/health > /dev/null; then
+            if curl -sf "${BASE_URL}/health" > /dev/null; then
               echo "${SERVER} is ready"
               exit 0
             fi
@@ -139,18 +146,18 @@ jobs:
           WARMUP_BODY: ${{ matrix.warmup_body }}
         run: |
           set -euo pipefail
-          curl -sf -X POST http://127.0.0.1:8080/generate \
+          curl -sf -X POST "${BASE_URL}/generate" \
             -H 'Content-Type: application/json' \
             -d "${WARMUP_BODY}" > /dev/null
 
       # Writes only when the family list or the reported version differs from
       # what is committed, so an unchanged metric surface leaves no diff and
-      # the step below has nothing to open.
+      # the issue step has nothing to file.
       - name: Capture metric-family fixture
         run: |
           set -euo pipefail
           pdm run python scripts/capture_server_metric_names.py \
-            --server "${SERVER}" --base-url http://127.0.0.1:8080
+            --server "${SERVER}" --base-url "${BASE_URL}"
 
       # The serverless checks need no server, so run them here against the
       # fixture just captured and put the verdict in the issue.
@@ -171,7 +178,7 @@ jobs:
 
       - name: Collect server logs
         if: always()
-        run: docker logs drift > "${SERVER}-server.log" 2>&1 || true
+        run: docker logs "${CONTAINER}" > "${SERVER}-server.log" 2>&1 || true
 
       - name: Upload server logs
         if: always()
@@ -182,7 +189,7 @@ jobs:
 
       - name: Stop ${{ matrix.server }}
         if: always()
-        run: docker rm -f drift 2>/dev/null || true
+        run: docker rm -f "${CONTAINER}" 2>/dev/null || true
 
       # The issue carries a capped diff. The artifact is the whole fixture, so
       # whoever lands the refresh does not need a GPU to regenerate it.
