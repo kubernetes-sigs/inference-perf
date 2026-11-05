@@ -171,9 +171,9 @@ class TestWorkerFailureDescription(unittest.TestCase):
         self.assertIn("SIGKILL", described)
         self.assertIn("without reporting a Python traceback", described)
 
+    # Exit code 1 and no record: Worker.run() never ran, so the description must say
+    # the worker failed during startup and point at stderr, not blame a segfault.
     def test_nonzero_exit_without_a_record_is_described_as_a_startup_failure(self) -> None:
-        # Exit code 1 and no record: Worker.run() never ran, so the description must say
-        # the worker failed during startup and point at stderr, not blame a segfault.
         described = WorkerFailure(worker_id=2, exitcode=1, crash=None).describe()
         self.assertIn("Worker 2 exited with code 1", described)
         self.assertIn("during startup", described)
@@ -320,10 +320,10 @@ class TestWorkerCrashEndToEnd(unittest.IsolatedAsyncioTestCase):
         for info in load_gen.stage_runtime_info.values():
             self.assertEqual(info.status, StageStatus.FAILED)
 
+    # One worker, one stage, and a datagen that raises while the worker unpickles it.
+    # The worker exits 1 before Worker.run() with no crash record, the run returns
+    # instead of hanging, and the parent says the worker failed during startup.
     async def test_payload_that_fails_to_unpickle_is_reported_as_a_startup_failure(self) -> None:
-        # One worker, one stage, and a datagen that raises while the worker unpickles it.
-        # The worker exits 1 before Worker.run() with no crash record, the run returns
-        # instead of hanging, and the parent says the worker failed during startup.
         api_config = APIConfig(type=APIType.Completion, streaming=False)
         data_config = DataConfig(
             type=DataGenType.Random,

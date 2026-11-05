@@ -73,6 +73,7 @@ async def _process_yaml_config(config: Union[str, Path, Dict[str, Any]], out_dir
     return cfg_path
 
 
+# pythonpath_env("/repo") with PYTHONPATH=/nix/site -> {"PYTHONPATH": "/repo:/nix/site"}.
 def pythonpath_env(*paths: Union[str, Path]) -> Dict[str, str]:
     """Build a ``PYTHONPATH`` override that keeps the inherited entries.
 

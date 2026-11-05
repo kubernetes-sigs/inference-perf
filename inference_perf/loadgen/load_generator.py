@@ -646,7 +646,7 @@ class Worker(ForkServerProcess):
 
         # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        # Forked with the load generator's SIGTERM handler; terminate() needs the default action.
+        # A fork child inherits the load generator's SIGTERM handler; terminate() needs the default action.
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         set_event_loop_policy(uvloop.EventLoopPolicy())
 

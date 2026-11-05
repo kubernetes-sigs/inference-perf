@@ -73,9 +73,11 @@ class _PicklableHFTokenizer:
     def encode(self, text: str, **kw: object) -> List[int]:
         return [0] * sum(int(n) for n in re.findall(r"tok_(\d+)", text))
 
+    # Any list of ids decodes to "tok_<count>": [7, 8, 9] -> "tok_3".
     def decode(self, ids: List[int], **kw: object) -> str:
         return f"tok_{len(ids)}"
 
+    # decode applied to each list: [[1], [1, 2]] -> ["tok_1", "tok_2"].
     def batch_decode(self, batch: List[List[int]], **kw: object) -> List[str]:
         return [f"tok_{len(ids)}" for ids in batch]
 
@@ -83,15 +85,19 @@ class _PicklableHFTokenizer:
 class _PicklableTokenizer:
     """Picklable CustomTokenizer stand-in, matching _mock_tokenizer's surface."""
 
+    # Returns a fresh _PicklableHFTokenizer, the object datagens call encode/decode on.
     def get_tokenizer(self) -> _PicklableHFTokenizer:
         return _PicklableHFTokenizer()
 
+    # Sums the N in every "tok_N": "tok_2 tok_3" -> 5. Anything that is not a string -> 0.
     def count_tokens(self, text: object, **kw: object) -> int:
         if isinstance(text, str):
             return sum(int(n) for n in re.findall(r"tok_(\d+)", text))
         return 0
 
 
+# A SharedPrefix completion datagen with num_groups x num_prompts_per_group prompts, built on
+# the given tokenizer or, by default, the MagicMock one (which only survives fork).
 def _make_datagen(
     num_groups: int = 1, num_prompts_per_group: int = 1, tokenizer: Optional[CustomTokenizer] = None
 ) -> SharedPrefixDataGenerator:

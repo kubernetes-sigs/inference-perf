@@ -172,9 +172,9 @@ def _span_records_in_worker(otel: OTelInstrumentation, result: "SimpleQueue[bool
         result.put(span is not None and span.is_recording())
 
 
+@pytest.mark.parametrize("otlp_endpoint", [None, "http://localhost:4317"])
 # An enabled instance goes to a forkserver worker, once with the console exporter and once with OTLP.
 # The worker reports True: the instance pickled and the worker built a live tracer of its own.
-@pytest.mark.parametrize("otlp_endpoint", [None, "http://localhost:4317"])
 def test_enabled_instrumentation_traces_in_forkserver_worker(
     monkeypatch: pytest.MonkeyPatch, otlp_endpoint: Optional[str]
 ) -> None:
