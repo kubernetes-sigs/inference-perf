@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -19,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from inference_perf.apis import AnthropicMessagesAPIData, ChatMessage
+from inference_perf.apis.response_errors import InBandError
 from inference_perf.config import APIConfig, APIType
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventOutputRegistry,
@@ -147,6 +149,23 @@ async def test_anthropic_messages_process_response_reports_client_count_with_ser
     assert info.response_metrics.output_tokens == 2
     assert info.response_metrics.server_usage == {"input_tokens": 3, "output_tokens": 5}
     assert info.extra_info["stop_reason"] == "end_turn"
+
+
+# Unary 200 whose body is Anthropic's `{"type": "error", "error": {...}}`. Must raise
+# InBandError carrying that body as its message rather than return a zero-token success.
+@pytest.mark.asyncio
+async def test_anthropic_messages_process_response_in_band_error_body_raises() -> None:
+    data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="hello there")])
+    body = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+
+    with pytest.raises(InBandError) as exc_info:
+        await data.process_response(
+            response=_mock_response(body),
+            config=APIConfig(type=APIType.AnthropicMessages),
+            tokenizer=_mock_tokenizer(),
+        )
+
+    assert json.loads(str(exc_info.value)) == body
 
 
 @pytest.mark.asyncio
@@ -330,3 +349,30 @@ async def test_anthropic_streaming_without_usage_falls_back_to_client_count() ->
     assert info.response_metrics is not None
     assert info.response_metrics.output_tokens == 2
     assert info.response_metrics.server_usage is None
+
+
+# Replayed unary Anthropic turn whose 200 body is `{"type": "error", "error": {...}}`.
+# Must raise InBandError and register no output for the event, so the client's
+# failure path, not the success path, settles the session.
+@pytest.mark.asyncio
+async def test_session_anthropic_messages_in_band_error_body_raises() -> None:
+    registry = EventOutputRegistry()
+    data = SessionAnthropicMessagesAPIData(
+        messages=[ChatMessage(role="user", content="hello there")],
+        event_id="session_1:event_1",
+        registry=registry,
+        worker_tracker=WorkerSessionTracker(),
+        completion_queue=None,
+        total_events_in_session=1,
+    )
+    body = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+
+    with pytest.raises(InBandError) as exc_info:
+        await data.process_response(
+            response=_mock_response(body),
+            config=APIConfig(type=APIType.AnthropicMessages),
+            tokenizer=_mock_tokenizer(),
+        )
+
+    assert json.loads(str(exc_info.value)) == body
+    assert registry.get_output_by_event_id("session_1:event_1") is None

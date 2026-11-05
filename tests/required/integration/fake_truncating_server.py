@@ -22,6 +22,10 @@ and then half-closes. aiohttp raises a real ``ClientPayloadError`` when the
 connection ends early, so tests exercise the client's genuine exception path
 instead of a patched-in exception (the #606 Integration tier's "fake the
 conditions, never the oracle" principle).
+
+With ``missing_bytes=0`` the server keeps its promise and the body arrives
+complete, which is the condition #713 needs: a well-formed 200 whose *payload*
+is the failure (an in-band error frame, or nothing at all).
 """
 
 import asyncio
@@ -36,13 +40,26 @@ class TruncatingSSEServer:
     break; pass an empty list to break before any body byte is sent.
     ``sent_body`` records exactly what went out on the wire so a test can
     assert the client preserved that text and not an approximation of it.
+
+    ``body`` replaces the SSE framing with a verbatim body (a unary JSON
+    response, say) and ``content_type`` labels it; ``events`` is ignored then.
     """
 
-    def __init__(self, events: List[str], missing_bytes: int = 64) -> None:
+    def __init__(
+        self,
+        events: List[str],
+        missing_bytes: int = 64,
+        *,
+        body: Optional[str] = None,
+        content_type: str = "text/event-stream",
+    ) -> None:
         self.events = events
         # How far the declared Content-Length overshoots what we actually
-        # write. Any positive value triggers the client-side error.
+        # write. Any positive value triggers the client-side error; 0 delivers
+        # the body complete.
         self.missing_bytes = missing_bytes
+        self.body = body
+        self.content_type = content_type
         self.sent_body = ""
         self._server: Optional[asyncio.AbstractServer] = None
         self.port = 0
@@ -82,12 +99,12 @@ class TruncatingSSEServer:
             writer.close()
             return
 
-        body = "".join(f"data: {event}\n\n" for event in self.events)
+        body = self.body if self.body is not None else "".join(f"data: {event}\n\n" for event in self.events)
         encoded = body.encode()
         headers = (
             "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/event-stream\r\n"
-            # The lie: promise more than we are going to send.
+            f"Content-Type: {self.content_type}\r\n"
+            # The lie (when missing_bytes > 0): promise more than we are going to send.
             f"Content-Length: {len(encoded) + self.missing_bytes}\r\n"
             "\r\n"
         )

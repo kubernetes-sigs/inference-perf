@@ -145,6 +145,18 @@ class TestRequestFailuresByLabel:
         assert bucket["messages"][0]["message"] == "boom"
         assert bucket["messages"][0]["session_ids"] == ["s1", "s2", "s3"]
 
+    # A 200 carrying {"error": {"message": "upstream connect error"}} and a client
+    # transport failure with the same text. The 200 must stay under "inbanderror",
+    # the transport failure under "Connection Error", not merged into one bucket.
+    def test_in_band_error_keeps_its_label_when_the_message_matches_a_pattern(self) -> None:
+        in_band = ErrorResponseInfo(error_type="InBandError", error_msg='{"error": {"message": "upstream connect error"}}')
+        transport = ErrorResponseInfo(error_type="ClientConnectorError", error_msg="upstream connect error")
+        summary = summarize_requests([_req(error=in_band), _req(error=transport)], PERCENTILES)
+        by_label = summary.failures["by_label"]
+        assert by_label["inbanderror"]["count"] == 1
+        assert by_label["inbanderror"]["messages"][0]["message"] == "upstream connect error"
+        assert by_label["Connection Error"]["count"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Session-lifecycle total_recorded_substitutions
