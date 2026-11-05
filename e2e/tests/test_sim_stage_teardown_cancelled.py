@@ -129,3 +129,15 @@ async def test_requests_cancelled_at_stage_teardown_are_reported_as_cancelled():
     by_label = {label: bucket["count"] for label, bucket in stage_report["failures"]["by_label"].items()}
     assert by_label == {}, f"Unexpected failure labels: {by_label}"
     assert stage_report["failures"]["count"] == 0
+
+    # The llm-d benchmark report partial counts the same requests as incomplete, not failed.
+    br_requests = result.reports["inference-perf.partial.stage_0.yaml"]["results"]["request_performance"]["aggregate"][
+        "requests"
+    ]
+    assert br_requests.get("failures", 0) == 0, br_requests
+    assert br_requests["incomplete"] == cancelled["count"], br_requests
+
+    # The report set agrees with itself: inference-perf's own validator finds no errors.
+    validation = result.reports["validation.json"]
+    errors = validation["global"]["errors"] + [e for group in validation["reports"].values() for e in group["errors"]]
+    assert errors == [], errors
