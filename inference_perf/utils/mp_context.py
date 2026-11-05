@@ -27,8 +27,38 @@ contexts raises at pickle/transfer time.
 """
 
 import multiprocessing as mp
+import os
+from multiprocessing import forkserver
 from multiprocessing.context import ForkServerContext
+from typing import Dict, Optional
 
 # forkserver is available on Linux and macOS, which are the platforms this tool
-# targets. The server is started lazily on first worker creation.
+# targets. start_forkserver() starts the server; otherwise the first worker or
+# manager start does, without the settings below.
 MP_CONTEXT: ForkServerContext = mp.get_context("forkserver")
+
+# Imported once in the server so workers fork with the package loaded instead of
+# importing it again each (seconds and hundreds of MB per worker). "__main__" is
+# the stdlib default and stays.
+_PRELOAD = ["__main__", "inference_perf.loadgen.load_generator"]
+
+# Those imports start native threads: OpenBLAS sizes a pool to the core count when
+# numpy loads, and pyarrow's bundled jemalloc starts a purge thread. Either makes the
+# server multi-threaded and every worker fork unsafe again. Workers inherit these
+# settings and do no BLAS work, and pyarrow's default pool is not jemalloc.
+_SERVER_ENV = {"OPENBLAS_NUM_THREADS": "1", "JE_ARROW_MALLOC_CONF": "background_thread:false"}
+
+
+def start_forkserver() -> None:
+    """Start the forkserver with the package preloaded and no native threads, if it is not running."""
+    MP_CONTEXT.set_forkserver_preload(_PRELOAD)
+    saved: Dict[str, Optional[str]] = {key: os.environ.get(key) for key in _SERVER_ENV}
+    os.environ.update(_SERVER_ENV)
+    try:
+        forkserver.ensure_running()
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value

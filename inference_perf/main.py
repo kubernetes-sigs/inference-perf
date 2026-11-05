@@ -17,7 +17,7 @@ from argparse import ArgumentParser
 
 import yaml
 from inference_perf.analysis.analyze import analyze_reports
-from inference_perf.utils.mp_context import MP_CONTEXT
+from inference_perf.utils.mp_context import MP_CONTEXT, start_forkserver
 from typing import List, Optional
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
 from inference_perf.datagen.base import BaseGenerator
@@ -322,6 +322,11 @@ def main_cli() -> None:
 
     if len(config.load.stages) == 0 and config.load.sweep is None:
         raise Exception("Load stages must be configured, or sweep must be configured")
+
+    # Before the manager below, which would otherwise start the forkserver
+    # without its preload settings.
+    if config.load.num_workers > 0:
+        start_forkserver()
 
     # Create multiprocessing manager for session replay datagens if needed.
     # Must be created before workers are started, and from the same context as

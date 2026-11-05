@@ -13,14 +13,13 @@
 # limitations under the License.
 """End-to-end guard for the fork -> forkserver multiprocessing switch.
 
-The load generator starts workers with a ``forkserver`` context instead of the
-(Python 3.14 deprecated) ``fork`` default. Unlike fork, forkserver pickles the
-worker payload and runs it in a fresh interpreter, so the entire production
-payload -- the model server client, the datagen, and its CustomTokenizer -- must
-be picklable. The unit suite only exercises this boundary with picklable
-doubles; these tests drive the real ``inference-perf`` CLI through the
-multiprocessing path (num_workers > 0) with a real tokenizer-backed datagen and
-the mock server (so no real model is required).
+The load generator starts workers with a ``forkserver`` context instead of
+``fork``. Unlike fork, forkserver pickles the worker payload and runs it in a
+fresh interpreter, so everything a worker receives (the model server client,
+the datagen, and its CustomTokenizer) must be picklable. The unit suite only
+exercises this boundary with picklable doubles; these tests drive the real
+``inference-perf`` CLI through the multiprocessing path (num_workers > 0) with a
+real tokenizer-backed datagen and the mock server (so no real model is required).
 """
 
 from pathlib import Path
@@ -41,7 +40,14 @@ _EXPECTED_REQUESTS = _RATE * _DURATION
 
 _OTEL_TRACES = Path(__file__).resolve().parents[2] / "examples" / "otel" / "test_traces" / "simple"
 
+# The fork-with-threads DeprecationWarning is raised inside multiprocessing, and the
+# default filters only show DeprecationWarning from __main__, so a plain run prints
+# nothing either way. "default" (not "error") so an unrelated deprecation cannot fail the run.
+_SHOW_DEPRECATIONS = {"PYTHONWARNINGS": "default::DeprecationWarning"}
 
+
+# Builds a constant 2 QPS x 5s run (10 requests) through 2 workers against the mock
+# server, with the given datagen and the gpt2 tokenizer.
 def _config(datagen_type: str) -> Dict[str, Any]:
     distribution = {"min": 10, "max": 50, "mean": 30, "std_dev": 10}
     return {
@@ -84,8 +90,10 @@ def _replay_config(data: Dict[str, Any]) -> Dict[str, Any]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("datagen_type", ["synthetic", "random"])
+# The synthetic and random datagens with a real gpt2 tokenizer go through 2 workers at
+# 2 QPS for 5s. All 10 requests succeed and the fork-with-threads warning never prints.
 async def test_real_datagen_pickles_into_forkserver_workers(datagen_type: str) -> None:
-    result = await run_benchmark_minimal(_config(datagen_type), timeout_sec=180)
+    result = await run_benchmark_minimal(_config(datagen_type), timeout_sec=180, extra_env=_SHOW_DEPRECATIONS)
 
     assert result.success, (
         f"Benchmark failed for datagen={datagen_type} "
@@ -100,17 +108,15 @@ async def test_real_datagen_pickles_into_forkserver_workers(datagen_type: str) -
         f"expected {_EXPECTED_REQUESTS} successful requests, got {summary['successes']['count']}"
     )
 
-    # The deprecated fork() warning must not reappear: workers now start from the
-    # single-threaded forkserver, not a fork of this multi-threaded process.
+    # Workers start from the single-threaded forkserver, not a fork of this
+    # multi-threaded process. _SHOW_DEPRECATIONS makes the warning visible if they don't.
     assert "use of fork() may lead to deadlocks" not in result.stdout, (
-        f"fork() deprecation warning present for datagen={datagen_type}; "
-        f"workers are not using the forkserver context.\n{result.stdout}"
+        f"fork() deprecation warning present for datagen={datagen_type}: a worker was forked "
+        f"from a multi-threaded process, either the CLI itself or a forkserver whose preload "
+        f"started threads.\n{result.stdout}"
     )
 
 
-# Session replay datagens are built with the run's SyncManager, which cannot be pickled.
-# 4 synthetic agentic sessions x 2 turns = 8 requests, the two sample OTel chains = 6.
-# Each run uses 2 workers and every request must succeed.
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "data, expected_requests",
@@ -151,6 +157,9 @@ async def test_real_datagen_pickles_into_forkserver_workers(datagen_type: str) -
         ),
     ],
 )
+# Session replay datagens are built with the run's SyncManager, which cannot be pickled.
+# 4 synthetic agentic sessions x 2 turns = 8 requests, the two sample OTel chains = 6.
+# Each run uses 2 workers and every request must succeed.
 async def test_replay_datagen_pickles_into_forkserver_workers(data: Dict[str, Any], expected_requests: int) -> None:
     result = await run_benchmark_minimal(_replay_config(data), timeout_sec=180)
 

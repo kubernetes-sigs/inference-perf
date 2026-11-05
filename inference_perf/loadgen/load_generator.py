@@ -85,7 +85,7 @@ from inference_perf.observability.progress import (
     BarHandle,
     ProgressBars,
 )
-from inference_perf.utils.mp_context import MP_CONTEXT
+from inference_perf.utils.mp_context import MP_CONTEXT, start_forkserver
 
 logger = logging.getLogger(__name__)
 
@@ -1879,6 +1879,8 @@ class LoadGenerator:
             await sleep(0.05)
 
     async def mp_run(self, client: ModelServerClient) -> None:
+        # No-op when main_cli already started it.
+        start_forkserver()
         request_queue: RequestQueue[RequestQueueData] = RequestQueue(
             self.num_workers if self.datagen.is_preferred_worker_requested() else 1
         )
