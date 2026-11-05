@@ -44,6 +44,16 @@ import inference_perf.client.modelserver.openai_client
 inference_perf.client.modelserver.openai_client.CustomTokenizer = MagicMock()  # type: ignore[attr-defined]
 
 
+# The client waits for a readiness route on construction; these tests use a mock URI.
+def _no_readiness_wait(self: openAIModelServerClient) -> None:
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _skip_readiness_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(openAIModelServerClient, "wait_until_ready", _no_readiness_wait)
+
+
 class ConcreteOpenAIClient(openAIModelServerClient):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]

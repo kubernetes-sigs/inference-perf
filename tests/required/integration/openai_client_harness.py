@@ -60,7 +60,12 @@ async def run_request_against(
     collector = LocalRequestMetricCollector()
     # The client builds a CustomTokenizer, which would otherwise fetch from the
     # Hub; token counts are irrelevant to these tests, only the response body is.
-    with patch.object(openai_client_module, "CustomTokenizer", return_value=make_tokenizer()):
+    with (
+        patch.object(openai_client_module, "CustomTokenizer", return_value=make_tokenizer()),
+        # The client waits for the endpoint on construction; the fake server serves the request, not
+        # a readiness probe, so readiness is not under test here.
+        patch.object(openai_client_module.openAIModelServerClient, "wait_until_ready"),
+    ):
         client = ConcreteOpenAIClient(
             metrics_collector=collector,
             api_config=api_config or APIConfig(type=APIType.Completion, streaming=True),

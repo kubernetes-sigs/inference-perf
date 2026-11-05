@@ -51,9 +51,11 @@ logger = logging.getLogger(__name__)
 _SUPPORTED_MODELS_TIMEOUT_SEC = 30.0
 
 # Readiness wait: the pause between probes of the readiness route, and the cap on a
-# single probe so one hung connection cannot eat the whole readiness_timeout.
+# single probe so one hung connection cannot eat the whole readiness budget.
 _READINESS_POLL_INTERVAL_SEC = 1.0
 _READINESS_PROBE_TIMEOUT_SEC = 5.0
+# Probed when a profile names no readiness route of its own.
+_READINESS_FALLBACK_ROUTE = "/v1/models"
 
 
 class OpenAIMetrics(BaseMetrics):
@@ -89,9 +91,11 @@ class OpenAIMetrics(BaseMetrics):
 class openAIModelServerClient(ModelServerClient):
     _session: "Optional[openAIModelServerClientSession]" = None
     _session_lock = asyncio.Lock()
-    # Route that answers 200 once the server can take requests; set by the server
-    # profiles that have one. None: readiness_timeout is ignored with a warning.
+    # Route that answers 200 once the server can take requests. A profile without one
+    # probes _READINESS_FALLBACK_ROUTE instead.
     readiness_route: Optional[str] = None
+    # Budget for the readiness wait. Profiles override it when their boot takes longer.
+    readiness_timeout_sec: float = 600.0
 
     def __init__(
         self,
@@ -110,7 +114,6 @@ class openAIModelServerClient(ModelServerClient):
         lora_config: Optional[List[MultiLoRAConfig]] = None,
         request_retries: int = 0,
         request_retry_backoff_sec: float = 0.5,
-        readiness_timeout: Optional[float] = None,
     ) -> None:
         super().__init__(
             api_config,
@@ -140,8 +143,7 @@ class openAIModelServerClient(ModelServerClient):
 
         # Before the /v1/models probe below, so a server still loading its weights is
         # waited for instead of failing model auto-detection.
-        if readiness_timeout is not None:
-            self.wait_until_ready(readiness_timeout)
+        self.wait_until_ready()
 
         supported_models: Optional[List[dict[str, Any]]] = None
         inferred_entry: Optional[dict[str, Any]] = None
@@ -276,18 +278,19 @@ class openAIModelServerClient(ModelServerClient):
     def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         raise NotImplementedError
 
-    def wait_until_ready(self, timeout: float) -> None:
-        """Poll the readiness route until it answers 200, for at most ``timeout`` seconds.
+    def wait_until_ready(self) -> None:
+        """Poll the server's readiness route until it answers 200.
 
-        Any other status and any transport error count as not ready yet; the error raised
-        at the deadline names the last one seen.
+        A profile without a readiness route probes ``/v1/models`` instead. A 404 means the
+        route is not served here, so the run carries on without waiting. Any other status
+        and any transport error count as not ready yet, for at most
+        ``readiness_timeout_sec``; the error raised at the deadline names the last one seen.
         """
-        if self.readiness_route is None:
-            logger.warning(f"{type(self).__name__} has no readiness route, starting without waiting for the server")
-            return
-        url = f"{self.uri}{self.readiness_route}"
+        route = self.readiness_route if self.readiness_route is not None else _READINESS_FALLBACK_ROUTE
+        url = f"{self.uri}{route}"
         headers = _build_request_headers(self.api_config, self.api_key)
         cert = (self.cert_path, self.key_path) if self.cert_path and self.key_path else None
+        timeout = self.readiness_timeout_sec
         deadline = time.monotonic() + timeout
         last_seen = "no response"
         while True:
@@ -298,6 +301,9 @@ class openAIModelServerClient(ModelServerClient):
                 response = requests.get(url, headers=headers, timeout=min(remaining, _READINESS_PROBE_TIMEOUT_SEC), cert=cert)
                 if response.status_code == 200:
                     logger.info(f"Server ready: {url} answered 200")
+                    return
+                if response.status_code == 404:
+                    logger.info(f"Server does not serve {url}, starting without waiting for it")
                     return
                 last_seen = f"HTTP {response.status_code}"
             except requests.RequestException as e:

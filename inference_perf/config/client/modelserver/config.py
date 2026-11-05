@@ -41,9 +41,3 @@ class ModelServerClientConfig(StrictBaseModel):
     )
     cert_path: Optional[str] = Field(default=None, description="Path to a client TLS certificate file.")
     key_path: Optional[str] = Field(default=None, description="Path to the private key for the client TLS certificate.")
-    readiness_timeout: Optional[float] = Field(
-        default=None,
-        gt=0,
-        description="Seconds to wait for the server's readiness route (vLLM: GET /health) to answer 200 before the run "
-        "contacts it for anything else. Unset: start without waiting.",
-    )

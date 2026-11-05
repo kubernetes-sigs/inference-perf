@@ -13,11 +13,11 @@
 # limitations under the License.
 """The vLLM profile's readiness route against a real vLLM (#979).
 
-The benchmark starts first, with ``server.readiness_timeout`` set, against a
-port where vLLM is still booting: the run must wait on ``/health``, then
-auto-detect the model and complete every request. Against an external server
-(``E2E_VLLM_BASE_URL``) the server is already up, so the run only checks that
-the route the profile names exists and answers 200.
+The benchmark starts first, against a port where vLLM is still booting: the
+run must wait on ``/health``, then auto-detect the model and complete every
+request. Against an external server (``E2E_VLLM_BASE_URL``) the server is
+already up, so the run only checks that the route the profile names exists and
+answers 200.
 """
 
 import asyncio
@@ -35,8 +35,8 @@ RATE = 2
 DURATION = 3
 
 
-# Benchmark launched before the server boots, readiness_timeout=600, no model_name ->
-# the run waits on /health, infers the model and completes RATE * DURATION requests.
+# Benchmark launched before the server boots, no model_name -> the run waits on
+# /health, infers the model and completes RATE * DURATION requests.
 @pytest.mark.asyncio
 @pytest.mark.skipif(not VLLMServerRunner.is_available(), reason="no vLLM server or executable available")
 async def test_run_waits_for_vllm_health_before_first_stage() -> None:
@@ -47,7 +47,7 @@ async def test_run_waits_for_vllm_health_before_first_stage() -> None:
                 "data": {"type": "mock"},
                 "load": {"type": "constant", "stages": [{"rate": RATE, "duration": DURATION}], "num_workers": 1},
                 "api": {"type": "completion", "streaming": True},
-                "server": {"type": "vllm", "base_url": runner.base_url, "readiness_timeout": 600},
+                "server": {"type": "vllm", "base_url": runner.base_url},
                 "report": {"request_lifecycle": {"summary": True, "per_request": True}},
             },
             timeout_sec=900,

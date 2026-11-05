@@ -116,6 +116,17 @@ EXPECTED_REPORTS = (
 )
 
 
+# The client waits up to 600 s for its readiness route on construction; these tests are
+# about transport failure after construction, so the wait is replaced by a no-op.
+def _no_readiness_wait(self: openai_client_module.openAIModelServerClient) -> None:
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _skip_readiness_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(openai_client_module.openAIModelServerClient, "wait_until_ready", _no_readiness_wait)
+
+
 # Stands in for the HuggingFace tokenizer so building the client needs no Hub download.
 # count_tokens("a b c") -> 3; nothing in these tests actually calls it.
 class _StubTokenizer(CustomTokenizer):
