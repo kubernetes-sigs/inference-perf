@@ -11,15 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 import jmespath
 
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 from pydantic import BaseModel
 from inference_perf.config.circuit_breaker import CircuitBreakerConfig
 
 from .base import CircuitBreaker
 from .triggers import HitSample
+
+logger = logging.getLogger(__name__)
 
 
 class SimpleCircuitBreaker(CircuitBreaker):
@@ -33,14 +36,24 @@ class SimpleCircuitBreaker(CircuitBreaker):
         super().__init__(config)
         self._matches = [jmespath.compile(expr) for expr in config.metrics.matches]
         self._rules = [jmespath.compile(expr) for expr in config.metrics.rules]
+        self._failed_exprs: Set[str] = set()
 
     def _search(self, exprs: List[jmespath.parser.ParsedResult], data: Dict[str, Any]) -> bool:
         for expr in exprs:
             try:
                 if bool(expr.search(data)):
                     return True
-            except Exception:
-                pass
+            except Exception as e:
+                # Data-dependent (e.g. comparing a string field to a number). Never let it
+                # reach the collector's drain task, but say once per expression that it is
+                # not being evaluated, since the breaker will otherwise just never trip on it.
+                if expr.expression not in self._failed_exprs:
+                    self._failed_exprs.add(expr.expression)
+                    logger.warning(
+                        f"Circuit breaker '{self.name}': expression {expr.expression!r} "
+                        f"failed to evaluate and is treated as not matching ({type(e).__name__}: {e}). "
+                        f"Further failures of this expression are not logged."
+                    )
         return False
 
     def feed(self, metric: BaseModel) -> None:
