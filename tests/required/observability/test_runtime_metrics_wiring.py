@@ -20,9 +20,7 @@ stage transitions and in-flight sampling from the load generator, and the
 config surface that turns the HTTP endpoint on.
 """
 
-import multiprocessing as mp
 import pickle
-import sys
 import unittest
 from argparse import ArgumentParser
 from pathlib import Path
@@ -63,14 +61,6 @@ from inference_perf.observability.metrics.prometheus import DEFAULT_PORT
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils.cli_parser import add_global_args, add_pydantic_args, unflatten_dict
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-
-# Match the start method used in production (main.py) so objects are inherited
-# rather than pickled into worker processes.
-if sys.platform == "darwin":
-    try:
-        mp.set_start_method("fork", force=True)
-    except RuntimeError:
-        pass
 
 
 def _metric(stage_id: int = 0) -> RequestLifecycleMetric:
