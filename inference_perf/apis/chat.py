@@ -497,7 +497,8 @@ class ChatCompletionAPIData(InferenceAPIData):
         # count — image/video/audio bytes don't contribute to text-token
         # totals here. Tool definitions are serialized the same way they're
         # sent on the wire (see to_request_body) since the server tokenizes
-        # them as part of the prompt.
+        # them as part of the prompt, unless api.clean_tool_schemas is on,
+        # in which case the server gets the cleaned ones.
         total = tokenizer.count_tokens(self.prefix_text) if self.prefix_text else 0
         total += sum(
             tokenizer.count_tokens(
