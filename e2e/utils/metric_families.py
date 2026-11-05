@@ -93,19 +93,32 @@ def exposed_vllm_families(metrics_text: str) -> Dict[str, str]:
     return parse_exposition(metrics_text, "vllm:")
 
 
+# Family types that produce each derived series. A summary has no _bucket series,
+# so histogram_quantile over a histogram retyped to summary returns nothing.
+DERIVED_SERIES = {
+    "_bucket": ("histogram",),
+    "_count": ("histogram", "summary"),
+    "_sum": ("histogram", "summary"),
+}
+
+
 def provided_by_families(series: str, metric_type: str, families: Dict[str, str]) -> bool:
     """Whether a family -> type map provides one series a query selects.
 
     A family map records what ``# TYPE`` declares, so counter and gauge series
     are families in their own right, while ``_bucket``/``_count``/``_sum`` series
-    are produced by a histogram or summary family with the suffix stripped. That
-    second case also covers a counter declared straight onto a histogram's
-    ``_count`` series, which is valid PromQL and which SGLang's request count uses.
+    are produced by the family with the suffix stripped (``DERIVED_SERIES``).
+    Only counter and histogram queries may select a derived series, since those
+    series are cumulative and a gauge's ``avg_over_time`` over one is
+    meaningless. The counter case covers a counter declared straight onto a
+    histogram's ``_count`` series, which SGLang's request count uses.
     """
     if families.get(series) == metric_type:
         return True
-    for suffix in ("_bucket", "_count", "_sum"):
-        if series.endswith(suffix) and families.get(series[: -len(suffix)]) in ("histogram", "summary"):
+    if metric_type not in ("counter", "histogram"):
+        return False
+    for suffix, family_types in DERIVED_SERIES.items():
+        if series.endswith(suffix) and families.get(series[: -len(suffix)]) in family_types:
             return True
     return False
 
