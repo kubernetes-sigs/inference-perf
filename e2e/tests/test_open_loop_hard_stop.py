@@ -158,16 +158,35 @@ def _server_inflight_at(requests: List[AbsorbedRequest], t: float) -> int:
     return sum(1 for r in requests if r.arrival_s <= t + ARRIVAL_SLACK_S and _server_end(r) > t)
 
 
-# Whether the client's incomplete requests are exactly the ones the server saw
-# abandoned: one server-side disconnect per incomplete request. The client may
-# count one more: the request scheduled exactly at the end `end` is stamped as
-# sent and then cancelled before its connection reaches the server, so it is in
-# flight for the client but never arrives. (The server's in-flight count at the
-# nominal end can differ from both by requests that finish in the few ms the
-# cancellation takes to land, which is why disconnects are the oracle.)
-def _incomplete_matches_server(incomplete: List[Dict[str, Any]], requests: List[AbsorbedRequest], end: float) -> bool:
-    extra = len(incomplete) - sum(1 for r in requests if r.disconnect_s is not None)
-    return extra == 0 or (extra == 1 and max(e["start_time"] for e in incomplete) >= end - ARRIVAL_SLACK_S)
+# How long a response the server has finished may sit unread in the client
+# before the client processes it. A request cancelled in that window is
+# incomplete for the client but finished for the server (no disconnect).
+READ_LAG_S = 0.25
+
+
+# Whether the client's incomplete requests agree with what the server saw
+# abandoned, as None or the reason they do not. Every server-side disconnect is
+# an incomplete request. The client may count more, but only:
+# - requests whose reply the server finished within READ_LAG_S before the
+#   client cancelled them (finished, but not yet read: no disconnect), and
+# - one request scheduled exactly at the end `end`, stamped as sent and then
+#   cancelled before its connection reaches the server.
+# (The server's in-flight count at the nominal end can differ from both by
+# requests that finish in the few ms the cancellation takes to land, which is
+# why disconnects are the oracle.)
+def _incomplete_mismatch(incomplete: List[Dict[str, Any]], requests: List[AbsorbedRequest], end: float) -> Optional[str]:
+    disconnects = sum(1 for r in requests if r.disconnect_s is not None)
+    cancelled_by = max((e["end_time"] for e in incomplete), default=end)
+    unread = sum(
+        1 for r in requests if r.disconnect_s is None and r.done_s is not None and end - READ_LAG_S <= r.done_s <= cancelled_by
+    )
+    last_send = 1 if incomplete and max(e["start_time"] for e in incomplete) >= end - ARRIVAL_SLACK_S else 0
+    if disconnects <= len(incomplete) <= disconnects + unread + last_send:
+        return None
+    return (
+        f"{len(incomplete)} incomplete on the client, {disconnects} disconnects on the server "
+        f"(+ up to {unread} finished-but-unread and {last_send} unsent)"
+    )
 
 
 # Entries the client recorded as incomplete, and those it recorded as successes.
@@ -205,7 +224,7 @@ async def test_open_loop_keeps_schedule_far_beyond_server_capacity() -> None:
     assert 0.85 * rate * latency <= peak <= 1.15 * rate * latency, f"peak in flight {peak}, expected ~{rate * latency:.0f}"
     incomplete, successes = _split(entries)
     assert len(incomplete) + len(successes) == len(entries)
-    assert _incomplete_matches_server(incomplete, requests, end)
+    assert (mismatch := _incomplete_mismatch(incomplete, requests, end)) is None, mismatch
 
 
 # Test 2, stalled server: the server never answers. 50 qps for 10 s still puts
@@ -231,7 +250,7 @@ async def test_arrivals_follow_schedule_when_server_never_answers() -> None:
     assert_arrivals_spread([{"start_time": r.arrival_s} for r in requests])
     incomplete, successes = _split(entries)
     assert successes == [] and len(incomplete) == len(entries)
-    assert _incomplete_matches_server(incomplete, requests, _stage_end(entries, 0))
+    assert (mismatch := _incomplete_mismatch(incomplete, requests, _stage_end(entries, 0))) is None, mismatch
 
 
 # Test 3, cap detector: the default bounded dispatch with 2 workers x 50 permits
@@ -288,7 +307,7 @@ async def test_hard_stop_cancels_everything_in_flight_at_stage_end() -> None:
     incomplete, successes = _split(entries)
     assert _server_inflight_at(requests, end) == len(requests)
     assert len(incomplete) == len(entries)
-    assert _incomplete_matches_server(incomplete, requests, end)
+    assert (mismatch := _incomplete_mismatch(incomplete, requests, end)) is None, mismatch
     summary = result.reports["summary_lifecycle_metrics.json"] if result.reports else {}
     assert summary["incomplete"]["count"] == len(incomplete)
     assert summary["successes"]["count"] == 0
@@ -363,7 +382,7 @@ async def test_fixed_concurrency_holds_exactly_c_and_stops_at_its_bound() -> Non
     assert 0 < len(incomplete) <= concurrency
     # Cancelled at the bound, not a permit-poll interval later.
     assert all(e["end_time"] <= end + ARRIVAL_SLACK_S for e in incomplete)
-    assert _incomplete_matches_server(incomplete, requests, end)
+    assert (mismatch := _incomplete_mismatch(incomplete, requests, end)) is None, mismatch
 
 
 # Pins the helper the tests above rely on: two requests overlapping in [1, 2)
