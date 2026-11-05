@@ -1,6 +1,8 @@
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-25.11";
+    # Only the sim's Go toolchain comes from here. Its go.mod needs go 1.27, which 25.11 lacks.
+    nixpkgs-go.url = "github:nixos/nixpkgs?ref=nixos-26.05";
     flake-parts.url = "github:hercules-ci/flake-parts";
 
     pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
@@ -30,9 +32,10 @@
           };
         };
         perSystem =
-          { pkgs, self', ... }@systemInputs:
+          { pkgs, self', system, ... }@systemInputs:
           let
             python = pkgs.python3;
+            goPkgs = inputs.nixpkgs-go.legacyPackages.${system};
           in
           {
             devShells.default = pkgs.mkShell {
@@ -80,26 +83,20 @@
                 in
                 python.pkgs.buildPythonPackage (buildAttrs // { });
 
-              llm-d-inference-sim = pkgs.buildGoModule rec {
+              llm-d-inference-sim = (pkgs.buildGoModule.override { go = goPkgs.go_1_27; }) rec {
                 pname = "llm-d-inference-sim";
-                version = "0.6.1";
+                version = "1.0.0";
 
                 src = pkgs.fetchFromGitHub {
                   owner = "llm-d";
                   repo = "llm-d-inference-sim";
                   tag = "v${version}";
-                  hash = "sha256-KdA7dgdy1jGjRhrqXfkg4Z9V3SXPcKp1FnTtm+e5DSA=";
+                  hash = "sha256-GI1sF1+XgB7o+4VSRwNv0UBFJybzNX4cZSrPvNYLi1E=";
                 };
-                vendorHash = "sha256-MINH7J2ozTORFK/KgZvXBlwThYRISL1wlHebdZxvuvw=";
+                vendorHash = "sha256-pVacBlTPqOkLekVIOWmeONxVtobCHnUAp66ExBnn17g=";
 
-                nativeBuildInputs = with pkgs; [
-                  pkg-config
-                ];
-
-                buildInputs = with pkgs; [
-                  zeromq
-                  libtokenizers
-                ];
+                # cmd/dataset-tool is a second binary the e2e suite does not use.
+                subPackages = [ "cmd/llm-d-inference-sim" ];
 
                 # several tests require networking.
                 doCheck = false;
@@ -109,25 +106,6 @@
                   homepage = "https://github.com/llm-d/llm-d-inference-sim";
                   license = with nixpkgs.lib.licenses; asl20;
                   mainProgram = "llm-d-inference-sim";
-                };
-              };
-
-              libtokenizers = pkgs.rustPlatform.buildRustPackage rec {
-                pname = "libtokenizers";
-                version = "1.22.1"; # keep same as llm-d-inference-sim's version
-
-                src = pkgs.fetchFromGitHub {
-                  owner = "daulet";
-                  repo = "tokenizers";
-                  tag = "v${version}";
-                  hash = "sha256-unGAXpD4GHWVFcXAwd0zU/u30wzH909tDcRYRPsSKwQ=";
-                };
-                cargoHash = "sha256-rY3YAcCbbx5CY6qu44Qz6UQhJlWVxAWdTaUSagHDn2o=";
-
-                meta = {
-                  description = "Go bindings for Tiktoken & HuggingFace Tokenizer";
-                  homepage = "https://github.com/daulet/tokenizers";
-                  license = with nixpkgs.lib.licenses; mit;
                 };
               };
             };

@@ -116,12 +116,14 @@ def _server_block(sim: LLMDInferenceSimRunner, model_name: str) -> dict:
     }
 
 
-# Sim flags for the concurrency tests: fixed TTFT and ITL with zero jitter.
-# Request duration must not vary, or the length of the plateau moves with it.
+# Sim flags for the concurrency tests: --time-to-first-token 150ms and
+# --inter-token-latency 15ms with zero jitter. Request duration must not vary,
+# or the length of the plateau moves with it.
 def _pinned_latency_sim_args() -> list[str]:
     return _sim_args(
-        *("--time-to-first-token", str(SIM_TTFT_MS)),
-        *("--inter-token-latency", str(SIM_ITL_MS)),
+        # The sim parses latencies as Go durations. A bare number fails to start it.
+        *("--time-to-first-token", f"{SIM_TTFT_MS}ms"),
+        *("--inter-token-latency", f"{SIM_ITL_MS}ms"),
         *("--time-to-first-token-std-dev", "0"),
         *("--inter-token-latency-std-dev", "0"),
         *("--seed", "42"),
