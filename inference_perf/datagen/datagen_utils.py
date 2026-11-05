@@ -131,7 +131,8 @@ def converge_to_exact_length_text(
 
     raise ValueError(
         f"Could not generate a prompt of exactly {target_len} tokens after {max_iterations} "
-        f"attempts (got {last_len}). This usually means tokenizer.pretrained_model_name_or_path "
+        f"attempts (got {last_len}). The token count did not converge: either re-tokenization keeps "
+        f"merging tokens across the edited boundary, or tokenizer.pretrained_model_name_or_path "
         f"does not match the model the server is running."
     )
 
@@ -152,14 +153,25 @@ def generate_random_exact_length_text(
         return "", []
 
     initial_tokens = random_token_ids(rng, valid_token_ids, target_len)
+    seen_lens: List[int] = []
 
     def adjust_tokens(current_tokens: List[int], current_len: int, target_len: int) -> List[int]:
+        # Re-tokenizing can merge a token with its neighbour, so appending or
+        # trimming n tokens may move the count by n+1 and the loop can bounce
+        # between target-1 and target+1 forever. When a length repeats, the
+        # tail is the problem: drop it and resample fresh tokens in its place
+        # instead of appending to / trimming the same tail again.
+        stuck = current_len in seen_lens
+        seen_lens.append(current_len)
+        if stuck and current_tokens:
+            current_tokens = current_tokens[:-1]
+            current_len -= 1
         if current_len < target_len:
             current_tokens.extend(random_token_ids(rng, valid_token_ids, target_len - current_len))
             return current_tokens
         diff = current_len - target_len
         if diff < len(current_tokens):
-            return current_tokens[:-diff]
+            return current_tokens[:-diff] if diff else current_tokens
         return []
 
     return converge_to_exact_length_text(

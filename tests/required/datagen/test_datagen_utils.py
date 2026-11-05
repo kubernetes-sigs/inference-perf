@@ -1,6 +1,12 @@
+import numpy as np
 import pytest
 from typing import Any, List
-from inference_perf.datagen.datagen_utils import converge_to_exact_length_text
+from inference_perf.datagen.datagen_utils import (
+    converge_to_exact_length_text,
+    generate_random_exact_length_text,
+    random_token_ids,
+)
+from inference_perf.datagen.synthetic.shared_prefix_datagen import SharedPrefixDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
@@ -106,3 +112,52 @@ def test_generate_exact_length_text_with_wrap_fn() -> None:
     assert tokenizer.count_tokens(result, add_special_tokens=False) == 5
     assert result == "<open> 10 20 30 <close>"
     assert ids == [10, 20, 30]
+
+
+# Fake tokenizer: ids are counted one per token, except that an id divisible by 5 in the
+# second-to-last position merges with the token after it, so [..., 10, 7] counts 1 more.
+class MergingCustomTokenizer(DummyCustomTokenizer):
+    def count_tokens(self, text: str, add_special_tokens: bool = True) -> int:
+        ids = [int(t) for t in text.split()]
+        return len(ids) + (1 if len(ids) >= 2 and ids[-2] % 5 == 0 else 0)
+
+
+# Seeds 3, 4 and 14 with target_len=8: before the fix the loop bounces between 7 and 9
+# tokens and raises ValueError. After it the text counts exactly 8, and the escape only drops
+# and resamples the tail: the leading ids are the ones first sampled from the same rng.
+@pytest.mark.parametrize("seed", [3, 4, 14])
+def test_generate_random_exact_length_text_escapes_merge_oscillation(seed: int) -> None:
+    tokenizer = MergingCustomTokenizer()
+    valid_token_ids = np.arange(10, 500)
+    target_len = 8
+    initial = random_token_ids(np.random.default_rng(seed), valid_token_ids, target_len)
+
+    text, ids = generate_random_exact_length_text(np.random.default_rng(seed), valid_token_ids, tokenizer, target_len)
+
+    assert tokenizer.count_tokens(text) == target_len
+    # At most one id is lost to a merge, so the ids are target_len or target_len - 1 long.
+    assert len(ids) in (target_len - 1, target_len)
+    assert ids[: target_len - 3] == initial[: target_len - 3]
+
+
+# Same oscillation in the shared-prefix suffix sampler, which has its own pad/trim loop and must
+# keep its word-start first id.
+@pytest.mark.parametrize("seed", [3, 4, 14])
+def test_sample_suffix_ids_escapes_merge_oscillation(seed: int) -> None:
+    tokenizer = MergingCustomTokenizer()
+    generator = object.__new__(SharedPrefixDataGenerator)
+    generator.rng = np.random.default_rng(seed)
+    generator.tokenizer = tokenizer
+    generator.valid_token_ids = np.arange(10, 500)
+    generator.word_start_token_ids = np.arange(10, 20)
+    target_len = 8
+
+    probe = np.random.default_rng(seed)
+    first_id = int(probe.choice(generator.word_start_token_ids))
+    initial = [first_id] + random_token_ids(probe, generator.valid_token_ids, target_len - 1)
+
+    ids = generator._sample_suffix_ids(target_len)
+
+    assert tokenizer.count_tokens(" ".join(str(i) for i in ids)) == target_len
+    assert ids[0] == first_id
+    assert ids[: target_len - 3] == initial[: target_len - 3]
