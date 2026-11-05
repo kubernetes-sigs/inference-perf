@@ -13,12 +13,12 @@
 # limitations under the License.
 """Shared multiprocessing context for the load generator.
 
-Workers are started with ``forkserver`` rather than the platform-default
-``fork``. Python 3.14 deprecates ``fork()`` from a multi-threaded process (the
-main process runs an asyncio event loop and executor threads) because the child
-can deadlock on locks held by threads that do not exist after the fork. The
-``forkserver`` server process is single-threaded, so the forks that create
-workers are safe.
+Workers are started with ``forkserver`` rather than ``fork``. The main process
+runs an asyncio event loop and executor threads, and a child forked from it can
+deadlock on a lock held by a thread that does not exist after the fork. Python
+3.12 added a DeprecationWarning for that fork and 3.14 made ``forkserver`` the
+Linux default. The ``forkserver`` server process is single-threaded, so the
+forks that create workers are safe.
 
 Every multiprocessing object that crosses the worker boundary (queues, shared
 values, events, barriers, managers, and the ``Process`` subclass itself) must be
@@ -27,8 +27,8 @@ contexts raises at pickle/transfer time.
 """
 
 import multiprocessing as mp
-from multiprocessing.context import BaseContext
+from multiprocessing.context import ForkServerContext
 
 # forkserver is available on Linux and macOS, which are the platforms this tool
 # targets. The server is started lazily on first worker creation.
-MP_CONTEXT: BaseContext = mp.get_context("forkserver")
+MP_CONTEXT: ForkServerContext = mp.get_context("forkserver")

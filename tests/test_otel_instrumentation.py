@@ -186,7 +186,7 @@ def test_enabled_instrumentation_traces_in_forkserver_worker(
     otel = OTelInstrumentation(service_name="test-service", enabled=True)
 
     result: "SimpleQueue[bool]" = MP_CONTEXT.SimpleQueue()
-    worker = MP_CONTEXT.Process(target=_span_records_in_worker, args=(otel, result))  # type: ignore[attr-defined]
+    worker = MP_CONTEXT.Process(target=_span_records_in_worker, args=(otel, result))
     worker.start()
     worker.join(timeout=60)
 

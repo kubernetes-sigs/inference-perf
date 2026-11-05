@@ -64,6 +64,7 @@ import time
 import traceback
 import multiprocessing as mp
 from queue import Empty
+from multiprocessing.context import ForkServerProcess
 from multiprocessing.synchronize import Event as SyncEvent
 from multiprocessing.sharedctypes import Synchronized
 from concurrent.futures import TimeoutError
@@ -244,7 +245,7 @@ def collect_worker_failures(
     return failures
 
 
-class Worker(MP_CONTEXT.Process):  # type: ignore[name-defined,misc]
+class Worker(ForkServerProcess):
     def __init__(
         self,
         id: int,
