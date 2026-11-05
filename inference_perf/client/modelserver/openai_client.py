@@ -24,7 +24,7 @@ from inference_perf.apis import (
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anthropic_content
 from inference_perf.apis.response_errors import InvalidResponseError
-from inference_perf.apis.base import stage_teardown_cancelled_error
+from inference_perf.apis.base import is_stage_teardown_cancelled, stage_teardown_cancelled_error
 from inference_perf.apis.streaming_parser import StreamInterruptedError
 from inference_perf.apis.tool_schema import clean_request_tool_schemas
 from inference_perf.payloads import RequestMetrics, Text
@@ -462,6 +462,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if not self.client.otel.enabled or span is None:
             return
 
+        cancelled = is_stage_teardown_cancelled(error)
+
         if info:
             inner = info.response_metrics
             otel_response_info: Dict[str, Any] = {
@@ -601,6 +603,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 span=span,
                 response_info=otel_response_info,
                 error=error.error_msg if error else None,
+                cancelled=cancelled,
             )
         elif error:
             # No `info` to draw response metrics from, but the retry cost is known -- and
@@ -612,6 +615,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 span=span,
                 response_info=failed_info or None,
                 error=error.error_msg,
+                cancelled=cancelled,
             )
 
     async def process_request(

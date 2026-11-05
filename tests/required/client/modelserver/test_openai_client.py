@@ -1364,7 +1364,7 @@ async def test_retry_ending_in_http_error_is_not_recovered(mock_client: MagicMoc
 
 
 # A POST that never returns; the request task is cancelled 50ms in. Expects one
-# metric recorded as a StageTeardownCancelled failure (not TimeoutError), and the
+# metric recorded with error type StageTeardownCancelled (not TimeoutError), and the
 # cancellation still raised to the caller.
 @pytest.mark.asyncio
 async def test_process_request_cancelled_in_flight_is_recorded_then_reraised(
@@ -1425,3 +1425,71 @@ async def test_process_request_cancelled_during_retry_backoff_is_recorded(
     metric = mock_client.metrics_collector.record_metric.call_args[0][0]
     assert metric.error.error_type == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
     assert metric.info.retries_attempted == 1
+
+
+# Stands in for a server that never answers: sleeps an hour, so only a cancel ends it.
+async def _hang(*args: Any, **kwargs: Any) -> None:
+    await asyncio.sleep(3600)
+
+
+# Turns OTel on and captures the keyword arguments of the last record_response_metrics
+# call into the returned dict, e.g. {"error": "...", "cancelled": True}.
+def _capture_otel_record(mock_client: MagicMock) -> dict[str, Any]:
+    mock_client.otel.enabled = True
+    recorded: dict[str, Any] = {}
+    mock_client.otel.record_response_metrics = MagicMock(side_effect=lambda **kwargs: recorded.update(kwargs))
+    return recorded
+
+
+# The POST never returns and the task is cancelled 50ms in, before any response.
+# Expects the span recorded with cancelled=True, so its status is left unset, not ERROR.
+@pytest.mark.asyncio
+async def test_otel_marks_request_cancelled_in_flight(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    recorded = _capture_otel_record(mock_client)
+    session = _retrying_session(mock_client, retries=0)
+    hanging = MagicMock()
+    hanging.__aenter__ = AsyncMock(side_effect=_hang)
+    hanging.__aexit__ = AsyncMock(return_value=None)
+    _post(session).return_value = hanging
+
+    task = asyncio.create_task(session.process_request(mock_data, stage_id=0, scheduled_time=0.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert recorded["cancelled"] is True
+
+
+# A 200 is read, then the task is cancelled 50ms into releasing the connection. Expects the
+# span recorded through the answered-request path (response_info set) with cancelled=True.
+@pytest.mark.asyncio
+async def test_otel_marks_request_cancelled_after_its_response(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    recorded = _capture_otel_record(mock_client)
+    session = _retrying_session(mock_client, retries=0)
+    answered = _ok_ctx()
+    answered.__aexit__ = AsyncMock(side_effect=_hang)
+    _post(session).return_value = answered
+
+    task = asyncio.create_task(session.process_request(mock_data, stage_id=0, scheduled_time=0.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert recorded["response_info"] is not None
+    assert recorded["cancelled"] is True
+
+
+# A connection reset with retries off is a real failure. Expects cancelled=False and the
+# error passed through, so the span still ends ERROR.
+@pytest.mark.asyncio
+async def test_otel_does_not_mark_failed_request_cancelled(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    recorded = _capture_otel_record(mock_client)
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError())]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    assert recorded["error"] is not None
+    assert recorded["cancelled"] is False
