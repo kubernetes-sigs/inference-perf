@@ -11,10 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import pytest
 
+from inference_perf.client.modelserver.metrics.base import Metric
 from inference_perf.client.modelserver.metrics import (
     CounterMetric,
     CounterResult,
@@ -124,3 +125,47 @@ def test_metric_types_reject_name_selectors() -> None:
     for metric_type in (CounterMetric, GaugeMetric, HistogramMetric):
         with pytest.raises(ValueError, match="selector"):
             metric_type(metric_name='{__name__=~"vllm:foo(_total)?"}')
+
+
+# Counter, gauge and histogram each list the series names they query, and each name must appear
+# in the query text followed by `{`. Bare substring matching would let "vllm:prompt_tokens" pass
+# inside "vllm:prompt_tokens_total" even if the bare leg were dropped.
+def test_candidate_names_are_the_series_each_metric_actually_queries() -> None:
+    metrics: List[Metric[Any]] = [
+        CounterMetric("vllm:prompt_tokens"),
+        GaugeMetric("vllm:num_requests_waiting"),
+        HistogramMetric("vllm:e2e_request_latency_seconds"),
+    ]
+    for metric in metrics:
+        queries = " ".join(metric.get_queries(60.0, "model_name='m'"))
+        advertised = {name for group in metric.candidate_names() for name in group}
+        assert advertised, f"{metric.metric_name} advertises no candidate names"
+        unqueried = sorted(name for name in advertised if f"{name}{{" not in queries)
+        assert not unqueried, f"{metric.metric_name} advertises {unqueried} but never queries them"
+
+
+# CounterMetric("vllm:prompt_tokens") and CounterMetric("vllm:prompt_tokens_total") both return
+# ({"vllm:prompt_tokens_total"}, {"vllm:prompt_tokens"}): two one-name groups, either one resolves it.
+def test_counter_candidate_names_span_both_name_forms() -> None:
+    expected = (frozenset({"vllm:prompt_tokens_total"}), frozenset({"vllm:prompt_tokens"}))
+    for declared in ("vllm:prompt_tokens", "vllm:prompt_tokens_total"):
+        assert CounterMetric(declared).candidate_names() == expected
+
+
+# CounterMetric("sglang:e2e_request_latency_seconds_count") returns only that exact name, and the
+# same holds for _sum and _bucket. Histogram series never carry _total, so no _total leg is added.
+@pytest.mark.parametrize("suffix", ["_count", "_sum", "_bucket"])
+def test_counter_candidate_names_over_a_histogram_series_are_the_single_exact_name(suffix: str) -> None:
+    name = f"sglang:e2e_request_latency_seconds{suffix}"
+    assert CounterMetric(name).candidate_names() == (frozenset({name}),)
+
+
+# HistogramMetric("vllm:lat") returns one group {"vllm:lat_bucket", "vllm:lat_count", "vllm:lat_sum"}.
+# A family exposing _sum and _count without _bucket does not satisfy it.
+def test_histogram_candidate_names_require_all_three_series_together() -> None:
+    assert HistogramMetric("vllm:lat").candidate_names() == (frozenset({"vllm:lat_bucket", "vllm:lat_count", "vllm:lat_sum"}),)
+
+
+# GaugeMetric("vllm:kv_cache_usage_perc") returns ({"vllm:kv_cache_usage_perc"},) and nothing else.
+def test_gauge_candidate_names_are_the_bare_name() -> None:
+    assert GaugeMetric("vllm:kv_cache_usage_perc").candidate_names() == (frozenset({"vllm:kv_cache_usage_perc"}),)
