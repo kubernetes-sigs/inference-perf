@@ -42,20 +42,28 @@ MP_CONTEXT: ForkServerContext = mp.get_context("forkserver")
 # the stdlib default and stays.
 _PRELOAD = ["__main__", "inference_perf.loadgen.load_generator"]
 
-# Those imports start native threads: OpenBLAS sizes a pool to the core count when
-# numpy loads, and pyarrow's bundled jemalloc starts a purge thread. Either makes the
-# server multi-threaded and every worker fork unsafe again. Workers inherit these
-# settings and do no BLAS work, and pyarrow's default pool is not jemalloc.
-_SERVER_ENV = {"OPENBLAS_NUM_THREADS": "1", "JE_ARROW_MALLOC_CONF": "background_thread:false"}
+# The preload imports pyarrow, whose bundled jemalloc starts a purge thread that keeps
+# running across fork, so the server would fork every worker from a multi-threaded
+# process again. pyarrow's default pool is not jemalloc, so nothing needs that thread.
+# (numpy's OpenBLAS pool also starts on import but stops itself before each fork.)
+_SERVER_ENV = {"JE_ARROW_MALLOC_CONF": "background_thread:false"}
+
+
+_started = False
 
 
 def start_forkserver() -> None:
-    """Start the forkserver with the package preloaded and no native threads, if it is not running."""
+    """Start the forkserver with the package preloaded and no native threads, once per process."""
+    global _started
+    # Later calls return here so a running process never rewrites os.environ for nothing.
+    if _started:
+        return
     MP_CONTEXT.set_forkserver_preload(_PRELOAD)
     saved: Dict[str, Optional[str]] = {key: os.environ.get(key) for key in _SERVER_ENV}
     os.environ.update(_SERVER_ENV)
     try:
         forkserver.ensure_running()
+        _started = True
     finally:
         for key, value in saved.items():
             if value is None:
