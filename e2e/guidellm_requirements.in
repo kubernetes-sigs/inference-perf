@@ -10,4 +10,4 @@
 # PyTorch's own index, so installing from the lock needs it:
 #
 #   pip install --extra-index-url https://download.pytorch.org/whl/cpu -r e2e/guidellm_requirements.txt
-guidellm==0.8.0
+guidellm==0.8.1

@@ -67,6 +67,9 @@ def _exact_length_distribution(tokens: int) -> dict:
     }
 
 
+# Per profile, 10 requests against a sim pinned to TTFT 0.5s, ITL 0.05s and 25 tokens,
+# or TTFT 0.2s, ITL 0.1s and 8 tokens. Expects exactly that many tokens per request,
+# TTFT min >= the pinned TTFT, and TPOT and median ITL within slack of the pinned ITL.
 @pytest.mark.asyncio
 @pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
 # Two deliberately contrasting timing profiles: a metric that is scaled or
@@ -95,8 +98,9 @@ async def test_streaming_metrics_match_simulated_ground_truth(ttft_sec: float, i
 
     async with LLMDInferenceSimRunner(
         TEST_MODEL_NAME,
-        *("--time-to-first-token", str(int(ttft_sec * 1000))),
-        *("--inter-token-latency", str(int(itl_sec * 1000))),
+        # The sim parses latencies as Go durations. A bare number fails to start it.
+        *("--time-to-first-token", f"{ttft_sec}s"),
+        *("--inter-token-latency", f"{itl_sec}s"),
         # Deterministic sleeps: no jitter around the configured latencies.
         *("--time-to-first-token-std-dev", "0"),
         *("--inter-token-latency-std-dev", "0"),

@@ -371,7 +371,7 @@ class TestUserSessionTurnSerialization:
             # the turns would run to completion one after another on their own and
             # the session's serialization would never be exercised.
             await asyncio.sleep(0)
-            await data.process_response(_unary_response(f"A{n}"), api_config, tokenizer)
+            await data.process_response(_unary_response(f" A{n}"), api_config, tokenizer)
 
         await asyncio.wait_for(asyncio.gather(*(turn(i) for i in range(4))), timeout=_TURN_TIMEOUT)
 
@@ -398,7 +398,7 @@ class TestMultiTurnConversationSemantics:
             data = UserSessionCompletionAPIData(user_session_id="sess_grow", target_round=n, prompt=f"Q{n}", max_tokens=8)
             body = await data.to_request_body("model", 8, False, False)
             prompts.append(body["prompt"])
-            await data.process_response(_unary_response(f"A{n}"), api_config, tokenizer)
+            await data.process_response(_unary_response(f" A{n}"), api_config, tokenizer)
 
         # The growing prefix is the whole point of the workload: each turn is a
         # longer prefill than the last, and a cached prefix the server can reuse.
@@ -431,7 +431,7 @@ class TestMultiTurnConversationSemantics:
 
         ok = UserSessionCompletionAPIData(user_session_id="sess_fail", target_round=0, prompt="Q0", max_tokens=8)
         await ok.to_request_body("model", 8, False, False)
-        await ok.process_response(_unary_response("A0"), api_config, tokenizer)
+        await ok.process_response(_unary_response(" A0"), api_config, tokenizer)
         assert session.context == "SYSTEM Q0 A0"
 
         failed = UserSessionCompletionAPIData(user_session_id="sess_fail", target_round=1, prompt="Q1", max_tokens=8)
