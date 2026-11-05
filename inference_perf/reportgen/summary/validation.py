@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Sequence
 
+from inference_perf.reportgen.base import TOOL_TOKEN_AGREEMENT_ABS_TOL, TOOL_TOKEN_AGREEMENT_REL_TOL
 from inference_perf.reportgen.validation import (
     SUMMARY_LIFECYCLE_FILENAME,
     Check,
@@ -212,17 +213,26 @@ def token_mismatch_findings(filename: str, contents: Any, check: str) -> List[Fi
     A non-zero count is the #564 regression family showing up in-band:
     per-chunk re-tokenization disagreeing with the server's own count.
     """
-    mismatches = _get(contents, "successes", "token_count_mismatches")
-    if is_number(mismatches) and mismatches > 0:
-        return [
-            _warning(
-                check,
-                filename,
-                f"{mismatches} request(s) where the client-side token count disagrees with the "
-                "server-reported completion_tokens",
+    findings: List[Finding] = []
+    for key, label in (
+        ("token_count_mismatches", "request(s)"),
+        (
+            "tool_token_count_mismatches",
+            f"tool request(s), outside both the {TOOL_TOKEN_AGREEMENT_ABS_TOL}-token absolute "
+            f"and {TOOL_TOKEN_AGREEMENT_REL_TOL:.0%} relative tolerances,",
+        ),
+    ):
+        mismatches = _get(contents, "successes", key)
+        if is_number(mismatches) and mismatches > 0:
+            findings.append(
+                _warning(
+                    check,
+                    filename,
+                    f"{mismatches} {label} where the client-side token count disagrees with the "
+                    "server-reported output count (completion_tokens / output_tokens)",
+                )
             )
-        ]
-    return []
+    return findings
 
 
 def summary_content_findings(filename: str, contents: Any, check_prefix: str) -> List[Finding]:
