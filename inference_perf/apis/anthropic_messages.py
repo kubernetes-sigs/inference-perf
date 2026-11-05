@@ -19,7 +19,7 @@ from typing import Any
 from aiohttp import ClientResponse
 
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, StreamedResponseMetrics, UnaryResponseMetrics
-from inference_perf.apis.chat import ChatMessage, _clean_parameters
+from inference_perf.apis.chat import ChatMessage
 from inference_perf.apis.image_parts import is_image_part, openai_image_to_part
 from inference_perf.apis.streaming_parser import ParsedSSEStream, parse_sse_stream
 from inference_perf.config import APIConfig, APIType
@@ -133,7 +133,7 @@ def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
     name = function.get("name", "")
     result = {
         "name": name,
-        "input_schema": _clean_parameters(function.get("parameters") or {"type": "object", "properties": {}}),
+        "input_schema": function.get("parameters") or {"type": "object", "properties": {}},
     }
     if function.get("description") is not None:
         result["description"] = function["description"]
