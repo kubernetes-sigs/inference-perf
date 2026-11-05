@@ -31,6 +31,7 @@ from inference_perf.client.modelserver.openai_client import (
 from inference_perf.client.modelserver.metrics import Metric, CounterResult
 from inference_perf.apis import (
     AnthropicMessagesAPIData,
+    ChatCompletionAPIData,
     ChatMessage,
     EmbeddingsAPIData,
     ErrorResponseInfo,
@@ -51,6 +52,7 @@ def mock_client() -> MagicMock:
     client.api_config.headers = {}
     client.api_config.response_format = None
     client.api_config.streaming = False
+    client.api_config.clean_tool_schemas = False
     client.tokenizer = MagicMock()
     client.metrics_collector = MagicMock()
     client.cert_path = None
@@ -308,6 +310,46 @@ async def test_anthropic_messages_request_uses_messages_route_and_headers(mock_c
     assert headers_passed["anthropic-version"] == ANTHROPIC_VERSION
     assert "Authorization" not in headers_passed
     assert '"ignore_eos"' not in session.session.post.call_args.kwargs["data"]
+
+
+# Sends a Chat request whose tool schema has "title": "F" and returns the body that went on the wire.
+async def _send_chat_with_tool_schema(mock_client: MagicMock, clean: bool) -> dict[str, Any]:
+    mock_client.api_config.type = APIType.Chat
+    mock_client.api_config.session_id_header_key = None
+    mock_client.api_config.clean_tool_schemas = clean
+    mock_client.api_key = None
+    mock_client.model_name = "m"
+    mock_client.max_completion_tokens = 16
+    mock_client.ignore_eos = False
+
+    data = ChatCompletionAPIData(
+        messages=[ChatMessage(role="user", content="hi")],
+        tool_definitions=[{"type": "function", "name": "f", "parameters": {"type": "object", "title": "F"}}],
+    )
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(data, stage_id=1, scheduled_time=0.0)
+    body: dict[str, Any] = json.loads(session.session.post.call_args.kwargs["data"])
+    return body
+
+
+# clean_tool_schemas=False (default): the tool schema {"type": "object", "title": "F"} is sent unchanged.
+@pytest.mark.asyncio
+async def test_tool_schema_sent_verbatim_by_default(mock_client: MagicMock) -> None:
+    body = await _send_chat_with_tool_schema(mock_client, clean=False)
+    assert body["tools"][0]["function"]["parameters"] == {"type": "object", "title": "F"}
+
+
+# clean_tool_schemas=True: "title" is dropped and "properties": {} is added before sending.
+@pytest.mark.asyncio
+async def test_tool_schema_cleaned_when_enabled(mock_client: MagicMock) -> None:
+    body = await _send_chat_with_tool_schema(mock_client, clean=True)
+    assert body["tools"][0]["function"]["parameters"] == {"type": "object", "properties": {}}
 
 
 @pytest.mark.asyncio

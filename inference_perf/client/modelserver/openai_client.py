@@ -24,6 +24,7 @@ from inference_perf.apis import (
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anthropic_content
 from inference_perf.apis.streaming_parser import StreamInterruptedError
+from inference_perf.apis.tool_schema import clean_request_tool_schemas
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession
@@ -573,6 +574,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
             ignore_eos=self.client.ignore_eos,
             streaming=self.client.api_config.streaming,
         )
+
+        # Opt-in: rewrite tool schemas for servers that reject the recorded ones.
+        if self.client.api_config.clean_tool_schemas:
+            clean_request_tool_schemas(payload, self.client.api_config.type)
 
         # Add response_format for structured output if configured.
         if self.client.api_config.type != APIType.AnthropicMessages and self.client.api_config.response_format:
