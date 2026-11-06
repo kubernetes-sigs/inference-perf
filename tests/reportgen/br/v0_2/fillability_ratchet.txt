@@ -1,0 +1,64 @@
+# Append-only. Every BR0.2 leaf inference-perf has ever marked WRITTEN or RESERVED
+# in inference_perf/reportgen/br/v0_2/fillability.py, one per line.
+#
+# Consumers read these fields as measured by inference-perf, so none of them may
+# become settable from a base report. test_fillability.py fails when a leaf here
+# is no longer WRITTEN or RESERVED. Delete a line only when the schema drops the leaf.
+results.observability.drop_rate
+results.request_performance.aggregate.latency.inter_token_latency
+results.request_performance.aggregate.latency.normalized_time_per_output_token
+results.request_performance.aggregate.latency.request_latency
+results.request_performance.aggregate.latency.time_per_output_token
+results.request_performance.aggregate.latency.time_to_first_token
+results.request_performance.aggregate.requests.failures
+results.request_performance.aggregate.requests.incomplete
+results.request_performance.aggregate.requests.input_length
+results.request_performance.aggregate.requests.multimodal.audio.count
+results.request_performance.aggregate.requests.multimodal.audio.duration
+results.request_performance.aggregate.requests.multimodal.audio.filesize
+results.request_performance.aggregate.requests.multimodal.image.aspect_ratio
+results.request_performance.aggregate.requests.multimodal.image.count
+results.request_performance.aggregate.requests.multimodal.image.filesize
+results.request_performance.aggregate.requests.multimodal.image.pixels
+results.request_performance.aggregate.requests.multimodal.video.aspect_ratio
+results.request_performance.aggregate.requests.multimodal.video.count
+results.request_performance.aggregate.requests.multimodal.video.filesize
+results.request_performance.aggregate.requests.multimodal.video.frames
+results.request_performance.aggregate.requests.multimodal.video.pixels
+results.request_performance.aggregate.requests.output_length
+results.request_performance.aggregate.requests.request_size
+results.request_performance.aggregate.requests.total
+results.request_performance.aggregate.throughput.audio_rate
+results.request_performance.aggregate.throughput.image_rate
+results.request_performance.aggregate.throughput.input_token_rate
+results.request_performance.aggregate.throughput.output_token_rate
+results.request_performance.aggregate.throughput.request_rate
+results.request_performance.aggregate.throughput.total_token_rate
+results.request_performance.aggregate.throughput.video_rate
+results.request_performance.time_series.latency.inter_token_latency
+results.request_performance.time_series.latency.normalized_time_per_output_token
+results.request_performance.time_series.latency.request_latency
+results.request_performance.time_series.latency.time_per_output_token
+results.request_performance.time_series.latency.time_to_first_token
+results.request_performance.time_series.throughput.input_token_rate
+results.request_performance.time_series.throughput.output_token_rate
+results.request_performance.time_series.throughput.request_rate
+results.request_performance.time_series.throughput.total_token_rate
+results.request_performance.time_series.throughput.units
+results.session_performance.sessions.events_cancelled_per_session
+results.session_performance.sessions.events_per_session
+results.session_performance.sessions.failed
+results.session_performance.sessions.input_tokens_per_session
+results.session_performance.sessions.output_tokens_per_session
+results.session_performance.sessions.session_duration
+results.session_performance.sessions.session_rate
+results.session_performance.sessions.succeeded
+results.session_performance.sessions.total
+results.session_performance.sessions.total_events
+results.session_performance.sessions.total_events_cancelled
+results.session_performance.sessions.total_events_completed
+run.time.duration
+run.time.end
+run.time.start
+run.uid
+version

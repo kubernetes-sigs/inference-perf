@@ -23,14 +23,18 @@ both halves of that contract.
 """
 
 import shutil
+from pathlib import Path
 from typing import Any, Dict
 
 import pytest
+import yaml
 
 from utils.benchmark import run_benchmark_minimal
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
+from utils.net import get_free_port
 from utils.testdata import extract_tarball
 
+from inference_perf.reportgen.br.v0_2 import apply_base_report
 from inference_perf.reportgen.br.v0_2.schema import BenchmarkReportV021
 
 
@@ -200,3 +204,56 @@ async def test_br_v0_2_partial_carries_server_component(prometheus_server) -> No
     assert component["aggregate"]["running_requests"]["units"] == "count"
     assert component["aggregate"]["waiting_requests"]["units"] == "count"
     BenchmarkReportV021.model_validate(partial)
+
+
+# The composer partial above, handed in as report.benchmark_report.base_file
+# instead of merged afterwards. Two stages against the sim give two partials that
+# already hold the base (its eid, description and stack) next to inference-perf's
+# own uid, time and results, and each validates as a full BR0.2 document.
+@pytest.mark.asyncio
+@pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
+async def test_br_v0_2_partial_built_on_base_file(tmp_path: Path) -> None:
+    model_name = TEST_MODEL_NAME
+    model_path = extract_tarball(TEST_MODEL_TARBALL)
+    base = _composer_partial(model_name)
+    base_file = tmp_path / "base.yaml"
+    base_file.write_text(yaml.safe_dump(base))
+
+    stages = [{"rate": 2, "duration": 5}, {"rate": 4, "duration": 5}]
+
+    async with LLMDInferenceSimRunner(model_name, port=get_free_port()) as sim:
+        result = await run_benchmark_minimal(
+            {
+                "data": {"type": "mock"},
+                "load": {"type": "constant", "stages": stages, "num_workers": 2},
+                "api": {"type": "completion", "streaming": True},
+                "server": {
+                    "type": "vllm",
+                    "model_name": model_name,
+                    "base_url": f"http://{sim.host}:{sim.port}",
+                    "ignore_eos": True,
+                },
+                "tokenizer": {"pretrained_model_name_or_path": str(model_path)},
+                "report": {
+                    "request_lifecycle": {"summary": True, "per_stage": True},
+                    "benchmark_report": {"base_file": str(base_file)},
+                },
+            },
+            work_dir=tmp_path,
+        )
+
+    assert result.success, f"Benchmark failed: {result.stdout}"
+    partials = {
+        name: contents for name, contents in result.reports.items() if name.startswith("inference-perf.partial.stage_")
+    }
+    assert len(partials) == len(stages), f"expected one partial per stage, got {list(partials)}"
+
+    for name, partial in partials.items():
+        assert apply_base_report(partial, base) == partial, f"{name}: base fields missing or changed"
+        parsed = BenchmarkReportV021.model_validate(partial)
+        assert parsed.run.uid.startswith("inference-perf-stage-"), f"{name}: missing/malformed run.uid"
+        assert parsed.run.eid == "br-v0-2-e2e"
+        assert parsed.run.time is not None
+        assert parsed.scenario is not None and parsed.scenario.stack is not None
+        assert parsed.scenario.stack[0].metadata.label == "sim-0"
+        assert partial["results"]["request_performance"]["aggregate"]["requests"]["total"] > 0
