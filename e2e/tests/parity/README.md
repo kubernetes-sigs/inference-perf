@@ -98,7 +98,7 @@ tools:
   inference-perf:
     arrival: constant     # rate mode: how this tool spaces requests (sets its tolerance)
   vllm-bench:
-    arrival: poisson
+    arrival: constant     # v0.10.0 rescales its random gaps to the exact total
     leading_extra_requests: 1   # vllm bench sends one warmup request first
     prompt_outlier_frac: 0.01   # share of prompts allowed outside prompt_tokens_rel_tol
 ```
@@ -125,13 +125,13 @@ tighten a case is to raise `num_requests`, never to edit a number.
 ## Differences that are expected and allowed for
 
 - **Spacing between requests.** Both tools draw random gaps between
-  requests. inference-perf's `constant` load scales its gaps to add up to
-  exactly the stage duration, so its average rate comes out almost exact.
-  `vllm bench serve` uses plain Poisson gaps, whose total drifts. Cases check
-  the average rate only, never the spacing pattern. Each tool gets the
-  tolerance its own spacing earns (`tools.<tool>.arrival`). When the two tools
-  are compared directly, the looser of the two tolerances applies, since the
-  `constant` tool adds almost no wobble of its own.
+  requests and scale them to add up to the exact total: inference-perf's
+  `constant` load to the stage duration, `vllm bench serve` (v0.10.0, no
+  ramp-up) to `--num-prompts / --request-rate`, so both average rates come
+  out almost exact. Cases check the average rate only, never the spacing
+  pattern. Each tool gets the tolerance its own spacing earns
+  (`tools.<tool>.arrival`). When the two tools are compared directly, the
+  looser of the two tolerances applies.
 - **Prompt length is approximate.** Both tools aim for `prompt_tokens` under
   the same tokenizer, but text built from random token ids does not always
   tokenize back to the same count. Hence `prompt_tokens_rel_tol` instead of an
