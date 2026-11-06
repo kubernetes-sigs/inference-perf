@@ -13,18 +13,25 @@
 # limitations under the License.
 """Post-flight measurement records for video instances on a request."""
 
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
 
 class Video(BaseModel):
-    """Realized stats of one video instance (per-instance, recorded post-flight)."""
+    """Realized stats of one video instance (per-instance, recorded post-flight).
 
-    pixels: int = 0
-    bytes: int = 0
-    aspect_ratio: float = 0.0
-    frames: int = 0
+    None means not measured, not zero (see :class:`~inference_perf.payloads.Image`).
+    ``pixels`` is per frame.
+    """
+
+    pixels: Optional[int] = None
+    bytes: Optional[int] = None
+    aspect_ratio: Optional[float] = None
+    frames: Optional[int] = None
+    # Duration, which frames alone do not give without a frame rate. No input
+    # spec declares one, so only responses fill it.
+    seconds: Optional[float] = None
 
 
 class Videos(BaseModel):

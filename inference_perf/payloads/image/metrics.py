@@ -13,17 +13,21 @@
 # limitations under the License.
 """Post-flight measurement records for image instances on a request."""
 
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
 
 class Image(BaseModel):
-    """Realized stats of one image instance (per-instance, recorded post-flight)."""
+    """Realized stats of one image instance (per-instance, recorded post-flight).
 
-    pixels: int = 0
-    bytes: int = 0
-    aspect_ratio: float = 0.0
+    None means not measured, not zero: a remote input or a response that
+    returns a URL never had its bytes seen by the client.
+    """
+
+    pixels: Optional[int] = None
+    bytes: Optional[int] = None
+    aspect_ratio: Optional[float] = None
 
 
 class Images(BaseModel):
