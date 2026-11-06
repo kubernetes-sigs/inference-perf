@@ -14,7 +14,7 @@
 from typing import Dict, List, Optional
 
 from inference_perf.config.common import StrictBaseModel
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class PerRequestFieldsConfig(StrictBaseModel):
@@ -73,6 +73,25 @@ class GoodputConfig(StrictBaseModel):
     )
 
 
+class BenchmarkReportConfig(StrictBaseModel):
+    base_file: Optional[str] = Field(
+        default=None,
+        description="Path to a partial BR0.2 report (YAML) that every inference-perf.partial.stage_<n>.yaml is built on."
+        " It may set fields inference-perf does not measure, such as run.description or scenario.stack."
+        " Setting a field inference-perf writes is an error at config load.",
+    )
+
+    @field_validator("base_file")
+    @classmethod
+    def _check_base_file(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None:
+            # Imported here: the BR package imports reportgen.base, which imports this config package.
+            from inference_perf.reportgen.br.v0_2.base_report import load_base_report
+
+            load_base_report(value)
+        return value
+
+
 class ReportConfig(StrictBaseModel):
     request_lifecycle: RequestLifecycleMetricsReportConfig = Field(
         default=RequestLifecycleMetricsReportConfig(),
@@ -86,4 +105,8 @@ class ReportConfig(StrictBaseModel):
     )
     goodput: Optional[GoodputConfig] = Field(
         default=None, description="Goodput reporting: the share of requests meeting the configured SLOs."
+    )
+    benchmark_report: BenchmarkReportConfig = Field(
+        default=BenchmarkReportConfig(),
+        description="The BR0.2 partial report written per stage (inference-perf.partial.stage_<n>.yaml).",
     )

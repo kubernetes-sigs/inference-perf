@@ -1,0 +1,21 @@
+# Adds pod startup times and component health collected from the cluster before the run.
+data:
+  type: shareGPT
+load:
+  type: constant
+  stages:
+    - rate: 2
+      duration: 60
+    - rate: 4
+      duration: 60
+api:
+  type: completion
+  streaming: true
+server:
+  type: vllm
+  model_name: google/gemma-3-270m
+  base_url: http://0.0.0.0:8000
+report:
+  benchmark_report:
+    # Relative to the working directory, like every other path in the config.
+    base_file: base.yaml
