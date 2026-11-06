@@ -117,15 +117,19 @@ CHILD_PLUGIN_SOURCE = '''"""Carry what a forked child does back to the test that
 
 import os
 import resource
+import signal
 from pathlib import Path
 
 import pytest
 
 HITS_DIR = Path(os.environ.get("MUTATION_HITS_DIR", "."))
 MEMORY_HEADROOM = int(os.environ.get("MUTATION_MEMORY_HEADROOM", "0"))
+# mutmut's exit code for a timeout
+TIMEOUT_EXIT = 36
 _current = None
 _count = 0
 _registered = False
+_timer_armed = False
 
 
 def pytest_configure(config):
@@ -137,19 +141,44 @@ def pytest_configure(config):
     _cap_memory()
 
 
+def _vm_data():
+    try:
+        status = Path("/proc/self/status").read_text()
+    except OSError:
+        return None
+    return next(int(line.split()[1]) * 1024 for line in status.splitlines() if line.startswith("VmData:"))
+
+
 def _cap_memory():
     # mutmut sets the mutant before each mutant's pytest run, so this skips the stats and clean runs
     if not MEMORY_HEADROOM or "__mutmut_" not in os.environ.get("MUTANT_UNDER_TEST", ""):
         return
-    try:
-        status = Path("/proc/self/status").read_text()
-    except OSError:
+    # what the run inherits from mutmut's fork server is already in VmData, so only growth counts
+    start = _vm_data()
+    if start is None:
         return
-    # what the run inherits from mutmut's fork server counts against the limit too
-    in_use = next(int(line.split()[1]) * 1024 for line in status.splitlines() if line.startswith("VmData:"))
+    limit = start + MEMORY_HEADROOM
+
+    # a failed allocation can abort Python, which mutmut reads as suspicious, a survivor. Exiting first
+    # records the timeout mutmut's own timer would have. Checked every 0.1 s of CPU, which a runaway burns
+    def check(signum, frame):
+        if (_vm_data() or 0) > limit:
+            os._exit(TIMEOUT_EXIT)
+
+    global _timer_armed
+    signal.signal(signal.SIGPROF, check)
+    signal.setitimer(signal.ITIMER_PROF, 0.1, 0.1)
+    _timer_armed = True
+    # for processes the tests fork, which inherit the limit but not the timer
     _, hard = resource.getrlimit(resource.RLIMIT_DATA)
-    soft = in_use + MEMORY_HEADROOM
+    soft = limit + MEMORY_HEADROOM // 2
     resource.setrlimit(resource.RLIMIT_DATA, (soft if hard == resource.RLIM_INFINITY else min(soft, hard), hard))
+
+
+def pytest_unconfigure(config):
+    # interpreter shutdown restores SIGPROF's default action, which would kill the process on the next tick
+    if _timer_armed:
+        signal.setitimer(signal.ITIMER_PROF, 0)
 
 
 def pytest_sessionstart(session):
@@ -202,8 +231,8 @@ context = "${MUTATION_CHILD_CONTEXT-}"
 
 # Memory one mutant's tests may allocate on top of what they inherit from mutmut's fork server. A
 # mutant that never leaves a loop can allocate faster than mutmut's timeout fires: on #941 an AsyncMock
-# recording every call grew each worker ~200 MB/s, and four at once killed a 16 GB runner. Past the cap
-# allocation fails and the mutant dies as a kill. Four workers at the cap still fit on that runner.
+# recording every call grew each worker ~200 MB/s, and four at once killed a 16 GB runner. Past the
+# headroom the run exits as a timeout. Four workers at the cap still fit on that runner.
 MUTANT_MEMORY_HEADROOM = 2 * 1024**3
 
 # Where the plugin and its coverage config are written. main() puts it next to the trees.

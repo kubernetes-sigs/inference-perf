@@ -1491,10 +1491,32 @@ def big_allocation_project(tmp_path: Path) -> Path:
     return project
 
 
-# With mutant inference_perf.m.x_f__mutmut_1 active and a 128 MiB headroom, the 1 GiB bytearray
-# raises MemoryError and the test fails (exit 1) instead of the run growing.
+# With mutant inference_perf.m.x_f__mutmut_1 active and a 128 MiB headroom, a test that keeps 1 MiB
+# per 5 ms of CPU, the way a runaway loop grows, makes the run exit 36, mutmut's timeout code.
 @pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="the cap reads VmData from /proc")
-def test_child_plugin_caps_a_mutants_memory(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_child_plugin_times_out_a_mutant_that_keeps_growing(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    (project / "tests" / "test_grow.py").write_text(
+        "import time\n\n\n"
+        "def test_grows():\n"
+        "    kept = []\n"
+        "    for _ in range(1024):\n"
+        "        kept.append(bytearray(1024**2))\n"
+        "        end = time.process_time() + 0.005\n"
+        "        while time.process_time() < end:\n"
+        "            pass\n"
+    )
+    env = {"MUTANT_UNDER_TEST": "inference_perf.m.x_f__mutmut_1", "MUTATION_MEMORY_HEADROOM": str(128 * 1024**2)}
+
+    assert pytest_with_plugin(cmr, project, ["tests/test_grow.py"], env) == 36
+
+
+# With the same mutant and headroom, one 1 GiB bytearray jumps past the hard limit (headroom plus
+# half again) before the timer can look, so it raises MemoryError and the test fails (exit 1).
+@pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="the cap reads VmData from /proc")
+def test_child_plugin_limits_a_mutants_memory(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
     project = big_allocation_project(tmp_path)
     env = {"MUTANT_UNDER_TEST": "inference_perf.m.x_f__mutmut_1", "MUTATION_MEMORY_HEADROOM": str(128 * 1024**2)}
