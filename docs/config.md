@@ -402,7 +402,14 @@ report:
   prometheus:
     summary: true             # Include Prometheus metrics summary
     per_stage: false          # Disable Prometheus stage breakdown
+  benchmark_report:
+    base_file: base.yaml      # Partial BR0.2 report every stage's BR0.2 partial is built on (default: none)
 ```
+
+`benchmark_report.base_file` supplies the BR0.2 fields inference-perf cannot
+measure, such as `run.description` or `scenario.stack`. A base that sets a field
+inference-perf writes fails at config load. See
+[BR0.2: building on a base report](br_v0_2.md#building-on-a-base-report).
 
 For metrics-only per-request reports, disable the raw fields and enable
 `computed_metrics` instead — this removes the multi-GB raw payloads while

@@ -14,6 +14,9 @@ observability beyond what inference-perf measures) is left absent so a
 composer can merge another producer's partial on top without any
 inference-perf field silently overwriting their data.
 
+A composer can also hand those fields in before the run instead of merging
+them afterwards. See [Building on a base report](#building-on-a-base-report).
+
 ## Output
 
 A run with two stages produces:
@@ -100,6 +103,77 @@ overwrite it during merge.
 `run.time` is the stage's wall-clock window as recorded by the load
 generator (stage start to stage end, including drain), not the span from
 first request start to last request end.
+
+## Building on a base report
+
+`report.benchmark_report.base_file` points at a partial BR0.2 document that
+every stage's partial is built on. The base carries what inference-perf cannot
+measure, and inference-perf adds its own fields on top. The output keeps its
+name, `inference-perf.partial.stage_<n>.yaml`, and the same base goes into
+every stage.
+
+```yaml
+report:
+  benchmark_report:
+    base_file: base.yaml   # relative to the working directory
+```
+
+```yaml
+# base.yaml
+run:
+  description: Nightly rate sweep against one vLLM replica.
+  keywords: [nightly, vllm]
+scenario:
+  stack:
+    - metadata:
+        label: vllm-0
+        cfg_id: vllm-gemma-270m
+      standardized:
+        kind: generic
+        tool: vllm
+        tool_version: 0.11.0
+      native:
+        args:
+          --max-num-seqs: 256
+```
+
+Every leaf of the BR0.2 schema has one of four classes, listed in
+`inference_perf/reportgen/br/v0_2/fillability.py`. A `Statistics` or
+time-series block counts as one leaf.
+
+| Class | Base may set it | inference-perf writes it | Examples |
+|---|---|---|---|
+| fillable | yes | never | `run.description`, `scenario.stack`, `results.component_health` |
+| defaulted | yes | when the base does not | `run.eid` |
+| written | no | always | `run.uid`, `run.time`, `results.request_performance.aggregate`, `results.session_performance` |
+| reserved | no | not today | `results.request_performance.aggregate.requests.incomplete`, `results.request_performance.time_series`, `results.observability.drop_rate` |
+
+`results.observability` takes keys the schema does not name, and those are
+fillable. A leaf the table does not list, from a newer 0.2.x schema, is fillable
+too, since inference-perf has no code that writes it.
+
+The base is checked at config load, before any request is sent. Loading fails
+when the base:
+
+1. sets a written or reserved field (the error names each one),
+2. has a key BR0.2 does not define,
+3. has a null value,
+4. is not valid BR0.2 once inference-perf's required fields are added, or
+5. has a distribution with `min` above `max`, or a negative value.
+
+Unquoted YAML timestamps in the base come out as ISO-8601 strings, like
+inference-perf's own `run.time`. If the base stops loading during the run, every
+stage emits its partial without it and the error is logged.
+
+A field moves from fillable to written or reserved when inference-perf starts
+measuring it. A base that sets it then fails at config load, and the release
+notes say so. A field never moves back. Consumers read written and reserved
+fields as measured by inference-perf, so a base can never set them.
+`tests/reportgen/br/v0_2/fillability_ratchet.txt` lists every such field, and a
+test fails if one becomes fillable.
+
+Worked examples live in `tests/reportgen/br/v0_2/base_report_examples/`. Each
+directory holds a `config.yaml` and the `base.yaml` it points at.
 
 ## Composing with other producers
 
