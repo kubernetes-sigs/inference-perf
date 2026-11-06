@@ -50,6 +50,13 @@ logger = logging.getLogger(__name__)
 # the probe falls back to this bounded deadline.
 _SUPPORTED_MODELS_TIMEOUT_SEC = 30.0
 
+# Readiness wait: the pause between probes of the readiness route, and the cap on a
+# single probe so one hung connection cannot eat the whole readiness budget.
+_READINESS_POLL_INTERVAL_SEC = 1.0
+_READINESS_PROBE_TIMEOUT_SEC = 5.0
+# Probed when a profile names no readiness route of its own.
+_READINESS_FALLBACK_ROUTE = "/v1/models"
+
 
 class OpenAIMetrics(BaseMetrics):
     def __init__(
@@ -84,6 +91,11 @@ class OpenAIMetrics(BaseMetrics):
 class openAIModelServerClient(ModelServerClient):
     _session: "Optional[openAIModelServerClientSession]" = None
     _session_lock = asyncio.Lock()
+    # Route that answers 200 once the server can take requests. A profile without one
+    # probes _READINESS_FALLBACK_ROUTE instead.
+    readiness_route: Optional[str] = None
+    # Budget for the readiness wait. Profiles override it when their boot takes longer.
+    readiness_timeout_sec: float = 600.0
 
     def __init__(
         self,
@@ -128,6 +140,10 @@ class openAIModelServerClient(ModelServerClient):
         # object (main.py copies it back into the run config).
         tokenizer_config = tokenizer_config if tokenizer_config is not None else CustomTokenizerConfig()
         self.tokenizer_config = tokenizer_config
+
+        # Before the /v1/models probe below, so a server still loading its weights is
+        # waited for instead of failing model auto-detection.
+        self.wait_until_ready()
 
         supported_models: Optional[List[dict[str, Any]]] = None
         inferred_entry: Optional[dict[str, Any]] = None
@@ -261,6 +277,39 @@ class openAIModelServerClient(ModelServerClient):
     @abstractmethod
     def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         raise NotImplementedError
+
+    def wait_until_ready(self) -> None:
+        """Poll the server's readiness route until it answers 200.
+
+        A profile without a readiness route probes ``/v1/models`` instead. A 404 means the
+        route is not served here, so the run carries on without waiting. Any other status
+        and any transport error count as not ready yet, for at most
+        ``readiness_timeout_sec``; the error raised at the deadline names the last one seen.
+        """
+        route = self.readiness_route if self.readiness_route is not None else _READINESS_FALLBACK_ROUTE
+        url = f"{self.uri}{route}"
+        headers = _build_request_headers(self.api_config, self.api_key)
+        cert = (self.cert_path, self.key_path) if self.cert_path and self.key_path else None
+        timeout = self.readiness_timeout_sec
+        deadline = time.monotonic() + timeout
+        last_seen = "no response"
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Exception(f"Server not ready: {url} did not answer 200 within {timeout}s (last: {last_seen})")
+            try:
+                response = requests.get(url, headers=headers, timeout=min(remaining, _READINESS_PROBE_TIMEOUT_SEC), cert=cert)
+                if response.status_code == 200:
+                    logger.info(f"Server ready: {url} answered 200")
+                    return
+                if response.status_code == 404:
+                    logger.info(f"Server does not serve {url}, starting without waiting for it")
+                    return
+                last_seen = f"HTTP {response.status_code}"
+            except requests.RequestException as e:
+                last_seen = f"{type(e).__name__}: {e}"
+            logger.debug(f"Waiting for {url}: {last_seen}")
+            time.sleep(min(_READINESS_POLL_INTERVAL_SEC, max(0.0, deadline - time.monotonic())))
 
     def get_supported_models(self) -> List[dict[str, Any]]:
         try:

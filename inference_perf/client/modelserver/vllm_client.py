@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 
 class vLLMModelServerClient(openAIModelServerClient):
+    # 200 once the engine is up; 503 while it is dead (vllm/entrypoints/serve/instrumentator/health.py).
+    readiness_route = "/health"
+
     def __init__(
         self,
         metrics_collector: RequestMetricCollector,
