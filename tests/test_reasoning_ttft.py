@@ -150,17 +150,21 @@ def test_first_output_token_for_records_without_chunk_times() -> None:
     assert latency["time_to_first_output_token"]["mean"] == pytest.approx(2.0)
 
 
-# One reasoning chunk at 2.0 and nothing else. TTFT and TTFO are both None.
-def test_single_generation_event_is_not_streamable() -> None:
-    """A single timestamped event is indistinguishable from a unary response,
-    matching the pre-#559 guard against single-event streams."""
+# One reasoning chunk at 2.0 on a request started at 1.0, and nothing else.
+# TTFT = 1.0. TTFO is None since no content arrived. TPOT and ITL are None.
+def test_single_generation_event_has_ttft_only() -> None:
+    """One timestamp is enough for TTFT: the first token arrived, even if it was
+    the only one. TPOT and ITL are differences between timestamps, so they need two."""
     metric = make_streamed_metric(
         start_time=1.0, end_time=4.0, output_token_times=[2.0], reasoning_chunk_times=[2.0], output_tokens=1
     )
     latency = summarize_requests([metric], [50]).successes["latency"]
 
-    assert latency["time_to_first_token"] is None
+    ttft = latency["time_to_first_token"]
+    assert ttft is not None and ttft["mean"] == pytest.approx(1.0)
     assert latency["time_to_first_output_token"] is None
+    assert latency["time_per_output_token"] is None
+    assert latency["inter_token_latency"] is None
 
 
 # Timeline 2.0 to 5.2 (3.2s) over 5 tokens, server completion_tokens = 5 with
