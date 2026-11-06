@@ -155,6 +155,14 @@ class APIConfig(StrictBaseModel):
         default=None,
         description="Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity.",
     )
+    # Request header carrying a client-generated request ID (x-request-id by default,
+    # which vLLM uses to build its own request ID and proxies such as Envoy can log).
+    # The ID is generated before the request is sent, so a request that timed out or
+    # never got a response can still be found in server logs.
+    request_id_header_key: Optional[str] = Field(
+        default="x-request-id",
+        description="Header used to send a client-generated ID with each request, reported as request_id in per-request entries. An empty string sends no ID.",
+    )
 
     @model_validator(mode="after")
     def validate_no_generation_options(self) -> "APIConfig":

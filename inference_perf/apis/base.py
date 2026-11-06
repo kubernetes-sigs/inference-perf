@@ -104,6 +104,8 @@ class RequestLifecycleMetric(BaseModel):
     stage_id: Optional[int] = None
     session_id: Optional[str] = None
     request_session_id: Optional[str] = None
+    request_id: Optional[str] = None
+    server_request_id: Optional[str] = None
     scheduled_time: float
     start_time: float
     end_time: float

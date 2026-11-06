@@ -228,6 +228,44 @@ def test_per_request_fields_omit_session_ids_when_absent() -> None:
     assert "request_session_id" not in entry
 
 
+# A failed request with request_id "3f9c1a7e", written with info, request and response
+# all turned off, still carries request_id "3f9c1a7e" at the top level of its entry.
+def test_per_request_fields_include_request_id_on_a_failed_request_with_info_off() -> None:
+    metric = _metric()
+    metric.request_id = "3f9c1a7e"
+    metric.error = ErrorResponseInfo(error_type="TimeoutError", error_msg="Request timed out")
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(request=False, response=False, info=False))
+
+    assert entry["request_id"] == "3f9c1a7e"
+
+
+# A metric with no request_id, as when sending is turned off, writes no request_id key.
+def test_per_request_fields_omit_request_id_when_absent() -> None:
+    entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig())
+
+    assert "request_id" not in entry
+
+
+# A metric with server_request_id "chatcmpl-abc", written with info, request and
+# response all turned off, carries server_request_id "chatcmpl-abc" at the top level.
+def test_per_request_fields_include_server_request_id_with_info_off() -> None:
+    metric = _metric()
+    metric.server_request_id = "chatcmpl-abc"
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(request=False, response=False, info=False))
+
+    assert entry["server_request_id"] == "chatcmpl-abc"
+
+
+# A metric with no server_request_id, as when no response came back, writes no
+# server_request_id key.
+def test_per_request_fields_omit_server_request_id_when_absent() -> None:
+    entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig())
+
+    assert "server_request_id" not in entry
+
+
 @pytest.mark.parametrize("include_raw", [True, False])
 @pytest.mark.parametrize("failed", [True, False])
 def test_per_request_entries_preserve_stage_and_schedule(include_raw: bool, failed: bool) -> None:
