@@ -64,7 +64,6 @@ import time
 import traceback
 import multiprocessing as mp
 from queue import Empty
-from multiprocessing.context import ForkServerProcess
 from multiprocessing.synchronize import Event as SyncEvent
 from multiprocessing.sharedctypes import Synchronized
 from concurrent.futures import TimeoutError
@@ -85,7 +84,7 @@ from inference_perf.observability.progress import (
     BarHandle,
     ProgressBars,
 )
-from inference_perf.utils.mp_context import MP_CONTEXT, start_forkserver
+from inference_perf.utils.mp_context import MP_CONTEXT, PreloadedForkServerProcess
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +257,7 @@ def _worker_ready(worker: "Worker") -> bool:
     return worker.ready_event is None or worker.ready_event.is_set()
 
 
-class Worker(ForkServerProcess):
+class Worker(PreloadedForkServerProcess):
     def __init__(
         self,
         id: int,
@@ -1887,8 +1886,6 @@ class LoadGenerator:
             await sleep(0.05)
 
     async def mp_run(self, client: ModelServerClient) -> None:
-        # No-op when main_cli already started it.
-        start_forkserver()
         request_queue: RequestQueue[RequestQueueData] = RequestQueue(
             self.num_workers if self.datagen.is_preferred_worker_requested() else 1
         )

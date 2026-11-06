@@ -323,8 +323,8 @@ def main_cli() -> None:
     if len(config.load.stages) == 0 and config.load.sweep is None:
         raise Exception("Load stages must be configured, or sweep must be configured")
 
-    # Before the manager below, which would otherwise start the forkserver
-    # without its preload settings.
+    # The first worker or manager start would do this too. Starting here lets the server's
+    # preload run while the tokenizer and datagen load.
     if config.load.num_workers > 0:
         start_forkserver()
 

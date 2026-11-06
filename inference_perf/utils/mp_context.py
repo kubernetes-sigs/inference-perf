@@ -26,16 +26,10 @@ created from this same context. Mixing objects from different start-method
 contexts raises at pickle/transfer time.
 """
 
-import multiprocessing as mp
 import os
 from multiprocessing import forkserver
-from multiprocessing.context import ForkServerContext
+from multiprocessing.context import ForkServerContext, ForkServerProcess
 from typing import Dict, Optional
-
-# forkserver is available on Linux and macOS, which are the platforms this tool
-# targets. start_forkserver() starts the server; otherwise the first worker or
-# manager start does, without the settings below.
-MP_CONTEXT: ForkServerContext = mp.get_context("forkserver")
 
 # Imported once in the server so workers fork with the package loaded instead of
 # importing it again each (seconds and hundreds of MB per worker). "__main__" is
@@ -58,7 +52,7 @@ def start_forkserver() -> None:
     # Later calls return here so a running process never rewrites os.environ for nothing.
     if _started:
         return
-    MP_CONTEXT.set_forkserver_preload(_PRELOAD)
+    forkserver.set_forkserver_preload(_PRELOAD)
     saved: Dict[str, Optional[str]] = {key: os.environ.get(key) for key in _SERVER_ENV}
     os.environ.update(_SERVER_ENV)
     try:
@@ -70,3 +64,22 @@ def start_forkserver() -> None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+class PreloadedForkServerProcess(ForkServerProcess):
+    """A forkserver Process that starts the server with start_forkserver() first."""
+
+    # Whichever process starts first launches the one server per interpreter, and a server
+    # launched without the preload cannot gain it later.
+    def start(self) -> None:
+        start_forkserver()
+        super().start()
+
+
+class _PreloadedForkServerContext(ForkServerContext):
+    # SyncManager.start() builds its server process from ctx.Process, so managers get it too.
+    Process = PreloadedForkServerProcess
+
+
+# forkserver is available on Linux and macOS, which are the platforms this tool targets.
+MP_CONTEXT: ForkServerContext = _PreloadedForkServerContext()
