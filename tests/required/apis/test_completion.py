@@ -282,14 +282,16 @@ async def test_process_response_non_streaming_in_band_error_body_raises() -> Non
     assert json.loads(str(exc_info.value)) == body
 
 
-# Unary 200 whose body is `{}`: no choices, no usage, no error. Must raise
-# EmptyResponseError. The sibling test above with `{"choices": [], "usage": {...}}`
-# still returns an InferenceInfo, so usage is what separates the two.
+# Unary 200 with a valid completion envelope, `choices: []`, no usage, no error.
+# Must raise EmptyResponseError. The sibling test above with the same envelope plus
+# usage still returns an InferenceInfo, so usage is what separates the two.
 @pytest.mark.asyncio
 async def test_process_response_non_streaming_no_choices_no_usage_raises() -> None:
     data = CompletionAPIData(prompt="hi")
     response = MagicMock()
-    response.json = AsyncMock(return_value={})
+    response.json = AsyncMock(
+        return_value={"id": "cmpl-1", "object": "text_completion", "created": 0, "model": "test-model", "choices": []}
+    )
 
     with pytest.raises(EmptyResponseError):
         await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
