@@ -1345,10 +1345,27 @@ class ReportGenerator:
             # Always emit the inference-perf slice of a BR0.2 report per stage,
             # alongside the native inference-perf reports. Downstream composers
             # (llm-d-benchmark CLI, wrappers, ad-hoc yq merges) layer their
-            # own partials on top to produce a full BR0.2 document.
+            # own partials on top to produce a full BR0.2 document, or hand
+            # theirs in up front as report.benchmark_report.base_file.
             # Imported here rather than at module top: the br.v0_2 adapter
             # imports effective_output_tokens from this module.
-            from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_experiment_eid, generate_run_uid
+            from inference_perf.reportgen.br.v0_2 import (
+                apply_base_report,
+                build_partial_report,
+                generate_experiment_eid,
+                generate_run_uid,
+                load_base_report,
+            )
+
+            base_report = None
+            base_file = report_config.benchmark_report.base_file
+            if base_file is not None:
+                # Config load already checked this file. It only fails here if
+                # it changed during the run, and that must not cost the run's results.
+                try:
+                    base_report = load_base_report(base_file)
+                except ValueError:
+                    logger.exception("BR0.2 base report %s no longer loads, emitting partials without it", base_file)
 
             br_stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
             for metric in request_metrics:
@@ -1383,6 +1400,8 @@ class ReportGenerator:
                         else None
                     ),
                 )
+                if base_report is not None:
+                    partial = apply_base_report(partial, base_report)
                 lifecycle_reports.append(
                     ReportFile(
                         name=f"inference-perf.partial.stage_{br_stage_id}",

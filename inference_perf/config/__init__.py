@@ -84,6 +84,7 @@ from inference_perf.config.observability import (
     RuntimeMetricsConfig,
 )
 from inference_perf.config.reportgen import (
+    BenchmarkReportConfig,
     GoodputConfig,
     PerRequestFieldsConfig,
     PrometheusMetricsReportConfig,
@@ -98,6 +99,7 @@ __all__ = [
     "APIConfig",
     "APIType",
     "AudioDatagenConfig",
+    "BenchmarkReportConfig",
     "CircuitBreakerConfig",
     "ConcurrentLoadStage",
     "Config",
