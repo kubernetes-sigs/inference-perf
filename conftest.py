@@ -12,21 +12,3 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Repo-wide pytest setup (rootdir conftest, loaded for every test tier)."""
-
-import multiprocessing as mp
-import sys
-
-import pytest
-
-
-# Match the multiprocessing start method used in production (main.py): on
-# macOS force "fork" so tokenizer and datagen objects are inherited by worker
-# processes instead of pickled. Linux keeps its default, as main.py does:
-# fork before Python 3.14, forkserver from 3.14 on. Set once here, before any
-# test module is imported, instead of at import time in individual test modules.
-def pytest_configure(config: pytest.Config) -> None:
-    if sys.platform == "darwin":
-        try:
-            mp.set_start_method("fork", force=True)
-        except RuntimeError:
-            pass
