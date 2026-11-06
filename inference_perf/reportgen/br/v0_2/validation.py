@@ -61,6 +61,7 @@ _DURATION_ABS_TOL = 1e-3
 _AGREEMENT_PATHS: List[tuple[tuple[str, ...], tuple[str, ...]]] = [
     (("requests", "total"), ("load_summary", "count")),
     (("requests", "failures"), ("failures", "count")),
+    (("requests", "incomplete"), ("cancelled", "count")),
     # Video pixels cannot be compared directly: BR sums frames, native is per-frame.
     (("requests", "request_size", "mean"), ("successes", "request_size_bytes", "mean")),
     (("throughput", "image_rate", "mean"), ("successes", "throughput", "images_per_sec")),

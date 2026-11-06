@@ -16,7 +16,7 @@
 
 import base64
 from multiprocessing.queues import SimpleQueue
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import pytest
 
@@ -26,6 +26,9 @@ from inference_perf.client.modelserver.otel_instrumentation import (
     summarize_media,
 )
 from inference_perf.utils.mp_context import MP_CONTEXT
+
+if TYPE_CHECKING:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
 def test_otel_instrumentation_init() -> None:
@@ -139,6 +142,51 @@ def test_record_response_metrics_with_error() -> None:
             response_info=None,
             error="Connection timeout",
         )
+
+
+# Hooks an in-memory exporter onto the tracer provider otel uses and returns it, so a test
+# can read the spans that finished after this call. Skips when the otel extra is missing.
+def _capture_spans(otel: OTelInstrumentation) -> "InMemorySpanExporter":
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    otel._provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return exporter
+
+
+# A request cancelled at stage teardown, recorded with its error text and cancelled=True.
+# Expects status UNSET, inference_perf.request.cancelled=True, and no error.message.
+def test_record_response_metrics_cancelled_leaves_status_unset() -> None:
+    otel = OTelInstrumentation(service_name="test-service", enabled=True)
+    exporter = _capture_spans(otel)
+
+    with otel.trace_llm_request(operation_name="chat.completions", model_name="test-model") as span:
+        otel.record_response_metrics(span=span, error="Cancelled by the load generator", cancelled=True)
+
+    (finished,) = exporter.get_finished_spans()
+    attributes = dict(finished.attributes or {})
+    assert finished.status.status_code.name == "UNSET"
+    assert attributes["inference_perf.request.cancelled"] is True
+    assert "error.message" not in attributes
+
+
+# A request that failed with "Connection timeout". Expects status ERROR carrying that text,
+# error.message set to it, and no cancelled marker.
+def test_record_response_metrics_error_sets_error_status() -> None:
+    otel = OTelInstrumentation(service_name="test-service", enabled=True)
+    exporter = _capture_spans(otel)
+
+    with otel.trace_llm_request(operation_name="chat.completions", model_name="test-model") as span:
+        otel.record_response_metrics(span=span, error="Connection timeout")
+
+    (finished,) = exporter.get_finished_spans()
+    attributes = dict(finished.attributes or {})
+    assert finished.status.status_code.name == "ERROR"
+    assert finished.status.description == "Connection timeout"
+    assert attributes["error.message"] == "Connection timeout"
+    assert "inference_perf.request.cancelled" not in attributes
 
 
 def test_summarize_media_replaces_inline_payloads_and_keeps_everything_else() -> None:

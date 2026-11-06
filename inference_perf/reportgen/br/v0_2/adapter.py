@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
 import numpy as np
 
 from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
+from inference_perf.apis.base import is_stage_teardown_cancelled
 from inference_perf.reportgen.base import effective_output_tokens, retokenize_output_token_times
 from inference_perf.payloads import Audios, Images, Videos
 
@@ -183,7 +184,10 @@ def _build_aggregate(
     use_server_output_tokens: bool,
 ) -> AggregateRequestPerformance:
     successful = [m for m in metrics if m.error is None]
-    failed = [m for m in metrics if m.error is not None]
+    # A request cancelled at stage teardown never got an answer, so it is incomplete rather than
+    # a failure, which the schema defines as a request that responded with an error.
+    cancelled = [m for m in metrics if is_stage_teardown_cancelled(m.error)]
+    failed = [m for m in metrics if m.error is not None and not is_stage_teardown_cancelled(m.error)]
 
     input_lengths = [float(m.info.input_tokens) for m in successful]
     # Zero is a real output length (immediate EOS, stop sequence) and stays in
@@ -198,6 +202,8 @@ def _build_aggregate(
     requests = AggregateRequests(
         total=len(metrics),
         failures=len(failed),
+        # Unset when nothing was cancelled, the way the native report omits its cancelled block.
+        incomplete=len(cancelled) or None,
         input_length=_statistics(input_lengths, Units.COUNT),
         output_length=_statistics(output_lengths, Units.COUNT),
         request_size=_statistics(

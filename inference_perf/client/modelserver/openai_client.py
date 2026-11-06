@@ -24,6 +24,7 @@ from inference_perf.apis import (
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anthropic_content
 from inference_perf.apis.response_errors import InvalidResponseError
+from inference_perf.apis.base import is_stage_teardown_cancelled, stage_teardown_cancelled_error
 from inference_perf.apis.streaming_parser import StreamInterruptedError
 from inference_perf.apis.tool_schema import clean_request_tool_schemas
 from inference_perf.payloads import RequestMetrics, Text
@@ -461,6 +462,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if not self.client.otel.enabled or span is None:
             return
 
+        cancelled = is_stage_teardown_cancelled(error)
+
         if info:
             inner = info.response_metrics
             otel_response_info: Dict[str, Any] = {
@@ -600,6 +603,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 span=span,
                 response_info=otel_response_info,
                 error=error.error_msg if error else None,
+                cancelled=cancelled,
             )
         elif error:
             # No `info` to draw response metrics from, but the retry cost is known -- and
@@ -611,6 +615,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 span=span,
                 response_info=failed_info or None,
                 error=error.error_msg,
+                cancelled=cancelled,
             )
 
     async def process_request(
@@ -679,6 +684,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
         error = None
         response_content = ""
         caught_exception: Optional[Exception] = None
+        # Set when the load generator cancels this request at stage teardown. The
+        # request is still recorded below, with its own cancelled outcome rather
+        # than as a failure, and the cancellation is re-raised once it has been.
+        cancelled = False
         retries_attempted = 0
         retries_recovered = False
         # Set once the attempt loop exits; read again after the span closes.
@@ -819,6 +828,12 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     caught_exception = e
                     log_message = "Request timed out:"
                     error = ErrorResponseInfo(error_msg="Request timed out", error_type="TimeoutError")
+                except asyncio.CancelledError:
+                    # Not an Exception, so nothing above sees it. Without this the
+                    # request would leave no lifecycle metric and be missing from the
+                    # report: sent to the server, then counted nowhere.
+                    cancelled = True
+                    error = stage_teardown_cancelled_error()
                 except Exception as e:
                     caught_exception = e
                     log_message = "Unexpected error during request processing:"
@@ -837,7 +852,15 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     backoff = self.client.request_retry_backoff_sec * (2**attempt)
                     # Jitter keeps concurrent requests from resynchronizing into a burst
                     # against a server that is already shedding connections.
-                    await sleep(backoff * (0.5 + random.random()))
+                    try:
+                        await sleep(backoff * (0.5 + random.random()))
+                    except asyncio.CancelledError:
+                        # Cancelled between attempts: the fault being retried is no
+                        # longer what ended this request.
+                        cancelled = True
+                        caught_exception = None
+                        error = stage_teardown_cancelled_error()
+                        break
                     logger.warning(
                         f"Retrying request after {type(caught_exception).__name__} (attempt {attempt + 2}/{max_attempts})."
                     )
@@ -970,6 +993,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         # Record the metric
         self.client.metrics_collector.record_metric(metric)
+
+        if cancelled:
+            raise asyncio.CancelledError()
 
     async def close(self) -> None:
         await self.session.close()

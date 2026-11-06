@@ -303,6 +303,7 @@ class OTelInstrumentation:
         span: Optional[Any],
         response_info: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
+        cancelled: bool = False,
     ) -> None:
         """
         Record response metrics on the span.
@@ -311,12 +312,18 @@ class OTelInstrumentation:
             span: The OTEL span to record metrics on
             response_info: Response information including token counts, latency, etc.
             error: Error message if the request failed
+            cancelled: The request was cancelled at stage teardown. Takes precedence over error.
         """
         if not self.enabled or span is None:
             return
 
         try:
-            if error:
+            if cancelled:
+                # The load generator ended the request on purpose. OTel's HTTP client conventions
+                # leave a deliberate cancel's status unset, and the report counts it as neither a
+                # success nor a failure, so the span gets a marker instead of ERROR or OK.
+                span.set_attribute("inference_perf.request.cancelled", True)
+            elif error:
                 span.set_status(Status(StatusCode.ERROR, error))
                 # Note: There's no standard attribute for error in the semantic conventions yet
                 span.set_attribute("error.message", error)

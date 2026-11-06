@@ -181,6 +181,21 @@ def test_lifecycle_report_shape_with_failures() -> None:
 # --- Retry reporting (#777) ---
 
 
+# One success and one failure, nothing cancelled. Expects no "cancelled" key in the
+# serialized report at all, so a report from a stage that drained cleanly is
+# byte-identical to one built before the block existed.
+def test_cancelled_absent_when_nothing_cancelled() -> None:
+    summary = summarize_requests(
+        typing.cast(
+            typing.Any,
+            [retry_metric(0, False), failed_metric(start_time=1.0, end_time=1.2, scheduled_time=1.0, input_tokens=8)],
+        ),
+        percentiles=[50],
+    )
+    assert summary.cancelled is None
+    assert "cancelled" not in summary.model_dump()
+
+
 def test_retries_absent_when_nothing_retried() -> None:
     """A run with retries off must carry no retry section at all -- not a block of zeros
     implying the mechanism was exercised, and not a `"retries": null` either.
