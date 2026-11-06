@@ -849,7 +849,6 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             replay_config=self.weka_config,
         )
 
-        self.mp_manager = mp_manager
         self.num_workers = max(1, num_workers)
         self.base_seed = base_seed if base_seed is not None else 42
 

@@ -21,7 +21,7 @@ import multiprocessing as mp
 import os
 import signal
 import unittest
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -106,6 +106,13 @@ class CrashingDataGenerator(RandomDataGenerator):
         self._real_rng = value
 
 
+class UnpicklableDataGenerator(RandomDataGenerator):
+    # Raises RuntimeError("payload refused to unpickle") when a worker process rebuilds it,
+    # so the worker dies before Worker.run() and never sends a crash record.
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        raise RuntimeError("payload refused to unpickle")
+
+
 class TestWorkerFailureDescription(unittest.TestCase):
     """The text a user sees for each way a worker can die."""
 
@@ -163,6 +170,15 @@ class TestWorkerFailureDescription(unittest.TestCase):
         self.assertIn("Worker 0", described)
         self.assertIn("SIGKILL", described)
         self.assertIn("without reporting a Python traceback", described)
+
+    # Exit code 1 and no record: Worker.run() never ran, so the description must say
+    # the worker failed during startup and point at stderr, not blame a segfault.
+    def test_nonzero_exit_without_a_record_is_described_as_a_startup_failure(self) -> None:
+        described = WorkerFailure(worker_id=2, exitcode=1, crash=None).describe()
+        self.assertIn("Worker 2 exited with code 1", described)
+        self.assertIn("during startup", described)
+        self.assertIn("stderr", described)
+        self.assertNotIn("segfault", described)
 
     def test_clean_early_exit_is_still_reported_as_a_failure(self) -> None:
         # Exit code 0 mid-stage is abnormal: the worker should have stayed alive
@@ -260,20 +276,6 @@ class TestCollectWorkerFailures(unittest.TestCase):
 class TestWorkerCrashEndToEnd(unittest.IsolatedAsyncioTestCase):
     """A real worker process crashes and the parent explains it without hanging."""
 
-    def setUp(self) -> None:
-        # Worker._run() reads the datagen's `rng` in the child; under fork the
-        # object is inherited so the crash lands inside the worker. Python 3.14
-        # defaults to forkserver on Linux, where the same object is pickled and
-        # the failure moves into process startup instead (see #526).
-        self._previous_start_method = mp.get_start_method()
-        try:
-            mp.set_start_method("fork", force=True)
-        except RuntimeError:
-            self.skipTest("fork start method unavailable on this platform")
-
-    def tearDown(self) -> None:
-        mp.set_start_method(self._previous_start_method, force=True)
-
     async def test_crash_is_attributed_and_the_stage_is_failed(self) -> None:
         # One worker, two stages, and a datagen that raises as soon as the worker
         # starts. mp_run must return instead of hanging, must record worker 0 with
@@ -317,6 +319,38 @@ class TestWorkerCrashEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(load_gen.stage_runtime_info), 2, "both stages must run")
         for info in load_gen.stage_runtime_info.values():
             self.assertEqual(info.status, StageStatus.FAILED)
+
+    # One worker, one stage, and a datagen that raises while the worker unpickles it.
+    # The worker exits 1 before Worker.run() with no crash record, the run returns
+    # instead of hanging, and the parent says the worker failed during startup.
+    async def test_payload_that_fails_to_unpickle_is_reported_as_a_startup_failure(self) -> None:
+        api_config = APIConfig(type=APIType.Completion, streaming=False)
+        data_config = DataConfig(
+            type=DataGenType.Random,
+            input_distribution=Distribution(min=10, max=10, mean=10.0, std_dev=0.0, total_count=4),
+            output_distribution=Distribution(min=5, max=5, mean=5.0, std_dev=0.0, total_count=4),
+        )
+        datagen = UnpicklableDataGenerator(api_config, data_config, _CustomTokenizer())
+
+        collector = MultiprocessRequestMetricCollector()
+        client = MockModelServerClient(collector, api_config, mock_latency=0)
+        load_config = LoadConfig(
+            type=LoadType.CONSTANT,
+            num_workers=1,
+            worker_max_concurrency=4,
+            stages=[StandardLoadStage(rate=4, duration=1)],
+            base_seed=42,
+        )
+        load_gen = LoadGenerator(datagen, load_config)
+
+        async with collector.start():
+            await load_gen.mp_run(client)
+
+        self.assertGreaterEqual(len(load_gen.worker_failures), 1)
+        failure = load_gen.worker_failures[0]
+        self.assertEqual(failure.exitcode, 1)
+        self.assertIsNone(failure.crash)
+        self.assertIn("during startup", failure.describe())
 
 
 if __name__ == "__main__":
