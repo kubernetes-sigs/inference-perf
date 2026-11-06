@@ -108,7 +108,7 @@ class Config(StrictBaseModel):
 
     @model_validator(mode="after")
     def validate_duration_bounded_replay_stage(self) -> "Config":
-        """Reject datagen settings a duration-bounded stage would silently contradict.
+        """Reject datagen settings a stage with a deadline (duration or stop_condition) would silently contradict.
 
         Such a stage replays the corpus, so duplicate sessions now arise from ``load`` too.
         Two ``data`` settings were written when ``data`` was their only source, and neither
@@ -119,7 +119,7 @@ class Config(StrictBaseModel):
         duration_stages = [
             stage
             for stage in self.load.stages
-            if isinstance(stage, TraceSessionReplayLoadStage) and stage.duration is not None
+            if isinstance(stage, TraceSessionReplayLoadStage) and stage.effective_duration is not None
         ]
         if not duration_stages:
             return self

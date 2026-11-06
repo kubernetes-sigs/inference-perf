@@ -28,6 +28,7 @@ from inference_perf.config import (
     MultiLoRAConfig,
     StandardLoadStage,
     StageGenType,
+    StopConditionConfig,
     SweepConfig,
     TraceSessionReplayLoadStage,
 )
@@ -177,6 +178,76 @@ def test_trace_session_replay_stage_duration_checked_against_deprecated_timeout(
         TraceSessionReplayLoadStage(concurrent_sessions=4, duration=2100, timeout=1800)
 
 
+# stop_condition '(t >= 1800) | (errors >= 10)' on a session stage: its deadline is 1800.0, it reads the
+# measured signal errors, and it holds once by default.
+def test_trace_session_replay_stage_stop_condition_valid() -> None:
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=16, stop_condition="(t >= 1800) | (errors >= 10)")
+    assert stage.effective_duration == 1800.0
+    assert stage.predicate is not None and stage.predicate.measured_symbols == {"errors"}
+    assert stage.stop_settings == StopConditionConfig(condition="(t >= 1800) | (errors >= 10)")
+
+
+# duration=30 is shorthand for stop_condition 't >= 30.0': same predicate source, deadline 30.0, nothing measured.
+def test_trace_session_replay_stage_duration_is_stop_condition_shorthand() -> None:
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, duration=30)
+    assert stage.stop_settings == StopConditionConfig(condition="t >= 30.0")
+    assert stage.effective_duration == 30.0
+    assert stage.predicate is not None and not stage.predicate.measured_symbols
+
+
+# A stage bounded by num_sessions=10, or by nothing (all remaining sessions), has no stop condition and no deadline.
+def test_trace_session_replay_stage_count_bounded_has_no_stop_condition() -> None:
+    for stage in (
+        TraceSessionReplayLoadStage(concurrent_sessions=4, num_sessions=10),
+        TraceSessionReplayLoadStage(concurrent_sessions=4),
+    ):
+        assert stage.stop_settings is None
+        assert stage.predicate is None
+        assert stage.effective_duration is None
+
+
+# The object form {condition: '(t >= 600) | (errors >= 3)', hold: 2} keeps its hold of 2.
+def test_trace_session_replay_stage_stop_condition_object_form() -> None:
+    settings = StopConditionConfig(condition="(t >= 600) | (errors >= 3)", hold=2)
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition=settings)
+    assert stage.stop_settings == settings
+    assert stage.effective_duration == 600.0
+
+
+# stop_condition 't >= 60' with duration=60, or with num_sessions=100, is rejected: each one ends the stage.
+def test_trace_session_replay_stage_stop_condition_excludes_duration_and_num_sessions() -> None:
+    with pytest.raises(ValueError, match="stop_condition and duration cannot both be set"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="t >= 60", duration=60)
+    with pytest.raises(ValueError, match="stop_condition and num_sessions cannot both be set"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="t >= 60", num_sessions=100)
+
+
+# A condition that never holds on time alone, 'quantile_over_time(0.99, ttft[30s]) > 2', fails at load with the
+# same reason a constant stage gets.
+def test_trace_session_replay_stage_rejects_condition_without_deadline() -> None:
+    with pytest.raises(ValueError, match="it must also hold on time alone"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="quantile_over_time(0.99, ttft[30s]) > 2")
+
+
+# '(t >= 600) | (avg_over_sent(ttft, 0, 10) > 2)' is rejected on a session stage: events are sent as their
+# dependencies finish, so the stage has no send order for _over_sent to count.
+def test_trace_session_replay_stage_rejects_over_sent_terms() -> None:
+    with pytest.raises(ValueError, match="counts requests in the order they were sent"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="(t >= 600) | (avg_over_sent(ttft, 0, 10) > 2)")
+
+
+# A deadline of 1800s against max_stage_duration=1800 (or timeout=1200) is rejected, since the safety limit would
+# fail every run before the condition could end it. 1799s against 1800 is accepted.
+def test_trace_session_replay_stage_stop_condition_deadline_shorter_than_cap() -> None:
+    with pytest.raises(ValueError, match="holds by 1800s, which must be shorter than max_stage_duration"):
+        TraceSessionReplayLoadStage(
+            concurrent_sessions=4, stop_condition="(t >= 1800) | (errors >= 10)", max_stage_duration=1800
+        )
+    with pytest.raises(ValueError, match="must be shorter than timeout"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="t >= 1800", timeout=1200)
+    TraceSessionReplayLoadStage(concurrent_sessions=4, stop_condition="t >= 1799", max_stage_duration=1800)
+
+
 # --- LoadConfig cross-stage validation -----------------------------------
 
 
@@ -245,3 +316,151 @@ def test_multilora_traffic_split_summing_to_one_is_ok() -> None:
     )
     assert cfg.lora_traffic_split is not None
     assert len(cfg.lora_traffic_split) == 2
+
+
+# --- StandardLoadStage.stop_condition ------------------------------------------
+
+
+# rate=10 with stop_condition 't >= 60' and no duration is valid; effective_duration is 60.0 and the parsed predicate is exposed.
+def test_standard_load_stage_stop_condition_valid() -> None:
+    stage = StandardLoadStage(rate=10, stop_condition="t >= 60")
+    assert stage.duration is None
+    assert stage.effective_duration == 60.0
+    assert stage.predicate is not None
+    assert stage.predicate.boundary == 60.0
+
+
+# duration=60 is shorthand for stop_condition 't >= 60': the stage's predicate is Predicate('t >= 60') with
+# boundary 60.0, while the user-facing fields keep what was written (duration 60, stop_condition None).
+def test_standard_load_stage_duration_is_stop_condition_shorthand() -> None:
+    stage = StandardLoadStage(rate=10, duration=60)
+    assert stage.predicate.raw == "t >= 60"
+    assert stage.effective_duration == 60.0
+    assert stage.duration == 60
+    assert stage.stop_condition is None
+
+
+# For every integer duration 1..600 the shorthand's boundary is exactly float(duration), so a duration
+# stage's window is unchanged by routing it through Predicate.
+def test_duration_shorthand_boundary_is_exact() -> None:
+    for d in range(1, 601):
+        assert StandardLoadStage(rate=1, duration=d).effective_duration == float(d)
+
+
+# Assigning duration=90 after construction (as main.py does for concurrent stages) moves the window to 90.0:
+# the predicate is rebuilt from the current fields, not frozen at validation time.
+def test_duration_assignment_after_construction_rebuilds_predicate() -> None:
+    stage = StandardLoadStage(rate=10, duration=60)
+    stage.duration = 90
+    assert stage.predicate.raw == "t >= 90"
+    assert stage.effective_duration == 90.0
+
+
+# 't >= 60.5' is allowed even though duration must be an int; effective_duration is 60.5.
+def test_standard_load_stage_stop_condition_fractional_boundary() -> None:
+    assert StandardLoadStage(rate=10, stop_condition="t >= 60.5").effective_duration == 60.5
+
+
+# rate=10 with neither duration nor stop_condition is rejected naming both fields.
+def test_standard_load_stage_requires_duration_or_stop_condition() -> None:
+    with pytest.raises(ValidationError, match="Exactly one of duration or stop_condition"):
+        StandardLoadStage(rate=10)
+
+
+# rate=10 with duration=60 AND stop_condition 't >= 60' is rejected: the two bound the same window.
+def test_standard_load_stage_rejects_duration_and_stop_condition_together() -> None:
+    with pytest.raises(ValidationError, match="Exactly one of duration or stop_condition"):
+        StandardLoadStage(rate=10, duration=60, stop_condition="t >= 60")
+
+
+# 'Eq(t, 60)' holds only at one instant; the stage is rejected with the predicate's own message.
+def test_standard_load_stage_stop_condition_single_instant_rejected() -> None:
+    with pytest.raises(ValidationError, match="uses equality"):
+        StandardLoadStage(rate=10, stop_condition="Eq(t, 60)")
+
+
+# 't < 60' already holds at t=0; the stage is rejected with the predicate's own message.
+def test_standard_load_stage_stop_condition_lapsing_rejected() -> None:
+    with pytest.raises(ValidationError, match=r"holds only on \[0, 60\);"):
+        StandardLoadStage(rate=10, stop_condition="t < 60")
+
+
+# A CONSTANT LoadConfig accepts a stop_condition stage alongside a duration stage; both are StandardLoadStage.
+def test_load_config_accepts_stop_condition_stage() -> None:
+    cfg = LoadConfig(
+        type=LoadType.CONSTANT,
+        stages=[StandardLoadStage(rate=10, duration=60), StandardLoadStage(rate=10, stop_condition="t >= 60")],
+    )
+    assert [s.effective_duration for s in cfg.stages if isinstance(s, StandardLoadStage)] == [60.0, 60.0]
+
+
+# TRACE_REPLAY takes its request count and timing from the trace, so a stage's stop_condition would be accepted
+# and then ignored. Input: a TRACE_REPLAY LoadConfig with stop_condition 't >= 60'. Expected: rejected at load,
+# naming the stage. A plain duration stays accepted, since the shipped trace_replay example sets one.
+def test_trace_replay_rejects_stop_condition() -> None:
+    with pytest.raises(ValidationError, match="Stage 0: stop_condition has no effect under TRACE_REPLAY"):
+        LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, stop_condition="t >= 60")])
+    LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, duration=30)])
+
+
+# --- StandardLoadStage.stop_condition over measured terms ------------------------
+
+
+# The object form {condition: '(t >= 300) | (avg_over_last(error, 20) > 0.5)', hold: 3} loads with that hold;
+# the stage's effective_duration is the 300s deadline and its predicate reads one term.
+def test_standard_load_stage_stop_condition_object_form() -> None:
+    stage = StandardLoadStage(
+        rate=10, stop_condition={"condition": "(t >= 300) | (avg_over_last(error, 20) > 0.5)", "hold": 3}
+    )
+    assert isinstance(stage.stop_condition, StopConditionConfig)
+    assert stage.stop_settings == StopConditionConfig(condition="(t >= 300) | (avg_over_last(error, 20) > 0.5)", hold=3)
+    assert stage.effective_duration == 300.0
+    assert [term.source for term in stage.predicate.terms.values()] == ["avg_over_last(error, 20)"]
+
+
+# A string stop_condition and the duration shorthand both normalise to the object form with hold 1.
+def test_stop_settings_defaults() -> None:
+    by_string = StandardLoadStage(rate=10, stop_condition="(t >= 300) | (errors >= 10)")
+    assert by_string.stop_settings == StopConditionConfig(condition="(t >= 300) | (errors >= 10)", hold=1)
+    assert StandardLoadStage(rate=10, duration=60).stop_settings == StopConditionConfig(condition="t >= 60")
+
+
+# hold=0 is rejected, as is a 'window' key: the window lives in the condition now.
+def test_stop_condition_object_form_bounds() -> None:
+    with pytest.raises(ValidationError):
+        StopConditionConfig(condition="t >= 60", hold=0)
+    with pytest.raises(ValidationError):
+        StandardLoadStage(rate=10, stop_condition={"condition": "t >= 60", "window": 5})
+
+
+# 'errors >= 10' alone cannot end the stage on time; rejected at config load with the form to use.
+def test_stop_condition_measured_only_rejected() -> None:
+    with pytest.raises(ValidationError, match="must also hold on time alone"):
+        StandardLoadStage(rate=10, stop_condition="errors >= 10")
+
+
+# At rate 2 a 60s stage sends 120 requests: 'avg_over_sent(ttft, 100, 120)' loads, 'avg_over_sent(ttft, 100, 121)'
+# is rejected because request 121 is never sent.
+def test_over_sent_must_fit_in_the_stage() -> None:
+    StandardLoadStage(rate=2, stop_condition="(t >= 60) | (avg_over_sent(ttft, 100, 120) > 1)")
+    with pytest.raises(ValidationError, match="reads requests up to 121, but the stage sends 120 by its 60s deadline"):
+        StandardLoadStage(rate=2, stop_condition="(t >= 60) | (avg_over_sent(ttft, 100, 121) > 1)")
+
+
+# Reassigning the object form rebuilds the predicate: 't >= 60' replaced by '(t >= 120) | (errors >= 1)' gives
+# effective_duration 120.0 and a predicate that reads errors.
+def test_predicate_rebuilt_when_object_form_changes() -> None:
+    stage = StandardLoadStage(rate=10, stop_condition=StopConditionConfig(condition="t >= 60"))
+    assert stage.effective_duration == 60.0
+    stage.stop_condition = StopConditionConfig(condition="(t >= 120) | (errors >= 1)")
+    assert stage.effective_duration == 120.0
+    assert stage.predicate.signals == {"errors"}
+
+
+# TRACE_REPLAY rejects the object form of stop_condition the way it rejects the string.
+def test_trace_replay_rejects_object_form() -> None:
+    with pytest.raises(ValidationError, match="Stage 0: stop_condition has no effect under TRACE_REPLAY"):
+        LoadConfig(
+            type=LoadType.TRACE_REPLAY,
+            stages=[StandardLoadStage(rate=1, stop_condition={"condition": "(t >= 60) | (errors >= 1)"})],
+        )
