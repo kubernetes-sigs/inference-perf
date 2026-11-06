@@ -15,6 +15,10 @@
 
 from unittest.mock import Mock
 
+import pytest
+from openai.types import Completion
+from pydantic import ValidationError
+
 from inference_perf.apis.base import (
     ErrorResponseInfo,
     RequestLifecycleMetric,
@@ -156,6 +160,16 @@ class TestRequestFailuresByLabel:
         assert by_label["inbanderror"]["count"] == 1
         assert by_label["inbanderror"]["messages"][0]["message"] == "upstream connect error"
         assert by_label["Connection Error"]["count"] == 1
+
+    # A unary 200 whose body {"choices": [{"text": "could not connect upstream"}]} fails
+    # the OpenAI schema. pydantic quotes the body in the message, so it carries "connect".
+    # The failure must stay under "validationerror", not land in "Connection Error".
+    def test_schema_validation_error_keeps_its_label_when_the_body_matches_a_pattern(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            Completion.model_validate({"choices": [{"text": "could not connect upstream"}]})
+        err = ErrorResponseInfo(error_type=type(exc_info.value).__name__, error_msg=str(exc_info.value))
+        summary = summarize_requests([_req(error=err)], PERCENTILES)
+        assert list(summary.failures["by_label"]) == ["validationerror"]
 
 
 # ---------------------------------------------------------------------------

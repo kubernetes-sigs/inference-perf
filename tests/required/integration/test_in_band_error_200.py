@@ -138,15 +138,15 @@ async def test_unary_in_band_error_body_is_a_failure() -> None:
     assert metric.response_data == ERROR_FRAME
 
 
-# Unary completion against a complete 200 whose body is `{}`. Must record an
-# EmptyResponseError failure with response_data == "{}".
+# Unary completion against a complete 200 whose body is `{}`. It is not a valid
+# completion, so it must record a ValidationError failure with response_data == "{}".
 @pytest.mark.asyncio
 async def test_unary_empty_body_is_a_failure() -> None:
     async with TruncatingSSEServer([], missing_bytes=0, body="{}", content_type="application/json") as server:
         metric = await run_request_against(server.base_url, APIConfig(type=APIType.Completion, streaming=False))
 
     assert metric.error is not None
-    assert metric.error.error_type == "EmptyResponseError"
+    assert metric.error.error_type == "ValidationError"
     assert metric.response_data == "{}"
 
 

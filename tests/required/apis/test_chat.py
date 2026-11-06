@@ -138,8 +138,12 @@ async def test_process_response_non_streaming_uses_server_prompt_tokens() -> Non
     response = MagicMock()
     response.json = AsyncMock(
         return_value={
-            "choices": [{"message": {"content": "hello there"}}],
-            "usage": {"prompt_tokens": 42, "completion_tokens": 2},
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "test-model",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "hello there"}}],
+            "usage": {"prompt_tokens": 42, "completion_tokens": 2, "total_tokens": 44},
         }
     )
 
@@ -147,7 +151,11 @@ async def test_process_response_non_streaming_uses_server_prompt_tokens() -> Non
 
     assert info.request_metrics.text.input_tokens == 42
     assert isinstance(info.response_metrics, UnaryResponseMetrics)
-    assert info.response_metrics.server_usage == {"prompt_tokens": 42, "completion_tokens": 2}
+    # Usage is normalized through the OpenAI schema, which carries optional
+    # detail fields, so assert the counts rather than exact dict equality.
+    assert info.response_metrics.server_usage is not None
+    assert info.response_metrics.server_usage["prompt_tokens"] == 42
+    assert info.response_metrics.server_usage["completion_tokens"] == 2
 
 
 @pytest.mark.asyncio
@@ -157,7 +165,15 @@ async def test_process_response_non_streaming_falls_back_without_server_usage() 
     tokenizer = _make_tokenizer()
 
     response = MagicMock()
-    response.json = AsyncMock(return_value={"choices": [{"message": {"content": "hi"}}]})
+    response.json = AsyncMock(
+        return_value={
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "test-model",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "hi"}}],
+        }
+    )
 
     info = await data.process_response(response, _make_config(streaming=False), tokenizer)
 
@@ -198,12 +214,15 @@ async def test_process_response_non_streaming_in_band_error_body_raises() -> Non
     assert json.loads(str(exc_info.value)) == body
 
 
-# Unary 200 whose body is `{}`: no choices, no usage. Must raise EmptyResponseError.
+# Unary 200 with a valid completion envelope, `choices: []` and no usage. Must raise
+# EmptyResponseError. A bare `{}` fails schema validation before this check runs.
 @pytest.mark.asyncio
 async def test_process_response_non_streaming_no_choices_no_usage_raises() -> None:
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
     response = MagicMock()
-    response.json = AsyncMock(return_value={})
+    response.json = AsyncMock(
+        return_value={"id": "chatcmpl-1", "object": "chat.completion", "created": 0, "model": "test-model", "choices": []}
+    )
 
     with pytest.raises(EmptyResponseError):
         await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
@@ -283,7 +302,15 @@ async def test_process_response_streaming_usage_only_is_a_completion() -> None:
 @pytest.mark.asyncio
 async def test_process_response_non_streaming_reasoning_only_null_content_is_a_completion() -> None:
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
-    body = {"choices": [{"message": {"role": "assistant", "content": None, "reasoning": "a b"}, "finish_reason": "length"}]}
+    body = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "test-model",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": None, "reasoning": "a b"}, "finish_reason": "length"}
+        ],
+    }
     response = MagicMock()
     response.json = AsyncMock(return_value=body)
 
