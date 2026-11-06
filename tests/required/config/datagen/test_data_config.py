@@ -240,10 +240,10 @@ def test_multimodal_config_parsing() -> None:
         assert config.data.multimodal is not None
         assert config.data.multimodal.image is not None
         assert config.data.multimodal.image.insertion_point == 0.5
-        assert config.data.multimodal.image.count is not None
+        assert isinstance(config.data.multimodal.image.count, Distribution)
         assert config.data.multimodal.image.count.mean == 3
         assert config.data.multimodal.video is not None
-        assert config.data.multimodal.video.count is not None
+        assert isinstance(config.data.multimodal.video.count, Distribution)
         assert config.data.multimodal.video.count.mean == 1
         assert config.data.multimodal.video.profiles is not None
         assert isinstance(config.data.multimodal.video.profiles, VideoProfile)
@@ -269,3 +269,17 @@ def test_multimodal_config_parsing() -> None:
 def test_multimodal_config_rejects_out_of_range_insertion_points(insertion_point: object) -> None:
     with pytest.raises(ValidationError, match="insertion_point"):
         ImageDatagenConfig(insertion_point=insertion_point)
+
+
+# Media count and insertion_point take expression strings. Accepted: count 'Poisson(2)', insertion_point
+# 'Beta(2, 5)' and the explicitly clamped 'Min(Max(Normal(0.5, 0.1), 0), 1)', all provably in [0, 1].
+# Rejected: 'Normal(0.5, 0.1)' (unbounded), 'Uniform(0, 2)' (reaches 2), and a malformed count 'foo(1)'.
+def test_multimodal_expression_fields() -> None:
+    cfg = ImageDatagenConfig(count="Poisson(2)", insertion_point="Beta(2, 5)")
+    assert (cfg.count, cfg.insertion_point) == ("Poisson(2)", "Beta(2, 5)")
+    ImageDatagenConfig(insertion_point="Min(Max(Normal(0.5, 0.1), 0), 1)")
+    for bad in ("Normal(0.5, 0.1)", "Uniform(0, 2)"):
+        with pytest.raises(ValidationError, match="must be provably within"):
+            ImageDatagenConfig(insertion_point=bad)
+    with pytest.raises(ValidationError, match="unknown function"):
+        ImageDatagenConfig(count="foo(1)")
