@@ -321,6 +321,18 @@ class RecordingGateClient(_TestClientBase):
                 await asyncio.sleep(0.01)
 
 
+# A Worker whose _wind_down_stage waits until the file at allow_wind_down_path exists, then runs
+# the real one. Defined at module level so the forkserver child unpickles this class; a
+# monkeypatch in the parent never reaches the child.
+class _HeldWindDownWorker(Worker):
+    allow_wind_down_path = ""
+
+    async def _wind_down_stage(self, tasks: List[asyncio.Task[None]], draining: asyncio.Event) -> None:
+        while not os.path.exists(self.allow_wind_down_path):
+            await asyncio.sleep(0.01)
+        await super()._wind_down_stage(tasks, draining)
+
+
 def _line_count(path: str) -> int:
     if not os.path.exists(path):
         return 0
@@ -352,6 +364,7 @@ class _Harness:
         teardown_grace_seconds: float,
         datagen: Optional[MockDataGenerator | SessionGenerator] = None,
         worker_max_concurrency: int = 4,
+        hold_wind_down_until: Optional[str] = None,
     ) -> None:
         api_config = APIConfig(type=APIType.Chat)
         self.datagen = (
@@ -384,7 +397,7 @@ class _Harness:
         self.loadgen._stage_boundary_seq = self.stage_boundary_seq
         self.request_phase.set()
 
-        worker = Worker(
+        worker = (Worker if hold_wind_down_until is None else _HeldWindDownWorker)(
             0,
             client,
             self.request_queue.get_channel(0),
@@ -404,6 +417,8 @@ class _Harness:
             teardown_grace_seconds=teardown_grace_seconds,
             ready_event=self.worker_ready,
         )
+        if isinstance(worker, _HeldWindDownWorker) and hold_wind_down_until is not None:
+            worker.allow_wind_down_path = hold_wind_down_until
         worker.start()
         self._await_worker_ready()
         self.loadgen.workers = [worker]
@@ -481,9 +496,7 @@ async def test_dependency_wait_does_not_consume_request_concurrency(tmp_path: ob
         harness.shutdown()
 
 
-async def test_permit_released_after_teardown_does_not_dispatch_waiter(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_permit_released_after_teardown_does_not_dispatch_waiter(tmp_path: object) -> None:
     """A session request that acquires the only permit after the parent has
     signalled teardown must not be dispatched before the worker starts its
     local wind-down."""
@@ -495,27 +508,17 @@ async def test_permit_released_after_teardown_does_not_dispatch_waiter(
     with open(predecessor_done, "w") as f:
         f.write("done\n")
 
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = StubSessionGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
     # Keep the worker's local draining event clear until the waiter has reacted
     # to the released permit. This isolates the shared-signal recheck added by
     # the fix: without it, the waiter dispatches before wind-down is allowed.
-    original_wind_down = Worker._wind_down_stage
-
-    async def delayed_wind_down(worker: Worker, tasks: List[asyncio.Task[None]], draining: asyncio.Event) -> None:
-        while not os.path.exists(allow_wind_down):
-            await asyncio.sleep(0.01)
-        await original_wind_down(worker, tasks, draining)
-
-    # The autouse fixture forces fork, so the child inherits this patch. The
-    # parent-side monkeypatch cleanup is sufficient once the child exits.
-    monkeypatch.setattr(Worker, "_wind_down_stage", delayed_wind_down)
-
-    api_config = APIConfig(type=APIType.Chat)
-    datagen = StubSessionGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
     harness = _Harness(
         RecordingGateClient(dispatch_log, release_root),
         teardown_grace_seconds=2.0,
         datagen=datagen,
         worker_max_concurrency=1,
+        hold_wind_down_until=allow_wind_down,
     )
 
     now = time.perf_counter()
