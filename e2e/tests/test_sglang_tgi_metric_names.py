@@ -110,7 +110,11 @@ def declared_for(spec: ServerSpec) -> Dict[str, Metric[Any]]:
     patched out to keep construction offline (same approach as
     tests/required/client/metricsclient/test_prometheus_query_goldens.py).
     """
-    with patch("inference_perf.client.modelserver.openai_client.CustomTokenizer"):
+    with (
+        patch("inference_perf.client.modelserver.openai_client.CustomTokenizer"),
+        # Only the declared metric names are read here; construction must not wait for readiness.
+        patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
+    ):
         client = spec.client_cls(
             metrics_collector=MagicMock(),
             api_config=APIConfig(type=APIType.Completion, streaming=False),

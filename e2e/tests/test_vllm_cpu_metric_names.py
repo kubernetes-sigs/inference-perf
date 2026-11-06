@@ -48,6 +48,7 @@ what the check would have accepted.
 import os
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import aiohttp
 import pytest
@@ -115,18 +116,20 @@ GOLDEN_FILES = sorted(GOLDEN_DIR.glob("*.txt"))
 
 
 # _declared("http://127.0.0.1:1", DEFAULT_MODEL) -> {"vllm:num_requests_waiting": GaugeMetric(...), ...},
-# read from vLLMModelServerClient's metadata. The base URL is never contacted.
+# read from vLLMModelServerClient's metadata. The base URL is never contacted: the client's
+# construction-time readiness wait is bypassed, because this helper only reads declarations.
 def _declared(base_url: str, model_name: str) -> dict[str, Metric[Any]]:
     """Declared metric name -> the metric object, as declared by the vLLM client."""
-    client = vLLMModelServerClient(
-        metrics_collector=LocalRequestMetricCollector(),
-        api_config=APIConfig(type=APIType.Completion),
-        uri=base_url,
-        model_name=model_name,
-        tokenizer_config=CustomTokenizerConfig(pretrained_model_name_or_path=str(extract_tarball(GEMMA_TARBALL))),
-        max_tcp_connections=1,
-        additional_filters=[],
-    )
+    with patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"):
+        client = vLLMModelServerClient(
+            metrics_collector=LocalRequestMetricCollector(),
+            api_config=APIConfig(type=APIType.Completion),
+            uri=base_url,
+            model_name=model_name,
+            tokenizer_config=CustomTokenizerConfig(pretrained_model_name_or_path=str(extract_tarball(GEMMA_TARBALL))),
+            max_tcp_connections=1,
+            additional_filters=[],
+        )
     return declared_metrics(client.get_prometheus_metric_metadata())
 
 
