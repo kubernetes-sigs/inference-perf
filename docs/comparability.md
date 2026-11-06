@@ -102,12 +102,12 @@ batching, which shows up as a client-side latency difference that no client caus
 ## Flag and setting map
 
 **Checked on 2026-08-21 against `vllm bench serve` from vLLM v0.10.0 and `aiperf profile` from
-AIPerf v0.12.0.** Both tools have changed what these flags mean between releases, so
+AIPerf v0.13.0 on 2026-11-02.** Both tools have changed what these flags mean between releases, so
 treat a row as unverified against any other version and re-read the tool's own `--help` before
 relying on it. The version of vLLM the parity harness (#481) pins is the one these rows were
 read from.
 
-| What you are pinning | inference-perf | `vllm bench serve` v0.10.0 | `aiperf profile` v0.12.0 |
+| What you are pinning | inference-perf | `vllm bench serve` v0.10.0 | `aiperf profile` v0.13.0 |
 | :--- | :--- | :--- | :---
 | Evenly spaced arrivals at a rate | `load.type: constant`, `stages[].rate` | `--request-rate` with `--burstiness` above 1 (approximate) | `--request-rate` with `--arrival-pattern constant` |
 | Poisson arrivals at a rate | `load.type: poisson`, `stages[].rate` | `--request-rate` (default `--burstiness 1.0`) | `--request-rate` (default `--arrival-pattern poisson`) |
@@ -160,11 +160,31 @@ a converted config still needs reading:
 
 ### Converting a run automatically
 
-There is no converter today, and the rows above are the mapping in the meantime. One is tracked
-in #755, outside this release. The parity harness in #481 carries worked examples of the
-mapping, a `vllm bench` argument file and the inference-perf config that matches it, kept in
-sync by a test; a converter would be built and tested on those pairs, and would have to refuse
-or annotate every break listed above rather than translate silently.
+`inference-perf-convert` (#755) turns a `vllm bench serve` or `aiperf profile` argument list into
+a config. The peer version is an argument, and only versions whose flag surface was verified
+against source convert: `vllm bench serve` v0.10.0 and `aiperf profile` v0.12.0 and v0.13.0
+today. Everything after `--` is the peer's own argument list, verbatim.
+
+```bash
+inference-perf-convert vllm-bench --peer-version v0.10.0 -o config.yaml -- \
+    --model m --dataset-name random --num-prompts 600 --request-rate 40 --ignore-eos
+inference-perf-convert aiperf-profile --peer-version v0.13.0 -o config.yaml -- \
+    --model m --endpoint-type completions --streaming --osl 64 --concurrency 8 --request-count 48
+```
+
+The emitted file starts with a comment block recording the source argv, every assumption made and
+every workload-neutral flag dropped. Each break listed above either refuses with a named reason or
+is recorded as an assumption (the warmup window, for one); nothing is translated silently. A
+refusal exits 2 and writes nothing, so a config that looks converted but changes the workload
+cannot come out of it; an argument list the peer itself would reject exits 1. Two AIPerf defaults
+refuse on their own: an unset `--osl` (AIPerf then sends no `max_tokens`) and a
+`--num-dataset-entries` pool smaller than the request count (prompt reuse). A comma-separated
+value such as `--concurrency 8,16` is an AIPerf parameter sweep, one run per value, and refuses as
+well. `--api-key` is never written into the file, which is meant to be checked in, and neither is a
+`--header` whose name carries a credential (the `CREDENTIAL_HEADER_FRAGMENTS` rule in
+`inference_perf/config/redaction.py`); set `server.api_key` or the header under `api.headers` on
+the run host instead. The parity cases in #736 are the converter's acceptance
+oracle: converting each case's peer arguments must reproduce its checked-in config.
 
 ## Verify before comparing
 
