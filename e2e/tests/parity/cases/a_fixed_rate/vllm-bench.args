@@ -4,10 +4,11 @@
 #
 # These flags are for the vllm version pinned in e2e/utils/vllm_bench.py
 # (VLLM_PINNED_REF). Each was checked against that version's
-# vllm/benchmarks/serve.py and vllm/benchmarks/datasets.py, because what the
-# flags mean has changed between vllm versions. Notes on the non-obvious ones:
-#   --endpoint-type openai picks the code path that sends requests. (There is
-#     also a --backend flag at this version but it does not affect this case.)
+# vllm/benchmarks/serve.py and vllm/benchmarks/datasets/datasets.py, because
+# what the flags mean has changed between vllm versions. Notes on the
+# non-obvious ones:
+#   --backend openai picks the code path that sends requests (the completions
+#     payload). Up to v0.11.0 that was --endpoint-type, which v0.11.1 removed.
 #   --random-range-ratio 0 means "every prompt exactly the requested length".
 #     At this version the length is drawn from [len*(1-r), len*(1+r)], so r=0
 #     pins both ends to len. Older versions read 0 as "anywhere from 0 to len",
@@ -17,11 +18,13 @@
 #     prompt is 127. That is why expected.yaml has prompt_tokens_rel_tol.
 #   --request-rate 40 spaces requests randomly with an average of 40/s (the
 #     default --burstiness 1.0 is what makes it Poisson).
-#   --ignore-eos is the only way to set ignore_eos in the request body. stream
-#     is always true on this endpoint and cannot be changed from the CLI.
-# The parity test adds --base-url/--model/--tokenizer/--save-result/
-# --result-filename at the end.
---endpoint-type
+#   --ignore-eos sets ignore_eos in the request body. This version sets it for
+#     the random dataset anyway, so the flag only states the intent. stream is
+#     always true on this endpoint and cannot be changed from the CLI.
+#   No warmup request: the endpoint ready check (--ready-check-timeout-sec) and
+#     --num-warmups both default to 0 at this version.
+# The parity test adds --base-url/--model/--tokenizer at the end.
+--backend
 openai
 --endpoint
 /v1/completions
