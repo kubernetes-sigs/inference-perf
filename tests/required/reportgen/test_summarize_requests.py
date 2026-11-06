@@ -18,10 +18,12 @@ import pytest
 from inference_perf.reportgen.base import (
     ReportGenerator,
     compute_request_latency_metrics,
+    series_values,
     summarize_prompt_token_usage,
     summarize_requests,
 )
 from inference_perf.apis.base import (
+    ErrorResponseInfo,
     RequestLifecycleMetric,
     InferenceInfo,
     StreamedResponseMetrics,
@@ -58,6 +60,93 @@ def test_summarize_requests_tpot_calculation() -> None:
     assert "time_per_output_token" in successes["latency"]
     tpot_summary = successes["latency"]["time_per_output_token"]
     assert tpot_summary["mean"] == pytest.approx(2.0 / 9.0)
+
+
+# A request sent at 0.00s whose only streamed token arrives at 0.20s, ending at 0.21s.
+# TTFT and TTFO = 0.20. TPOT and ITL stay None: both need a second token.
+def test_single_token_stream_has_ttft() -> None:
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0,
+        start_time=0.0,
+        end_time=0.21,
+        request_data="test_request",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=StreamedResponseMetrics(output_tokens=1, chunk_times=[0.20], output_token_times=[0.20]),
+        ),
+        error=None,
+    )
+
+    latency = compute_request_latency_metrics(metric)
+
+    assert latency["time_to_first_token"] == pytest.approx(0.20)
+    assert latency["time_to_first_output_token"] == pytest.approx(0.20)
+    assert latency["time_per_output_token"] is None
+    assert latency["inter_token_latency"] is None
+
+
+# A streamed request that finished with no token timestamps (no chunk arrived).
+# There is no first token, so TTFT and TTFO are None.
+def test_stream_without_tokens_has_no_ttft() -> None:
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0,
+        start_time=0.0,
+        end_time=0.21,
+        request_data="test_request",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=StreamedResponseMetrics(output_tokens=0, output_token_times=[]),
+        ),
+        error=None,
+    )
+
+    latency = compute_request_latency_metrics(metric)
+
+    assert latency["time_to_first_token"] is None
+    assert latency["time_to_first_output_token"] is None
+
+
+# A streamed success scheduled at 0.0, sent at 0.1, tokens at 0.3/0.5/0.7, ending at 0.8 with
+# 4 client tokens, and a failure scheduled at 1.0 and sent at 1.2. Expects the success's series
+# to be the report's fields (latency 0.7, TTFT 0.2, TPOT 0.4 / 3, NTPOT 0.7 / 4) plus schedule
+# delay 0.1, and the failure to carry schedule delay 0.2 alone.
+def test_series_values_are_the_report_values() -> None:
+    success = RequestLifecycleMetric(
+        scheduled_time=0.0,
+        start_time=0.1,
+        end_time=0.8,
+        request_data="test_request",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=StreamedResponseMetrics(
+                output_tokens=4, chunk_times=[0.3, 0.5, 0.7], output_token_times=[0.3, 0.5, 0.7]
+            ),
+        ),
+        error=None,
+    )
+    failure = RequestLifecycleMetric(
+        scheduled_time=1.0,
+        start_time=1.2,
+        end_time=1.5,
+        request_data="test_request",
+        info=InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=5))),
+        error=ErrorResponseInfo(error_type="TimeoutError", error_msg="boom"),
+    )
+
+    report = compute_request_latency_metrics(success)
+    assert series_values(success) == pytest.approx(
+        {
+            "latency": report["request_latency"],
+            "ttft": report["time_to_first_token"],
+            "tpot": report["time_per_output_token"],
+            "ntpot": report["normalized_time_per_output_token"],
+            "schedule_delay": 0.1,
+        }
+    )
+    assert series_values(success) == pytest.approx(
+        {"latency": 0.7, "ttft": 0.2, "tpot": 0.4 / 3, "ntpot": 0.7 / 4, "schedule_delay": 0.1}
+    )
+    assert series_values(failure) == pytest.approx({"schedule_delay": 0.2})
 
 
 def test_summarize_requests_tpot_fallback() -> None:

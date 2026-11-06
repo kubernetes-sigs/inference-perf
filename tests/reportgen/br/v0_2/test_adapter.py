@@ -94,6 +94,24 @@ def test_build_results_latency_calculations() -> None:
     assert latency.inter_token_latency.mean == pytest.approx(0.02, abs=1e-6)
 
 
+# Ten streamed requests with one token each, arriving 0.05s after the request starts.
+# TTFT mean = 0.05. TPOT and ITL are absent: neither exists with one token.
+def test_build_results_single_token_streams_have_ttft() -> None:
+    now = time.time()
+    metrics = [_streaming_metric(now + i * 0.1, output_tokens=1, ttft=0.05) for i in range(10)]
+
+    results = build_results(metrics)
+    assert results.request_performance is not None
+    aggregate = results.request_performance.aggregate
+    assert aggregate is not None and aggregate.latency is not None
+
+    latency = aggregate.latency
+    assert latency.time_to_first_token is not None
+    assert latency.time_to_first_token.mean == pytest.approx(0.05, abs=1e-6)
+    assert latency.time_per_output_token is None
+    assert latency.inter_token_latency is None
+
+
 def test_build_results_aggregate_units() -> None:
     """The BR0.2 schema enforces unit compatibility per metric
     category. Guards that the adapter assigns units the schema accepts."""

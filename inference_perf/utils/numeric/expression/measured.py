@@ -51,8 +51,10 @@ class Series:
 # Series use short names, not the report's field names: a condition reads
 # 'quantile_over_time(0.99, ttft[30s])', not '... time_to_first_token[30s]'.
 # docs/expressions.md lists the mapping and test_doc_examples.py pins it to this table.
-# No inter-token latency: the report re-derives token timestamps from the raw
-# chunks at report time (#564), so a live value would differ from the report's.
+# Each series and signal is the term form of one runtime metric, which names it in
+# its MetricSpec. Its values come from reportgen's series_values, the report's own
+# formulas. No inter-token latency: it needs a timestamp per token, which only the
+# report computes, after the run (#564).
 SERIES: Dict[str, Series] = {
     s.name: s
     for s in (

@@ -26,6 +26,7 @@ from inference_perf.observability.metrics import (
     MetricSpec,
     MetricStability,
     MetricsHub,
+    ObservedRequest,
     PrometheusMetricsServer,
     build_metrics,
 )
@@ -129,10 +130,10 @@ def test_run_elapsed_zero_until_run_start_then_advances() -> None:
 # Expects the second hook to still count both (test_ok_total == 2) and the raising
 # one to be logged once, not once per request.
 def test_failing_hook_is_isolated_and_logged_once(caplog: pytest.LogCaptureFixture) -> None:
-    def _boom(counter: Counter, metric: RequestLifecycleMetric) -> None:
+    def _boom(counter: Counter, request: ObservedRequest) -> None:
         raise RuntimeError("boom")
 
-    def _count(counter: Counter, metric: RequestLifecycleMetric) -> None:
+    def _count(counter: Counter, request: ObservedRequest) -> None:
         counter.inc()
 
     # The failing spec comes first to prove the fan-out continues past it.
