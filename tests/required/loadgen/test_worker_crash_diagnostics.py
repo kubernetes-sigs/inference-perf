@@ -31,7 +31,6 @@ from inference_perf.config import (
     APIType,
     DataConfig,
     DataGenType,
-    Distribution,
     LoadConfig,
     LoadType,
     StandardLoadStage,
@@ -283,10 +282,10 @@ class TestWorkerCrashEndToEnd(unittest.IsolatedAsyncioTestCase):
         api_config = APIConfig(type=APIType.Completion, streaming=False)
         data_config = DataConfig(
             type=DataGenType.Random,
-            input_distribution=Distribution(min=10, max=10, mean=10.0, std_dev=0.0, total_count=4),
-            output_distribution=Distribution(min=5, max=5, mean=5.0, std_dev=0.0, total_count=4),
+            input_distribution=10,
+            output_distribution=5,
         )
-        datagen = CrashingDataGenerator(api_config, data_config, _CustomTokenizer())
+        datagen = CrashingDataGenerator(api_config, data_config, _CustomTokenizer(), total_count=4)
 
         collector = MultiprocessRequestMetricCollector()
         client = MockModelServerClient(collector, api_config, mock_latency=0)

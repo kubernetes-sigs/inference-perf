@@ -15,7 +15,13 @@ import numpy as np
 import pytest
 
 from inference_perf.config import Distribution, DistributionType
-from inference_perf.utils.numeric.distribution import generate_distribution, sample_from_distribution
+from inference_perf.utils.numeric.distribution import (
+    generate_distribution,
+    sample_from_distribution,
+    sample_lengths,
+    sample_values,
+    value_ceiling,
+)
 
 
 class TestSampleFromDistribution:
@@ -135,3 +141,41 @@ class TestLegacyGenerateDistribution:
     def test_fixed_value(self) -> None:
         result = generate_distribution(min=42, max=42, mean=42, std_dev=0, total_count=100)
         assert all(v == 42 for v in result)
+
+
+# sample_values in fractional mode keeps fractions. Inputs: the number 0.25 and the expression 'Uniform(0.1, 0.4)'.
+# Expected: 0.25 repeated, and draws strictly inside (0.1, 0.4) with a fractional part.
+def test_sample_values_fractional() -> None:
+    rng = np.random.default_rng(0)
+    assert np.all(sample_values(0.25, 3, rng, integer=False) == 0.25)
+    draws = sample_values("Uniform(0.1, 0.4)", 100, rng, integer=False)
+    assert np.all((draws > 0.1) & (draws < 0.4)) and np.any(draws != np.round(draws))
+
+
+# sample_values in integer mode matches sample_lengths draw for draw: same seed, same expression or number.
+def test_sample_values_integer_matches_sample_lengths() -> None:
+    for value in ("Min(Max(Normal(100, 20), 10), 200)", "Normal(100, 20)", 7):
+        a = sample_values(value, 50, np.random.default_rng(3), integer=True)
+        b = sample_lengths(value, 50, np.random.default_rng(3))
+        assert a.tolist() == b.tolist()
+
+
+# value_ceiling: the worst case each form can produce. Inputs and expected ceilings: the int 99 -> 99;
+# 'Min(Max(Normal(512, 10), 10), 1024)' -> 1024; 'Min(LogNormal(6, 0.5), 4096)' -> 4096; 'Normal(50, 10)' -> inf
+# (unbounded); 'Piecewise((1, Normal(0, 1) > 0), (2, True))' -> None (no interval rule, nothing proven).
+def test_value_ceiling() -> None:
+    assert value_ceiling(99) == 99.0
+    assert value_ceiling("Min(Max(Normal(512, 10), 10), 1024)") == 1024.0
+    assert value_ceiling("Min(LogNormal(6, 0.5), 4096)") == 4096.0
+    assert value_ceiling("Normal(50, 10)") == float("inf")
+    assert value_ceiling("Piecewise((1, Normal(0, 1) > 0), (2, True))") is None
+
+
+# A length expression whose mass crosses zero is clamped at 0 rather than yielding negative lengths. Inputs:
+# 'Normal(5, 40)' sampled 500 times as integer lengths and 'Normal(0.2, 1)' sampled 500 times as fractional
+# seconds. Expected: no value below 0 in either, and at least one exact 0 where a negative draw was clamped.
+def test_sample_values_clamps_draws_at_zero() -> None:
+    lengths = sample_lengths("Normal(5, 40)", 500, np.random.default_rng(0))
+    seconds = sample_values("Normal(0.2, 1)", 500, np.random.default_rng(0), integer=False)
+    assert lengths.min() == 0 and (lengths == 0).sum() > 50
+    assert seconds.min() == 0.0 and (seconds == 0.0).sum() > 50

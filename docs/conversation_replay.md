@@ -10,7 +10,7 @@ deterministically seeded for reproducible A/B comparisons.
 - [When to use conversation replay](#when-to-use-conversation-replay)
 - [Quick Start](#quick-start)
 - [Configuration Guide](#configuration-guide)
-- [Distribution types](#distribution-types)
+- [Length expressions](#length-expressions)
 - [Tool call latency simulation](#tool-call-latency-simulation)
 - [Router session affinity](#router-session-affinity)
 - [How it fits together](#how-it-fits-together)
@@ -63,30 +63,10 @@ data:
     seed: 42
     num_conversations: 200
     shared_system_prompt_len: 8359
-    dynamic_system_prompt_len:
-      type: normal
-      min: 5000
-      max: 45000
-      mean: 14000
-      std_dev: 15000
-    turns_per_conversation:
-      type: normal
-      min: 25
-      max: 57
-      mean: 38
-      std_dev: 6
-    input_tokens_per_turn:
-      type: lognormal
-      min: 64
-      max: 24000
-      mean: 1652
-      std_dev: 3000
-    output_tokens_per_turn:
-      type: lognormal
-      min: 62
-      max: 3600
-      mean: 585
-      std_dev: 400
+    dynamic_system_prompt_len: "Min(Max(Normal(14000, 15000), 5000), 45000)"
+    turns_per_conversation: "Min(Max(Normal(38, 6), 25), 57)"
+    input_tokens_per_turn: "Min(Max(LogNormal(6.737, 1.147), 64), 24000)"    # mean ~1650, heavy right tail
+    output_tokens_per_turn: "Min(Max(LogNormal(6.183, 0.613), 62), 3600)"    # mean ~585
 ```
 
 The `concurrent` load type plus `preferred_worker_id` ensures each conversation is pinned to a
@@ -96,30 +76,44 @@ worker so its turns run strictly in order.
 
 All fields live under `data.conversation_replay`:
 
+Every distribution field below also accepts an [expression](./expressions.md) string.
+Token and turn counts are rounded to whole numbers; `tool_call_latency_sec` keeps fractional seconds.
+With `max_model_len` set, `output_tokens_per_turn` needs a finite upper bound (see
+[Value ranges](./expressions.md#value-ranges)), so cap an unbounded expression with `Min(...)`.
+
+<!-- checked-example -->
+```yaml
+data:
+  type: conversation_replay
+  conversation_replay:
+    turns_per_conversation: "Min(Poisson(30), 57)"
+    input_tokens_per_turn: "Min(LogNormal(7, 1), 24000)"
+    output_tokens_per_turn: "Uniform(62, 3600)"
+    tool_call_latency_sec: "Uniform(0.1, 0.4)"
+    max_model_len: 32768
+```
+
 | Field | Type | Description |
 | :--- | :--- | :--- |
 | `seed` | int | RNG seed. Same seed → identical conversations, prompts, and turn lengths. |
 | `num_conversations` | int | Number of conversation blueprints to pre-generate. Each conversation maps to one `LocalUserSession`; concurrency is driven by the `concurrent` load type. |
 | `shared_system_prompt_len` | int | Tokens in the fixed prefix shared across all conversations. Useful for exercising prefix caching. |
-| `dynamic_system_prompt_len` | [`Distribution`](#distribution-types) | Per-conversation suffix appended to the shared prefix. Makes each conversation's system prompt unique. |
-| `turns_per_conversation` | [`Distribution`](#distribution-types) | How many user turns each conversation will issue before being recycled. |
-| `input_tokens_per_turn` | [`Distribution`](#distribution-types) | User-message token length per turn. |
-| `output_tokens_per_turn` | [`Distribution`](#distribution-types) | Target `max_tokens` per assistant turn. |
-| `tool_call_latency_sec` | [`Distribution`](#distribution-types) | Optional: simulated tool-call delay between turns. See below. |
+| `dynamic_system_prompt_len` | [length expression](#length-expressions) | Per-conversation suffix appended to the shared prefix. Makes each conversation's system prompt unique. |
+| `turns_per_conversation` | [length expression](#length-expressions) | How many user turns each conversation will issue before being recycled. |
+| `input_tokens_per_turn` | [length expression](#length-expressions) | User-message token length per turn. |
+| `output_tokens_per_turn` | [length expression](#length-expressions) | Target `max_tokens` per assistant turn. |
+| `tool_call_latency_sec` | [length expression](#length-expressions) | Optional: simulated tool-call delay between turns, in seconds. See below. |
 
-Any distribution field may be omitted; sensible per-field defaults are used when absent.
+Any of these may be omitted; sensible per-field defaults are used when absent.
 
-## Distribution types
+## Length expressions
 
-Distribution fields use the shared [`Distribution`](../inference_perf/config/config.py) config, so the
-same `type`, `min`, `max`, `mean`, `std_dev` schema works here and in other data generators.
-Supported `type` values:
-
-- `normal` — truncated normal clamped to `[min, max]`
-- `lognormal` — heavy right tail; good match for real token-length distributions
-- `uniform` — flat over `[min, max]`
-- `fixed` — constant value (uses `mean`; `std_dev` is ignored)
-- `skew_normal`, `poisson` — also supported for parity with other datagens
+Each sizing field takes a bare number (a fixed value) or an [expression](./expressions.md) string drawn
+once per conversation or per turn: `"Min(Max(Normal(38, 6), 25), 57)"` is a normal clamped to `[25, 57]`,
+`"Min(LogNormal(6.7, 1.1), 24000)"` a heavy right tail capped at 24000, `"Uniform(62, 3600)"` flat over
+that range. Token counts round to whole numbers; `tool_call_latency_sec` keeps fractions. The legacy
+`{type, min, max, mean, std_dev}` block still loads with a warning that shows the expression to use
+instead, see [Legacy distribution blocks](./expressions.md#legacy-distribution-blocks).
 
 All sampling is seeded by the top-level `seed`, so runs are fully reproducible.
 
@@ -129,12 +123,7 @@ Set `tool_call_latency_sec` to model the time an agent spends *between* LLM call
 waiting on tool execution (DB lookup, API call, etc.):
 
 ```yaml
-tool_call_latency_sec:
-  type: lognormal
-  min: 1
-  max: 30
-  mean: 8
-  std_dev: 6
+tool_call_latency_sec: "Min(Max(LogNormal(1.856, 0.668), 1), 30)"   # mean ~8s, clamped to [1, 30]
 ```
 
 After each assistant response, the conversation sleeps for the sampled number of seconds

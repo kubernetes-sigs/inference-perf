@@ -4,6 +4,8 @@ import typing
 from enum import Enum
 from pydantic import BaseModel, SecretStr
 
+from inference_perf.config.common import Distribution, LegacyDistributionBlock
+
 
 def unwrap_type(annotation: typing.Any) -> typing.Tuple[typing.Any, bool]:
     origin = typing.get_origin(annotation)
@@ -73,6 +75,13 @@ def add_pydantic_args(
         help_text = field.description or f"Matches {prefix}{name} in config"
 
         annotation, is_optional = unwrap_type(field.annotation)
+        # Pydantic hoists a field's own Annotated metadata into field.metadata, but
+        # leaves it in place inside Optional[Annotated[...]]; look in both.
+        legacy_block = next((m for m in field.metadata if isinstance(m, LegacyDistributionBlock)), None)
+        if typing.get_origin(annotation) is typing.Annotated:
+            inner, *metadata = typing.get_args(annotation)
+            legacy_block = legacy_block or next((m for m in metadata if isinstance(m, LegacyDistributionBlock)), None)
+            annotation = inner
         origin = typing.get_origin(annotation)
 
         # Recurse into nested BaseModels
@@ -121,6 +130,10 @@ def add_pydantic_args(
             else:
                 parser.add_argument(arg_name, type=str, help=f"{help_text} (handled as string)", default=argparse.SUPPRESS)
                 docs.append(f"| `{arg_name}` | string | {help_text} |")
+                # A field that still accepts the deprecated distribution block keeps the
+                # block's nested flags too, so `--x.mean 600` works until the block goes.
+                if legacy_block is not None:
+                    add_pydantic_args(parser, Distribution, prefix=f"{prefix}{name}.", docs=docs)
 
     return docs
 
@@ -135,7 +148,13 @@ def unflatten_dict(flat_dict: dict[str, typing.Any]) -> dict[str, typing.Any]:
             continue
         parts = key.split(".")
         d = result
-        for part in parts[:-1]:
+        for i, part in enumerate(parts[:-1]):
             d = d.setdefault(part, {})
+            if not isinstance(d, dict):
+                raise ValueError(
+                    f"--{key} conflicts with --{'.'.join(parts[: i + 1])}: set the whole value or its fields, not both."
+                )
+        if isinstance(d.get(parts[-1]), dict):
+            raise ValueError(f"--{key} conflicts with --{key}.*: set the whole value or its fields, not both.")
         d[parts[-1]] = value
     return result
