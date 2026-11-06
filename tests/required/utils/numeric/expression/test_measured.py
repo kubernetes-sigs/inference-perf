@@ -162,6 +162,20 @@ class TestParsing:
         with pytest.raises(ValueError, match=r"Series use short names: 'request_latency' is 'latency'"):
             Predicate("(t >= 600) | (request_latency > 2)")
 
+    # A parse error names the condition as written, '(avg_over_last(ttft, 5) > 2) |', not the '_term0' placeholder.
+    def test_parse_error_shows_the_source_text(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"Could not parse predicate '\(t >= 600\) \| \(avg_over_last\(ttft, 5\) > 2\) \|'"
+        ):
+            Predicate("(t >= 600) | (avg_over_last(ttft, 5) > 2) |")
+
+    # 't + 0*avg_over_last(ttft, 5)' folds the term away; terms and measured_symbols are both empty.
+    def test_eliminated_term_is_dropped(self) -> None:
+        p = Predicate("(t >= 600) | (t + 0*avg_over_last(ttft, 5) >= 300)")
+        assert p.terms == {}
+        assert p.measured_symbols == frozenset()
+        assert (p.boundary, p.earliest) == (300.0, 300.0)
+
 
 class TestProof:
     # '(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)' holds by 600 and can hold from 0.
@@ -173,6 +187,25 @@ class TestProof:
     def test_term_gated_by_time(self) -> None:
         p = Predicate("((t >= 60) & (avg_over_last(latency, 50) > 1)) | (t >= 600)")
         assert (p.boundary, p.earliest) == (600.0, 60.0)
+
+    # A 't > 0' gate is open at 0: '(t >= 600) | ((t > 0) & (errors > 10))' holds by 600 and can hold from 0.
+    def test_gate_open_at_zero(self) -> None:
+        p = Predicate("(t >= 600) | ((t > 0) & (errors > 10))")
+        assert (p.boundary, p.earliest) == (600.0, 0.0)
+
+    # With the term true, '(t >= 600) | ((t < 300) & (errors > 10))' lapses between 300 and 600: rejected.
+    def test_lapsing_once_true_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"holds only on \[0, 300\) or \[600, infinity\) once its measured values hold"):
+            Predicate("(t >= 600) | ((t < 300) & (errors > 10))")
+
+    # The compiled condition agrees with the proof: with no values it holds at 600 and not at 599.4 or 0.
+    def test_compiled_condition_agrees_with_proof(self) -> None:
+        p = Predicate("((t >= 60) & (avg_over_last(latency, 50) > 1)) | (t >= 600)")
+        assert p.holds(p.boundary, {})
+        assert not p.holds(0.999 * p.boundary, {})
+        assert not p.holds(0.0, {})
+        assert p.holds(p.earliest, {"_term0": 2.0})
+        assert not p.holds(0.999 * p.earliest, {"_term0": 2.0})
 
     # Signals are measured too: '(t >= 300) | (errors >= 10)' holds by 300 and can hold from 0.
     def test_signal(self) -> None:
@@ -228,6 +261,15 @@ class TestWindow:
             }[aggregate]
             got = window.value()
             assert (math.isnan(got) and math.isnan(expected)) or math.isclose(got, expected, rel_tol=1e-9, abs_tol=1e-9)
+
+    # count, min, max and quantile never read the exact sums, so adding 1e300 twice leaves them at 0.
+    @pytest.mark.parametrize("aggregate", ["count", "min", "max", "quantile"])
+    def test_unread_sums_are_not_kept(self, aggregate: str) -> None:
+        window = _Window(aggregate, 0.5)
+        window.add(1e300)
+        window.add(1e300)
+        assert (window._sum, window._sumsq) == (0, 0)
+        assert window.value() == (2.0 if aggregate == "count" else 1e300)
 
     # Equal samples have a stddev of exactly 0, not float noise, because the sums are exact integers.
     def test_constant_samples_have_zero_stddev(self) -> None:
