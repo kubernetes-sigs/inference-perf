@@ -47,6 +47,8 @@ Two errors stop the run before a verdict. **`The base branch ... fails its own u
 
 **The floor is two serial full-suite runs.** mutmut's stats pass runs the whole unit suite once per side to learn which tests cover which function, so one changed function costs about 8 minutes on a 4-core runner before a mutant runs. Mutant runs are parallel and cost their covering tests' time each. A function in scope only through changed tests costs the changed tests' time per mutant, plus its covering tests' time for each mutant the changed tests did not settle. The job stops itself at 80 minutes and reports what it did not reach. Scope is what sets the wall time: the day the job landed, PRs with 54 to 66 functions in scope passed in 4 to 51 minutes and every PR above about 100 ran out of budget (#1002). An edit to one test in a file whose other tests drive the whole load generator used to bring all of it in; now only the edited test's functions come in.
 
+**Each mutant's run may allocate 2 GiB on top of what it inherits from mutmut's fork server.** A mutant that removes a loop's exit can allocate faster than mutmut's timeout fires. Under a test that patches `sleep` with an `AsyncMock`, every iteration is recorded, and four such mutants at once took the 16 GB runner down with no summary (#941). Past the cap allocation raises `MemoryError` and the mutant counts as killed. A test that legitimately needs more than 2 GiB would kill every mutant it covers the same way, so keep unit tests well under it.
+
 ## The weekly run
 
 `pdm run test:mutation` mutates the whole package against the full suite and prints survivors per module. It takes hours and is the input for a scheduled run and a burn-down, neither of which exists yet (#872).

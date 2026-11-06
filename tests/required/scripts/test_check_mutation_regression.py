@@ -1483,6 +1483,57 @@ def test_child_plugin_carries_child_hits_to_the_test(cmr: Any, tmp_path: Path, m
     assert pytest_with_plugin(cmr, project, ["tests/test_fork.py"], {}) == 1
 
 
+# Writes a project whose one test allocates 1 GiB, more than the 128 MiB headroom the cap tests set.
+def big_allocation_project(tmp_path: Path) -> Path:
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    (project / "tests" / "test_big.py").write_text("def test_allocates():\n    assert len(bytearray(1024**3)) == 1024**3\n")
+    return project
+
+
+# With mutant inference_perf.m.x_f__mutmut_1 active and a 128 MiB headroom, the 1 GiB bytearray
+# raises MemoryError and the test fails (exit 1) instead of the run growing.
+@pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="the cap reads VmData from /proc")
+def test_child_plugin_caps_a_mutants_memory(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    project = big_allocation_project(tmp_path)
+    env = {"MUTANT_UNDER_TEST": "inference_perf.m.x_f__mutmut_1", "MUTATION_MEMORY_HEADROOM": str(128 * 1024**2)}
+
+    assert pytest_with_plugin(cmr, project, ["tests/test_big.py"], env) == 1
+
+
+# The same 1 GiB allocation passes (exit 0) under mutmut's stats run with the headroom set, and
+# under a mutant with no headroom set, so only a mutant's run is ever capped.
+@pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="the cap reads VmData from /proc")
+def test_child_plugin_leaves_other_runs_uncapped(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    project = big_allocation_project(tmp_path)
+    headroom = {"MUTATION_MEMORY_HEADROOM": str(128 * 1024**2)}
+    mutant = {"MUTANT_UNDER_TEST": "inference_perf.m.x_f__mutmut_1"}
+
+    assert pytest_with_plugin(cmr, project, ["tests/test_big.py"], {"MUTANT_UNDER_TEST": "stats", **headroom}) == 0
+    assert pytest_with_plugin(cmr, project, ["tests/test_big.py"], mutant) == 0
+
+
+# mutmut() hands every mutmut command MUTANT_MEMORY_HEADROOM (2 GiB) through the environment, and
+# the setup diagnosis, which reproduces mutmut's uncapped clean run, gets none.
+def test_only_mutmut_runs_get_the_memory_headroom(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    monkeypatch.delenv("MUTATION_MEMORY_HEADROOM", raising=False)
+    envs: list[dict[str, str]] = []
+
+    def record(command: list[str], cwd: Path, env: dict[str, str] | None = None, timeout: float | None = None) -> Any:
+        envs.append(env or {})
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(cmr, "run_bounded", record)
+    cmr.mutmut(tmp_path, "results")
+    cmr.diagnose_setup_failure(cmr.Side(tree=tmp_path, tests=[]), [])
+
+    assert envs[0]["MUTATION_MEMORY_HEADROOM"] == str(2 * 1024**3)
+    assert "MUTATION_MEMORY_HEADROOM" not in envs[1]
+
+
 # inference_perf/m.py has in_child, which the test only runs in a forked process, and in_parent,
 # run directly. Both count as run by the test.
 def test_functions_run_by_sees_code_run_in_a_forked_child(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
