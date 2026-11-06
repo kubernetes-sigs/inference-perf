@@ -97,7 +97,7 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 
 - **`load_summary`**: Details about the requested vs achieved load.
 - **`successes`**: Metrics for successful requests.
-- **`failures`**: Metrics for failed requests, including the per-label error breakdown. A request fails on a non-200 status, on a transport error, or on a 200 whose body is not a completion: a body or stream frame carrying a top-level `error` (label `inbanderror`, `error_msg` is the JSON of that body or frame) or one with neither completion content nor `usage` (label `emptyresponseerror`). The body is kept as `response` in the per-request report either way.
+- **`failures`**: Metrics for failed requests, including the per-label error breakdown. A request fails on a non-200 status, on a transport error, or on a 200 whose body is not a completion: a body or stream frame carrying a top-level `error` (label `inbanderror`, `error_msg` is the JSON of that body or frame), a unary body that does not match the OpenAI completion schema (label `validationerror`, a bare `{}` lands here), or one with neither completion content nor `usage` (label `emptyresponseerror`). The body is kept as `response` in the per-request report in every case.
 - **`goodput_metrics`**: (Optional) Goodput statistics if constraints were configured.
 
 ### Token Counts
