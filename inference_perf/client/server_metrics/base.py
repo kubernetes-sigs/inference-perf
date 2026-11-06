@@ -35,7 +35,10 @@ class StageStatus(Enum):
 
 class StageRuntimeInfo(BaseModel):
     stage_id: int
-    rate: float
+    # The configured request rate, or None for a stage that sets request_interval
+    # instead: its load is described by the gap distribution, not a rate.
+    rate: Optional[float]
+    request_interval: Optional[str] = None
     # End of the load window. Stage teardown (draining or cancelling in-flight
     # requests) happens after end_time and is reported in teardown_duration,
     # so metrics windows derived from [start_time, end_time] exclude it.
@@ -54,6 +57,9 @@ class StageRuntimeInfo(BaseModel):
     dropped_requests: Optional[int] = None
     # False when the queue could not count every dropped request, which makes dropped_requests a lower bound.
     dropped_requests_exact: Optional[bool] = None
+    # Stage seconds at which a stop condition over measured terms held and ended
+    # the stage before its deadline; None when the stage ran to the deadline.
+    stop_condition_met_at: Optional[float] = None
     # Session-replay stages only: sessions still active (dispatched but not finished) or
     # pending (never dispatched) when the stage ended.
     sessions_not_completed_active: int = 0
