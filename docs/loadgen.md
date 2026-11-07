@@ -86,6 +86,43 @@ load:
 
 Regardless of the serving stack, accelerator you are running on or the number of replicas, this will make sure it will generate different request rates until the server is saturated. Saturation detection is done by doing an initial run with a 1000 concurrent requests and identifying the maximum QPS the server can handle by looking at the burn rate. This QPS is then used as the upper bound for the sweep.
 
+#### Closed-loop capacity probe
+
+The burst above estimates saturation from the *draining* side of a transient:
+it takes a percentile of sampled request rates once dispatch stops, which is
+the least stable part of the run and does not converge as more requests are
+added. Set `sweep.probe` to measure capacity from the stable side instead:
+
+```yaml
+load:
+  type: constant
+  num_workers: 8                # the probe drives worker concurrency, so it needs workers
+  sweep:
+    type: linear
+    probe:
+      rung_duration: 30         # measurement window per rung, in seconds
+      settle_duration: 5        # warm-up before the window opens
+      start_concurrency: 1      # first rung, also the unloaded latency baseline
+      growth_factor: 2.0        # concurrency multiplier between rungs
+      max_concurrency: 1024     # ladder ceiling (also capped by workers x worker_max_concurrency)
+      gain_threshold: 0.05      # stop once the throughput gain between rungs is below this fraction
+      knee_fraction: 0.9        # fraction of saturation rate that defines the knee concurrency
+```
+
+The probe holds in-flight concurrency fixed at N, measures throughput X(N) and
+mean latency R(N) over a stationary window, and grows N geometrically until
+throughput gains flatten. Little's law (`N = X * R`) is checked per rung, so a
+rung that was not actually held at N is reported as non-stationary instead of
+silently biasing the estimate. It fits the rung curve two ways — an isotonic
+plateau that never extrapolates, and a saturating-curve asymptote — and keeps
+the asymptote only when it is close to the measured plateau. `r_sat` and
+`n_knee` are reported with bootstrap confidence intervals, and the generated
+stages are spaced up to `r_sat`.
+
+Probe traffic runs under negative stage ids and is dropped from reports, so it
+never pollutes the benchmark it configures. The per-rung measurements and the
+bound constants are available after the run as `LoadGenerator.probe_result`.
+
 ### Generate specific QPS
 
 1. Set the desired request rate in the load generation config with the appropriate stages.
