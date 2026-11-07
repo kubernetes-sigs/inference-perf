@@ -12,17 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import time
 import jmespath
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Set
 from pydantic import BaseModel
+from inference_perf.apis import RequestLifecycleMetric
 from inference_perf.config.circuit_breaker import CircuitBreakerConfig
 
 from .base import CircuitBreaker
 from .triggers import HitSample
 
 logger = logging.getLogger(__name__)
+
+# Internal coordinates for perf_counter seconds, not a calendar timestamp.
+_MONOTONIC_ORIGIN = datetime(2000, 1, 1)
 
 
 class SimpleCircuitBreaker(CircuitBreaker):
@@ -60,7 +65,8 @@ class SimpleCircuitBreaker(CircuitBreaker):
         data = metric.model_dump(mode="json", exclude_unset=True, exclude_none=True)
         if self._search(self._matches, data):
             hit = 1 if not self._rules or self._search(self._rules, data) else 0
-            hit_sample = HitSample(datetime.now(), hit)
+            sample_time = metric.end_time if isinstance(metric, RequestLifecycleMetric) else time.perf_counter()
+            hit_sample = HitSample(_MONOTONIC_ORIGIN + timedelta(seconds=sample_time), hit)
             for t in self._triggers:
                 t.update(hit_sample)
                 if t.fired():
