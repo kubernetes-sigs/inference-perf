@@ -481,19 +481,23 @@ class OTelInstrumentation:
 
         return span, context_dict
 
-    def end_session_span(self, span: Optional[Any], error: Optional[str] = None) -> None:
+    def end_session_span(self, span: Optional[Any], error: Optional[str] = None, *, truncated: bool = False) -> None:
         """
         End a session span.
 
         Args:
             span: The OTEL span to end
             error: Optional error message if session failed
+            truncated: Whether the session was cut short at the stage boundary
         """
         if not self.enabled or span is None:
             return
 
         try:
-            if error:
+            if truncated:
+                # Leave status UNSET: the stage boundary is not a session failure.
+                span.set_attribute("inference_perf.session.truncated", True)
+            elif error:
                 span.set_status(Status(StatusCode.ERROR, error))
             else:
                 span.set_status(Status(StatusCode.OK))
