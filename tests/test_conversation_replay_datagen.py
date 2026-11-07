@@ -312,19 +312,29 @@ class TestConversationReplayDataGenerator:
         assert list(gen._ready_slots) == [0]
 
     # A stage-0 request that ends after stage 1 has started must not mark the stage-1
-    # slot ready: its callback carries stage 0, while the scheduler now tracks stage 1.
-    def test_release_slot_ignores_a_callback_from_an_earlier_stage(self) -> None:
+    # slot ready, and must not release the lock the stage-1 request holds: stage teardown
+    # clears the registry and the next stage re-primes the same id with a new session
+    # object, so the stale task must clean up only the object it was created against.
+    async def test_release_slot_ignores_a_callback_from_an_earlier_stage(self) -> None:
         api_config, data_config = _make_config(num_conversations=1)
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
         old_stage = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=0))
-        current_stage = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=1))
         assert isinstance(old_stage, _ConversationReplayAPIData)
+        old_session = old_stage.user_session
+
+        LocalUserSession.clear_instances()
+        current_stage = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=1))
         assert isinstance(current_stage, _ConversationReplayAPIData)
+        re_primed = current_stage.user_session
+        assert re_primed is not old_session
+        await re_primed.get_context(current_stage.target_round)
+        assert re_primed._in_flight is not None and re_primed._in_flight.locked()
 
         old_stage.on_request_finished()
 
         assert gen._slot_states[0].busy is True
         assert list(gen._ready_slots) == []
+        assert re_primed._in_flight is not None and re_primed._in_flight.locked()
 
     def test_no_ready_conversation_fails_instead_of_waiting_with_capacity(self) -> None:
         api_config, data_config = _make_config(num_conversations=1)

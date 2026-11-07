@@ -86,24 +86,28 @@ class _ConversationReplayAPIData(UserSessionCompletionAPIData):
     """
 
     tool_call_latency_sec: float = 0.0
+    _bound_session: Optional[LocalUserSession] = PrivateAttr(default=None)
     _request_finished_callback: Optional[Callable[[], None]] = PrivateAttr(default=None)
 
-    def bind_request_finished(self, callback: Callable[[], None]) -> None:
+    def bind_request_finished(self, session: LocalUserSession, callback: Callable[[], None]) -> None:
+        self._bound_session = session
         self._request_finished_callback = callback
 
     def on_request_finished(self) -> None:
         callback = self._request_finished_callback
         if callback is None:
             return
+        session = self._bound_session
         self._request_finished_callback = None
+        self._bound_session = None
         try:
-            # Resolve the session by id instead of through the user_session property.
-            # The property creates a new LocalUserSession when the id is missing, so a
-            # task that ends after _wind_down_stage clears the registry would resurrect
-            # its id. The next stage's re-prime check then sees the id present and skips
-            # the slot for the whole stage. A missing session needs no cleanup: it was
-            # already torn down.
-            session = LocalUserSession._instances.get(self.user_session_id)
+            # Clean up the session this request was created against, not whatever the
+            # registry holds for its id now. Never look the id up here: a later stage
+            # re-primes the same id with a new object, so an id lookup would find that
+            # new session and release the lock a current request holds on it. A session
+            # whose stage was torn down needs no cleanup either, and resolving through
+            # the user_session property would resurrect the cleared id and make the next
+            # stage skip its re-prime.
             if session is not None and session._in_flight is not None and session._in_flight.locked():
                 try:
                     session.update_context(getattr(self, "_session_context", session.context))
@@ -333,14 +337,15 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
                 logger.debug("Slot %d starting conversation %d", conv_idx, convo_num)
 
             latency = bp.turn_tool_call_latencies[turn_idx] if bp.turn_tool_call_latencies else 0.0
+            session = self.user_sessions[conv_idx]
             request = _ConversationReplayAPIData(
                 prompt=bp.turn_prompts[turn_idx],
                 max_tokens=bp.turn_output_lens[turn_idx],
-                user_session_id=self.user_sessions[conv_idx].user_session_id,
+                user_session_id=session.user_session_id,
                 target_round=round_num,
                 tool_call_latency_sec=latency,
             )
-            request.bind_request_finished(lambda: self._release_slot(conv_idx, data.stage_id))
+            request.bind_request_finished(session, lambda: self._release_slot(conv_idx, data.stage_id))
             return request
         except Exception:
             slot.next_round -= 1
