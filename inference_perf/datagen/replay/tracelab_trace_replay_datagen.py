@@ -45,11 +45,11 @@ import random
 from datetime import datetime, timezone
 from multiprocessing.managers import SyncManager
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
 
-from inference_perf.config import APIConfig, DataConfig
+from inference_perf.config import APIConfig, DataConfig, TraceLabTraceReplayConfig
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import RawCall, build_graph
 from inference_perf.datagen.replay.otel_trace_utils import _compile_filter
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
@@ -92,6 +92,7 @@ class TraceLabRound(BaseModel):
 
     session_id: str
     round_id: Optional[str] = None
+    round_pk: Optional[Union[int, str]] = None  # HF join key for tool_calls/timing_events
     round_index: int
     provider: Optional[str] = None
     model: Optional[str] = None
@@ -125,11 +126,12 @@ def _round_time_bounds(rnd: TraceLabRound) -> Tuple[Optional[float], Optional[fl
     return (min(present), max(present))
 
 
-def _read_jsonl_rows(path: Path) -> List[Tuple[int, Dict[str, Any]]]:
-    """Read TraceLab rows from .json / .jsonl / .jsonl.gz files.
+def _iter_jsonl_rows(path: Path) -> Iterator[Tuple[int, Dict[str, Any]]]:
+    """Yield TraceLab rows from .json / .jsonl / .jsonl.gz files lazily.
 
-    Returns (line_number, row) tuples so validation errors can name the
-    file and line. JSON files report line 0.
+    Yields (line_number, row) tuples so validation errors can name the file
+    and line. JSON files report line 0. Lazily so callers can stop reading
+    once the requested number of sessions has been collected.
     """
     suffixes = "".join(path.suffixes)
     opener: Callable[..., Any]
@@ -138,24 +140,24 @@ def _read_jsonl_rows(path: Path) -> List[Tuple[int, Dict[str, Any]]]:
     else:
         opener = open
 
-    rows: List[Tuple[int, Dict[str, Any]]] = []
     with opener(path, "rt", encoding="utf-8") as f:
         first = f.read(1)
         if not first:
-            return rows
+            return
         f.seek(0)
         if path.suffix == ".json" and not str(path).endswith(".jsonl"):
             blob = json.load(f)
             if isinstance(blob, list):
-                return [(0, r) for r in blob if isinstance(r, dict)]
-            if isinstance(blob, dict):
-                return [(0, blob)]
-            return rows
+                for r in blob:
+                    if isinstance(r, dict):
+                        yield 0, r
+            elif isinstance(blob, dict):
+                yield 0, blob
+            return
         for line_no, line in enumerate(f, start=1):
             line = line.strip()
             if line:
-                rows.append((line_no, json.loads(line)))
-    return rows
+                yield line_no, json.loads(line)
 
 
 class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
@@ -234,14 +236,57 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             raise FilterExpressionError(f"Filter expression failed on session {augmented.get('session_id')!r}: {e!r}") from e
 
     def _load_tracelab_sessions(self) -> Dict[str, List[TraceLabRound]]:
-        """Load rows from all configured sources, grouped by session."""
-        filter_func = _compile_filter(self.tracelab_config.filter)
-        if filter_func:
-            logger.info(f"Using filter expression: {self.tracelab_config.filter}")
+        """Load sessions, stopping once ``num_dataset_entries`` sessions are kept.
 
-        raw_rows: List[Tuple[str, int, Dict[str, Any]]] = []
+        Both local files and the Hugging Face ``rounds`` table are streamed, so
+        requesting a small number of sessions never materializes the full
+        corpus. Rows for one session must be contiguous in the source; TraceLab
+        JSONL exports and the HF ``rounds`` table both group rows by session.
+        """
         cfg = self.tracelab_config
+        filter_func = _compile_filter(cfg.filter)
+        if filter_func:
+            logger.info(f"Using filter expression: {cfg.filter}")
 
+        blocks: Iterator[Tuple[str, List[TraceLabRound], int]]
+        if cfg.hf_dataset_path:
+            blocks = self._iter_session_blocks(self._iter_hf_rounds(cfg.hf_dataset_path))
+        else:
+            blocks = self._iter_session_blocks(self._iter_local_rows(cfg))
+
+        kept: Dict[str, List[TraceLabRound]] = {}
+        n_filtered = 0
+        n_invalid = 0
+        limit = cfg.num_dataset_entries
+
+        for session_id, rounds, invalid in blocks:
+            n_invalid += invalid
+            if not rounds:
+                continue
+            if not self._keep_session(self._augment_for_filter(session_id, rounds), filter_func):
+                n_filtered += 1
+                continue
+            kept[session_id] = rounds
+            if len(kept) >= limit:
+                logger.info(f"Stopped reading TraceLab input after {len(kept)} sessions (num_dataset_entries={limit})")
+                break
+
+        # Join the HF aux tables only after selection so their rows are indexed
+        # for the kept rounds, not for the whole dataset.
+        if cfg.hf_dataset_path and kept:
+            self._attach_hf_aux_tables(kept, cfg.hf_dataset_path)
+
+        if filter_func:
+            logger.info(f"Filter applied: {len(kept)} sessions kept, {n_filtered} rejected")
+        if n_invalid:
+            logger.warning(f"Skipped {n_invalid} invalid rows (skip_invalid_files=True)")
+        if not kept:
+            raise ValueError("No valid TraceLab sessions found")
+        logger.info(f"Loaded {len(kept)} TraceLab sessions ({sum(len(v) for v in kept.values())} rounds)")
+        return kept
+
+    def _iter_local_rows(self, cfg: TraceLabTraceReplayConfig) -> Iterator[Tuple[str, int, Dict[str, Any]]]:
+        """Yield rows from local trace files lazily so callers can stop early."""
         if cfg.trace_directory:
             trace_dir = Path(cfg.trace_directory)
             if not trace_dir.exists() or not trace_dir.is_dir():
@@ -249,33 +294,38 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             files = sorted(p for p in trace_dir.iterdir() if p.is_file() and "".join(p.suffixes) in TRACE_FILE_SUFFIXES)
             if not files:
                 raise ValueError(f"No TraceLab trace files found in {trace_dir}")
-            for f in files:
-                try:
-                    raw_rows.extend((str(f), line_no, blob) for line_no, blob in _read_jsonl_rows(f))
-                except Exception as e:
-                    logger.error(f"Failed to load trace file {f.name}: {e}")
-                    if not cfg.skip_invalid_files:
-                        raise
-        elif cfg.trace_files:
-            for path in cfg.trace_files:
+        else:
+            files = []
+            for path in cfg.trace_files or []:
                 f = Path(path)
                 if not f.is_file():
                     raise ValueError(f"Trace file does not exist: {path}")
-                try:
-                    raw_rows.extend((str(f), line_no, blob) for line_no, blob in _read_jsonl_rows(f))
-                except Exception as e:
-                    logger.error(f"Failed to load trace file {f.name}: {e}")
-                    if not cfg.skip_invalid_files:
-                        raise
-        elif cfg.hf_dataset_path:
-            hf_rows = self._load_hf_rows(cfg.hf_dataset_path, cfg.num_dataset_entries, cfg.skip_invalid_files)
-            raw_rows.extend((f"hf:{cfg.hf_dataset_path}", line_no, blob) for line_no, blob in enumerate(hf_rows, start=1))
-        else:
-            raise ValueError("Either trace_directory, trace_files, or hf_dataset_path must be provided")
+                files.append(f)
 
-        grouped: Dict[str, List[TraceLabRound]] = {}
+        for f in files:
+            try:
+                for line_no, blob in _iter_jsonl_rows(f):
+                    yield str(f), line_no, blob
+            except Exception as e:
+                logger.error(f"Failed to load trace file {f.name}: {e}")
+                if not cfg.skip_invalid_files:
+                    raise
+
+    def _iter_session_blocks(
+        self, rows: Iterator[Tuple[str, int, Dict[str, Any]]]
+    ) -> Iterator[Tuple[str, List[TraceLabRound], int]]:
+        """Group contiguous rows into validated, ordered sessions.
+
+        Yields ``(session_id, rounds, invalid_rows)``. A session is yielded as
+        soon as the next session starts, so the consumer can stop reading
+        without waiting for the rest of the corpus.
+        """
+        cfg = self.tracelab_config
+        current_id: Optional[str] = None
+        rounds: List[TraceLabRound] = []
         n_invalid = 0
-        for source, line_no, blob in raw_rows:
+
+        for source, line_no, blob in rows:
             try:
                 rnd = TraceLabRound.model_validate(blob)
             except Exception as e:
@@ -284,144 +334,128 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                     raise ValueError(f"Invalid TraceLab row at {source}:{line_no}: {e}") from e
                 n_invalid += 1
                 continue
-            # session_id is required now (no default), so validation ensures it exists.
-            key = rnd.session_id  # session_id already includes provider prefix in real data
-            grouped.setdefault(key, []).append(rnd)
 
-        # Order rounds and apply the session filter.
-        kept: Dict[str, List[TraceLabRound]] = {}
-        n_filtered = 0
-        for session_id, rounds in grouped.items():
-            rounds.sort(key=lambda r: (r.round_index, r.round_id or ""))
-            # Re-assign dense round indices so downstream timing is stable even
-            # when the trace carries sparse/duplicate indices.
-            for i, r in enumerate(rounds):
-                r.round_index = i
-            augmented = self._augment_for_filter(session_id, rounds)
-            try:
-                if not self._keep_session(augmented, filter_func):
-                    n_filtered += 1
-                    continue
-            except FilterExpressionError:
-                raise
-            except Exception as e:
-                logger.error(f"Failed to filter session {session_id}: {e}")
-                if not cfg.skip_invalid_files:
-                    raise
-                continue
-            kept[session_id] = rounds
+            if rnd.session_id != current_id:
+                if current_id is not None:
+                    yield current_id, self._finalize_block(rounds), n_invalid
+                current_id = rnd.session_id
+                rounds = []
+                n_invalid = 0
+            rounds.append(rnd)
 
-        if filter_func:
-            logger.info(f"Filter applied: {len(kept)} sessions kept, {n_filtered} rejected of {len(grouped)} scanned")
-        if n_invalid:
-            logger.warning(f"Skipped {n_invalid} invalid rows (skip_invalid_files=True)")
-        if not kept:
-            raise ValueError("No valid TraceLab sessions found")
-        logger.info(f"Loaded {len(kept)} TraceLab sessions ({sum(len(v) for v in kept.values())} rounds)")
-        return kept
+        if current_id is not None:
+            yield current_id, self._finalize_block(rounds), n_invalid
 
-    def _load_hf_rows(self, hf_path: Any, limit: int, skip_invalid: bool) -> List[Dict[str, Any]]:
-        """Load TraceLab rounds from HF and join tools/timing_events tables.
+    @staticmethod
+    def _finalize_block(rounds: List[TraceLabRound]) -> List[TraceLabRound]:
+        rounds.sort(key=lambda r: (r.round_index, r.round_id or ""))
+        # Re-assign dense round indices so downstream timing is stable even
+        # when the trace carries sparse/duplicate indices.
+        for i, r in enumerate(rounds):
+            r.round_index = i
+        return rounds
 
-        The UW-SyFI/TraceLab dataset has multiple configs:
-        - default ("rounds" table): one row per LLM invocation
-        - "tool_calls": one row per tool call, with round_pk foreign key
-        - "timing_events": one row per timing event, with round_pk foreign key
+    @staticmethod
+    def _hf_source(hf_path: Any) -> Tuple[str, Dict[str, Any]]:
+        if isinstance(hf_path, dict):
+            return hf_path.get("path", DEFAULT_HF_DATASET), {k: v for k, v in hf_path.items() if k != "path"}
+        return hf_path or DEFAULT_HF_DATASET, {}
 
-        We load the rounds table and join tool_calls/timing_events by round_pk.
-        The limit applies to SESSIONS, not rows.
+    @staticmethod
+    def _as_split(ds: Any, kwargs: Dict[str, Any]) -> Any:
+        if hasattr(ds, "keys"):
+            split = kwargs.get("split", "train")
+            keys = list(ds.keys())
+            return ds[split] if split in keys else ds[keys[0]]
+        return ds
+
+    def _iter_hf_rounds(self, hf_path: Any) -> Iterator[Tuple[str, int, Dict[str, Any]]]:
+        """Yield the HF ``rounds`` table row by row, without loading aux tables.
+
+        The UW-SyFI/TraceLab dataset has multiple configs: the default
+        ("rounds") table has one row per LLM invocation, "tool_calls" one row
+        per tool call, and "timing_events" one row per timing event, both with
+        a ``round_pk`` foreign key into rounds.
         """
         from datasets import load_dataset
 
-        if isinstance(hf_path, dict):
-            path = hf_path.get("path", DEFAULT_HF_DATASET)
-            kwargs = {k: v for k, v in hf_path.items() if k != "path"}
-        else:
-            path = hf_path or DEFAULT_HF_DATASET
-            kwargs = {}
-
+        path, kwargs = self._hf_source(hf_path)
         logger.info(f"Downloading TraceLab traces from Hugging Face dataset: {path}")
-
-        def _as_split(ds: Any) -> Any:
-            if hasattr(ds, "keys"):
-                split = kwargs.get("split", "train")
-                keys = list(ds.keys())
-                return ds[split] if split in keys else ds[keys[0]]
-            return ds
-
-        # Load rounds table (default config)
         try:
-            ds_rounds = _as_split(load_dataset(path, **kwargs))
+            ds_rounds = self._as_split(load_dataset(path, **kwargs), kwargs)
         except Exception as e:
             raise ValueError(f"Failed to load Hugging Face dataset {path}: {e}") from e
 
-        def _load_aux_table(name: str) -> Any:
+        source = f"hf:{path}"
+        for idx, rnd in enumerate(ds_rounds, start=1):
+            if not isinstance(rnd, dict):
+                if not self.tracelab_config.skip_invalid_files:
+                    raise ValueError(f"Unexpected row type {type(rnd)} in Hugging Face dataset {path}")
+                continue
+            yield source, idx, rnd
+
+    def _attach_hf_aux_tables(self, kept: Dict[str, List[TraceLabRound]], hf_path: Any) -> None:
+        """Join tool_calls/timing_events onto the kept rounds only.
+
+        Indexing just the kept ``round_pk`` values avoids building dictionaries
+        over the full aux tables (hundreds of thousands to millions of rows).
+        """
+        from datasets import load_dataset
+
+        round_pks = {str(r.round_pk) for rounds in kept.values() for r in rounds if r.round_pk is not None}
+        if not round_pks:
+            return
+
+        path, kwargs = self._hf_source(hf_path)
+
+        def _aux_rows(name: str) -> Iterator[Dict[str, Any]]:
             try:
-                return _as_split(load_dataset(path, name=name, **kwargs))
+                table = self._as_split(load_dataset(path, name=name, **kwargs), kwargs)
             except Exception as e:
                 msg = (
                     f"Could not load '{name}' table from {path}: {e}. "
                     "Rounds will replay without it (tool-latency waits or "
                     "timestamp gaps from that table will be 0)."
                 )
-                if not skip_invalid:
+                if not self.tracelab_config.skip_invalid_files:
                     raise ValueError(msg) from e
                 logger.warning(msg)
-                return []
+                return
+            for row in table:
+                if isinstance(row, dict):
+                    yield row
 
-        # Load tool_calls table, keyed by round_pk (int on the hub; normalize
-        # to str so JSONL-shaped rows join the same way).
-        tools_by_round: Dict[str, List[Dict[str, Any]]] = {}
-        for t in _load_aux_table("tool_calls"):
-            if isinstance(t, dict):
-                rpk = t.get("round_pk")
-                if rpk is not None:
-                    tools_by_round.setdefault(str(rpk), []).append(
+        tools_by_round: Dict[str, List[TraceLabToolCall]] = {}
+        for t in _aux_rows("tool_calls"):
+            rpk = t.get("round_pk")
+            if rpk is not None and str(rpk) in round_pks:
+                tools_by_round.setdefault(str(rpk), []).append(
+                    TraceLabToolCall.model_validate(
                         {
                             "tool_name": t.get("tool_name"),
                             "tool_wall_latency_ms": t.get("tool_wall_latency_ms"),
                             "tool_internal_latency_ms": t.get("tool_internal_latency_ms"),
                         }
                     )
+                )
 
-        # Load timing_events table if available
-        timing_by_round: Dict[str, List[Dict[str, Any]]] = {}
-        for te in _load_aux_table("timing_events"):
-            if isinstance(te, dict):
-                rpk = te.get("round_pk")
-                if rpk is not None:
-                    timing_by_round.setdefault(str(rpk), []).append(
-                        {"event_type": te.get("event_type"), "timestamp": te.get("timestamp")}
-                    )
+        timing_by_round: Dict[str, List[TraceLabTimingEvent]] = {}
+        for te in _aux_rows("timing_events"):
+            rpk = te.get("round_pk")
+            if rpk is not None and str(rpk) in round_pks:
+                timing_by_round.setdefault(str(rpk), []).append(
+                    TraceLabTimingEvent.model_validate({"event_type": te.get("event_type"), "timestamp": te.get("timestamp")})
+                )
 
-        # Build rows by joining tools/timing, stopping at session limit.
-        rows: List[Dict[str, Any]] = []
-        session_ids_seen: Set[str] = set()
-
-        for rnd in ds_rounds:
-            if not isinstance(rnd, dict):
-                if not skip_invalid:
-                    raise ValueError(f"Unexpected row type {type(rnd)} in Hugging Face dataset {path}")
-                continue
-
-            session_id = rnd.get("session_id", "")
-            if session_id and session_id not in session_ids_seen:
-                session_ids_seen.add(session_id)
-                if len(session_ids_seen) > limit:
-                    break
-
-            # Join tools and timing_events by round_pk
-            rpk = rnd.get("round_pk")
-            key = str(rpk) if rpk is not None else ""
-            if key and key in tools_by_round:
-                rnd["tools"] = tools_by_round[key]
-            if key and key in timing_by_round:
-                rnd["timing_events"] = timing_by_round[key]
-
-            rows.append(dict(rnd))
-
-        logger.info(f"Loaded {len(rows)} rounds across {len(session_ids_seen)} sessions from HF")
-        return rows
+        for rounds in kept.values():
+            for r in rounds:
+                if r.round_pk is None:
+                    continue
+                key = str(r.round_pk)
+                if key in tools_by_round:
+                    r.tools = tools_by_round[key]
+                if key in timing_by_round:
+                    r.timing_events = timing_by_round[key]
 
     def _stable_offset(self, session_id: str, round_index: int, salt: int) -> int:
         """Return a deterministic offset for corpus slicing.

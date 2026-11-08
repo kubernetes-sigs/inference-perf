@@ -211,10 +211,9 @@ Receives the session dict plus derived aggregates: max_tokens (largest
 single-round input+output), total_tokens, and num_rounds.
 Example: "lambda x: x['max_tokens'] < 262144"
 Security: Filter expressions use eval() and should only contain trusted input. |
-| `--data.tracelab_trace_replay.num_dataset_entries` | int | Max number of sessions to load from HuggingFace |
+| `--data.tracelab_trace_replay.num_dataset_entries` | int | Max number of sessions to load, applied to every source (local files and HuggingFace). Reading stops once this many sessions pass the filter, so a small benchmark does not materialize the full corpus. |
 | `--data.tracelab_trace_replay.trace_idle_gap_cap_seconds` | float | Cap idle timing gaps between rounds in seconds |
-| `--data.tracelab_trace_replay.ignore_trace_delays` | boolean | Ignore delays from original trace and run back-to-back |
-| `--data.tracelab_trace_replay.disable_output_substitution` | boolean | When True, replay each call with its recorded prompt text instead of substituting the live output from predecessor calls. Dependency timing (waiting for predecessors) is still enforced. Default False preserves faithful live-output replay. |
+| `--data.tracelab_trace_replay.ignore_trace_delays` | boolean | Ignore delays from original trace and run back-to-back. Overrides trace_idle_gap_cap_seconds: every inter-round gap is set to zero. |
 | `--data.conversation_replay.seed` | int | Random seed for deterministic generation |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |
 | `--data.conversation_replay.shared_system_prompt_len` | int | Fixed shared system prompt length in tokens |

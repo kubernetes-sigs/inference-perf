@@ -389,16 +389,20 @@ class TraceLabTraceReplayConfig(SessionReplayConfig):
             "Security: Filter expressions use eval() and should only contain trusted input."
         ),
     )
-    num_dataset_entries: int = Field(100, description="Max number of sessions to load from HuggingFace")
+    num_dataset_entries: int = Field(
+        100,
+        description=(
+            "Max number of sessions to load, applied to every source (local files and HuggingFace). "
+            "Reading stops once this many sessions pass the filter, so a small benchmark does not "
+            "materialize the full corpus."
+        ),
+    )
     trace_idle_gap_cap_seconds: float = Field(60.0, description="Cap idle timing gaps between rounds in seconds")
-    ignore_trace_delays: bool = Field(False, description="Ignore delays from original trace and run back-to-back")
-    disable_output_substitution: bool = Field(
+    ignore_trace_delays: bool = Field(
         False,
         description=(
-            "When True, replay each call with its recorded prompt text instead of "
-            "substituting the live output from predecessor calls. Dependency timing "
-            "(waiting for predecessors) is still enforced. Default False preserves "
-            "faithful live-output replay."
+            "Ignore delays from original trace and run back-to-back. Overrides "
+            "trace_idle_gap_cap_seconds: every inter-round gap is set to zero."
         ),
     )
 
@@ -419,27 +423,6 @@ class TraceLabTraceReplayConfig(SessionReplayConfig):
             raise ValueError(
                 "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
             )
-        return self
-
-    @model_validator(mode="after")
-    def validate_output_substitution(self) -> "TraceLabTraceReplayConfig":
-        # Same conflict as OTel replay: random session-ID injection rewrites
-        # 'unique' segments via the substitution pass that
-        # disable_output_substitution asks to turn off.
-        if self.disable_output_substitution:
-            conflicting = []
-            if self.inject_random_session_id:
-                conflicting.append("inject_random_session_id")
-            if self.duplicate_sessions_target is not None:
-                conflicting.append("duplicate_sessions_target")
-            if conflicting:
-                raise ValueError(
-                    "disable_output_substitution=True cannot be combined with "
-                    f"{' or '.join(conflicting)}: those options trigger random "
-                    "session-ID injection, which substitutes live predecessor "
-                    "output into prompts — the opposite of replaying recorded "
-                    "prompts as-is."
-                )
         return self
 
 
