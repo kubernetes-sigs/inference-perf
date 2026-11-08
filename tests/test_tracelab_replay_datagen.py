@@ -699,3 +699,118 @@ def test_tracelab_determinism_across_subprocesses(tmp_path: Path) -> None:
         assert proc.returncode == 0, f"seed {seed} failed:\n{proc.stderr[-2000:]}"
         outputs.append(proc.stdout)
     assert outputs[0] == outputs[1], "prompts differ across hash seeds"
+
+
+# num_dataset_entries caps sessions for local sources too. With a limit of two,
+# the third session file and a malformed fourth file are never read.
+def test_tracelab_num_dataset_entries_caps_local_sessions(tmp_path: Path) -> None:
+    rows = _rows()
+    a = _write_jsonl(tmp_path / "a.jsonl", rows[:2])  # sess-A, two rounds
+    b = _write_jsonl(tmp_path / "b.jsonl", rows[2:3])  # sess-B, one round
+    c_row = dict(rows[2])
+    c_row["session_id"] = "sess-C"
+    c = _write_jsonl(tmp_path / "c.jsonl", [c_row])
+    unreadable = tmp_path / "d.jsonl"
+    unreadable.write_text("not json\n", encoding="utf-8")
+
+    gen = _make_gen([str(a), str(b), str(c), str(unreadable)], num_dataset_entries=2)
+
+    assert gen.get_session_count() == 2
+    sessions = {s.source_id: s for s in gen.sessions if s is not None}
+    assert set(sessions) == {"sess-A", "sess-B"}
+    # The last kept session is complete: both of sess-A's rounds were replayed.
+    assert len(sessions["sess-A"].graph.events) == 2
+
+
+# The cap counts kept sessions, not scanned ones: a session rejected by the
+# filter must not consume one of the available slots.
+def test_tracelab_num_dataset_entries_counts_kept_sessions_only(tmp_path: Path) -> None:
+    trace_file = _write_jsonl(tmp_path / "trace.jsonl", _rows())
+
+    gen = _make_gen(
+        [str(trace_file)],
+        num_dataset_entries=1,
+        filter="lambda x: x['session_id'] == 'sess-B'",
+    )
+
+    assert gen.get_session_count() == 1
+    assert next(s for s in gen.sessions if s is not None).source_id == "sess-B"
+
+
+# A small HF limit must stop iterating the rounds table and join aux rows only
+# for kept rounds. Four rows are enough to finish two sessions; the fifth row
+# (a fourth session) must never be read.
+def test_tracelab_num_dataset_entries_caps_hf_rounds(tmp_path: Path) -> None:
+    import sys
+    from unittest.mock import patch
+
+    def _round(pk: str, session_id: str, index: int) -> Dict[str, Any]:
+        return {
+            "round_pk": pk,
+            "session_id": session_id,
+            "round_index": index,
+            "provider": "claude",
+            "model": "m",
+            "input_tokens_total": 10,
+            "prefix_tokens": 0,
+            "newly_append_tokens": 10,
+            "output_tokens": 2,
+        }
+
+    class _RoundsTable:
+        """Rounds iterable that fails if the loader reads past ``fail_at``."""
+
+        def __init__(self, rows: List[Dict[str, Any]], fail_at: int) -> None:
+            self.rows = rows
+            self.fail_at = fail_at
+            self.read = 0
+
+        def __iter__(self) -> Any:
+            for i, row in enumerate(self.rows):
+                assert i < self.fail_at, f"loader read row {i}; it should have stopped at {self.fail_at}"
+                self.read += 1
+                yield row
+
+    rounds = _RoundsTable(
+        [
+            _round("1", "s1", 0),
+            _round("2", "s1", 1),
+            _round("3", "s2", 0),
+            _round("4", "s3", 0),
+            _round("5", "s4", 0),
+        ],
+        fail_at=4,
+    )
+    tool_calls = [{"round_pk": "1", "tool_name": "bash", "tool_wall_latency_ms": 700, "tool_internal_latency_ms": None}]
+
+    def fake_load_dataset(path: str, **kwargs: Any) -> Any:
+        name = kwargs.get("name")
+        if name == "tool_calls":
+            return tool_calls
+        if name == "timing_events":
+            return []
+        assert name is None, f"unexpected config name: {name!r}"
+        return rounds
+
+    fake_datasets = MagicMock()
+    fake_datasets.load_dataset = fake_load_dataset
+    with patch.dict(sys.modules, {"datasets": fake_datasets}):
+        api_cfg = APIConfig(type=APIType.Chat, streaming=False)
+        data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
+        data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(hf_dataset_path="UW-SyFI/TraceLab", num_dataset_entries=2)
+        gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+
+    assert gen.get_session_count() == 2
+    assert rounds.read == 4
+    sessions = {s.source_id: s for s in gen.sessions if s is not None}
+    assert set(sessions) == {"s1", "s2"}
+    # Tool latency for the kept first round still reaches the replay plan.
+    events = sorted(sessions["s1"].graph.events.values(), key=lambda e: e.t_start_ms)
+    assert events[1].wait_ms == 700
+
+
+# TraceLab replay never substitutes live output, so the old flag is gone and a
+# config that still sets it is rejected instead of silently doing nothing.
+def test_tracelab_disable_output_substitution_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        TraceLabTraceReplayConfig.model_validate({"trace_files": ["./traces/t.jsonl"], "disable_output_substitution": True})

@@ -15,6 +15,13 @@ Dataset + paper: https://tracelab.cs.washington.edu / https://arxiv.org/abs/2606
 > shrink). Expected outputs are sized to the recorded `output_tokens`. Inter-round spacing comes from
 > `timing_events` timestamps when present, else the round's tool latency.
 >
+> KV-cache profile: every prompt is the offline-built one, so a server with prefix caching can reuse the
+> leading `prefix_tokens` of the previous round when that text is unchanged. A round with
+> `prefix_tokens = 0` (cache miss) shares nothing and reprocesses the whole prompt, and a compacting
+> round truncates the shared prefix so reuse stops at the divergence point. Live model outputs are never
+> fed back into later prompts: unlike OTel/Weka replay, a round's response does not change its
+> successors' inputs.
+>
 > Tokenizer: reconstruction uses the run's configured `tokenizer`, so prompt sizes are measured with
 > the same tokenizer the benchmark runs against — point it at the target model's tokenizer for
 > faithful prefill sizes.
@@ -25,17 +32,20 @@ Dataset + paper: https://tracelab.cs.washington.edu / https://arxiv.org/abs/2606
 
 1. **Trace Load**: rows are loaded from local TraceLab JSONL files (`.json`, `.jsonl`, `.jsonl.gz`) or a
    Hugging Face dataset (e.g. `UW-SyFI/TraceLab`), grouped by `session_id`, and ordered by `round_index`.
-   For Hugging Face, the `rounds` table is joined with the `tools` and `timing_events` tables on
-   `round_pk`, and `num_dataset_entries` caps sessions (not rows).
-2. **Graph Compilation**: each round becomes one LLM call in a linear session chain. The transcript grows
-   round-over-round (prior outputs are carried as assistant messages), so the shared replay-graph runtime
-   infers causal edges and replays with output substitution like OTel/Weka replay.
+   For Hugging Face, the `rounds` table is joined with the `tool_calls` and `timing_events` tables on
+   `round_pk`. `num_dataset_entries` caps sessions (not rows) for every source, and reading stops once
+   that many sessions pass the filter, so a small benchmark does not load the full corpus. Only the
+   `tool_calls` and `timing_events` rows belonging to kept sessions are indexed.
+2. **Graph Compilation**: each round becomes one LLM call in a linear session chain. The call's input is
+   a single synthetic user message reconstructed from the recorded token accounting; round predecessors
+   are linked only for ordering and timing. Because that message is not a predecessor's assistant
+   output, replay never substitutes live model output into a later prompt.
 3. **Session-based Execution**: a thread pool runs sessions concurrently. Within each session, events execute
    as soon as their predecessors complete.
 4. **Think-Time Simulation**: the gap between the previous round's last `timing_events` timestamp and
    this round's first is replayed as think time (falling back to the previous round's tool latency when
-   timestamps are absent), capped by `trace_idle_gap_cap_seconds`, or skipped with `ignore_trace_delays`
-   (same knob shape as Weka replay).
+   timestamps are absent), capped by `trace_idle_gap_cap_seconds`. Setting `ignore_trace_delays: true`
+   overrides the cap: every inter-round gap becomes zero and rounds run back-to-back.
 
 ---
 
@@ -67,7 +77,7 @@ data:
       - ./traces/tracelab_round_trace.jsonl
     # trace_directory: ./traces/tracelab/
     # hf_dataset_path: "UW-SyFI/TraceLab"
-    # num_dataset_entries: 100 # Max sessions from HuggingFace
+    # num_dataset_entries: 100 # Max sessions, applied to every source
     # filter: "lambda x: x['max_tokens'] < 262144" # Derived per session: max_tokens
     #                       (largest single-round input+output), total_tokens,
     #                       num_rounds. Uses eval(), so treat as trusted input.
@@ -75,9 +85,8 @@ data:
     static_model_name: "mock-model"
     skip_invalid_files: true
     trace_idle_gap_cap_seconds: 1.0 # Caps think-time delay between rounds to 1s
-    # ignore_trace_delays: true # Run rounds back-to-back
-    # disable_output_substitution: true # Replay built prompts verbatim instead of
-    #   substituting live predecessor outputs (dependency timing still enforced)
+    # ignore_trace_delays: true # Run rounds back-to-back; overrides the gap cap
+    #   and sets every inter-round gap to zero
 
 report:
   request_lifecycle:
