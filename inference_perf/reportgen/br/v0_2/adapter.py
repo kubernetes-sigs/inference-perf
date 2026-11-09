@@ -21,13 +21,15 @@ by the user via the partial report; see ``partial_report.py``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
 from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.reportgen.base import effective_output_tokens, retokenize_output_token_times
 from inference_perf.payloads import Audios, Images, Videos
+from inference_perf.client.modelserver.metrics import GaugeResult
+from inference_perf.client.server_metrics import ModelServerMetrics
 
 from .schema import (
     AggregateLatency,
@@ -35,10 +37,13 @@ from .schema import (
     AggregateRequests,
     AggregateThroughput,
     AudioPayloadStats,
+    ComponentObservability,
     ImagePayloadStats,
     MultiModalRequests,
+    Observability,
     VideoPayloadStats,
     RequestPerformance,
+    ResourceMetrics,
     Results,
     SessionPerformance,
     SessionRequests,
@@ -61,6 +66,7 @@ def build_results(
     *,
     session_metrics: Optional[List[SessionLifecycleMetric]] = None,
     sessions_not_completed: int = 0,
+    server_metrics: Optional[Mapping[str, ModelServerMetrics]] = None,
 ) -> Results:
     """Build a BR0.2 ``Results`` from inference-perf request metrics.
 
@@ -84,11 +90,57 @@ def build_results(
     without them a stage cut short by ``max_stage_duration`` would report only
     the sessions that happened to finish, which reads as a clean run. Like the
     native session report, they count towards ``total`` and nothing else.
+
+    ``server_metrics`` maps a component label (the server type, e.g. ``vllm``)
+    to the stage's Prometheus summary. It fills
+    ``observability.components[].aggregate``; omitted, ``observability`` stays
+    ``None``.
     """
     return Results(
         request_performance=_build_request_performance(request_metrics, tokenizer, use_server_output_tokens),
         session_performance=_build_session_performance(session_metrics or [], sessions_not_completed),
+        observability=_build_observability(server_metrics or {}),
     )
+
+
+# ---------------------------------------------------------------------------
+# Observability: the stage's Prometheus summary per component
+# ---------------------------------------------------------------------------
+
+
+def _build_observability(server_metrics: Mapping[str, ModelServerMetrics]) -> Optional[Observability]:
+    components = [
+        ComponentObservability(component_label=label, aggregate=aggregate)
+        for label, metrics in server_metrics.items()
+        if (aggregate := _build_resource_metrics(metrics)) is not None
+    ]
+    return Observability(components=components) if components else None
+
+
+def _build_resource_metrics(metrics: ModelServerMetrics) -> Optional[ResourceMetrics]:
+    # Only the metrics the server declares are queried. The rest keep
+    # ModelServerMetrics' 0.0 defaults, which are not measurements.
+    declared = metrics.model_fields_set
+    preemptions = metrics.num_preemptions_total.total if "num_preemptions_total" in declared else None
+    hits = metrics.prefix_cache_hits.total if "prefix_cache_hits" in declared else None
+    queries = metrics.prefix_cache_queries.total
+    aggregate = ResourceMetrics(
+        kv_cache_usage=_gauge_statistics(metrics.kv_cache_usage, Units.FRACTION) if "kv_cache_usage" in declared else None,
+        running_requests=(
+            _gauge_statistics(metrics.num_requests_running, Units.COUNT) if "num_requests_running" in declared else None
+        ),
+        waiting_requests=_gauge_statistics(metrics.queue_length, Units.COUNT) if "queue_length" in declared else None,
+        preemptions=_scalar_statistics(preemptions, Units.COUNT) if preemptions is not None else None,
+        # No cache queries (0, or the 0.0 default when undeclared) means no hit rate, rather than 0%.
+        cache_hit_rate=_scalar_statistics(hits / queries * 100, Units.PERCENT) if hits is not None and queries else None,
+    )
+    return aggregate if aggregate.model_dump(exclude_none=True) else None
+
+
+def _gauge_statistics(result: GaugeResult, units: Units) -> Optional[Statistics]:
+    if result.avg is None:
+        return None
+    return Statistics(units=units, mean=result.avg, p50=result.median, p90=result.p90, p99=result.p99)
 
 
 # ---------------------------------------------------------------------------

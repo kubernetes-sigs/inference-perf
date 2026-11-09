@@ -23,11 +23,12 @@ acted on: a bug here does not fail the run, it ships wrong results.
 `generate_session_reports` and `generate_prometheus_metrics_report`.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import Mock, patch
 
 import pytest
 
+from inference_perf.apis import InferenceInfo, RequestLifecycleMetric, StreamedResponseMetrics
 from inference_perf.apis.base import SessionLifecycleMetric
 from inference_perf.client.modelserver.metrics import BaseMetrics
 from inference_perf.client.modelserver.metrics.counter.base import CounterResult
@@ -40,12 +41,14 @@ from inference_perf.client.server_metrics.base import (
     StageStatus,
 )
 from inference_perf.client.server_metrics.prometheus_client.base import PrometheusMetricsClient
+from inference_perf.config.client.modelserver.config import ModelServerType
 from inference_perf.config.client.server_metrics.config import PrometheusClientConfig
 from inference_perf.config.reportgen.config import (
     PrometheusMetricsReportConfig,
     ReportConfig,
     SessionLifecycleReportConfig,
 )
+from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.reportgen.base import ReportGenerator, summarize_prometheus_metrics
 
 PERCENTILES = [50.0, 90.0]
@@ -691,3 +694,67 @@ class TestSummarizePrometheusMetricsMissing:
         ).model_dump()["successes"]
 
         assert summary["request_latency"] == {"mean": 0.5, "median": None, "p90": 0.9, "p99": 1.1}
+
+
+# ---------------------------------------------------------------------------
+# The stage's Prometheus summary in the BR0.2 partial (#799)
+# ---------------------------------------------------------------------------
+
+
+def _partial_generator(server: Optional[ModelServerType]) -> ReportGenerator:
+    request = RequestLifecycleMetric(
+        stage_id=0,
+        scheduled_time=1.0,
+        start_time=1.0,
+        end_time=2.0,
+        request_data="{}",
+        response_data="ok",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=10)),
+            response_metrics=StreamedResponseMetrics(response_chunks=[], output_tokens=2, output_token_times=[1.5, 1.9]),
+        ),
+        error=None,
+    )
+    collector = Mock()
+    collector.get_metrics.return_value = [request]
+    config = Mock()
+    config.tokenizer = None
+    config.server = Mock(type=server) if server else None
+    config.model_dump.return_value = {}
+    return ReportGenerator(metrics_client=_prometheus_client(), metrics_collector=collector, config=config)
+
+
+async def _stage_0_partial(gen: ReportGenerator, per_stage: bool) -> Tuple[Dict[str, Any], int]:
+    report_config = ReportConfig(prometheus=PrometheusMetricsReportConfig(summary=False, per_stage=per_stage))
+    with (
+        patch.object(PrometheusMetricsClient, "wait"),
+        patch.object(PrometheusMetricsClient, "collect_metrics_for_stage", return_value=_server_metrics()) as collect,
+    ):
+        reports = await gen.generate_reports(report_config, _runtime({0: _stage_info(0)}))
+    partial: Dict[str, Any] = next(r.contents for r in reports if r.name == "inference-perf.partial.stage_0")
+    return partial, collect.call_count
+
+
+class TestPrometheusComponentInPartial:
+    async def test_per_stage_metrics_fill_the_component(self) -> None:
+        partial, _ = await _stage_0_partial(_partial_generator(ModelServerType.VLLM), per_stage=True)
+
+        [component] = partial["results"]["observability"]["components"]
+        assert component["component_label"] == "vllm"
+        assert component["aggregate"]["waiting_requests"]["mean"] == 3.0
+
+    async def test_the_label_follows_the_server_type(self) -> None:
+        partial, _ = await _stage_0_partial(_partial_generator(ModelServerType.SGLANG), per_stage=True)
+
+        assert [c["component_label"] for c in partial["results"]["observability"]["components"]] == ["sglang"]
+
+    async def test_no_component_without_per_stage_metrics(self) -> None:
+        partial, collections = await _stage_0_partial(_partial_generator(ModelServerType.VLLM), per_stage=False)
+
+        assert collections == 0
+        assert "observability" not in partial["results"]
+
+    async def test_no_component_without_a_server_type(self) -> None:
+        partial, _ = await _stage_0_partial(_partial_generator(None), per_stage=True)
+
+        assert "observability" not in partial["results"]

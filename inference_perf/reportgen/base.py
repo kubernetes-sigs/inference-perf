@@ -1060,6 +1060,8 @@ class ReportGenerator:
         self.config = config
         self.datagen = datagen
         self.session_metrics_collector: Optional[SessionMetricsCollector] = None
+        # Per-stage Prometheus summaries, kept for the BR0.2 partials.
+        self.stage_server_metrics: Dict[int, ModelServerMetrics] = {}
 
     def get_metrics_collector(self) -> RequestMetricCollector:
         """
@@ -1269,6 +1271,7 @@ class ReportGenerator:
                 # run.time needs the stage's wall-clock window: the request
                 # timestamps are monotonic and can't be mapped to epoch here.
                 stage_info = runtime_parameters.stages.get(br_stage_id)
+                stage_server_metrics = self.stage_server_metrics.get(br_stage_id)
                 partial = build_partial_report(
                     br_stage_buckets.get(br_stage_id, []),
                     tokenizer,
@@ -1282,6 +1285,12 @@ class ReportGenerator:
                         stage_info.sessions_not_completed_active + stage_info.sessions_not_completed_pending
                         if stage_info
                         else 0
+                    ),
+                    # The component is labelled with the server type (#799).
+                    server_metrics=(
+                        {self.config.server.type.value: stage_server_metrics}
+                        if stage_server_metrics is not None and self.config.server is not None
+                        else None
                     ),
                 )
                 lifecycle_reports.append(
@@ -1748,6 +1757,7 @@ class ReportGenerator:
             for stage_id in runtime_parameters.stages:
                 collected_metrics = self.metrics_client.collect_metrics_for_stage(runtime_parameters, stage_id)
                 if collected_metrics is not None:
+                    self.stage_server_metrics[stage_id] = collected_metrics
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_prometheus_metrics",
                         contents=summarize_prometheus_metrics(collected_metrics).model_dump(),
