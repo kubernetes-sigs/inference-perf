@@ -85,10 +85,10 @@ class TestLoadGeneratorConcurrency(unittest.TestCase):
     def _add_workers(self, n: int) -> None:
         self.load_generator.workers = []
         for i in range(n):
-            self.load_generator.workers.append(MockWorker(i, mp.Value("i", 0)))  # type: ignore
+            self.load_generator.workers.append(MockWorker(i, mp.Value("i", 0)))  # type: ignore[arg-type]
 
     def _worker_concurrencies(self) -> list[int]:
-        return [worker.shared_max_concurrency.value for worker in self.load_generator.workers]  # type: ignore
+        return [worker.shared_max_concurrency.value for worker in self.load_generator.workers]  # type: ignore[union-attr]
 
     # 4 workers, concurrency_level 8, and the datagen pins every request to
     # one worker. Pins the split [8, 0, 0, 0]: workers the pins never reach
@@ -128,47 +128,47 @@ class TestLoadGeneratorConcurrency(unittest.TestCase):
         self.load_generator.workers = []
         for i in range(4):
             shared_val = mp.Value("i", 0)
-            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore
+            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore[arg-type]
 
         # Test concurrency_level = 8 (8 / 4 = 2 per worker)
         self.load_generator._set_worker_concurrency(8)
 
         for worker in self.load_generator.workers:
-            self.assertEqual(worker.shared_max_concurrency.value, 2, f"Worker {worker.id} should have concurrency 2")  # type: ignore
+            self.assertEqual(worker.shared_max_concurrency.value, 2, f"Worker {worker.id} should have concurrency 2")  # type: ignore[union-attr]
 
     def test_set_worker_concurrency_remainder(self) -> None:
         # Setup workers
         self.load_generator.workers = []
         for i in range(4):
             shared_val = mp.Value("i", 0)
-            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore
+            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore[arg-type]
 
         # Test concurrency_level = 10 (10 // 4 = 2, 10 % 4 = 2)
         # Workers 0, 1 should have 3
         # Workers 2, 3 should have 2
         self.load_generator._set_worker_concurrency(10)
 
-        self.assertEqual(self.load_generator.workers[0].shared_max_concurrency.value, 3)  # type: ignore
-        self.assertEqual(self.load_generator.workers[1].shared_max_concurrency.value, 3)  # type: ignore
-        self.assertEqual(self.load_generator.workers[2].shared_max_concurrency.value, 2)  # type: ignore
-        self.assertEqual(self.load_generator.workers[3].shared_max_concurrency.value, 2)  # type: ignore
+        self.assertEqual(self.load_generator.workers[0].shared_max_concurrency.value, 3)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[1].shared_max_concurrency.value, 3)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[2].shared_max_concurrency.value, 2)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[3].shared_max_concurrency.value, 2)  # type: ignore[union-attr]
 
     def test_set_worker_concurrency_less_than_workers(self) -> None:
         # Setup workers
         self.load_generator.workers = []
         for i in range(4):
             shared_val = mp.Value("i", 0)
-            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore
+            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore[arg-type]
 
         # Test concurrency_level = 3
         # Workers 0, 1 should have 1
         # Worker 3 should have 0
         self.load_generator._set_worker_concurrency(3)
 
-        self.assertEqual(self.load_generator.workers[0].shared_max_concurrency.value, 1)  # type: ignore
-        self.assertEqual(self.load_generator.workers[1].shared_max_concurrency.value, 1)  # type: ignore
-        self.assertEqual(self.load_generator.workers[2].shared_max_concurrency.value, 1)  # type: ignore
-        self.assertEqual(self.load_generator.workers[3].shared_max_concurrency.value, 0)  # type: ignore
+        self.assertEqual(self.load_generator.workers[0].shared_max_concurrency.value, 1)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[1].shared_max_concurrency.value, 1)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[2].shared_max_concurrency.value, 1)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[3].shared_max_concurrency.value, 0)  # type: ignore[union-attr]
 
 
 class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
