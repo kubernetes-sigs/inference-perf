@@ -291,3 +291,47 @@ def test_duration_stage_allows_unlimited_concurrency_for_weka_replay() -> None:
         _replay_config({}, {"concurrent_sessions": 0, "duration": 1800}, data_type="weka_trace_replay")
     )
     assert config.data.weka_trace_replay is not None
+
+
+# --- conversation replay load-type and concurrency validation ------------
+
+
+def test_conversation_replay_requires_concurrent_load() -> None:
+    with pytest.raises(ValueError, match="requires load.type 'concurrent'"):
+        Config.model_validate(
+            {
+                "data": {"type": "conversation_replay", "conversation_replay": {"num_conversations": 4}},
+                "load": {"type": "constant"},
+            }
+        )
+
+
+def test_conversation_replay_rejects_concurrency_above_conversation_count() -> None:
+    with pytest.raises(ValueError, match=r"concurrency_level \(5\) cannot exceed.*num_conversations \(4\)"):
+        Config.model_validate(
+            {
+                "data": {"type": "conversation_replay", "conversation_replay": {"num_conversations": 4}},
+                "load": {
+                    "type": "concurrent",
+                    "stages": [{"num_requests": 10, "concurrency_level": 5}],
+                },
+            }
+        )
+
+
+def test_conversation_replay_accepts_concurrency_at_or_below_conversation_count() -> None:
+    config = Config.model_validate(
+        {
+            "data": {"type": "conversation_replay", "conversation_replay": {"num_conversations": 4}},
+            "load": {
+                "type": "concurrent",
+                "stages": [
+                    {"num_requests": 10, "concurrency_level": 2},
+                    {"num_requests": 10, "concurrency_level": 4},
+                ],
+            },
+        }
+    )
+
+    assert config.data.type == DataGenType.ConversationReplay
+    assert config.load.type == LoadType.CONCURRENT
