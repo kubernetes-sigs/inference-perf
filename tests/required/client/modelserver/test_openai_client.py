@@ -14,6 +14,7 @@
 import json
 import logging
 import random
+import re
 import ssl
 from types import SimpleNamespace
 from typing import FrozenSet, Sequence
@@ -41,6 +42,7 @@ from inference_perf.apis import (
     SessionLifecycleMetric,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
+from inference_perf.apis.streaming_parser import StreamInterruptedError
 from inference_perf.config import APIType
 from inference_perf.payloads import RequestMetrics, Text
 
@@ -1360,3 +1362,351 @@ async def test_retry_ending_in_http_error_is_not_recovered(mock_client: MagicMoc
     assert metric.error is not None
     assert metric.info.retries_attempted == 1
     assert metric.info.retries_recovered is False
+
+
+# --- Client-generated request ID (#685) ---
+#
+# Each request carries a client-generated ID under api.request_id_header_key and its
+# metric reports the same value as request_id, so a request can be found in server logs.
+
+
+# With request_id_header_key "x-request-id" and a 200 response, the POST carries a
+# 32-character hex x-request-id and metric.request_id holds that same value.
+@pytest.mark.asyncio
+async def test_request_id_sent_and_reported(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    sent = _post(session).call_args.kwargs["headers"]["x-request-id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", sent)
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is None
+    assert metric.request_id == sent
+
+
+# A request that times out never gets a response, but metric.request_id still holds
+# the x-request-id that was sent.
+@pytest.mark.asyncio
+async def test_request_id_reported_when_request_times_out(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_failing_ctx(asyncio.TimeoutError())]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    sent = _post(session).call_args.kwargs["headers"]["x-request-id"]
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is not None
+    assert metric.error.error_type == "TimeoutError"
+    assert metric.request_id == sent
+
+
+# Two requests sent through the same session carry two different x-request-id values.
+@pytest.mark.asyncio
+async def test_request_id_differs_between_requests(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx(), _ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    first, second = (call.kwargs["headers"]["x-request-id"] for call in _post(session).call_args_list)
+    assert first != second
+
+
+# A dropped connection retried once makes two POSTs; both carry the same x-request-id,
+# and metric.request_id holds that one value.
+@pytest.mark.asyncio
+async def test_request_id_kept_across_retries(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=1)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()), _ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    first, second = (call.kwargs["headers"]["x-request-id"] for call in _post(session).call_args_list)
+    assert first == second
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.request_id == first
+
+
+# With request_id_header_key set to None or "", the POST carries no x-request-id
+# header and metric.request_id is None.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header_key", [None, ""])
+async def test_request_id_not_sent_when_header_key_is_empty(
+    mock_client: MagicMock, mock_data: MagicMock, header_key: Optional[str]
+) -> None:
+    mock_client.api_config.request_id_header_key = header_key
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    headers = _post(session).call_args.kwargs["headers"]
+    assert not any(name.lower() == "x-request-id" for name in headers)
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.request_id is None
+
+
+# When api.headers already sets X-Request-Id to "fixed-id", the POST carries that header
+# once, unchanged, and metric.request_id is "fixed-id".
+@pytest.mark.asyncio
+async def test_request_id_from_api_headers_is_kept(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    mock_client.api_config.headers = {"X-Request-Id": "fixed-id"}
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    headers = _post(session).call_args.kwargs["headers"]
+    assert [value for name, value in headers.items() if name.lower() == "x-request-id"] == ["fixed-id"]
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.request_id == "fixed-id"
+
+
+# With request_id_header_key "" and api.headers setting X-Request-Id to "fixed-id", the
+# POST still carries X-Request-Id "fixed-id", but metric.request_id is None.
+@pytest.mark.asyncio
+async def test_request_id_from_api_headers_sent_but_not_reported_when_header_key_is_empty(
+    mock_client: MagicMock, mock_data: MagicMock
+) -> None:
+    mock_client.api_config.request_id_header_key = ""
+    mock_client.api_config.headers = {"X-Request-Id": "fixed-id"}
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    headers = _post(session).call_args.kwargs["headers"]
+    assert [value for name, value in headers.items() if name.lower() == "x-request-id"] == ["fixed-id"]
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.request_id is None
+
+
+# When the data's own headers set x-request-id to "trace-42" and the configured key is
+# "X-Request-ID", the lowercase header is sent unchanged with no second copy added, and
+# metric.request_id is "trace-42".
+@pytest.mark.asyncio
+async def test_request_id_from_data_headers_is_kept(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "X-Request-ID"
+    mock_data.headers = {"x-request-id": "trace-42"}
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    headers = _post(session).call_args.kwargs["headers"]
+    assert [value for name, value in headers.items() if name.lower() == "x-request-id"] == ["trace-42"]
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.request_id == "trace-42"
+
+
+# --- Server-reported request ID (#685) ---
+#
+# A response's metric reports the ID the server returned as server_request_id, so a
+# request can be found in the logs of a server that ignores x-request-id.
+
+
+# A response with status 200 unless given, `body` as its text and parsed JSON, and
+# `headers` as its headers, e.g. _body_ctx('{"id": "chatcmpl-1"}', {"x-request-id": "srv-1"}).
+def _body_ctx(body: str, headers: Optional[dict[str, str]] = None, status: int = 200) -> MagicMock:
+    response = MagicMock()
+    response.status = status
+    response.headers = headers or {}
+    response.text = AsyncMock(return_value=body)
+    response.json = AsyncMock(side_effect=lambda: json.loads(body))
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=response)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    return ctx
+
+
+# A 200 body with id "chatcmpl-abc" gives metric.server_request_id "chatcmpl-abc",
+# next to the generated metric.request_id that was sent as x-request-id.
+@pytest.mark.asyncio
+async def test_server_request_id_reported_from_response_body(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_body_ctx('{"id": "chatcmpl-abc", "choices": [{"text": "ok"}]}')]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.server_request_id == "chatcmpl-abc"
+    assert metric.request_id == _post(session).call_args.kwargs["headers"]["x-request-id"]
+
+
+# A streamed body whose chunks all carry id "chatcmpl-s1" gives metric.server_request_id
+# "chatcmpl-s1".
+@pytest.mark.asyncio
+async def test_server_request_id_read_from_first_streamed_chunk(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    mock_client.api_config.streaming = True
+    sse = (
+        'data: {"id": "chatcmpl-s1", "choices": [{"text": "he"}]}\n\n'
+        'data: {"id": "chatcmpl-s1", "choices": [{"text": "llo"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    mock_data.process_response = AsyncMock(
+        return_value=InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)), extra_info={"raw_response": sse})
+    )
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_body_ctx("")]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.server_request_id == "chatcmpl-s1"
+
+
+# A streamed Anthropic body opening with message_start for message "msg_01" gives
+# metric.server_request_id "msg_01".
+@pytest.mark.asyncio
+async def test_server_request_id_read_from_anthropic_message_start(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    mock_client.api_config.streaming = True
+    sse = (
+        "event: message_start\n"
+        'data: {"type": "message_start", "message": {"id": "msg_01", "type": "message", "content": []}}\n\n'
+        "event: content_block_delta\n"
+        'data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}}\n\n'
+    )
+    mock_data.process_response = AsyncMock(
+        return_value=InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)), extra_info={"raw_response": sse})
+    )
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_body_ctx("")]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.server_request_id == "msg_01"
+
+
+# A stream that breaks after one chunk with id "chatcmpl-s1" is reported as a
+# ClientPayloadError failure whose metric.server_request_id is still "chatcmpl-s1".
+@pytest.mark.asyncio
+async def test_server_request_id_read_from_a_stream_that_broke(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    mock_client.api_config.streaming = True
+    received = 'data: {"id": "chatcmpl-s1", "choices": [{"text": "he"}]}\n\n'
+    mock_data.process_response = AsyncMock(
+        side_effect=StreamInterruptedError(aiohttp.ClientPayloadError("Response payload is not completed"), received)
+    )
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_body_ctx("")]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is not None
+    assert metric.error.error_type == "ClientPayloadError"
+    assert metric.server_request_id == "chatcmpl-s1"
+
+
+# An HTTP 500 with body {"error": "boom"} and response header x-request-id "srv-7" is
+# reported as a failure with metric.server_request_id "srv-7".
+@pytest.mark.asyncio
+async def test_server_request_id_falls_back_to_response_header(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_body_ctx('{"error": "boom"}', {"x-request-id": "srv-7"}, status=500)]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is not None
+    assert metric.error.error_type == "HTTP Error 500"
+    assert metric.server_request_id == "srv-7"
+
+
+# A body with id "chatcmpl-abc" and a response header x-request-id "srv-7" gives
+# metric.server_request_id "chatcmpl-abc".
+@pytest.mark.asyncio
+async def test_server_request_id_prefers_body_over_header(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_body_ctx('{"id": "chatcmpl-abc"}', {"x-request-id": "srv-7"})]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.server_request_id == "chatcmpl-abc"
+
+
+# Body id 42 gives server_request_id "42". Body id true, "  " or null gives None.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body, expected",
+    [('{"id": 42}', "42"), ('{"id": true}', None), ('{"id": "  "}', None), ('{"id": null}', None)],
+)
+async def test_server_request_id_kept_only_when_a_string_or_number(
+    mock_client: MagicMock, mock_data: MagicMock, body: str, expected: Optional[str]
+) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_body_ctx(body)]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.server_request_id == expected
+
+
+# A 200 whose body is not JSON, "upstream timeout", gives metric.server_request_id None.
+@pytest.mark.asyncio
+async def test_server_request_id_absent_when_body_is_not_json(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_body_ctx("upstream timeout")]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.server_request_id is None
+
+
+# A request that times out has no response, so metric.server_request_id is None.
+@pytest.mark.asyncio
+async def test_server_request_id_absent_when_request_times_out(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_failing_ctx(asyncio.TimeoutError())]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.server_request_id is None
+
+
+# An embeddings response with id "embd-1" gives metric.server_request_id "embd-1", even
+# though the stored body keeps only model and usage.
+@pytest.mark.asyncio
+async def test_server_request_id_kept_when_embeddings_body_is_stripped(mock_client: MagicMock) -> None:
+    mock_client.api_config.type = APIType.Embeddings
+    mock_client.api_config.request_id_header_key = "x-request-id"
+    mock_client.model_name = "embed-model"
+    mock_client.max_completion_tokens = 128
+    mock_client.ignore_eos = True
+    body = {
+        "id": "embd-1",
+        "object": "list",
+        "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+        "model": "embed-model",
+        "usage": {"prompt_tokens": 4, "total_tokens": 4},
+    }
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_body_ctx(json.dumps(body))]
+
+    await session.process_request(EmbeddingsAPIData(input=["hello world"]), stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is None
+    assert "id" not in json.loads(metric.response_data)
+    assert metric.server_request_id == "embd-1"
