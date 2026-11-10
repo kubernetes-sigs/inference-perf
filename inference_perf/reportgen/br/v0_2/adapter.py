@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Iterable, List, Mapping, Optional, Tuple
 import numpy as np
 
 from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
+from inference_perf.apis.base import is_stage_teardown_cancelled
 from inference_perf.reportgen.base import effective_output_tokens, retokenize_output_token_times
 from inference_perf.payloads import Audios, Images, Videos
 from inference_perf.client.modelserver.metrics import GaugeResult
@@ -235,7 +236,10 @@ def _build_aggregate(
     use_server_output_tokens: bool,
 ) -> AggregateRequestPerformance:
     successful = [m for m in metrics if m.error is None]
-    failed = [m for m in metrics if m.error is not None]
+    # A request cancelled at stage teardown never got an answer, so it is incomplete rather than
+    # a failure, which the schema defines as a request that responded with an error.
+    cancelled = [m for m in metrics if is_stage_teardown_cancelled(m.error)]
+    failed = [m for m in metrics if m.error is not None and not is_stage_teardown_cancelled(m.error)]
 
     input_lengths = [float(m.info.input_tokens) for m in successful]
     # Zero is a real output length (immediate EOS, stop sequence) and stays in
@@ -250,6 +254,8 @@ def _build_aggregate(
     requests = AggregateRequests(
         total=len(metrics),
         failures=len(failed),
+        # Unset when nothing was cancelled, the way the native report omits its cancelled block.
+        incomplete=len(cancelled) or None,
         input_length=_statistics(input_lengths, Units.COUNT),
         output_length=_statistics(output_lengths, Units.COUNT),
         request_size=_statistics(
@@ -398,14 +404,13 @@ def _per_request_latencies(
         # rather than folding in a fabricated 0.0.
         ntpot.append((m.end_time - m.start_time) / output_tokens if output_tokens > 0 else None)
 
-        if len(token_times) > 1:
-            ttft.append(token_times[0] - m.start_time)
+        ttft.append(token_times[0] - m.start_time if token_times else None)
+        if any(t != token_times[0] for t in token_times):
             duration = token_times[-1] - token_times[0]
             tpot.append(duration / (output_tokens - 1) if output_tokens > 1 else None)
             for a, b in zip(token_times, token_times[1:], strict=False):
                 itl.append(b - a)
         else:
-            ttft.append(None)
             tpot.append(None)
 
     return request_latency, ttft, tpot, itl, ntpot
@@ -422,7 +427,7 @@ def _resolve_token_times(
     if info.output_token_times:
         return list(info.output_token_times)
 
-    if not (info.response_chunks or info.reasoning_chunks) or tokenizer is None:
+    if not (info.response_chunks or info.reasoning_chunks or info.tool_chunks) or tokenizer is None:
         return []
 
     return retokenize_output_token_times(info, tokenizer)

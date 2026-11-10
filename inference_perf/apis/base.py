@@ -41,9 +41,13 @@ class StreamedResponseMetrics(ResponseMetrics):
     output_token_times: List[float] = []
     # Reasoning-only chunks (delta.reasoning_content / delta.reasoning, or
     # Anthropic thinking deltas). Kept apart from response_chunks/chunk_times,
-    # which stay the content channel alone and give time to first output token.
+    # which stay the content channel alone; TTFO also includes tool output.
     reasoning_chunks: List[str] = []
     reasoning_chunk_times: List[float] = []
+    # Tool-only deltas; content and reasoning mixtures stay in their original channel.
+    tool_chunks: List[str] = []
+    tool_chunk_times: List[float] = []
+    has_tool_calls: bool = False
 
 
 class InferenceInfo(BaseModel):
@@ -98,6 +102,35 @@ class InferenceInfo(BaseModel):
 class ErrorResponseInfo(BaseModel):
     error_type: str
     error_msg: str
+
+
+# Error type of a request the load generator cancelled while it was in flight.
+# This is the stage's deadline, not the request's: the stage ended and the
+# request had still not finished when stage_teardown_grace_seconds ran out.
+# Kept apart from "TimeoutError", which means request_timeout was hit and so
+# describes the server under one fixed limit; how long a request gets before
+# teardown cancels it depends on when in the stage it was sent.
+STAGE_TEARDOWN_CANCELLED_ERROR_TYPE = "StageTeardownCancelled"
+STAGE_TEARDOWN_CANCELLED_ERROR_MSG = (
+    "Cancelled by the load generator: the stage ended and the request was still in flight "
+    "when stage_teardown_grace_seconds ran out. This is the stage's deadline, not request_timeout."
+)
+
+
+def stage_teardown_cancelled_error() -> ErrorResponseInfo:
+    return ErrorResponseInfo(
+        error_type=STAGE_TEARDOWN_CANCELLED_ERROR_TYPE,
+        error_msg=STAGE_TEARDOWN_CANCELLED_ERROR_MSG,
+    )
+
+
+def is_stage_teardown_cancelled(error: Optional[ErrorResponseInfo]) -> bool:
+    """A cancelled request is its own outcome, neither a success nor a failure.
+
+    The server never answered it and never refused it, so every consumer that
+    splits requests into successes and failures keeps it out of both.
+    """
+    return error is not None and error.error_type == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
 
 
 class RequestLifecycleMetric(BaseModel):
