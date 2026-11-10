@@ -149,12 +149,14 @@ def test_resolve_base_prefers_upstream_over_a_stale_origin(
     assert cte.resolve_base(clone) == newer
 
 
-# One block naming two modules and one block naming a single module as a string. Counts 3.
+# A block with ignore_errors on two modules, one with follow_imports on a single module as a string,
+# and one that only sets ignore_missing_imports on two modules. Counts 3: the last block is free.
 def test_counts_mypy_override_modules(cte: ModuleType) -> None:
     pyproject = (
         "[tool.mypy]\nplugins = []\n"
-        '[[tool.mypy.overrides]]\nmodule = ["a.*", "b.*"]\nignore_missing_imports = true\n'
-        '[[tool.mypy.overrides]]\nmodule = "c"\nignore_errors = true\n'
+        '[[tool.mypy.overrides]]\nmodule = ["a.*", "b.*"]\nignore_errors = true\n'
+        '[[tool.mypy.overrides]]\nmodule = "c"\nfollow_imports = "skip"\nignore_missing_imports = true\n'
+        '[[tool.mypy.overrides]]\nmodule = ["d.*", "e.*"]\nignore_missing_imports = true\n'
     )
     assert cte.count_overrides(pyproject) == 3
     assert cte.count_overrides("[project]\nname = 'x'\n") == 0
@@ -163,10 +165,10 @@ def test_counts_mypy_override_modules(cte: ModuleType) -> None:
 # main commits a pyproject.toml with 1 override module, the tree adds a second. override rose 1 -> 2.
 def test_new_mypy_override_rises(cte: ModuleType, repo: Path) -> None:
     pyproject = repo / "pyproject.toml"
-    pyproject.write_text('[[tool.mypy.overrides]]\nmodule = ["a.*"]\nignore_missing_imports = true\n')
+    pyproject.write_text('[[tool.mypy.overrides]]\nmodule = ["a.*"]\nignore_errors = true\n')
     git(repo, "add", ".")
     git(repo, "commit", "-q", "-m", "pyproject")
-    pyproject.write_text('[[tool.mypy.overrides]]\nmodule = ["a.*", "b.*"]\nignore_missing_imports = true\n')
+    pyproject.write_text('[[tool.mypy.overrides]]\nmodule = ["a.*", "b.*"]\nignore_errors = true\n')
     now, was = cte.totals(cte.scan(repo)), cte.totals(cte.scan_ref(repo, "main"))
     assert (was.override, now.override) == (1, 2)
     assert cte.risen_kinds(now, was) == ["override"]

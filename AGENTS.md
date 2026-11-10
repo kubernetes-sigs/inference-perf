@@ -232,7 +232,7 @@ then a module docstring describing what is under test:
 ### Never do
 
 - Never merge a behavior change **without accompanying tests**.
-- Never bypass the tooling — don't disable ruff/mypy rules, and don't add `# type: ignore`, `cast`, `Any` or a `[[tool.mypy.overrides]]` module to get past mypy. Fix the type.
+- Never bypass the tooling — don't disable ruff/mypy rules, and don't add `# type: ignore`, `cast`, `Any` or an `ignore_errors` style `[[tool.mypy.overrides]]` module to get past mypy. Fix the type.
   `pdm run validate` counts all four against `main` and fails when the total of any one rises.
 - Never edit or delete an existing test to make it pass. A test is pinned behavior. Say in the PR which behavior changed and why.
 - Never regenerate a golden without saying which output changed.

@@ -14,8 +14,8 @@
 """Ratchet on the escapes that satisfy `mypy --strict` without fixing the type.
 
 Counts `Any`, `cast(` and `# type: ignore` in every Python file under ROOTS, and
-the modules under `[[tool.mypy.overrides]]` in pyproject.toml, in the working
-tree and on main. Fails when the total of any one rises. Main is
+the modules that a `[[tool.mypy.overrides]]` block in pyproject.toml relaxes, in
+the working tree and on main. Fails when the total of any one rises. Main is
 read through git at check time, the way scripts/check_coverage_regression.py
 reads its baseline, so no count is committed and a moved file costs nothing.
 """
@@ -66,9 +66,12 @@ def count_escapes(source: str) -> Counts:
 
 
 def count_overrides(pyproject: str) -> int:
-    """Modules named under `[[tool.mypy.overrides]]`. Each one relaxes mypy for a whole module."""
+    """Modules under a `[[tool.mypy.overrides]]` block that relaxes checking of the module itself."""
     count = 0
     for block in tomllib.loads(pyproject).get("tool", {}).get("mypy", {}).get("overrides", []):
+        # an untyped dependency has no fix on our side, so a block that only sets this is free
+        if block.keys() <= {"module", "ignore_missing_imports"}:
+            continue
         modules = block.get("module", [])
         count += 1 if isinstance(modules, str) else len(modules)
     return count
