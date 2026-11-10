@@ -39,7 +39,7 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 ## Random variables
 
 > [!IMPORTANT]
-> The table below lists common distributions only. **Any constructor in SymPy's [`sympy.stats`](https://docs.sympy.org/latest/modules/stats.html) module works, about 75 in all, and SymPy's documentation is the reference for the full set and for every parameter.** Call a constructor without SymPy's leading name argument: `Normal(512, 128)`, not `Normal("x", 512, 128)`.
+> The table below lists common distributions only. **Any constructor in SymPy's [`sympy.stats`](https://docs.sympy.org/latest/modules/stats.html) module works, about 75 in all apart from the few listed under "Not supported yet" below, and SymPy's documentation is the reference for the full set and for every parameter.** Call a constructor without SymPy's leading name argument: `Normal(512, 128)`, not `Normal("x", 512, 128)`.
 >
 > Parameters follow SymPy's conventions, which do not always match the usual ones. Check SymPy's docs for any distribution not listed here.
 
@@ -70,7 +70,8 @@ Each occurrence of a constructor is an independent draw, so `Normal(0, 1) + Norm
 Not supported yet:
 
 - Constructors that take a list, such as `DiscreteUniform`: they can't be called from the grammar.
-- `Triangular` and `Weibull`: accepted when the config loads, but they fail when sampled.
+- `Weibull`, `Bernoulli` and `Triangular`: accepted when the config loads, but they fail when sampled. SymPy has no numpy sampler for the first two. `Triangular` works only when its mode equals its upper bound.
+- A `Piecewise` mixture, such as `Piecewise((Uniform(100, 200), Uniform(0, 1) < 0.75), (Uniform(1000, 2000), True))`: it samples correctly, but its bounds can't be proved, so a field that checks a value against a budget rejects it.
 
 ## Conditions
 
