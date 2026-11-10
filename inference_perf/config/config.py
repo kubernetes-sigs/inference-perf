@@ -23,7 +23,7 @@ from inference_perf.config.apis import APIConfig
 from inference_perf.config.circuit_breaker import CircuitBreakerConfig
 from inference_perf.config.client.filestorage import StorageConfig
 from inference_perf.config.client.modelserver import ModelServerClientConfig
-from inference_perf.config.datagen import DataConfig, DataGenType
+from inference_perf.config.datagen import ConversationReplayConfig, DataConfig, DataGenType
 from inference_perf.config.loadgen import (
     ConcurrentLoadStage,
     LoadConfig,
@@ -48,6 +48,57 @@ _SESSION_REPLAY_CONFIG_FIELDS = {
     DataGenType.WekaTraceReplay: "weka_trace_replay",
     DataGenType.SyntheticAgentic: "synthetic_agentic",
 }
+
+
+def _default_conversation_replay_concurrency(config: dict[str, object]) -> dict[str, object]:
+    """Fill an omitted ``concurrency_level`` in from ``num_conversations``.
+
+    Every conversation is one session, so the whole pool is the widest a stage can run
+    and the only size that needs no explaining: "run all of them". ``load`` cannot work
+    that number out itself -- ``num_conversations`` lives under ``data`` -- and a stage
+    field cannot carry a default that depends on a sibling section, so it is resolved
+    here, on the raw input, before the stage models are built.
+
+    Only raw input is rewritten. A validated ``DataConfig`` or ``LoadConfig``, and any
+    dump of one, already carries a ``concurrency_level`` on every stage, so there is
+    nothing left to fill.
+
+    The count is copied across as written and the stage field coerces it, so the stage
+    and ``data`` read every value the same way: a quoted count still sizes the stage, and
+    a count ``data`` rejects is never rounded down into a stage size it would accept.
+
+    Scoped to conversation replay on the concurrent load type, which is the only
+    combination that has a pool to size. Every other path is returned untouched, so
+    ``concurrency_level`` stays required for other data generators.
+    """
+    data_config = config.get("data")
+    load_config = config.get("load")
+    if not isinstance(data_config, Mapping) or not isinstance(load_config, Mapping):
+        return config
+    if data_config.get("type") != DataGenType.ConversationReplay.value:
+        return config
+    if load_config.get("type") != LoadType.CONCURRENT.value:
+        return config
+    stages = load_config.get("stages")
+    if not isinstance(stages, list):
+        return config
+
+    # Missing conversation_replay settings are rejected by
+    # validate_conversation_replay_load, but only after the stages have validated, and a
+    # stage without a concurrency_level would fail first with a generic "field required".
+    # Starting from the field's own default keeps the specific rejection in charge.
+    conversation_config = data_config.get("conversation_replay")
+    num_conversations: object = ConversationReplayConfig().num_conversations
+    if isinstance(conversation_config, Mapping) and conversation_config.get("num_conversations") is not None:
+        num_conversations = conversation_config["num_conversations"]
+
+    defaulted = [
+        {**stage, "concurrency_level": num_conversations}
+        if isinstance(stage, Mapping) and stage.get("concurrency_level") is None
+        else stage
+        for stage in stages
+    ]
+    return {**config, "load": {**load_config, "stages": defaulted}}
 
 
 class Config(StrictBaseModel):
@@ -92,6 +143,13 @@ class Config(StrictBaseModel):
                 f"{', '.join(placeholders)}. Supply the real values in the config file or on the command line, "
                 "or remove these settings."
             )
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_conversation_replay_concurrency(cls, data: object) -> object:
+        if isinstance(data, dict):
+            return _default_conversation_replay_concurrency(data)
         return data
 
     @model_validator(mode="after")
@@ -222,6 +280,12 @@ def read_config(config_file: Optional[str] = None, cli_overrides: Optional[dict[
                 path = merged_cfg["storage"][storage_type]["path"]
                 if path and "{timestamp}" in path:
                     merged_cfg["storage"][storage_type]["path"] = path.replace("{timestamp}", timestamp)
+
+    # A conversation replay stage may omit concurrency_level, but the stages below are
+    # turned into models before Config validates them, and the field is required there.
+    # The helper only rewrites "load", and hands back a copy, so updating with it leaves
+    # the rest of the merged config in place.
+    merged_cfg.update(_default_conversation_replay_concurrency(merged_cfg))
 
     # Handle stage type conversion based on load type
     if "load" in merged_cfg and "stages" in merged_cfg["load"] and merged_cfg["load"]["stages"]:
