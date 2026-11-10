@@ -10,6 +10,7 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 
 | Field | `t` | Random | Rule |
 | --- | --- | --- | --- |
+| [`load.stages[].rate`](./config.md#rate-expressions) (constant, poisson) | yes | no | Nonnegative over the stage and not zero everywhere. |
 | [`load.stages[].stop_condition`](./config.md#stop-conditions) (constant, poisson) | yes | no | A [condition](#conditions). |
 
 ## Grammar

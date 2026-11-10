@@ -234,6 +234,44 @@ load:
 
 **Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
 
+#### Rate Expressions
+
+A constant or Poisson stage's `rate` is a number or an [expression](./expressions.md) over stage time `t`. The stage sends the rate integrated over its window, and reports carry the mean rate. A number schedules exactly as it always has.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: poisson
+  stages:
+  - rate: "Min(5 + t/2, 40)"         # ramp to 40 req/s, then hold
+    stop_condition: "t >= 120"
+  - rate: "10 + 5*sin(2*pi*t/60)"    # one full cycle around 10 req/s
+    duration: 60
+```
+
+| Rate | Window (s) | Requests | Mean req/s |
+| --- | --- | --- | --- |
+| `10` | 60 | 600 | 10.00 |
+| `5 + t/2` | 60 | 1200 | 20.00 |
+| `Min(5 + t/2, 40)` | 120 | 3575 | 29.79 |
+| `10 + 5*sin(2*pi*t/60)` | 60 | 600 | 10.00 |
+| `2 + 18*Heaviside(t - 30)` | 60 | 660 | 11.00 |
+| `Piecewise((2, t < 30), (20, True))` | 60 | 660 | 11.00 |
+| `40*exp(-t/30)` | 90 | 1140 | 12.67 |
+| `Max(0, 20 - t/3)` | 90 | 600 | 6.67 |
+| `2**(t/10)` | 60 | 908 | 15.15 |
+
+The constant load type spreads requests by how much the rate has built up, so they bunch where the rate is high. The Poisson load type draws each second's count from the rate over that second. A Poisson stage can run past its window, since its counts are random; past the window it holds the window's mean rate.
+
+| Rejected rate | Why |
+| --- | --- |
+| `10 - t` | Goes negative during a 60s stage. |
+| `Normal(10, 1)` | Random. A rate must be the same on every run. |
+| `requests/10` | `requests` is not a known symbol. |
+| `0*t` | Zero over the whole stage, so the stage would send nothing. |
+
+Under `load.type: trace_replay` the trace sets when each request is sent, so a rate expression is rejected there.
+
 #### Stop Conditions
 
 A constant or Poisson stage ends after exactly one of `duration` (seconds) or `stop_condition`, a condition over stage time `t`. `duration: N` means `stop_condition: "t >= N"`, and existing configs are unchanged. The condition is solved when the config loads, so the stage ends at an exact time, fractional seconds included. See [Conditions](./expressions.md#conditions) for what a condition may contain and what is rejected.
