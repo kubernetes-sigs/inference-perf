@@ -226,6 +226,22 @@ def test_unmeasured_media_stays_out_of_br_statistics(mixed_requests: list[Reques
     assert multimodal["video"]["filesize"]["mean"] == pytest.approx(130 / 3)
 
 
+# The text request gains a 10-frame video whose resolution was never seen. Expects
+# video pixels still 400..3600 with that video left out, and its frame count kept:
+# frames over 2, 6 and 10 (mean 6).
+def test_video_without_resolution_stays_out_of_br_pixels(mixed_requests: list[RequestLifecycleMetric]) -> None:
+    text = mixed_requests[1]
+    text.info.request_metrics.video = Videos(count=1, instances=[Video(frames=10)])
+
+    video = _aggregate(mixed_requests)["requests"]["multimodal"]["video"]
+
+    assert video["pixels"]["min"] == 400
+    assert video["pixels"]["max"] == 3600
+    assert video["pixels"]["mean"] == pytest.approx(2000)
+    assert video["frames"]["max"] == 10
+    assert video["frames"]["mean"] == pytest.approx(6)
+
+
 # The first request's response also returns an image. Expects no response media in
 # the report yet: v0.2.1 has no field for it and rejects unknown keys, which
 # _aggregate checks by validating the report it builds.

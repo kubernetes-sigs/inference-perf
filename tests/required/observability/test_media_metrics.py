@@ -89,6 +89,20 @@ def test_response_media_counted_and_sized_by_modality() -> None:
     assert _sample(hub, "inference_perf_input_media_total", stage="0", modality="image") is None
 
 
+# One response returns two videos: one by URL with no frame count, then a 48-frame
+# one. Expects both counted and a single frames observation of 48. The unmeasured
+# video comes first because a hook that raises on it never reaches the second.
+def test_video_without_frame_count_is_counted_but_not_observed() -> None:
+    hub = build_metrics(Config())
+    response = UnaryResponseMetrics(video=Videos(count=2, instances=[Video(), Video(frames=48)]))
+
+    hub.observe_request(_request(response=response))
+
+    assert _sample(hub, "inference_perf_output_media_total", stage="0", modality="video") == 2.0
+    assert _sample(hub, "inference_perf_output_video_frames_count", stage="0") == 1.0
+    assert _sample(hub, "inference_perf_output_video_frames_sum", stage="0") == 48.0
+
+
 # One request sends a 3s, 100-byte clip and gets text back. Expects the clip on the
 # input metrics (1 audio, 100 bytes, 3s) and no output media series at all.
 def test_request_media_read_from_the_request_side() -> None:

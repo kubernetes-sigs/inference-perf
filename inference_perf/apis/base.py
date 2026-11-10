@@ -21,6 +21,12 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 
 
+# Undecorated so mutation testing reaches it: mutmut skips the body of the
+# decorated serializer that calls this.
+def _drop_absent_media(dumped: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in dumped.items() if value is not None or key not in ("image", "video", "audio")}
+
+
 class ResponseMetrics(BaseModel):
     output_tokens: int = 0
     # Last-seen `usage` dict reported by the server (streaming: the trailing
@@ -39,11 +45,7 @@ class ResponseMetrics(BaseModel):
         Keeps per_request_lifecycle_metrics.json byte-identical for text runs,
         which would otherwise carry three nulls on every request.
         """
-        dumped: dict[str, Any] = handler(self)
-        for key in ("image", "video", "audio"):
-            if dumped.get(key) is None:
-                dumped.pop(key, None)
-        return dumped
+        return _drop_absent_media(handler(self))
 
 
 class UnaryResponseMetrics(ResponseMetrics):

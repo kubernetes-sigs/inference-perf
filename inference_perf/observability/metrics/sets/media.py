@@ -81,8 +81,10 @@ def _observe_field(side: Side, field: str, modalities: tuple[str, ...]) -> Calla
 
 def _observe_frames(side: Side) -> Callable[[Histogram, RequestLifecycleMetric], None]:
     def observe(histogram: Histogram, metric: RequestLifecycleMetric) -> None:
+        if metric.error is not None:
+            return
         videos = side(metric).get("video")
-        if metric.error is not None or not isinstance(videos, Videos):
+        if not isinstance(videos, Videos):
             return
         for instance in videos.instances:
             if instance.frames is not None:
