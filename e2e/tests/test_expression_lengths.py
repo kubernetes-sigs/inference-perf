@@ -71,15 +71,15 @@ def _config(base_url: str) -> Dict[str, Any]:
 
 
 # Token count of each recorded prompt, e.g. three requests with 41, 77 and 58
-# token prompts give [41, 77, 58]. Special tokens are left out, since the
-# configured length is the length of the text.
+# token prompts give [41, 77, 58]. Counted the way a server counts a prompt,
+# with the tokenizer's leading special token, which is the length the config sets.
 def _prompt_token_counts(requests: List[AbsorbedRequest]) -> List[int]:
     oracle = AutoTokenizer.from_pretrained(MODEL_PATH)
     counts = []
     for request in requests:
         text = request.prompt_text
         assert text is not None, f"request carried no text prompt: {sorted(request.body)}"
-        counts.append(len(oracle.encode(text, add_special_tokens=False)))
+        counts.append(len(oracle.encode(text, add_special_tokens=True)))
     return counts
 
 
