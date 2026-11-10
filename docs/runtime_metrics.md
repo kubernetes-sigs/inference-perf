@@ -29,7 +29,7 @@ Nothing is demoted. A `STABLE` metric that needs a different shape is added unde
 
 ## Queries
 
-The endpoint is up only while the run is, so a scrape interval short relative to the stage length matters more than usual. See [config.md](./config.md#observability) for turning the endpoint on and the Helm chart README for scrape configs. A few starting points, all per stage:
+The endpoint is up while the run is and, after it, for `observability.metrics.linger_seconds` (default 30), so a scraper can collect the final values. Set `linger_seconds` to at least the scrape interval, and keep the scrape interval short relative to the stage length. See [config.md](./config.md#observability) for turning the endpoint on and the Helm chart README for scrape configs. A few starting points, all per stage:
 
 ```promql
 # request throughput, successes and failures together

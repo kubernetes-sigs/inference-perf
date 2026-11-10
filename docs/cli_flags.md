@@ -427,3 +427,4 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--tokenizer.load_timeout` | float | Deadline in seconds for loading the tokenizer, including any download from Hugging Face Hub. Null disables the deadline. |
 | `--circuit_breakers` | JSON | Circuit breakers that stop the run when observed metrics cross configured thresholds. |
 | `--observability.metrics.port` | int | Port the runtime metrics endpoint listens on. Setting it turns the endpoint on. 0 picks an ephemeral port, logged at startup. |
+| `--observability.metrics.linger_seconds` | float | Seconds the runtime metrics endpoint stays up after the run ends, counted from the end of the load, so a scrape can collect the final values. Report generation and saving happen inside this window. Set it to at least the scrape interval. 0 stops the endpoint once the reports are saved. SIGINT or SIGTERM ends the wait. |

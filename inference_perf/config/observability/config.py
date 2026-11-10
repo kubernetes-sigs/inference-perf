@@ -31,6 +31,17 @@ class RuntimeMetricsConfig(StrictBaseModel):
             "0 picks an ephemeral port, logged at startup."
         ),
     )
+    linger_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds the runtime metrics endpoint stays up after the run ends, counted from the end of the load, "
+            "so a scrape can collect the final values. Report generation and saving happen inside this window. "
+            "Set it to at least the scrape interval. 0 stops the endpoint once the reports are saved. "
+            "SIGINT or SIGTERM ends the wait."
+        ),
+    )
 
 
 class ObservabilityConfig(StrictBaseModel):
