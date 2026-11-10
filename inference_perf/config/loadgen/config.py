@@ -125,7 +125,7 @@ class StandardLoadStage(LoadStage):
         """
         source = self.stop_settings.condition
         if self._predicate is None or self._predicate.raw != source:
-            self._predicate = Predicate(source)
+            self._predicate = Predicate(source, name="stop_condition")
         return self._predicate
 
     @property

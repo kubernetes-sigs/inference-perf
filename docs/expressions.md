@@ -99,6 +99,8 @@ A condition may use `+ * /`, powers, `sqrt`, `exp`, `log`, `Min`, `Max`, the fou
 | `Normal(0, 1) >= t` | Random. A condition must be the same on every run. |
 | `requests >= 1000` | `requests` is not a known symbol. |
 
+An error names the comparison or name at fault and, when the condition has more than one clause joined by `|`, the clause it sits in: `Cause: 't < 120' in clause 37 of 50, '((t >= 60) & (t < 120))'`. It quotes at most the first 80 characters of the condition, so the message is the same size for one clause or fifty.
+
 ## Measured terms
 
 A condition can read what the stage measures, so it can become true on a latency or error threshold as well as on time. A measured term is a window function over finished requests, written in PromQL's range syntax: `quantile_over_time(0.99, ttft[30s])` is the p99 time to first token of the requests that finished in the last 30 seconds. Terms are evaluated in-process on every finished request, from each request's timings as received, so a quantile is the exact quantile of those requests rather than a histogram estimate. When a tokenizer is configured the report re-derives `ttft` and `tpot` from the response chunks before it writes them, so those two can differ from the value the window saw.

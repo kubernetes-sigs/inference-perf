@@ -637,40 +637,62 @@ class Predicate:
     Note the grammar quirk: ``&`` and ``|`` bind tighter than a comparison, so
     each comparison must be parenthesised, ``(t >= 60) & (t < 120)``.
 
+    An error names the piece at fault rather than repeating the condition: it
+    quotes at most ``_QUOTE_LIMIT`` characters of it, then the comparison or
+    name that broke the rule and the outermost ``|`` clause that holds it. So
+    the message stays the same size whether the condition has one clause or
+    fifty.
+
     Args:
         raw: The condition as a string.
+        name: What errors call the condition, e.g. the config field it came from.
     """
 
-    def __init__(self, raw: str) -> None:
+    def __init__(self, raw: str, name: str = "Predicate") -> None:
         if not isinstance(raw, str):
-            raise TypeError(f"Predicate accepts str, got {type(raw).__name__}.")
+            raise TypeError(f"{name} accepts str, got {type(raw).__name__}.")
         self.raw = raw
-        # the '=' inside a label selector, completed{status="failure"}, is not an equality
-        if _EQUALITY_SPELLING.search(re.sub(r"\{[^{}]*\}", "", raw)):
-            raise ValueError(_equality_message(raw))
+        self._subject = subject = f"{name} {_quote(raw)}"
+        # the '=' inside a label selector, completed{status="failure"}, is not an equality.
+        # blanked rather than cut, so a match keeps its offset in raw
+        equality = _EQUALITY_SPELLING.search(re.sub(r"\{[^{}]*\}", lambda m: " " * len(m.group()), raw))
+        if equality:
+            at = equality.start()
+            raise ValueError(_equality_message(subject, _where(raw, lambda start, text: start <= at < start + len(text))))
         rewritten, self._terms = extract_terms(raw)
         try:
             expr = _parse_raw("Predicate", rewritten, shown=raw)
         except ValueError as e:
+            where = _where(raw, lambda _start, text: _parse_clause(text) is None)
+            found = f" Found{where}." if where else ""
             if "&" in raw or "|" in raw:
+                # a TypeError here is Python applying '&' or '|' to a bare number, which says nothing to a config author
+                detail = (
+                    "'&' or '|' joins a comparison that has no parentheses"
+                    if isinstance(e.__cause__, TypeError)
+                    else e.__cause__
+                )
                 raise ValueError(
-                    f"{e} Hint: '&' and '|' bind tighter than a comparison, so parenthesise each one: '(t >= 60) & (t < 120)'."
+                    f"Could not parse {subject}: {detail}. Hint: '&' and '|' bind tighter than a comparison, "
+                    f"so parenthesise each one: '(t >= 60) & (t < 120)'.{found}"
                 ) from e
-            raise
+            raise ValueError(f"Could not parse {subject}: {e.__cause__}.") from e
 
         if isinstance(expr, bool) or expr in (sympy.true, sympy.false):
-            raise ValueError(f"Predicate {raw!r} is constant ({expr!r}); a condition must vary with t, e.g. 't >= 60'.")
+            raise ValueError(f"{subject} is constant ({expr!r}); a condition must vary with t, e.g. 't >= 60'.")
         if not (_is_node(expr) and _is_condition(expr)):
-            raise ValueError(f"Predicate {raw!r} is not a condition; use a comparison such as 't >= 60'.")
-        _reject_unknown_functions("Predicate", raw, expr)
+            raise ValueError(f"{subject} is not a condition; use a comparison such as 't >= 60'.")
+        undefined = sorted({f.func.__name__ for f in expr.atoms(AppliedUndef)})
+        if undefined:
+            raise ValueError(f"{subject} uses unknown function(s): {undefined}.{_found(raw, undefined[0])}")
 
         free = expr.free_symbols
         if any(_is_random_symbol(s) for s in free):
-            raise ValueError(f"Predicate {raw!r} contains a random variable; a condition must be the same on every run.")
+            raise ValueError(f"{subject} contains a random variable; a condition must be the same on every run.")
         names = {str(s) for s in free}
         disallowed = names - {"t"} - set(SIGNALS) - set(self._terms)
         if disallowed:
-            raise ValueError(_disallowed_message(raw, disallowed))
+            raise ValueError(_disallowed_message(subject, raw, disallowed))
         # sympy can fold a term away ('t + 0*avg_over_last(ttft, 5)'); a term
         # the compiled condition never reads must not be evaluated either.
         self._terms = {symbol: term for symbol, term in self._terms.items() if symbol in names}
@@ -678,11 +700,11 @@ class Predicate:
         if "t" not in names:
             if self._measured:
                 raise ValueError(
-                    f"Predicate {raw!r} can only hold on measured values; it must also hold on time alone, "
-                    f"e.g. '(t >= 600) | ({raw})'."
+                    f"{subject} can only hold on measured values; it must also hold on time alone, so that it holds "
+                    f"even if they never do. Add a time bound as one more clause: '| (t >= 600)'."
                 )
-            raise ValueError(f"Predicate {raw!r} does not depend on t; a condition must vary with t.")
-        _reject_unprovable_nodes(raw, expr)
+            raise ValueError(f"{subject} does not depend on t; a condition must vary with t.")
+        _reject_unprovable_nodes(subject, raw, expr)
 
         self._expr = expr
         self._symbols = [_T] + [Symbol(name) for name in sorted(self._measured)]
@@ -704,38 +726,40 @@ class Predicate:
         """Solve the condition with its measured comparisons false and require the shape ``[b, oo)`` with ``b > 0``."""
         holding = _holding_set(on_time_alone)
         if holding is None:
-            raise ValueError(f"Predicate {self.raw!r} could not be proved to hold from some time onward.")
+            raise ValueError(f"{self._subject} could not be proved to hold from some time onward.")
         if holding == sympy.S.EmptySet:
             if self._measured:
+                clauses = len(_clauses(self.raw))
+                which = f", and none of its {clauses} clauses does" if clauses > 1 else ""
                 raise ValueError(
-                    f"Predicate {self.raw!r} never holds on time alone; add a time bound so it always holds eventually, "
-                    f"e.g. '({self.raw}) | (t >= 600)'."
+                    f"{self._subject} never holds on time alone: it must hold with every measured comparison false{which}. "
+                    f"Add a time bound as one more clause: '| (t >= 600)'."
                 )
-            raise ValueError(f"Predicate {self.raw!r} never holds for t >= 0.")
+            raise ValueError(f"{self._subject} never holds for t >= 0.")
         if not isinstance(holding, Interval) or holding.sup != oo:
             raise ValueError(
-                f"Predicate {self.raw!r} holds only on {_format_time_set(holding)}; a condition must hold from some time onward "
-                f"without lapsing, e.g. 't >= 60'."
+                f"{self._subject} holds only on {_format_time_set(holding)}; a condition must keep holding once it "
+                f"starts to, as 't >= 60' does.{_cause(self.raw, _lapsing(on_time_alone))}"
             )
         if holding.inf == 0:
             raise ValueError(
-                f"Predicate {self.raw!r} already holds at (or immediately after) t=0; "
-                f"a condition must be false at t=0, e.g. 't >= 60'."
+                f"{self._subject} already holds at (or immediately after) t=0, before anything has run; "
+                f"a condition must be false at t=0, e.g. 't >= 60'.{_cause(self.raw, _holding_at_start(on_time_alone))}"
             )
         boundary = float(holding.inf)
         if not math.isfinite(boundary):
-            raise ValueError(f"Predicate {self.raw!r} holds only from t = {holding.inf}, which is too large for a float.")
+            raise ValueError(f"{self._subject} holds only from t = {holding.inf}, which is too large for a float.")
         return boundary
 
     def _prove_earliest(self, at_the_earliest: SympyNode) -> float:
         """Solve the condition with its measured comparisons true and require the shape ``[b, oo)``, ``b >= 0``."""
         holding = _holding_set(at_the_earliest)
         if holding is None:
-            raise ValueError(f"Predicate {self.raw!r} could not be proved to hold from some time onward.")
+            raise ValueError(f"{self._subject} could not be proved to hold from some time onward.")
         if not isinstance(holding, Interval) or holding.sup != oo:
             raise ValueError(
-                f"Predicate {self.raw!r} holds only on {_format_time_set(holding)} once its measured values hold; "
-                f"a condition must hold from some time onward without lapsing."
+                f"{self._subject} holds only on {_format_time_set(holding)} once its measured values hold; a condition "
+                f"must keep holding once it starts to, as 't >= 60' does.{_cause(self.raw, _lapsing(at_the_earliest))}"
             )
         return float(holding.inf)
 
@@ -833,11 +857,12 @@ def _format_time_set(s: SympySet) -> str:
     return str(s)
 
 
-def _disallowed_message(raw: str, disallowed: set[str]) -> str:
+def _disallowed_message(subject: str, raw: str, disallowed: set[str]) -> str:
     names = sorted(disallowed)
     message = (
-        f"Predicate {raw!r} uses disallowed symbol(s) {names}; permitted: t, the signals {sorted(SIGNALS)}, "
+        f"{subject} uses disallowed symbol(s) {names}; permitted: t, the signals {sorted(SIGNALS)}, "
         f"and window functions such as 'quantile_over_time(0.99, ttft[30s])' or 'avg_over_last(latency, 100)'."
+        f"{_found(raw, names[0])}"
     )
     series = [name for name in names if name in SERIES]
     if series:
@@ -849,32 +874,141 @@ def _disallowed_message(raw: str, disallowed: set[str]) -> str:
     return message
 
 
-def _equality_message(raw: str) -> str:
+def _equality_message(subject: str, where: str) -> str:
     return (
-        f"Predicate {raw!r} uses equality; a condition must be an inequality such as 't >= 60'. "
+        f"{subject} uses equality{where}; a condition must be an inequality such as 't >= 60'. "
         f"Equality holds at a single instant, which a check at discrete instants can miss."
     )
 
 
-def _reject_unprovable_nodes(raw: str, expr: SympyNode) -> None:
+def _reject_unprovable_nodes(subject: str, raw: str, expr: SympyNode) -> None:
     """Reject any node outside ``_PREDICATE_NODES``, naming it."""
     for node in sympy.preorder_traversal(expr):
         if isinstance(node, (sympy.Eq, sympy.Ne)):
-            raise ValueError(_equality_message(raw))
+            # sympy calls these Equality and Unequality; the config spells them Eq and Ne
+            raise ValueError(_equality_message(subject, _where_named(raw, "Eq" if isinstance(node, sympy.Eq) else "Ne")))
         if isinstance(node, sympy.Pow):
             base, exponent = node.args
             # t**2, sqrt(t), 1/t (constant exponent) and 2**t (positive constant base) only.
             if exponent.free_symbols and not (base.is_number and base.is_positive):
-                raise ValueError(
-                    f"Predicate {raw!r} uses {node}; a power needs a constant exponent or a positive constant base."
-                )
+                raise ValueError(f"{subject} uses {node}; a power needs a constant exponent or a positive constant base.")
             continue
         if not isinstance(node, _PREDICATE_NODES):
             name = node.func.__name__
             raise ValueError(
-                f"Predicate {raw!r} uses {name!r}, which is not allowed in a condition; "
-                f"permitted: + - * / **, sqrt, exp, log, Min, Max, and > >= < <= combined with & and |."
+                f"{subject} uses {name!r}, which is not allowed in a condition; "
+                f"permitted: + - * / **, sqrt, exp, log, Min, Max, and > >= < <= combined with & and |. "
+                f"These are the ones a condition can be proved to keep holding with.{_found(raw, name)}"
             )
+
+
+# The most of a condition an error quotes. Past it the message relies on the
+# comparison and clause it names, so its size does not grow with the condition.
+_QUOTE_LIMIT = 80
+
+
+def _quote(raw: str) -> str:
+    """``raw`` in quotes, cut at ``_QUOTE_LIMIT`` characters with its full length noted."""
+    if len(raw) <= _QUOTE_LIMIT:
+        return repr(raw)
+    return f"{raw[:_QUOTE_LIMIT]!r}... ({len(raw)} characters)"
+
+
+def _clauses(raw: str) -> list[tuple[int, str]]:
+    """The pieces of ``raw`` between its outermost ``|``, each with the offset it starts at."""
+    pieces: list[tuple[int, str]] = []
+    depth = start = 0
+    for i, ch in enumerate(raw):
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            pieces.append((start, raw[start:i]))
+            start = i + 1
+    pieces.append((start, raw[start:]))
+    return pieces
+
+
+def _where(raw: str, at_fault: Callable[[int, str], bool]) -> str:
+    """Name the first outermost ``|`` clause ``at_fault`` picks: `` in clause 37 of 50, '(t >= 60) & (t < 120)'``.
+
+    ``at_fault`` gets each clause's offset and text. Empty when the condition
+    is a single clause, where the quoted condition already is the clause, or
+    when no clause is picked.
+    """
+    pieces = _clauses(raw)
+    if len(pieces) < 2:
+        return ""
+    hits = [(n, text.strip()) for n, (start, text) in enumerate(pieces, 1) if at_fault(start, text)]
+    if not hits:
+        return ""
+    n, text = hits[0]
+    more = f" and {len(hits) - 1} more" if len(hits) > 1 else ""
+    return f" in clause {n} of {len(pieces)}, {_quote(text)}{more}"
+
+
+def _mentions(text: str, name: str) -> bool:
+    """Whether ``name`` appears in ``text`` as a whole word."""
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text) is not None
+
+
+def _where_named(raw: str, name: str) -> str:
+    """Name the first clause that mentions ``name``."""
+    return _where(raw, lambda _start, text: _mentions(text, name))
+
+
+def _found(raw: str, name: str) -> str:
+    """A sentence placing ``name`` in its clause, or nothing when there is one clause."""
+    where = _where_named(raw, name)
+    return f" Found{where}." if where else ""
+
+
+def _parse_clause(text: str) -> object:
+    """One clause parsed on its own, or ``None`` when it does not parse."""
+    try:
+        return _parse_raw("Predicate", extract_terms(text)[0])
+    except (ValueError, TypeError):
+        return None
+
+
+def _where_compared(raw: str, comparison: SympyNode) -> str:
+    """Name the first clause that contains ``comparison``."""
+
+    def contains(_start: int, text: str) -> bool:
+        parsed = _parse_clause(text)
+        return _is_node(parsed) and comparison in parsed.atoms(Relational)
+
+    return _where(raw, contains)
+
+
+def _cause(raw: str, comparisons: list[SympyNode]) -> str:
+    """A sentence naming up to three comparisons at fault and the clause each sits in; empty when there are none."""
+    if not comparisons:
+        return ""
+    shown = "; ".join(f"'{c}'{_where_compared(raw, c)}" for c in comparisons[:3])
+    more = f"; and {len(comparisons) - 3} more" if len(comparisons) > 3 else ""
+    return f" Cause: {shown}{more}."
+
+
+def _time_comparisons(expr: SympyNode) -> list[tuple[SympyNode, SympySet]]:
+    """Each comparison in a condition over ``t`` alone with the times it holds on, skipping any that never holds."""
+    solved = [(c, _holding_set(c)) for c in sorted(expr.atoms(Relational), key=str)]
+    return [(c, s) for c, s in solved if s is not None and s != sympy.S.EmptySet]
+
+
+def _lapsing(expr: SympyNode) -> list[SympyNode]:
+    """The comparisons that stop holding as ``t`` grows, e.g. ``t < 120``.
+
+    ``&`` and ``|`` of comparisons that each keep holding keep holding, so a
+    condition that lapses always has one of these in it.
+    """
+    return [c for c, s in _time_comparisons(expr) if not (isinstance(s, Interval) and s.sup == oo)]
+
+
+def _holding_at_start(expr: SympyNode) -> list[SympyNode]:
+    """The comparisons that already hold at ``t = 0``, e.g. ``t >= 0``."""
+    return [c for c, s in _time_comparisons(expr) if s.inf == sympy.S.Zero]
 
 
 def _holding_set(expr: SympyNode) -> Optional[SympySet]:

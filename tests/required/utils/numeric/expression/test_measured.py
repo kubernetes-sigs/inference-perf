@@ -165,7 +165,7 @@ class TestParsing:
     # A parse error names the condition as written, '(avg_over_last(ttft, 5) > 2) |', not the '_term0' placeholder.
     def test_parse_error_shows_the_source_text(self) -> None:
         with pytest.raises(
-            ValueError, match=r"Could not parse predicate '\(t >= 600\) \| \(avg_over_last\(ttft, 5\) > 2\) \|'"
+            ValueError, match=r"Could not parse Predicate '\(t >= 600\) \| \(avg_over_last\(ttft, 5\) > 2\) \|'"
         ):
             Predicate("(t >= 600) | (avg_over_last(ttft, 5) > 2) |")
 
