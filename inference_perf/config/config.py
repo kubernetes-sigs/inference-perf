@@ -210,6 +210,14 @@ def read_config(config_file: Optional[str] = None, cli_overrides: Optional[dict[
     if cli_overrides:
         merged_cfg = deep_merge(merged_cfg, cli_overrides)
 
+    # The defaults merged in above make load.type look set on every run, and a
+    # request_interval stage is only valid when the user left it out. Drop the
+    # merged-in default for those stages so the check sees what the user wrote.
+    user_load_keys = {**(cfg.get("load") or {}), **((cli_overrides or {}).get("load") or {})}
+    merged_stages = merged_cfg.get("load", {}).get("stages") or []
+    if "type" not in user_load_keys and any(isinstance(s, dict) and "request_interval" in s for s in merged_stages):
+        merged_cfg["load"].pop("type", None)
+
     # Handle timestamp substitution in storage paths
     if "storage" in merged_cfg and merged_cfg["storage"]:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")

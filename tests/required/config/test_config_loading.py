@@ -386,3 +386,45 @@ def test_read_config_stop_condition_object_form() -> None:
         assert stage.effective_duration == 300.0
     finally:
         os.remove(tmp_path)
+
+
+# Writes a config dict to a temporary YAML file and loads it through read_config, the path the CLI takes.
+def _read_config_from(config_content: dict[str, object]) -> Config:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+    try:
+        return read_config(tmp_path)
+    finally:
+        os.remove(tmp_path)
+
+
+# A YAML file with request_interval 0.1 for 3s and no load.type loads through read_config: the defaults
+# read_config merges in do not count as the user setting load.type. The stage sends 30 requests.
+def test_read_config_request_interval_stage_without_load_type() -> None:
+    config = _read_config_from({"data": {"type": "mock"}, "load": {"stages": [{"request_interval": 0.1, "duration": 3}]}})
+
+    stage = config.load.stages[0]
+    assert isinstance(stage, StandardLoadStage)
+    assert stage.request_interval == 0.1
+    assert stage.request_schedule.expected_requests == 30
+
+
+# The same file with load.type: constant written out is still rejected through read_config, naming load.type.
+def test_read_config_request_interval_stage_rejects_a_written_load_type() -> None:
+    with pytest.raises(ValueError, match="load.type"):
+        _read_config_from(
+            {"data": {"type": "mock"}, "load": {"type": "constant", "stages": [{"request_interval": 0.1, "duration": 3}]}}
+        )
+
+
+# load.type passed as a CLI override counts as written too: request_interval with --load.type poisson is rejected.
+def test_read_config_request_interval_stage_rejects_a_cli_load_type() -> None:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump({"data": {"type": "mock"}, "load": {"stages": [{"request_interval": 0.1, "duration": 3}]}}, tmp)
+        tmp_path = tmp.name
+    try:
+        with pytest.raises(ValueError, match="load.type"):
+            read_config(tmp_path, {"load": {"type": "poisson"}})
+    finally:
+        os.remove(tmp_path)
