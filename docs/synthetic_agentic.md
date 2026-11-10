@@ -106,11 +106,27 @@ turn the agent runs a *tool loop* (call a tool, read the result, repeat) then an
 | `max_model_len` | Fail-fast ceiling: reject a config whose worst-case peak request (inputs + output) would exceed the model's context window, instead of 400-ing mid-run. | off |
 | `seed` | Base seed for deterministic per-session generation. | 42 |
 
-Every distribution knob also accepts an expression string, such as
-`input_tokens_per_turn: "Min(LogNormal(7.5, 0.4), 6000)"` or `user_think_time_sec: "Uniform(5, 15)"`.
-Counts are rounded to whole numbers; `tool_call_latency_sec` and `user_think_time_sec` keep fractional
-seconds. With `max_model_len` set, each knob in the peak-request estimate needs a provable upper bound,
-so cap an unbounded expression with `Min(...)`.
+Every distribution knob also accepts an [expression](./expressions.md) string. Counts are rounded
+to whole numbers; `tool_call_latency_sec` and `user_think_time_sec` keep fractional seconds. With
+`max_model_len` set, each knob in the peak-request estimate needs a finite upper bound (see
+[Value ranges](./expressions.md#value-ranges)), so cap an unbounded expression with `Min(...)`.
+
+<!-- checked-example -->
+```yaml
+data:
+  type: synthetic_agentic
+  synthetic_agentic:
+    num_sessions: 100
+    fanout_probability: 0.0
+    theme_mix: {generic: 1.0}
+    turns_per_session: "Min(Poisson(3), 8)"
+    tool_loop_depth: "Min(Poisson(2), 4)"
+    input_tokens_per_turn: "Min(LogNormal(7.5, 0.4), 6000)"
+    output_tokens_per_turn: "150"
+    tool_call_latency_sec: "Uniform(0.1, 0.4)"
+    user_think_time_sec: "Uniform(5, 15)"
+    max_model_len: 131072
+```
 
 ## Examples
 

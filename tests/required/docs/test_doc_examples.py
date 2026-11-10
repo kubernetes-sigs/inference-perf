@@ -39,6 +39,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from inference_perf.config import DataConfig, LoadConfig
+from inference_perf.config.datagen.multimodal import ImageDatagenConfig
 from inference_perf.utils.numeric.expression import DISTRIBUTIONS, SERIES, SIGNALS, Expression, Predicate
 from inference_perf.utils.numeric.expression.distributions import DOCS_HEADER, docs_rows
 from inference_perf.utils.numeric.expression.measured import AGGREGATES, WINDOWS
@@ -165,6 +166,7 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Window", "Selects"): _check_window,
     ("Rejected expression", "Why"): _rejects(Expression),
     ("Rejected condition", "Why"): _rejects(Predicate),
+    ("Rejected insertion_point", "Why"): _rejects(lambda raw: ImageDatagenConfig(insertion_point=raw)),
 }
 
 MODELS: Dict[str, Type[BaseModel]] = {"load": LoadConfig, "data": DataConfig}
