@@ -394,3 +394,9 @@ def test_trace_replay_rejects_object_form() -> None:
             type=LoadType.TRACE_REPLAY,
             stages=[StandardLoadStage(rate=1, stop_condition={"condition": "(t >= 60) | (errors >= 1)"})],
         )
+
+
+# A stage's bad stop_condition is reported under the field's name: "stop_condition 't < 60' holds only on [0, 60);".
+def test_standard_load_stage_stop_condition_error_names_the_field() -> None:
+    with pytest.raises(ValidationError, match=r"stop_condition 't < 60' holds only on \[0, 60\);"):
+        StandardLoadStage(rate=10, stop_condition="t < 60")
