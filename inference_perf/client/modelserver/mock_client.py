@@ -25,6 +25,7 @@ from inference_perf.apis import (
 from inference_perf.payloads import RequestMetrics, Text
 from .base import ModelServerClient
 from .metrics import BaseMetrics
+from inference_perf.apis.base import stage_teardown_cancelled_error
 import asyncio
 import time
 import logging
@@ -88,6 +89,24 @@ class MockModelServerClient(ModelServerClient):
                         scheduled_time=scheduled_time,
                     )
                 )
+        except asyncio.CancelledError:
+            # Cancelled at stage teardown while in flight: record it, as the real
+            # client does, then let the cancellation through.
+            self.metrics_collector.record_metric(
+                RequestLifecycleMetric(
+                    stage_id=stage_id,
+                    request_data="",
+                    info=InferenceInfo(
+                        request_metrics=RequestMetrics(text=Text(input_tokens=0)),
+                        lora_adapter=lora_adapter,
+                    ),
+                    error=stage_teardown_cancelled_error(),
+                    start_time=start,
+                    end_time=time.perf_counter(),
+                    scheduled_time=scheduled_time,
+                )
+            )
+            raise
         except asyncio.exceptions.TimeoutError as e:
             logger.debug("Request timedout after %f seconds", self.timeout)
             self.metrics_collector.record_metric(

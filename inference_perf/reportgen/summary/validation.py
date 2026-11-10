@@ -58,18 +58,24 @@ def structure_findings(filename: str, contents: Any, check: str) -> List[Finding
 
 
 def count_findings(filename: str, contents: Any, check: str) -> List[Finding]:
-    """successes.count + failures.count must equal load_summary.count."""
+    """successes.count + failures.count + cancelled.count must equal load_summary.count."""
     total = _get(contents, "load_summary", "count")
     successes = _get(contents, "successes", "count")
     failures = _get(contents, "failures", "count")
     if not (is_number(total) and is_number(successes) and is_number(failures)):
         return [_error(check, filename, "missing or non-numeric request counts")]
-    if successes + failures != total:
+    # The cancelled block is omitted when nothing was cancelled, so its absence means zero.
+    has_cancelled = isinstance(_get(contents, "cancelled"), dict)
+    cancelled = _get(contents, "cancelled", "count") if has_cancelled else 0
+    if not is_number(cancelled):
+        return [_error(check, filename, "non-numeric cancelled.count")]
+    if successes + failures + cancelled != total:
+        cancelled_term = f" + cancelled ({cancelled})" if has_cancelled else ""
         return [
             _error(
                 check,
                 filename,
-                f"request counts do not reconcile: successes ({successes}) + failures ({failures}) "
+                f"request counts do not reconcile: successes ({successes}) + failures ({failures}){cancelled_term} "
                 f"!= load_summary.count ({total})",
             )
         ]

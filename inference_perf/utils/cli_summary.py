@@ -653,6 +653,7 @@ def _build_error_table(
     failures_by_stage: Dict[int, Dict[str, Any]],
     substitutions_by_stage: Dict[int, int],
     retries_by_stage: Optional[Dict[int, Dict[str, Any]]] = None,
+    cancelled_by_stage: Optional[Dict[int, int]] = None,
     title: str = "Request Error Summary",
     successes_label: str = "Successes",
 ) -> Table:
@@ -661,6 +662,8 @@ def _build_error_table(
     has_substitutions = any(substitutions_by_stage.get(s, 0) > 0 for s in sorted_stages)
     retries_by_stage = retries_by_stage or {}
     has_retries = any(retries_by_stage.get(s) for s in sorted_stages)
+    cancelled_by_stage = cancelled_by_stage or {}
+    has_cancelled = any(cancelled_by_stage.get(s, 0) > 0 for s in sorted_stages)
     table = Table(title=f"[bold magenta]{title}[/bold magenta]", show_header=True, header_style="bold cyan")
     table.add_column("Stage", justify="right")
     table.add_column(successes_label, justify="right")
@@ -670,6 +673,10 @@ def _build_error_table(
         # Retries are not an error label: they never go through build_error_counts,
         # so they stay out of failures.count and out of the red error columns.
         table.add_column("Retried (recovered)", justify="right")
+    if has_cancelled:
+        # Cancelled at teardown is an outcome, not an error label: it stays out of
+        # failures.count, so it gets its own column rather than a red one.
+        table.add_column("Cancelled at Teardown", justify="right")
     for label in labels:
         table.add_column(label, justify="right")
 
@@ -688,6 +695,10 @@ def _build_error_table(
             # were spent and every one of them still failed.
             color = "green" if recovered else ("yellow" if retried else "green")
             row.append(f"[{color}]{retried} ({recovered})[/]")
+        if has_cancelled:
+            cancelled = cancelled_by_stage.get(stage_id, 0)
+            color = "yellow" if cancelled > 0 else "green"
+            row.append(f"[{color}]{cancelled}[/]")
         by_label = failures_by_stage.get(stage_id, {})
         for label in labels:
             entry = by_label.get(label)
@@ -709,6 +720,7 @@ def print_error_summary_table(reports: List[ReportFile]) -> None:
     failures_by_stage: Dict[int, Dict[str, Any]] = {}
     substitutions_by_stage: Dict[int, int] = {}
     retries_by_stage: Dict[int, Dict[str, Any]] = {}
+    cancelled_by_stage: Dict[int, int] = {}
     session_successes_by_stage: Dict[int, int] = {}
     session_failures_by_stage: Dict[int, Dict[str, Any]] = {}
 
@@ -723,6 +735,9 @@ def print_error_summary_table(reports: List[ReportFile]) -> None:
             retries = report.contents.get("retries")
             if isinstance(retries, dict):
                 retries_by_stage[stage_id] = retries
+            cancelled = report.contents.get("cancelled")
+            if isinstance(cancelled, dict):
+                cancelled_by_stage[stage_id] = cancelled.get("count", 0)
             continue
         session_stage_id = extract_session_stage_id(report.name)
         if session_stage_id is not None:
@@ -739,7 +754,14 @@ def print_error_summary_table(reports: List[ReportFile]) -> None:
     if successes_by_stage or failures_by_stage:
         sorted_stages = sorted(set(successes_by_stage) | set(failures_by_stage))
         console.print(
-            _build_error_table(sorted_stages, successes_by_stage, failures_by_stage, substitutions_by_stage, retries_by_stage)
+            _build_error_table(
+                sorted_stages,
+                successes_by_stage,
+                failures_by_stage,
+                substitutions_by_stage,
+                retries_by_stage,
+                cancelled_by_stage,
+            )
         )
 
     # Only worth a table when a session actually failed; a clean replay run would

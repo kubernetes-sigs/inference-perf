@@ -159,6 +159,14 @@ The following GenAI semantic convention attributes are captured:
 - `llm.is_streaming`: Whether the request is streaming
 - `llm.usage.total_tokens`: Total tokens (input + output)
 
+### Span Status
+- Success: `OK`.
+- Failure: `ERROR`, with the error text as the status description and in `error.message`.
+- Cancelled at stage teardown: no status is set and there is no `error.message`. The span carries
+  `inference_perf.request.cancelled` = `true` instead. The report counts these requests under `cancelled`, as neither a
+  success nor a failure. See
+  [`stage_teardown_grace_seconds`](./otel_trace_replay.md#stage-timing-max_stage_duration-and-stage_teardown_grace_seconds).
+
 ## Architecture
 
 The OTEL instrumentation is implemented in `inference_perf/client/modelserver/otel_instrumentation.py` and automatically integrated into all model server clients:

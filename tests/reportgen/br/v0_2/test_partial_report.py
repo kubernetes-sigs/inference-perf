@@ -24,11 +24,13 @@ import time
 from typing import Any, Dict
 
 from inference_perf.apis import (
+    ErrorResponseInfo,
     InferenceInfo,
     RequestLifecycleMetric,
     SessionLifecycleMetric,
     StreamedResponseMetrics,
 )
+from inference_perf.apis.base import stage_teardown_cancelled_error
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_experiment_eid, generate_run_uid
 from inference_perf.reportgen.br.v0_2.schema import VERSION
@@ -224,6 +226,40 @@ def test_partial_report_deep_merges_cleanly_with_other_producer() -> None:
     assert "start" in merged["run"]["time"]
     assert merged["scenario"]["stack"][0]["name"] == "vllm"
     assert "request_performance" in merged["results"]
+
+
+# Three requests: one success, one HTTP 500, one cancelled at stage teardown. Expects
+# requests.total=3, failures=1 and incomplete=1, since the cancel never got an answer.
+def test_partial_counts_a_teardown_cancel_as_incomplete_not_failed() -> None:
+    now = time.time()
+    succeeded = _metric(now, now + 0.1)
+    failed = _metric(now + 0.2, now + 0.3).model_copy(
+        update={"error": ErrorResponseInfo(error_type="HTTP Error 500", error_msg="boom")}
+    )
+    cancelled = _metric(now + 0.4, now + 0.5).model_copy(update={"error": stage_teardown_cancelled_error()})
+
+    partial = build_partial_report(
+        [succeeded, failed, cancelled], tokenizer=None, run_uid="uid", stage_start=now, stage_end=now + 1.0
+    )
+
+    requests = partial["results"]["request_performance"]["aggregate"]["requests"]
+    assert (requests["total"], requests["failures"], requests["incomplete"]) == (3, 1, 1)
+
+
+# One success and one HTTP 500, nothing cancelled. Expects no requests.incomplete key, so
+# a partial from a run without cancels looks the same as before cancels were counted.
+def test_partial_omits_incomplete_when_nothing_was_cancelled() -> None:
+    now = time.time()
+    succeeded = _metric(now, now + 0.1)
+    failed = _metric(now + 0.2, now + 0.3).model_copy(
+        update={"error": ErrorResponseInfo(error_type="HTTP Error 500", error_msg="boom")}
+    )
+
+    partial = build_partial_report([succeeded, failed], tokenizer=None, run_uid="uid", stage_start=now, stage_end=now + 1.0)
+
+    requests = partial["results"]["request_performance"]["aggregate"]["requests"]
+    assert requests["failures"] == 1
+    assert "incomplete" not in requests
 
 
 def _session_metric(session_id: str, start: float, duration: float = 1.0) -> SessionLifecycleMetric:
