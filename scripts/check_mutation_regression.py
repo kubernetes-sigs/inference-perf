@@ -111,10 +111,12 @@ DOC_LINE = f"What each failure means and how to pass: {DOC_URL}"
 # hits in the pytest process, and coverage in a child starts from the config file with the empty
 # context that marks import time. This pytest plugin, loaded into every test run, carries both back
 # to the test that started the child. It is written outside the tree, so a change cannot edit it.
-# It also caps how much memory one mutant's run may take, see MUTANT_MEMORY_HEADROOM.
+# It also caps how much memory one mutant's run may take, see MUTANT_MEMORY_HEADROOM, and ends the
+# processes a mutant's tests fork when that run ends.
 CHILD_PLUGIN = "mutation_child_hits"
 CHILD_PLUGIN_SOURCE = '''"""Carry what a forked child does back to the test that started it."""
 
+import ctypes
 import os
 import resource
 import signal
@@ -126,10 +128,13 @@ HITS_DIR = Path(os.environ.get("MUTATION_HITS_DIR", "."))
 MEMORY_HEADROOM = int(os.environ.get("MUTATION_MEMORY_HEADROOM", "0"))
 # mutmut's exit code for a timeout
 TIMEOUT_EXIT = 36
+# prctl option: signal this process when its parent exits
+PR_SET_PDEATHSIG = 1
 _current = None
 _count = 0
 _registered = False
 _timer_armed = False
+_forked_from = None
 
 
 def pytest_configure(config):
@@ -137,7 +142,7 @@ def pytest_configure(config):
     # pytest.main can run more than once in a process, and a forked child inherits the handler
     if not _registered:
         _registered = True
-        os.register_at_fork(after_in_child=_in_child)
+        os.register_at_fork(before=_note_parent, after_in_child=_in_child)
     _cap_memory()
 
 
@@ -193,7 +198,28 @@ def pytest_runtest_setup(item):
     _current = HITS_DIR / f"{os.getpid()}-{_count}.hits"
 
 
+def _note_parent():
+    global _forked_from
+    _forked_from = os.getpid()
+
+
+def _die_with_parent():
+    # mutmut ends a mutant's run with os._exit or a kill. Both skip the exit hook that stops daemon
+    # processes, so a Worker the test left waiting would outlive the run and keep its memory.
+    if "__mutmut_" not in os.environ.get("MUTANT_UNDER_TEST", ""):
+        return
+    try:
+        ctypes.CDLL(None).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    except (OSError, AttributeError):
+        # no prctl off Linux
+        return
+    # a parent that left before the call above never sends the signal
+    if os.getppid() != _forked_from:
+        os._exit(1)
+
+
 def _in_child():
+    _die_with_parent()
     # only mutmut's stats run records hits. A mutant run reaches the child through the environment
     if os.environ.get("MUTANT_UNDER_TEST") != "stats" or _current is None:
         return

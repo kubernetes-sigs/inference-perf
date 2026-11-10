@@ -49,6 +49,8 @@ Two errors stop the run before a verdict. **`The base branch ... fails its own u
 
 **Each mutant's run may allocate 2 GiB on top of what it inherits from mutmut's fork server.** A mutant that removes a loop's exit can allocate faster than mutmut's timeout fires. Under a test that patches `sleep` with an `AsyncMock`, every iteration is recorded, and four such mutants at once took the 16 GB runner down with no summary (#941). Past the headroom the run exits as a timeout, which counts as caught, the verdict mutmut's own timer would have reached. A hard limit 1 GiB higher covers processes the tests fork. A test that legitimately needs more than 2 GiB would time out every mutant it covers the same way, so keep unit tests well under it.
 
+**Processes a mutant's tests fork end with that mutant's run.** mutmut ends a run with `os._exit` or a kill, which skips the exit hook that stops daemon processes. A test that starts Workers through `LoadGenerator.mp_run` would leave them waiting once per mutant, each one small enough to stay under the cap, until the runner ran out of memory (#946). On Linux every process forked during a mutant's run is killed when its parent exits. The stats run and the clean run are left alone.
+
 ## The weekly run
 
 `pdm run test:mutation` mutates the whole package against the full suite and prints survivors per module. It takes hours and is the input for a scheduled run and a burn-down, neither of which exists yet (#872).

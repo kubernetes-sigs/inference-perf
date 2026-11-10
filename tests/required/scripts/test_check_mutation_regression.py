@@ -16,6 +16,7 @@
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -1481,6 +1482,62 @@ def test_child_plugin_carries_child_hits_to_the_test(cmr: Any, tmp_path: Path, m
     assert pytest_with_plugin(cmr, project, ["tests/test_fork.py"], {"MUTANT_UNDER_TEST": "stats"}) == 0
     assert list((tmp_path / "harness" / "hits" / "project").iterdir()) == []
     assert pytest_with_plugin(cmr, project, ["tests/test_fork.py"], {}) == 1
+
+
+# Writes a project whose one test forks a process that sleeps 60 s, records its pid in child.pid and
+# then leaves through os._exit(1), the way mutmut ends a mutant's run. The process closes what it
+# inherited first, so it does not hold pytest's output pipes open.
+def stranded_child_project(tmp_path: Path) -> Path:
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    (project / "tests" / "test_strand.py").write_text(
+        "import multiprocessing as mp\n"
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n\n\n"
+        "def wait():\n"
+        "    os.closerange(0, 256)\n"
+        "    time.sleep(60)\n\n\n"
+        "def test_exits_with_a_child_running():\n"
+        "    p = mp.get_context('fork').Process(target=wait, daemon=True)\n"
+        "    p.start()\n"
+        "    Path('child.pid').write_text(str(p.pid))\n"
+        "    os._exit(1)\n"
+    )
+    return project
+
+
+# True once `pid` is gone or a zombie, checked every 0.1 s for up to `seconds`.
+def process_ended(pid: int, seconds: float) -> bool:
+    stat = Path(f"/proc/{pid}/stat")
+    for _ in range(int(seconds * 10)):
+        if not stat.exists() or stat.read_text().rpartition(")")[2].split()[0] == "Z":
+            return True
+        time.sleep(0.1)
+    return False
+
+
+# With mutant inference_perf.m.x_f__mutmut_1 active, the sleeping process the test forked is gone
+# within 5 s of the run's os._exit(1). Under mutmut's stats run the same process is still alive 0.5 s on.
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="prctl and /proc are Linux only")
+def test_child_plugin_ends_what_a_mutants_test_forked(
+    cmr: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    project = stranded_child_project(tmp_path)
+
+    assert (
+        pytest_with_plugin(cmr, project, ["tests/test_strand.py"], {"MUTANT_UNDER_TEST": "inference_perf.m.x_f__mutmut_1"})
+        == 1
+    )
+    assert process_ended(int((project / "child.pid").read_text()), 5)
+
+    assert pytest_with_plugin(cmr, project, ["tests/test_strand.py"], {"MUTANT_UNDER_TEST": "stats"}) == 1
+    survivor = int((project / "child.pid").read_text())
+    try:
+        assert not process_ended(survivor, 0.5)
+    finally:
+        os.kill(survivor, signal.SIGKILL)
 
 
 # Writes a project whose one test allocates 1 GiB, more than the 128 MiB headroom the cap tests set.
