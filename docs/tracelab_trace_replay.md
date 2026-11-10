@@ -10,13 +10,17 @@ Dataset + paper: https://tracelab.cs.washington.edu / https://arxiv.org/abs/2606
 
 > Note: the public TraceLab trace is sanitized — raw prompts, completions, and tool payloads are removed.
 > Each round's prompt is reconstructed as a single user message holding the whole prompt: the leading
-> `prefix_tokens` of the previous round's text are reused and the rest is fresh synthetic text, sized so
+> `prefix_tokens` of the previous round's prompt are reused and the rest is fresh synthetic text, sized so
 > the message tokenizes to exactly `input_tokens_total` (cache misses share nothing; compacting rounds
-> shrink). Expected outputs are sized to the recorded `output_tokens`. Inter-round spacing comes from
-> `timing_events` timestamps when present, else the round's tool latency.
+> shrink). Expected outputs are sized to the recorded `output_tokens`, and a round that recorded zero
+> output tokens falls back to `default_max_tokens`. Inter-round spacing comes from `timing_events`
+> timestamps when present, else the round's tool latency.
 >
 > KV-cache profile: every prompt is the offline-built one, so a server with prefix caching can reuse the
-> leading `prefix_tokens` of the previous round when that text is unchanged. A round with
+> leading `prefix_tokens` of the previous round when that text is unchanged. Prompt reuse is tracked in
+> token space (the previous round's token ids are kept, not re-tokenized from text) and the shared run is
+> decoded without special tokens, so a BOS-prepending tokenizer (gemma, Llama 3, Mistral) cannot shift every
+> later token by one position per round and zero out prefix-cache block hits. A round with
 > `prefix_tokens = 0` (cache miss) shares nothing and reprocesses the whole prompt, and a compacting
 > round truncates the shared prefix so reuse stops at the divergence point. Live model outputs are never
 > fed back into later prompts: unlike OTel/Weka replay, a round's response does not change its
@@ -24,28 +28,54 @@ Dataset + paper: https://tracelab.cs.washington.edu / https://arxiv.org/abs/2606
 >
 > Tokenizer: reconstruction uses the run's configured `tokenizer`, so prompt sizes are measured with
 > the same tokenizer the benchmark runs against — point it at the target model's tokenizer for
-> faithful prefill sizes.
+> faithful prefill sizes. Prompt text comes from `data.corpus_file_path` (Shakespeare by default); a corpus
+> smaller than the prompt is repeated as many times as needed, so long TraceLab rounds are never
+> under-sized.
 
 ---
 
 ## 🏗️ How it Works
 
-1. **Trace Load**: rows are loaded from local TraceLab JSONL files (`.json`, `.jsonl`, `.jsonl.gz`) or a
-   Hugging Face dataset (e.g. `UW-SyFI/TraceLab`), grouped by `session_id`, and ordered by `round_index`.
+1. **Trace Load**: rows are loaded from local TraceLab JSONL files (`.json`, `.jsonl`, `.jsonl.gz`,
+   `.json.gz`; stems may contain dots, e.g. `tracelab_v0.0.2.jsonl`) or a Hugging Face dataset (e.g.
+   `UW-SyFI/TraceLab`), grouped by `session_id`, and ordered by `round_index`.
    For Hugging Face, the `rounds` table is joined with the `tool_calls` and `timing_events` tables on
-   `round_pk`. `num_dataset_entries` caps sessions (not rows) for every source, and reading stops once
-   that many sessions pass the filter, so a small benchmark does not load the full corpus. Only the
-   `tool_calls` and `timing_events` rows belonging to kept sessions are indexed.
+   `round_pk`. Tables are **streamed** by default, so a small run never downloads and Arrow-builds the
+   whole corpus (~665k rounds, ~744k tool calls, ~2.7M timing events) before the first row; set
+   `hf_dataset_path: {path: "UW-SyFI/TraceLab", streaming: false}` for full local caching.
+   `num_dataset_entries` caps sessions (not rows) for every source, and reading stops once that many
+   sessions pass the filter. Only the `tool_calls` and `timing_events` rows belonging to kept sessions are
+   indexed.
+
+   Rows of one session must be **contiguous** in the source (the early stop depends on it). A `session_id`
+   that reappears after another session is a hard error instead of silently replacing the rounds already
+   read — sort the file by `session_id` or export one file per session.
 2. **Graph Compilation**: each round becomes one LLM call in a linear session chain. The call's input is
    a single synthetic user message reconstructed from the recorded token accounting; round predecessors
-   are linked only for ordering and timing. Because that message is not a predecessor's assistant
-   output, replay never substitutes live model output into a later prompt.
+   are linked only for ordering and timing, using a linear O(n) predecessor finder (the generic
+   text-matching finder is O(n²) and can never match here, since prompts are user messages). Because that
+   message is not a predecessor's assistant output, replay never substitutes live model output into a
+   later prompt.
+   Rounds are ordered by submission timestamp (tie-breaking on `round_index`, then `round_id`) when the
+   trace carries timestamps, so duplicate `(session_id, round_index)` rows and rows whose index disagrees
+   with their timestamps still replay in recorded order.
 3. **Session-based Execution**: a thread pool runs sessions concurrently. Within each session, events execute
    as soon as their predecessors complete.
-4. **Think-Time Simulation**: the gap between the previous round's last `timing_events` timestamp and
-   this round's first is replayed as think time (falling back to the previous round's tool latency when
-   timestamps are absent), capped by `trace_idle_gap_cap_seconds`. Setting `ignore_trace_delays: true`
-   overrides the cap: every inter-round gap becomes zero and rounds run back-to-back.
+4. **Think-Time Simulation**: a round is *submitted* when its last input event arrives (`user_message`, or
+   the last `tool_result` of several parallel tool calls) and *completes* at its last model-output event
+   (`reasoning`, `text`, `tool_call`). `usage_report` (token_count) rows are written after the tool ran, so
+   they are excluded from both bounds. The gap between the previous round's completion and this round's
+   submission is replayed as think time. When timestamps are absent it falls back to the previous round's
+   tool wall time, merging overlapping `[emitted_at, result_at]` intervals so concurrent tools are not
+   over-counted. Setting `ignore_trace_delays: true` overrides the cap: every inter-round gap becomes zero
+   and rounds run back-to-back.
+
+   `trace_idle_gap_cap_seconds` (default 60s) caps each gap. Because the runtime clamps every wait to
+   `max_wait_ms` (inherited default 15s), an unset `max_wait_ms` is raised to the cap; an explicit
+   `max_wait_ms` is respected as-is. Set `trace_idle_gap_cap_seconds: null` (or `<= 0`) to replay recorded
+   pauses verbatim — required for KV-cache TTL/eviction benchmarks over multi-minute human think time, where
+   the runtime clamp is lifted instead of reinterpreting `max_wait_ms: 0` (which other replay types read as
+   "no waiting at all").
 
 ---
 
@@ -76,7 +106,8 @@ data:
     trace_files:
       - ./traces/tracelab_round_trace.jsonl
     # trace_directory: ./traces/tracelab/
-    # hf_dataset_path: "UW-SyFI/TraceLab"
+    # hf_dataset_path: "UW-SyFI/TraceLab" # streamed by default
+    # hf_dataset_path: {path: "UW-SyFI/TraceLab", streaming: false} # full local cache
     # num_dataset_entries: 100 # Max sessions, applied to every source
     # filter: "lambda x: x['max_tokens'] < 262144" # Derived per session: max_tokens
     #                       (largest single-round input+output), total_tokens,
@@ -84,7 +115,11 @@ data:
     use_static_model: true
     static_model_name: "mock-model"
     skip_invalid_files: true
-    trace_idle_gap_cap_seconds: 1.0 # Caps think-time delay between rounds to 1s
+    trace_idle_gap_cap_seconds: 1.0 # Caps think-time delay between rounds to 1s.
+    #   null or <= 0 replays the recorded pauses verbatim (KV-cache TTL/eviction
+    #   benchmarks); max_wait_ms, inherited at 15s, is raised to this cap unless
+    #   you set max_wait_ms explicitly
+    # max_wait_ms: 60000 # Runtime clamp on a single wait; default follows the cap
     # ignore_trace_delays: true # Run rounds back-to-back; overrides the gap cap
     #   and sets every inter-round gap to zero
 

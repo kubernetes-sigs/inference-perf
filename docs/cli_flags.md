@@ -212,7 +212,7 @@ single-round input+output), total_tokens, and num_rounds.
 Example: "lambda x: x['max_tokens'] < 262144"
 Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.tracelab_trace_replay.num_dataset_entries` | int | Max number of sessions to load, applied to every source (local files and HuggingFace). Reading stops once this many sessions pass the filter, so a small benchmark does not materialize the full corpus. |
-| `--data.tracelab_trace_replay.trace_idle_gap_cap_seconds` | float | Cap idle timing gaps between rounds in seconds |
+| `--data.tracelab_trace_replay.trace_idle_gap_cap_seconds` | float | Cap idle timing gaps between rounds in seconds. Null or <= 0 disables the cap, which replays the recorded think time verbatim (useful for KV-cache TTL/eviction benchmarks). The runtime clamps every event wait to max_wait_ms, so when max_wait_ms is left unset it is raised to match this cap. |
 | `--data.tracelab_trace_replay.ignore_trace_delays` | boolean | Ignore delays from original trace and run back-to-back. Overrides trace_idle_gap_cap_seconds: every inter-round gap is set to zero. |
 | `--data.conversation_replay.seed` | int | Random seed for deterministic generation |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |

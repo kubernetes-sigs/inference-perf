@@ -18,6 +18,11 @@ from pydantic import BaseModel, Field, model_validator
 
 from inference_perf.config.common import Distribution, DistributionType, StrictBaseModel
 
+# Sentinel for "do not clamp inter-event waits". The replay runtime clamps with
+# ``min(event.wait_ms, max_wait_ms)``, so disabling a cap means raising that
+# ceiling instead of reinterpreting 0 (which means "no wait at all").
+UNCAPPED_WAIT_MS = 2**31 - 1
+
 
 class TraceFormat(Enum):
     AZURE_PUBLIC_DATASET = "AzurePublicDataset"
@@ -397,7 +402,15 @@ class TraceLabTraceReplayConfig(SessionReplayConfig):
             "materialize the full corpus."
         ),
     )
-    trace_idle_gap_cap_seconds: float = Field(60.0, description="Cap idle timing gaps between rounds in seconds")
+    trace_idle_gap_cap_seconds: Optional[float] = Field(
+        60.0,
+        description=(
+            "Cap idle timing gaps between rounds in seconds. Null or <= 0 disables the cap, "
+            "which replays the recorded think time verbatim (useful for KV-cache TTL/eviction "
+            "benchmarks). The runtime clamps every event wait to max_wait_ms, so when "
+            "max_wait_ms is left unset it is raised to match this cap."
+        ),
+    )
     ignore_trace_delays: bool = Field(
         False,
         description=(
@@ -423,6 +436,18 @@ class TraceLabTraceReplayConfig(SessionReplayConfig):
             raise ValueError(
                 "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
             )
+
+        # Reconcile the two timing knobs. ReplayGraphSessionGeneratorBase
+        # clamps every event wait to max_wait_ms, whose default (15s) would
+        # silently truncate the 60s gap cap (or any larger explicit cap).
+        if "max_wait_ms" not in self.model_fields_set:
+            if self.trace_idle_gap_cap_seconds is not None and self.trace_idle_gap_cap_seconds > 0:
+                self.max_wait_ms = max(self.max_wait_ms, int(self.trace_idle_gap_cap_seconds * 1000.0))
+            else:
+                # Uncapped: raise the runtime clamp out of the way instead of
+                # reinterpreting max_wait_ms=0 (which other replay types use to
+                # mean "no waiting at all").
+                self.max_wait_ms = UNCAPPED_WAIT_MS
         return self
 
 
