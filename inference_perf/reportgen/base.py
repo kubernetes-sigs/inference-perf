@@ -1137,8 +1137,6 @@ class ReportGenerator:
         self.config = config
         self.datagen = datagen
         self.session_metrics_collector: Optional[SessionMetricsCollector] = None
-        # Per-stage Prometheus summaries, kept for the BR0.2 partials.
-        self.stage_server_metrics: Dict[int, ModelServerMetrics] = {}
 
     def get_metrics_collector(self) -> RequestMetricCollector:
         """
@@ -1297,11 +1295,18 @@ class ReportGenerator:
                 )
                 lifecycle_reports.append(report_file)
 
+        # Per-stage Prometheus summaries for the BR0.2 partials, kept only if the whole
+        # section succeeds: no partial carries metrics the native report dropped.
+        stage_server_metrics: Dict[int, ModelServerMetrics] = {}
         if report_config.prometheus:
             # This runs after the load has already been sent; a failure here must cost the
             # Prometheus section, not the lifecycle reports the run already produced.
             try:
-                lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
+                collected: Dict[int, ModelServerMetrics] = {}
+                lifecycle_reports.extend(
+                    self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus, collected)
+                )
+                stage_server_metrics = collected
             except Exception:
                 logger.exception("Prometheus metrics report generation failed; continuing without it")
 
@@ -1348,7 +1353,7 @@ class ReportGenerator:
                 # run.time needs the stage's wall-clock window: the request
                 # timestamps are monotonic and can't be mapped to epoch here.
                 stage_info = runtime_parameters.stages.get(br_stage_id)
-                stage_server_metrics = self.stage_server_metrics.get(br_stage_id)
+                stage_metrics = stage_server_metrics.get(br_stage_id)
                 partial = build_partial_report(
                     br_stage_buckets.get(br_stage_id, []),
                     tokenizer,
@@ -1365,8 +1370,8 @@ class ReportGenerator:
                     ),
                     # The component is labelled with the server type (#799).
                     server_metrics=(
-                        {self.config.server.type.value: stage_server_metrics}
-                        if stage_server_metrics is not None and self.config.server is not None
+                        {self.config.server.type.value: stage_metrics}
+                        if stage_metrics is not None and self.config.server is not None
                         else None
                     ),
                 )
@@ -1805,12 +1810,16 @@ class ReportGenerator:
         return reports
 
     def generate_prometheus_metrics_report(
-        self, runtime_parameters: PerfRuntimeParameters, report_config: PrometheusMetricsReportConfig
+        self,
+        runtime_parameters: PerfRuntimeParameters,
+        report_config: PrometheusMetricsReportConfig,
+        stage_metrics: Optional[Dict[int, ModelServerMetrics]] = None,
     ) -> List[ReportFile]:
         """
         Report summary of the metrics collected by the metrics client during the run.
         Args:
             runtime_parameters (PerfRuntimeParameters): The runtime parameters containing the model server client, query eval time in the metrics db, duration.
+            stage_metrics: if given, filled with each stage's collected metrics.
         """
         prometheus_metrics_reports: List[ReportFile] = []
 
@@ -1836,7 +1845,8 @@ class ReportGenerator:
             for stage_id in runtime_parameters.stages:
                 collected_metrics = self.metrics_client.collect_metrics_for_stage(runtime_parameters, stage_id)
                 if collected_metrics is not None:
-                    self.stage_server_metrics[stage_id] = collected_metrics
+                    if stage_metrics is not None:
+                        stage_metrics[stage_id] = collected_metrics
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_prometheus_metrics",
                         contents=summarize_prometheus_metrics(collected_metrics).model_dump(),

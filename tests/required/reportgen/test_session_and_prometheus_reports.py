@@ -758,3 +758,28 @@ class TestPrometheusComponentInPartial:
         partial, _ = await _stage_0_partial(_partial_generator(None), per_stage=True)
 
         assert "observability" not in partial["results"]
+
+    async def test_a_later_call_without_per_stage_has_no_component(self) -> None:
+        gen = _partial_generator(ModelServerType.VLLM)
+        await _stage_0_partial(gen, per_stage=True)
+
+        partial, _ = await _stage_0_partial(gen, per_stage=False)
+
+        assert "observability" not in partial["results"]
+
+    async def test_a_failed_collection_leaves_no_component(self) -> None:
+        """Stage 1's query raises after stage 0's was collected: the native Prometheus
+        files are dropped, so stage 0's partial must not carry the component either."""
+        gen = _partial_generator(ModelServerType.VLLM)
+        report_config = ReportConfig(prometheus=PrometheusMetricsReportConfig(summary=False, per_stage=True))
+        with (
+            patch.object(PrometheusMetricsClient, "wait"),
+            patch.object(
+                PrometheusMetricsClient, "collect_metrics_for_stage", side_effect=[_server_metrics(), RuntimeError("boom")]
+            ),
+        ):
+            reports = await gen.generate_reports(report_config, _runtime({0: _stage_info(0), 1: _stage_info(1)}))
+
+        assert not any("prometheus" in r.name for r in reports)
+        partial: Dict[str, Any] = next(r.contents for r in reports if r.name == "inference-perf.partial.stage_0")
+        assert "observability" not in partial["results"]
