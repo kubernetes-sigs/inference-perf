@@ -16,6 +16,9 @@
 
 import gzip
 import json
+import random
+import tarfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
@@ -23,12 +26,19 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
-from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType
-from inference_perf.config.datagen.replay import TraceLabTraceReplayConfig
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, DataConfig, DataGenType
+from inference_perf.config.datagen.replay import UNCAPPED_WAIT_MS, TraceLabTraceReplayConfig
+from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
+    RawCall,
+    find_predecessors_by_text_matching,
+)
+from inference_perf.datagen.replay.replay_graph_types import ReplayMessage
 from inference_perf.datagen.replay.tracelab_trace_replay_datagen import (
     FilterExpressionError,
     TraceLabTraceReplayDataGenerator,
+    _find_tracelab_predecessors,
 )
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
 # Hand-written fixture rows for unit tests (sanitized shape).
@@ -198,8 +208,10 @@ def _write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> Path:
 def _mock_tokenizer() -> MagicMock:
     tok = MagicMock()
     # Deterministic 1-token-per-char-ish codec: encode length == len(text).
-    tok.get_tokenizer().encode = lambda text: list(range(len(text)))
-    tok.get_tokenizer().decode = lambda toks: "x" * len(toks)
+    # Accepts the add_special_tokens/skip_special_tokens kwargs the generator
+    # passes; the codec has no special tokens to add or skip.
+    tok.get_tokenizer().encode = lambda text, **kwargs: list(range(len(text)))
+    tok.get_tokenizer().decode = lambda toks, **kwargs: "x" * len(toks)
     return tok
 
 
@@ -210,6 +222,15 @@ def _make_gen(
     api_cfg = APIConfig(type=APIType.Chat, streaming=False)
     data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
     data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=trace_files, **overrides)
+    return TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+
+
+# Same as _make_gen but for the Hugging Face source, which takes either a repo
+# id or a {"path": ..., **load_dataset_kwargs} dict.
+def _make_hf_gen(hf_dataset_path: Any, **overrides: Any) -> TraceLabTraceReplayDataGenerator:
+    api_cfg = APIConfig(type=APIType.Chat, streaming=False)
+    data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
+    data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(hf_dataset_path=hf_dataset_path, **overrides)
     return TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
 
 
@@ -488,7 +509,13 @@ def test_tracelab_runtime_session_id_has_no_colon(tmp_path: Path) -> None:
 
 
 def test_tracelab_timing_events_gap(tmp_path: Path) -> None:
-    """Gaps from timing_events timestamps land before the following round."""
+    """Gaps from timing_events timestamps land before the following round.
+
+    Round 1 is submitted when its last *input* event arrives, so a round fed by
+    a tool_result is timed from that tool_result (15.0s), not from the earlier
+    user_message (12.5s): 15.0 - 12.0 = 3000ms. ``usage_report`` rows and the
+    model-output events of the *previous* round never shorten this gap.
+    """
     trace_file = _write_jsonl(tmp_path / "trace.jsonl", _real_rows())
     gen = _make_gen([str(trace_file)])
 
@@ -496,15 +523,15 @@ def test_tracelab_timing_events_gap(tmp_path: Path) -> None:
     sess = sessions["claude:abc"]
     events = sorted(sess.graph.events.values(), key=lambda e: e.t_start_ms)
     assert len(events) == 3
-    # Round 0 -> round 1: 12.000 -> 12.500 = 500ms (round 0 has no tools).
-    assert events[1].wait_ms == 500
+    # Round 0 -> round 1: round 0 completes at 12.0s, round 1 submits at 15.0s.
+    assert events[1].wait_ms == 3000
     # Round 1 -> round 2: 16.000 -> 16.700 = 700ms.
     assert events[2].wait_ms == 700
 
     capped = _make_gen([str(trace_file)], trace_idle_gap_cap_seconds=0.6)
     sessions = {s.source_id: s for s in capped.sessions if s is not None}
     events = sorted(sessions["claude:abc"].graph.events.values(), key=lambda e: e.t_start_ms)
-    assert events[1].wait_ms == 500
+    assert events[1].wait_ms == 600
     assert events[2].wait_ms == 600
 
 
@@ -672,8 +699,8 @@ def test_tracelab_determinism_across_subprocesses(tmp_path: Path) -> None:
         "from inference_perf.config.datagen.replay import TraceLabTraceReplayConfig;"
         "from inference_perf.datagen.replay.tracelab_trace_replay_datagen import TraceLabTraceReplayDataGenerator;"
         "tok = MagicMock();"
-        "tok.get_tokenizer().encode = lambda text: list(range(len(text)));"
-        "tok.get_tokenizer().decode = lambda toks: '<%d:%d>' % (toks[0], len(toks)) if toks else '';"
+        "tok.get_tokenizer().encode = lambda text, **kw: list(range(len(text)));"
+        "tok.get_tokenizer().decode = lambda toks, **kw: '<%d:%d>' % (toks[0], len(toks)) if toks else '';"
         "api_cfg = APIConfig(type=APIType.Chat, streaming=False);"
         "data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay);"
         "data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=[sys.argv[1]]);"
@@ -814,3 +841,479 @@ def test_tracelab_num_dataset_entries_caps_hf_rounds(tmp_path: Path) -> None:
 def test_tracelab_disable_output_substitution_is_rejected() -> None:
     with pytest.raises(ValidationError):
         TraceLabTraceReplayConfig.model_validate({"trace_files": ["./traces/t.jsonl"], "disable_output_substitution": True})
+
+
+# One TraceLab JSONL row: session/round identity plus the four recorded token
+# counts. Extra keys (prefix_tokens, tools, timing_events) pass straight through.
+def _row(session_id: str, round_index: int, in_tokens: int, out_tokens: int, **extra: Any) -> Dict[str, Any]:
+    row: Dict[str, Any] = {
+        "session_id": session_id,
+        "round_index": round_index,
+        "provider": "claude",
+        "model": "m",
+        "input_tokens_total": in_tokens,
+        "newly_append_tokens": in_tokens,
+        "output_tokens": out_tokens,
+    }
+    row.update(extra)
+    return row
+
+
+# ISO-8601 UTC timestamp ``seconds`` after the 2026-06-01T10:00:00Z clock that
+# every timing fixture below is measured from, e.g. _ts(30) -> 10:00:30Z.
+def _ts(seconds: float) -> str:
+    stamp = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc) + timedelta(seconds=seconds)
+    return stamp.isoformat().replace("+00:00", "Z")
+
+
+# One user_message/text pair spanning ``start`` -> ``end`` seconds, the shape a
+# round with no tools records.
+def _turn(start: float, end: float) -> List[Dict[str, str]]:
+    return [
+        {"event_type": "user_message", "timestamp": _ts(start)},
+        {"event_type": "text", "timestamp": _ts(end)},
+    ]
+
+
+# Runtime wait (ms) before each event of the only session in ``gen``; the first
+# event of a session always waits 0.
+def _waits(gen: TraceLabTraceReplayDataGenerator) -> List[int]:
+    per_session = list(gen._session_events.values())
+    assert len(per_session) == 1, f"expected one session, got {len(per_session)}"
+    return [e.wait_ms for e in per_session[0]]
+
+
+# Model the HF loads for a config split-name table: IterableDatasetDict has no
+# IterableDataset-like row access, only keys()/__getitem__.
+class _SplitDict:
+    def __init__(self, splits: Dict[str, List[Dict[str, Any]]]) -> None:
+        self._splits = splits
+
+    def keys(self) -> List[str]:
+        return list(self._splits)
+
+    def __getitem__(self, key: str) -> List[Dict[str, Any]]:
+        return self._splits[key]
+
+
+# trace_idle_gap_cap_seconds drives the runtime clamp: the inherited 15s
+# max_wait_ms default would truncate anything above it, so an unset max_wait_ms
+# is raised to the cap (60s by default, 30s here), a disabled cap sets the
+# uncapped sentinel, and an explicit max_wait_ms is never overridden.
+def test_tracelab_config_reconciles_max_wait_ms() -> None:
+    assert TraceLabTraceReplayConfig(trace_files=["a.jsonl"]).max_wait_ms == 60_000
+    assert TraceLabTraceReplayConfig(trace_files=["a.jsonl"], trace_idle_gap_cap_seconds=30.0).max_wait_ms == 30_000
+    assert TraceLabTraceReplayConfig(trace_files=["a.jsonl"], trace_idle_gap_cap_seconds=None).max_wait_ms == UNCAPPED_WAIT_MS
+    assert TraceLabTraceReplayConfig(trace_files=["a.jsonl"], trace_idle_gap_cap_seconds=0).max_wait_ms == UNCAPPED_WAIT_MS
+    assert TraceLabTraceReplayConfig(trace_files=["a.jsonl"], trace_idle_gap_cap_seconds=-1.0).max_wait_ms == UNCAPPED_WAIT_MS
+    # Explicit knobs win: a user who set max_wait_ms keeps that clamp.
+    assert TraceLabTraceReplayConfig(trace_files=["a.jsonl"], max_wait_ms=5_000).max_wait_ms == 5_000
+    # A cap below the inherited clamp leaves the larger clamp in place, which is
+    # harmless because gaps are already capped at 5s before reaching the clamp.
+    assert TraceLabTraceReplayConfig(trace_files=["a.jsonl"], trace_idle_gap_cap_seconds=5.0).max_wait_ms == 15_000
+
+
+# A 29s human think pause must reach the replayed event: with the default 60s
+# cap the runtime wait is 29_000ms, not the inherited 15_000ms max_wait_ms clamp.
+def test_tracelab_wait_above_inherited_clamp(tmp_path: Path) -> None:
+    rows = [
+        _row("s", 0, 10, 2, timing_events=_turn(0, 1), prefix_tokens=0),
+        _row("s", 1, 20, 2, timing_events=_turn(30, 31), prefix_tokens=10),
+    ]
+    gen = _make_gen([str(_write_jsonl(tmp_path / "trace.jsonl", rows))])
+
+    assert gen.tracelab_config.max_wait_ms == 60_000
+    assert _waits(gen) == [0, 29_000]
+
+
+# Disabling the cap (None or <= 0) replays recorded think time verbatim, which
+# is what a KV-cache TTL/eviction benchmark needs: a 5-minute pause stays
+# 300_000ms instead of being clipped to the 60s default cap.
+def test_tracelab_disabled_cap_replays_full_gap(tmp_path: Path) -> None:
+    rows = [
+        _row("s", 0, 10, 2, timing_events=_turn(0, 1)),
+        _row("s", 1, 20, 2, timing_events=_turn(301, 302), prefix_tokens=10),
+    ]
+    trace_file = str(_write_jsonl(tmp_path / "trace.jsonl", rows))
+
+    for cap in (None, 0, -1.0):
+        gen = _make_gen([trace_file], trace_idle_gap_cap_seconds=cap)
+        assert gen.tracelab_config.max_wait_ms == UNCAPPED_WAIT_MS, f"cap={cap!r} was clamped"
+        assert _waits(gen) == [0, 300_000], f"cap={cap!r} truncated the gap"
+
+
+# Codex writes a round's usage_report (token_count) after the tool it requested
+# has finished, so it must not define either bound: round 0 completes at its
+# text event (2s), not at the 9s usage_report, giving a 10s gap before round 1.
+def test_tracelab_usage_report_excluded_from_round_bounds(tmp_path: Path) -> None:
+    rows = [
+        _row(
+            "s",
+            0,
+            10,
+            2,
+            timing_events=[
+                {"event_type": "user_message", "timestamp": _ts(0)},
+                {"event_type": "text", "timestamp": _ts(2)},
+                {"event_type": "usage_report", "timestamp": _ts(9)},
+            ],
+        ),
+        _row(
+            "s",
+            1,
+            20,
+            2,
+            prefix_tokens=10,
+            timing_events=[
+                {"event_type": "user_message", "timestamp": _ts(12)},
+                {"event_type": "text", "timestamp": _ts(13)},
+                {"event_type": "usage_report", "timestamp": _ts(20)},
+            ],
+        ),
+    ]
+    gen = _make_gen([str(_write_jsonl(tmp_path / "trace.jsonl", rows))])
+
+    # 12s (round 1 submission) - 2s (round 0 text) = 10_000ms.
+    assert _waits(gen) == [0, 10_000]
+
+
+# A round fed by parallel tool calls is submitted when the LAST tool_result
+# arrives, so two results at 5s and 8s make the request start at 8s: the gap
+# after round 0 (which completed at 2s) is 6_000ms, not the 3_000ms the earliest
+# result would give.
+def test_tracelab_parallel_tool_results_submit_at_last_input(tmp_path: Path) -> None:
+    rows = [
+        _row("s", 0, 10, 2, timing_events=_turn(0, 2)),
+        _row(
+            "s",
+            1,
+            20,
+            2,
+            prefix_tokens=10,
+            timing_events=[
+                {"event_type": "tool_result", "timestamp": _ts(5)},
+                {"event_type": "tool_result", "timestamp": _ts(8)},
+                {"event_type": "text", "timestamp": _ts(9)},
+            ],
+        ),
+    ]
+    gen = _make_gen([str(_write_jsonl(tmp_path / "trace.jsonl", rows))])
+
+    assert _waits(gen) == [0, 6_000]
+
+
+# A round that recorded no input event still gets a submission time: the
+# earliest model-output event is used, so round 1 starting with text at 6s gives
+# a 4_000ms gap after round 0's 2s completion.
+def test_tracelab_submission_falls_back_to_first_output_event(tmp_path: Path) -> None:
+    rows = [
+        _row("s", 0, 10, 2, timing_events=_turn(0, 2)),
+        _row(
+            "s",
+            1,
+            20,
+            2,
+            prefix_tokens=10,
+            timing_events=[
+                {"event_type": "reasoning", "timestamp": _ts(7)},
+                {"event_type": "text", "timestamp": _ts(6)},
+            ],
+        ),
+    ]
+    gen = _make_gen([str(_write_jsonl(tmp_path / "trace.jsonl", rows))])
+
+    assert _waits(gen) == [0, 4_000]
+
+
+# Rows whose round_index disagrees with their timestamps are replayed in
+# submission order (0s, 10s, 20s) rather than file or index order, so the
+# conversation is not silently reordered.
+def test_tracelab_rounds_ordered_by_submission_time(tmp_path: Path) -> None:
+    rows = [
+        _row("s", 0, 10, 2, timing_events=_turn(0, 1)),
+        _row("s", 2, 30, 2, timing_events=_turn(20, 21), prefix_tokens=20),
+        _row("s", 1, 20, 2, timing_events=_turn(10, 11), prefix_tokens=10),
+    ]
+    gen = _make_gen([str(_write_jsonl(tmp_path / "trace.jsonl", rows))])
+
+    (session,) = [s for s in gen.sessions if s is not None]
+    events = sorted(session.graph.events.values(), key=lambda e: e.t_start_ms)
+    assert [e.call.total_input_tokens for e in events] == [10, 20, 30]
+    assert _waits(gen) == [0, 9_000, 9_000]
+
+
+# Two rows sharing a (session_id, round_index) pair are tie-broken by submission
+# time instead of one silently replacing the other, so both rounds replay.
+def test_tracelab_duplicate_round_index_keeps_both_rounds(tmp_path: Path) -> None:
+    rows = [
+        _row("s", 0, 10, 2, timing_events=_turn(0, 1)),
+        _row("s", 0, 20, 2, timing_events=_turn(10, 11), prefix_tokens=10),
+    ]
+    gen = _make_gen([str(_write_jsonl(tmp_path / "trace.jsonl", rows))])
+
+    (session,) = [s for s in gen.sessions if s is not None]
+    events = sorted(session.graph.events.values(), key=lambda e: e.t_start_ms)
+    assert [e.call.total_input_tokens for e in events] == [10, 20]
+    assert _waits(gen) == [0, 9_000]
+
+
+# Parallel tools run concurrently, so their [emitted_at, result_at] windows are
+# merged before summing: two 5s tools overlapping from 0-5s and 2-7s occupy 7s
+# of wall time, not the 10_000ms their latencies add up to.
+def test_tracelab_parallel_tool_intervals_merged(tmp_path: Path) -> None:
+    rows = [
+        _row(
+            "s",
+            0,
+            10,
+            2,
+            tools=[
+                {"tool_name": "a", "tool_wall_latency_ms": 5000.0, "emitted_at": _ts(0), "result_at": _ts(5)},
+                {"tool_name": "b", "tool_wall_latency_ms": 5000.0, "emitted_at": _ts(2), "result_at": _ts(7)},
+            ],
+        ),
+        _row("s", 1, 20, 2, prefix_tokens=10),
+    ]
+    gen = _make_gen([str(_write_jsonl(tmp_path / "trace.jsonl", rows))])
+
+    assert _waits(gen) == [0, 7_000]
+
+
+# Non-overlapping tool windows still add up: 0-3s then 5-9s occupies 7s.
+def test_tracelab_serial_tool_intervals_add_up(tmp_path: Path) -> None:
+    rows = [
+        _row(
+            "s",
+            0,
+            10,
+            2,
+            tools=[
+                {"tool_name": "a", "emitted_at": _ts(0), "result_at": _ts(3)},
+                {"tool_name": "b", "emitted_at": _ts(5), "result_at": _ts(9)},
+            ],
+        ),
+        _row("s", 1, 20, 2, prefix_tokens=10),
+    ]
+    gen = _make_gen([str(_write_jsonl(tmp_path / "trace.jsonl", rows))])
+
+    assert _waits(gen) == [0, 7_000]
+
+
+# A file whose stem contains dots (tracelab_v0.0.2.jsonl) must still be picked
+# up by a trace_directory scan, and a gzipped JSON array (.json.gz) must be
+# parsed as an array instead of falling through to line-by-line JSONL parsing.
+def test_tracelab_dotted_stem_and_gzipped_json_array(tmp_path: Path) -> None:
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    _write_jsonl(traces / "tracelab_v0.0.2.jsonl", [_row("sess-A", 0, 10, 2)])
+    with gzip.open(traces / "tracelab_v1.4.json.gz", "wt", encoding="utf-8") as f:
+        json.dump([_row("sess-B", 0, 12, 3)], f)
+    (traces / "notes.txt").write_text("not a trace", encoding="utf-8")
+
+    api_cfg = APIConfig(type=APIType.Chat, streaming=False)
+    data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
+    data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_directory=str(traces))
+    gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+
+    assert {s.source_id for s in gen.sessions if s is not None} == {"sess-A", "sess-B"}
+
+
+# A session that reappears after another session is a structural error: the
+# streaming early stop assumes contiguity, and overwriting would drop the rounds
+# already read. skip_invalid_files covers bad rows, not this.
+def test_tracelab_non_contiguous_session_raises(tmp_path: Path) -> None:
+    rows = [
+        _row("s1", 0, 10, 2),
+        _row("s2", 0, 10, 2),
+        _row("s1", 1, 20, 2, prefix_tokens=10),
+    ]
+    trace_file = str(_write_jsonl(tmp_path / "trace.jsonl", rows))
+
+    with pytest.raises(ValueError, match="reappears"):
+        _make_gen([trace_file])
+    with pytest.raises(ValueError, match="reappears"):
+        _make_gen([trace_file], skip_invalid_files=True)
+
+
+# The HF tables must be streamed by default so a small run never Arrow-builds
+# the full ~665k-round corpus: every load_dataset call gets streaming=True, and
+# an IterableDatasetDict split is selected by _as_split.
+def test_tracelab_hf_streams_by_default() -> None:
+    import sys
+    from unittest.mock import patch
+
+    seen: List[Dict[str, Any]] = []
+
+    def fake_load_dataset(path: str, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        name = kwargs.get("name")
+        if name in ("tool_calls", "timing_events"):
+            return _SplitDict({"train": []})
+        return _SplitDict(
+            {
+                "train": [
+                    dict(_row("s", 0, 10, 2), round_pk="1"),
+                    dict(_row("s", 1, 20, 2, prefix_tokens=10), round_pk="2"),
+                ]
+            }
+        )
+
+    fake_datasets = MagicMock()
+    fake_datasets.load_dataset = fake_load_dataset
+    with patch.dict(sys.modules, {"datasets": fake_datasets}):
+        gen = _make_hf_gen("UW-SyFI/TraceLab")
+
+    assert gen.get_session_count() == 1
+    assert [kwargs.get("streaming") for kwargs in seen] == [True, True, True]
+
+
+# A caller can opt back into full local caching from the config dict:
+# {"path": ..., "streaming": false} reaches load_dataset as streaming=False
+# (and is not also passed as a duplicate keyword).
+def test_tracelab_hf_streaming_false_is_honoured() -> None:
+    import sys
+    from unittest.mock import patch
+
+    seen: List[Dict[str, Any]] = []
+
+    def fake_load_dataset(path: str, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        name = kwargs.get("name")
+        if name in ("tool_calls", "timing_events"):
+            return []
+        return [dict(_row("s", 0, 10, 2), round_pk="1")]
+
+    fake_datasets = MagicMock()
+    fake_datasets.load_dataset = fake_load_dataset
+    with patch.dict(sys.modules, {"datasets": fake_datasets}):
+        _make_hf_gen({"path": "UW-SyFI/TraceLab", "streaming": False})
+
+    assert [kwargs.get("streaming") for kwargs in seen] == [False, False, False]
+
+
+# A small custom corpus is repeated as many times as the prompt needs: asking
+# for 300 tokens from a ~80-token corpus yields exactly 300 tokens, not the
+# ~160 the old single-wrap code produced with only a warning.
+def test_tracelab_small_corpus_fills_long_prompt(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text("line one\nline two\n", encoding="utf-8")
+    trace_file = _write_jsonl(tmp_path / "trace.jsonl", [_row("s", 0, 300, 5)])
+
+    api_cfg = APIConfig(type=APIType.Chat, streaming=False)
+    data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
+    data_cfg.corpus_file_path = str(corpus)
+    data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=[str(trace_file)])
+    gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+
+    (session,) = [s for s in gen.sessions if s is not None]
+    (event,) = list(session.graph.events.values())
+    prompt = "".join(m.get("content", "") if isinstance(m, dict) else m.text for m in event.call.messages)
+    assert len(prompt) == 300
+
+
+# A round whose recorded prefix_tokens exceeds its own input_tokens_total (a
+# counting oddity after compaction) must still build a prompt of exactly
+# input_tokens_total tokens: the shared run is trimmed to the round's size.
+def test_tracelab_prefix_larger_than_prompt_is_trimmed(tmp_path: Path) -> None:
+    rows = [
+        _row("s", 0, 50, 5),
+        _row("s", 1, 40, 5, prefix_tokens=90),
+    ]
+    gen = _make_gen([str(_write_jsonl(tmp_path / "trace.jsonl", rows))])
+
+    tokenizer = _mock_tokenizer()
+    (session,) = [s for s in gen.sessions if s is not None]
+    for event in session.graph.events.values():
+        built = _tokenize_messages(tokenizer, event.call.messages)
+        assert built == event.call.total_input_tokens, f"built {built} vs recorded {event.call.total_input_tokens}"
+
+
+# A round that recorded zero output tokens falls back to this replay's
+# default_max_tokens: leaving the recorded 0 reaches the wire as max_tokens=0,
+# which the client replaces with its own default instead of ours.
+def test_tracelab_zero_output_tokens_uses_default_max_tokens(tmp_path: Path) -> None:
+    rows = [_row("s", 0, 10, 0), _row("s", 1, 20, 7, prefix_tokens=10)]
+    gen = _make_gen([str(_write_jsonl(tmp_path / "trace.jsonl", rows))], default_max_tokens=321)
+
+    events = next(iter(gen._session_events.values()))
+    assert events[0].max_tokens_recorded == 321
+    assert events[1].max_tokens_recorded == 7
+
+
+# With a real BOS-adding tokenizer (gemma-3-270m, bos_token_id=2), round i's
+# tokenized prompt must start with its recorded prefix_tokens of round i-1's ids:
+# a per-round <bos> would shift every later token right by one and misalign
+# every fixed-size KV-cache block from block 0 onward.
+def test_tracelab_bos_tokenizer_preserves_prefix_across_rounds(tmp_path: Path) -> None:
+    tarball = Path(__file__).resolve().parents[1] / "e2e" / "testdata" / "models" / "google_gemma-3-270m.tar.gz"
+    model_dir = tmp_path / "gemma"
+    with tarfile.open(tarball) as tar:
+        tar.extractall(model_dir, filter="data")
+    tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path=str(model_dir)))
+    raw = tokenizer.get_tokenizer()
+    assert raw.encode("hi")[0] == 2, "expected the tokenizer to prepend <bos>"
+
+    rows = [
+        _row("s", 0, 200, 20, timing_events=_turn(0, 1)),
+        _row("s", 1, 260, 20, prefix_tokens=200, timing_events=_turn(2, 3)),
+        _row("s", 2, 300, 20, prefix_tokens=240, timing_events=_turn(4, 5)),
+    ]
+    trace_file = _write_jsonl(tmp_path / "trace.jsonl", rows)
+    api_cfg = APIConfig(type=APIType.Chat, streaming=False)
+    data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
+    data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=[str(trace_file)])
+    gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=tokenizer)
+
+    (session,) = [s for s in gen.sessions if s is not None]
+    events = sorted(session.graph.events.values(), key=lambda e: e.t_start_ms)
+    assert len(events) == 3
+    prompts = ["".join(m.get("content", "") if isinstance(m, dict) else m.text for m in e.call.messages) for e in events]
+    ids = [raw.encode(prompt, add_special_tokens=False) for prompt in prompts]
+    assert len(ids[0]) == 200
+    assert ids[1][:200] == ids[0][:200]
+    assert ids[2][:240] == ids[1][:240]
+
+
+# The linear predecessor finder must reproduce the generic O(n^2) text-matching
+# finder exactly for TraceLab's single-user-message rounds (a plain temporal
+# chain), and defer to it unchanged when a call carries assistant messages.
+def test_tracelab_linear_predecessor_finder_matches_generic() -> None:
+    def _call(index: int) -> RawCall:
+        return RawCall(
+            call_id=f"round_{index}",
+            trace_id="s",
+            t_start_ms=index * 1000,
+            t_end_ms=index * 1000,
+            model="m",
+            messages=[ReplayMessage(role="user", text=f"prompt {index}")],
+            out_message=ReplayMessage(role="assistant", text=f"out {index}"),
+            prompt_tokens=10,
+            completion_tokens=5,
+            temperature=0.0,
+            max_tokens_recorded=5,
+        )
+
+    chain = [_call(i) for i in range(3)]
+    assert _find_tracelab_predecessors(chain) == find_predecessors_by_text_matching(chain)
+
+    with_assistant = [_call(0), _call(1)]
+    with_assistant[1].messages = [
+        ReplayMessage(role="user", text="prompt 1"),
+        ReplayMessage(role="assistant", text="out 0"),
+    ]
+    assert _find_tracelab_predecessors(with_assistant) == find_predecessors_by_text_matching(with_assistant)
+
+
+# Session shuffling uses a local random.Random(base_seed), so building a
+# generator (a) leaves the process-global RNG untouched and (b) still produces
+# the same session order on every run.
+def test_tracelab_does_not_mutate_global_random_state(tmp_path: Path) -> None:
+    trace_file = str(_write_jsonl(tmp_path / "trace.jsonl", _real_rows()))
+
+    random.seed(1234)
+    state = random.getstate()
+    first = _make_gen([trace_file])
+    assert random.getstate() == state
+
+    second = _make_gen([trace_file])
+    assert [s.source_id for s in first.sessions if s is not None] == [s.source_id for s in second.sessions if s is not None]
