@@ -514,14 +514,17 @@ Runtime metrics inference-perf exports about the benchmark run itself (stage sta
 ```yaml
 observability:
   metrics:
-    port: 9464   # Port of the endpoint. 0 picks an ephemeral port, logged at startup
+    port: 9464            # Port of the endpoint. 0 picks an ephemeral port, logged at startup
+    linger_seconds: 30    # How long the endpoint stays up after the run ends. 0 stops it once the reports are saved
 ```
 
 Metrics are always collected in-process, where they drive the progress bars. The HTTP `/metrics` endpoint starts only when `observability.metrics` is set, so a run that never asked for it opens no port. `metrics: {}` serves on the default port. A bare `metrics:` with nothing under it is YAML null and leaves the endpoint off. Passing `--observability.metrics.port` on the command line also turns it on.
 
 The endpoint binds every interface, so a scraper reaches it by pod IP in Kubernetes or through `docker run -p`. The Helm chart values and the `deploy/` Job turn it on. The root `config.yml` does not, so the README quickstart exposes nothing. If the port cannot be bound, the run continues without the endpoint and logs an error. The reports are unaffected.
 
-Transient signals (current stage, in-flight requests) only exist while the run is active, so they need a scraper attached during the run. The last scrape can land up to one scrape interval before the run ends, and a run shorter than the interval may not be scraped at all. The final numbers are in the reports.
+After the run ends the endpoint stays up for `linger_seconds` (default 30), counted from the end of the load, so a scraper can collect the final counters and the last stage's end timestamp. Report generation and saving happen inside that window, so the wait never delays the reports. Set `linger_seconds` to at least the scrape interval, or the last scrape may still miss the end of the run. The wait applies only when the endpoint is running, and `linger_seconds: 0` stops it as soon as the reports are saved. SIGINT or SIGTERM ends the wait immediately, and a run that was interrupted does not linger. The Helm chart and the `deploy/` Job inherit the 30 second default.
+
+Transient signals (current stage, in-flight requests) only exist while the run is active, so they need a scraper attached during the run. The final numbers are in the reports.
 
 ## Full Configuration Examples
 

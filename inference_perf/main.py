@@ -18,7 +18,7 @@ from argparse import ArgumentParser
 import yaml
 from inference_perf.analysis.analyze import analyze_reports
 from inference_perf.utils.mp_context import MP_CONTEXT, start_forkserver
-from typing import List, Optional
+from typing import Callable, List, Optional
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
 from inference_perf.datagen.base import BaseGenerator
 from inference_perf.loadgen import LoadGenerator
@@ -76,6 +76,7 @@ from inference_perf.metrics.request_collector import (
 )
 from inference_perf.circuit_breaker import feed_breakers, init_circuit_breakers
 from inference_perf.observability.metrics import PrometheusMetricsServer, RunContext, build_metrics
+from inference_perf.observability.metrics.prometheus import linger_until
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile, add_global_args, add_pydantic_args, unflatten_dict
 from inference_perf.utils.cli_summary import print_summary_table
@@ -114,6 +115,25 @@ def log_metrics_endpoint_failure(metrics_config: RuntimeMetricsConfig, error: OS
         metrics_config.port,
         error,
     )
+
+
+def stop_runtime_metrics(
+    server: Optional[PrometheusMetricsServer],
+    linger_seconds: float,
+    run_end: float,
+    interrupted: Callable[[], bool],
+) -> None:
+    """Keep the metrics endpoint up until ``linger_seconds`` after the run ended, then stop it.
+
+    ``run_end`` is a ``time.monotonic()`` reading taken when the load finished, so
+    the time already spent on reports counts toward the linger and the wait never
+    delays them. A run that was interrupted does not linger.
+    """
+    if server is None:
+        return
+    if not interrupted():
+        linger_until(run_end + linger_seconds, interrupted)
+    server.stop()
 
 
 class InferencePerfRunner:
@@ -490,9 +510,8 @@ def main_cli() -> None:
         perfrunner.run()
     except KeyboardInterrupt:
         pass
-    finally:
-        if metrics_server is not None:
-            metrics_server.stop()
+    # The endpoint stays up through reporting; stop_runtime_metrics stops it once the linger is over.
+    run_end = time.monotonic()
 
     end_time = time.time()
 
@@ -545,6 +564,13 @@ def main_cli() -> None:
 
     # Print summary table to CLI
     print_summary_table(reports)
+
+    stop_runtime_metrics(
+        metrics_server,
+        metrics_config.linger_seconds if metrics_config is not None else 0.0,
+        run_end,
+        lambda: loadgen.interrupt_sig,
+    )
 
     perfrunner.stop()
 
