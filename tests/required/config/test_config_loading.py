@@ -293,6 +293,29 @@ def test_duration_stage_allows_unlimited_concurrency_for_weka_replay() -> None:
     assert config.data.weka_trace_replay is not None
 
 
+# --- sglang_generate and LoRA ---------------------------------------------
+
+_LORA_SPLIT = {"lora_traffic_split": [{"name": "adapter-a", "split": 1.0}]}
+
+
+# api.type sglang_generate with a LoRA traffic split -> rejected: /generate would serve the base model.
+def test_sglang_generate_rejects_lora_traffic_split() -> None:
+    with pytest.raises(ValueError, match="lora_traffic_split is not supported with api.type 'sglang_generate'"):
+        Config.model_validate({"api": {"type": "sglang_generate"}, "load": _LORA_SPLIT})
+
+
+# api.type completion with the same split -> accepted, as before.
+def test_lora_traffic_split_accepted_for_completion() -> None:
+    config = Config.model_validate({"api": {"type": "completion"}, "load": _LORA_SPLIT})
+    assert config.load.lora_traffic_split is not None
+
+
+# api.type sglang_generate with no split -> accepted.
+def test_sglang_generate_accepted_without_lora_traffic_split() -> None:
+    config = Config.model_validate({"api": {"type": "sglang_generate"}})
+    assert config.load.lora_traffic_split is None
+
+
 # --- conversation replay load-type and concurrency validation ------------
 
 
