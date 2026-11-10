@@ -97,6 +97,24 @@ requests currently on the wire. A conversation keeps its slot while simulated to
 its next turn is dispatched as soon as that delay finishes. Every stage's `concurrency_level` must
 be less than or equal to `num_conversations`.
 
+When concurrency is smaller than the blueprint pool, each execution slot keeps its current
+blueprint until all of that conversation's turns finish. It then takes the oldest available
+blueprint from its worker's pool and returns its previous blueprint to the back of that pool.
+The new conversation starts with fresh context and a new session ID. With enough completed
+requests, this exercises the whole pool rather than repeatedly replaying an initial subset.
+Short runs may stop before every blueprint completes; completion order and variable turn counts
+also mean blueprint request counts need not be equal.
+
+For a stage with W active workers, blueprint i belongs to worker `i % W`, matching queue routing.
+Concurrency is divided across those workers, including uneven splits. Blueprints never rotate
+across workers within a stage. When all blueprints are active, a completed slot reuses its own
+blueprint because no other blueprint is available. Each stage resets this scheduling state.
+Tool latency continues to occupy the conversation's slot before the next turn or rollover.
+
+For example, the `batch-summarization-rag` catalog sweep has 30 one-turn blueprints and concurrency
+6/12/18/24/30 on one worker. Every stage can exercise all 30 with sufficient requests, including
+the lower-concurrency stages; changing concurrency no longer deliberately truncates the pool.
+
 ## Configuration Guide
 
 All fields live under `data.conversation_replay`:
@@ -104,7 +122,7 @@ All fields live under `data.conversation_replay`:
 | Field | Type | Description |
 | :--- | :--- | :--- |
 | `seed` | int | RNG seed. Same seed → identical conversations, prompts, and turn lengths. |
-| `num_conversations` | int | Number of conversation blueprints to pre-generate. Each conversation maps to one `LocalUserSession`; concurrency is driven by the `concurrent` load type. |
+| `num_conversations` | int | Number of conversation blueprints to pre-generate and cycle through. Each active conversation has its own `LocalUserSession`; concurrency is driven by the `concurrent` load type. |
 | `shared_system_prompt_len` | int | Tokens in the fixed prefix shared across all conversations. Useful for exercising prefix caching. |
 | `dynamic_system_prompt_len` | [`Distribution`](#distribution-types) | Per-conversation suffix appended to the shared prefix. Makes each conversation's system prompt unique. |
 | `turns_per_conversation` | [`Distribution`](#distribution-types) | How many user turns each conversation will issue before being recycled. |
@@ -178,7 +196,8 @@ whole conversation on the same endpoint. See
   `preferred_worker_id`; each worker dispatches a ready conversation when capacity opens, so a
   slow conversation cannot block another ready conversation's next turn.
 - **Recycling**: when a conversation exhausts its turns, the slot resets (fresh session,
-  same blueprint) and replays from the beginning — letting a stage run as long as
+  next available worker-owned blueprint, or the same blueprint when the pool is fully active)
+  and starts from the beginning — letting a stage run as long as
   `num_requests` demands without running out of work.
 - **Safety reset**: if a session's accumulated context exceeds ~2.7 M characters (≈225 K
   tokens, near typical `max_model_len` limits), the session is reset rather than letting the

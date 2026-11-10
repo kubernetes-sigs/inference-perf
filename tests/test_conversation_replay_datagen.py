@@ -219,6 +219,98 @@ class TestConversationReplayDataGenerator:
         assert third.user_session_id == "conv_0"
         assert third.target_round == 1
 
+    # Four two-turn blueprints must all finish conversations within 32 requests
+    # at concurrency 1 or 2; concurrency 4 pins the existing full-pool behavior.
+    @pytest.mark.parametrize("concurrency", [1, 2, 4])
+    async def test_completed_conversations_cover_pool_below_pool_size(self, concurrency: int) -> None:
+        api_config, data_config = _make_config(num_conversations=4, turns_min=2, turns_max=2, turns_mean=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        prompt_identity: dict[str, tuple[int, int]] = {}
+        for blueprint in gen.blueprints:
+            blueprint.turn_prompts = [f"blueprint_{blueprint.conversation_id}_turn_{turn}" for turn in range(2)]
+            for turn, prompt in enumerate(blueprint.turn_prompts):
+                prompt_identity[prompt] = (blueprint.conversation_id, turn)
+
+        completed_turns: dict[str, list[tuple[int, int]]] = {}
+        completed_blueprints: set[int] = set()
+        data_iter = gen.get_data()
+        for _ in range(32 // concurrency):
+            requests: list[_ConversationReplayAPIData] = []
+            for _ in range(concurrency):
+                lazy = next(data_iter)
+                assert isinstance(lazy, LazyLoadInferenceAPIData)
+                request = gen.load_lazy_data(lazy)
+                assert isinstance(request, _ConversationReplayAPIData)
+                requests.append(request)
+
+            # Complete simulated responses through the session lifecycle before
+            # admitting the next batch; coverage is recorded only after completion.
+            for request in requests:
+                blueprint_id, turn = prompt_identity[request.prompt]
+                session = request.user_session
+                context = await asyncio.wait_for(session.get_context(request.target_round), timeout=1)
+                session.update_context(f"{context} {request.prompt} response")
+                request.on_request_finished()
+                turns = completed_turns.setdefault(request.user_session_id, [])
+                turns.append((blueprint_id, turn))
+                assert turns == [(blueprint_id, expected_turn) for expected_turn in range(len(turns))]
+                if turn == 1:
+                    completed_blueprints.add(blueprint_id)
+
+        assert completed_blueprints == {0, 1, 2, 3}, f"Completed blueprint coverage: {sorted(completed_blueprints)}"
+
+    # Uneven worker budgets and blueprint partitions must cover the pool without
+    # cross-worker duplication; five slots over five blueprints pins the full pool.
+    @pytest.mark.parametrize("pool_size,concurrency,workers", [(5, 3, 2), (7, 4, 3), (5, 5, 2)])
+    async def test_pool_rotation_respects_worker_ownership(self, pool_size: int, concurrency: int, workers: int) -> None:
+        all_completed: set[int] = set()
+        for worker_id in range(workers):
+            # Worker processes have separate registries. Run their deterministic
+            # completion streams separately to preserve that isolation in process.
+            LocalUserSession.clear_instances()
+            api_config, data_config = _make_config(num_conversations=pool_size)
+            gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+            identities: dict[str, tuple[int, int]] = {}
+            for blueprint in gen.blueprints:
+                blueprint.num_turns = 1 + blueprint.conversation_id % 3
+                blueprint.turn_prompts = [
+                    f"blueprint_{blueprint.conversation_id}_turn_{turn}" for turn in range(blueprint.num_turns)
+                ]
+                blueprint.turn_output_lens = [10] * blueprint.num_turns
+                for turn, prompt in enumerate(blueprint.turn_prompts):
+                    identities[prompt] = (blueprint.conversation_id, turn)
+
+            capacity = concurrency // workers + int(worker_id < concurrency % workers)
+            tokens = (
+                LazyLoadInferenceAPIData(data_index=i, preferred_worker_id=i % pool_size, active_worker_count=workers)
+                for i in range(pool_size * 60)
+                if (i % pool_size) % workers == worker_id
+            )
+            completed: set[int] = set()
+            sessions: dict[str, list[tuple[int, int]]] = {}
+            for _ in range(pool_size * 6):
+                requests = [gen.load_lazy_data(next(tokens)) for _ in range(capacity)]
+                for request in requests:
+                    assert isinstance(request, _ConversationReplayAPIData)
+                    blueprint_id, turn = identities[request.prompt]
+                    assert blueprint_id % workers == worker_id
+                    session = request.user_session
+                    context = await asyncio.wait_for(session.get_context(request.target_round), timeout=1)
+                    if turn == 0:
+                        assert context == gen.blueprints[blueprint_id].system_prompt
+                    session.update_context(f"{context} {request.prompt} response")
+                    request.on_request_finished()
+                    turns = sessions.setdefault(request.user_session_id, [])
+                    turns.append((blueprint_id, turn))
+                    assert turns == [(blueprint_id, t) for t in range(len(turns))]
+                    if turn == gen.blueprints[blueprint_id].num_turns - 1:
+                        completed.add(blueprint_id)
+
+            assert completed == set(range(worker_id, pool_size, workers))
+            assert all_completed.isdisjoint(completed)
+            all_completed.update(completed)
+        assert all_completed == set(range(pool_size))
+
     def test_materialization_failure_does_not_skip_a_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         api_config, data_config = _make_config(num_conversations=1, turns_min=1, turns_max=1, turns_mean=1)
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())

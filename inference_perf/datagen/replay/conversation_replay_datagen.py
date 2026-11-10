@@ -17,7 +17,7 @@ Closed-loop continuous replenishment model
 ------------------------------------------
 Each slot (preferred_worker_id) maps to one concurrent conversation. When a
 conversation completes all its turns, the slot immediately resets to a fresh
-LocalUserSession and starts a new conversation from turn 0. This models
+LocalUserSession and starts the next available worker-owned blueprint from turn 0. This models
 steady-state production traffic where a new conversation begins as soon as
 the previous one ends.
 
@@ -174,6 +174,9 @@ class ConversationBlueprint:
 class _ConversationSlotState:
     next_round: int = 0
     busy: bool = False
+    blueprint_index: Optional[int] = None
+    next_turn: int = 0
+    conversation_number: int = 0
 
 
 class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
@@ -186,7 +189,8 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
 
     Conversations are dispatched round-robin across workers using
     preferred_worker_id for affinity. When all turns of a conversation are
-    exhausted, the session resets and replays from the beginning (recycling).
+    exhausted, the slot resets its session and takes the next available blueprint
+    owned by its worker (recycling its own when the worker's entire pool is active).
     """
 
     def __init__(
@@ -252,6 +256,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         self._build_conversations()
         self._slot_states = [_ConversationSlotState() for _ in self.blueprints]
         self._ready_slots: deque[int] = deque()
+        self._available_blueprints: deque[int] = deque()
         self._scheduler_stage_id: Optional[int] = None
 
         logger.info(
@@ -284,6 +289,9 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self._scheduler_stage_id != data.stage_id:
             self._slot_states = [_ConversationSlotState() for _ in self.blueprints]
             self._ready_slots.clear()
+            worker_count = data.active_worker_count
+            worker_id = data.preferred_worker_id % worker_count
+            self._available_blueprints = deque(range(worker_id, len(self.blueprints), worker_count))
             self._scheduler_stage_id = data.stage_id
 
         candidate_idx = data.data_index % len(self.blueprints)
@@ -299,11 +307,24 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         slot = self._slot_states[conv_idx]
         slot.busy = True
-        bp = self.blueprints[conv_idx]
+        previous_blueprint = slot.blueprint_index
+        rollover = previous_blueprint is not None and slot.next_turn == self.blueprints[previous_blueprint].num_turns
+        # Reserve a new blueprint only at a conversation boundary. Keep the
+        # available FIFO unchanged until materialization succeeds, so a failed
+        # request cannot lose a blueprint or advance a conversation's turn.
+        if previous_blueprint is None or rollover:
+            blueprint_index = self._available_blueprints[0] if self._available_blueprints else conv_idx
+            if previous_blueprint is None and conv_idx in self._available_blueprints:
+                blueprint_index = conv_idx
+            if not self._available_blueprints and previous_blueprint is not None:
+                blueprint_index = previous_blueprint
+            turn_idx = 0
+        else:
+            blueprint_index = previous_blueprint
+            turn_idx = slot.next_turn
+        bp = self.blueprints[blueprint_index]
         round_num = slot.next_round
-        slot.next_round += 1
-        turn_idx = round_num % bp.num_turns
-        convo_num = round_num // bp.num_turns  # which conversation this slot is on
+        convo_num = slot.conversation_number + int(rollover)
         try:
             # Re-prime if the session was cleared (e.g. LoadGenerator calls
             # LocalUserSession.clear_instances() between load stages). Without this,
@@ -328,7 +349,9 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
             # keeps its previous id: without it, a stage-1 slot re-primed as
             # slot_0_convo_1 would roll over onto slot_0_convo_1 again instead of
             # starting a new conversation.
-            if turn_idx == 0 and round_num > 0:
+            if rollover or (previous_blueprint is None and blueprint_index != conv_idx):
+                shared_prompt = self._get_or_generate_shared_prompt(data.stage_id)
+                bp.system_prompt = self._build_system_prompt(shared_prompt, bp.dynamic_system_prompt)
                 self.user_sessions[conv_idx] = self._new_session(
                     user_session_id=f"stage_{data.stage_id}_slot_{conv_idx}_convo_{convo_num}",
                     context=bp.system_prompt,
@@ -346,9 +369,17 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
                 tool_call_latency_sec=latency,
             )
             request.bind_request_finished(session, lambda: self._release_slot(conv_idx, data.stage_id))
+            if previous_blueprint is None or rollover:
+                if self._available_blueprints:
+                    self._available_blueprints.remove(blueprint_index)
+                    if previous_blueprint is not None:
+                        self._available_blueprints.append(previous_blueprint)
+            slot.blueprint_index = blueprint_index
+            slot.next_turn = turn_idx + 1
+            slot.conversation_number = convo_num
+            slot.next_round += 1
             return request
         except Exception:
-            slot.next_round -= 1
             self._release_slot(conv_idx, data.stage_id)
             raise
 

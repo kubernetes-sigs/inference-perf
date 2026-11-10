@@ -283,6 +283,8 @@ class LazyLoadInferenceAPIData(InferenceAPIData):
     """
 
     data_index: int
+    # Routing modulus stamped by loadgen before crossing the worker boundary.
+    active_worker_count: int = 1
 
     def get_api_type(self) -> APIType:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
