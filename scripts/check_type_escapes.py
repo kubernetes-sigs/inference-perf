@@ -13,8 +13,9 @@
 # limitations under the License.
 """Ratchet on the escapes that satisfy `mypy --strict` without fixing the type.
 
-Counts `Any`, `cast(` and `# type: ignore` in every Python file under ROOTS, in
-the working tree and on main, and fails when the total of any one rises. Main is
+Counts `Any`, `cast(` and `# type: ignore` in every Python file under ROOTS, and
+the modules under `[[tool.mypy.overrides]]` in pyproject.toml, in the working
+tree and on main. Fails when the total of any one rises. Main is
 read through git at check time, the way scripts/check_coverage_regression.py
 reads its baseline, so no count is committed and a moved file costs nothing.
 """
@@ -26,11 +27,13 @@ import subprocess
 import sys
 import tarfile
 import tokenize
+import tomllib
 from pathlib import Path
 from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ROOTS = ("inference_perf", "tests")
+PYPROJECT = "pyproject.toml"
 
 TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore")
 
@@ -39,6 +42,7 @@ class Counts(NamedTuple):
     any: int = 0
     cast: int = 0
     ignore: int = 0
+    override: int = 0
 
 
 FileCounts = dict[str, Counts]
@@ -61,6 +65,20 @@ def count_escapes(source: str) -> Counts:
     return Counts(any_count, cast_count, ignore_count)
 
 
+def count_overrides(pyproject: str) -> int:
+    """Modules named under `[[tool.mypy.overrides]]`. Each one relaxes mypy for a whole module."""
+    count = 0
+    for block in tomllib.loads(pyproject).get("tool", {}).get("mypy", {}).get("overrides", []):
+        modules = block.get("module", [])
+        count += 1 if isinstance(modules, str) else len(modules)
+    return count
+
+
+def with_overrides(found: FileCounts, pyproject: str) -> FileCounts:
+    overrides = count_overrides(pyproject)
+    return {**found, PYPROJECT: Counts(override=overrides)} if overrides else found
+
+
 def scan(repo_root: Path) -> FileCounts:
     """Working-tree counts for every file under ROOTS that has at least one escape."""
     found: FileCounts = {}
@@ -69,7 +87,8 @@ def scan(repo_root: Path) -> FileCounts:
             counts = count_escapes(path.read_text(encoding="utf-8"))
             if any(counts):
                 found[path.relative_to(repo_root).as_posix()] = counts
-    return found
+    pyproject = repo_root / PYPROJECT
+    return with_overrides(found, pyproject.read_text(encoding="utf-8") if pyproject.exists() else "")
 
 
 def git(repo_root: Path, *args: str) -> "subprocess.CompletedProcess[bytes]":
@@ -94,9 +113,15 @@ def resolve_base(repo_root: Path) -> str:
 
 def scan_ref(repo_root: Path, ref: str) -> FileCounts:
     """Counts at a commit for every file under ROOTS that has at least one escape."""
+    found: FileCounts = {}
     roots = git(repo_root, "ls-tree", "-d", "--name-only", ref, "--", *ROOTS).stdout.decode().split()
-    if not roots:
-        return {}
+    if roots:
+        found = scan_archive(repo_root, ref, roots)
+    # a commit with no pyproject.toml prints nothing, which counts as no overrides
+    return with_overrides(found, git(repo_root, "show", f"{ref}:{PYPROJECT}").stdout.decode("utf-8"))
+
+
+def scan_archive(repo_root: Path, ref: str, roots: list[str]) -> FileCounts:
     archive = git(repo_root, "archive", "--format=tar", ref, "--", *roots)
     if archive.returncode:
         raise SystemExit(f"check_type_escapes: git archive {ref} failed: {archive.stderr.decode().strip()}")
@@ -141,7 +166,7 @@ def main() -> int:
     current, base = scan(REPO_ROOT), scan_ref(REPO_ROOT, base_ref)
     now, was = totals(current), totals(base)
 
-    labels = {"any": "Any", "cast": "cast(", "ignore": "type: ignore"}
+    labels = {"any": "Any", "cast": "cast(", "ignore": "type: ignore", "override": "mypy override"}
     print(f"Type escapes vs main ({base_ref[:12] if args.base is None else base_ref}):")
     for kind in Counts._fields:
         print(f"  {labels[kind]:<13} {getattr(was, kind)} -> {getattr(now, kind)}")
@@ -154,8 +179,8 @@ def main() -> int:
         for line in file_changes(current, base, kind):
             print(f"  {line}")
     print(
-        "\nFix the type instead of adding Any, cast( or type: ignore. A JSON boundary takes a TypedDict\n"
-        "or a pydantic model. A new escape lands only with one of the same kind removed."
+        "\nFix the type instead of adding Any, cast(, type: ignore or a mypy override. A JSON boundary\n"
+        "takes a TypedDict or a pydantic model. A new escape lands only with one of the same kind removed."
     )
     return 1
 
