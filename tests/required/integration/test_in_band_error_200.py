@@ -26,13 +26,14 @@ body preserved. No model server needed.
 """
 
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import pytest
 
 from fake_truncating_server import TruncatingSSEServer
 from openai_client_harness import generate_reports, run_request_against
 
+from inference_perf.apis import InferenceAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType
 
@@ -60,7 +61,7 @@ ERROR_FRAME = json.dumps(ERROR_PAYLOAD)
         ),
     ],
 )
-async def test_streaming_in_band_error_frame_is_a_failure(api_config: APIConfig, data: Any) -> None:
+async def test_streaming_in_band_error_frame_is_a_failure(api_config: APIConfig, data: Optional[InferenceAPIData]) -> None:
     """The #713 streaming shape. The stream is complete and well-formed, so no
     transport error fires; the payload alone has to make this a failure."""
     async with TruncatingSSEServer([ERROR_FRAME, "[DONE]"], missing_bytes=0) as server:

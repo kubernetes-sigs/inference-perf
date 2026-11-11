@@ -23,7 +23,7 @@ import heapq
 import json
 import re
 import time
-from typing import Any, Callable, List, NamedTuple, Optional
+from typing import Any, Callable, List, Mapping, NamedTuple, Optional
 
 from aiohttp import ClientResponse
 
@@ -86,7 +86,7 @@ class ParsedSSEStream(NamedTuple):
         return list(heapq.merge(self.chunk_times, self.reasoning_chunk_times, self.tool_chunk_times))
 
 
-def finish_reason_of(data: dict[str, Any]) -> Optional[str]:
+def finish_reason_of(data: Mapping[str, object]) -> Optional[str]:
     """The server's stated reason for ending generation carried by one parsed
     body or SSE frame, or None if this one carries none.
 
