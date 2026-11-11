@@ -33,7 +33,7 @@ No model server needed.
 """
 
 import json
-from typing import Any, Dict, List
+from typing import List
 
 import pytest
 
@@ -208,7 +208,7 @@ async def test_truncation_lands_in_the_failure_bucket_of_the_report() -> None:
     assert summary["successes"]["finish_reasons"] == {"length": 1}
     assert summary["successes"]["output_shortfalls"] == 0
     assert summary["failures"]["count"] == 1
-    by_label: Dict[str, Any] = summary["failures"]["by_label"]
+    by_label = summary["failures"]["by_label"]
     assert list(by_label) == ["truncatedresponseerror"]
     assert by_label["truncatedresponseerror"]["count"] == 1
     assert "delivered 3 of 16" in by_label["truncatedresponseerror"]["messages"][0]["message"]
