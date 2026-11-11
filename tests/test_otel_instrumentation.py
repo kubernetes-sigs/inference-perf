@@ -71,6 +71,39 @@ def test_record_response_metrics_disabled() -> None:
     )
 
 
+# A deliberately truncated session. Expects status UNSET and the explicit truncation
+# attribute, so trace-based error counts agree with the session report.
+def test_end_session_span_marks_truncation_without_error_status() -> None:
+    otel = OTelInstrumentation(enabled=True)
+    pytest.importorskip("opentelemetry.sdk")
+    exporter = _capture_spans(otel)
+    span, _ = otel.start_session_span("truncated", None, None)
+
+    otel.end_session_span(span, truncated=True)
+
+    (finished,) = exporter.get_finished_spans()
+    attributes = dict(finished.attributes or {})
+    assert finished.status.status_code.name == "UNSET"
+    assert attributes["inference_perf.session.truncated"] is True
+
+
+# A session that failed during teardown. Expects an error status carrying the failure
+# text and no deliberate-truncation marker.
+def test_end_session_span_keeps_failure_status() -> None:
+    otel = OTelInstrumentation(enabled=True)
+    pytest.importorskip("opentelemetry.sdk")
+    exporter = _capture_spans(otel)
+    span, _ = otel.start_session_span("failed", None, None)
+
+    otel.end_session_span(span, error="Session failed")
+
+    (finished,) = exporter.get_finished_spans()
+    attributes = dict(finished.attributes or {})
+    assert finished.status.status_code.name == "ERROR"
+    assert finished.status.description == "Session failed"
+    assert "inference_perf.session.truncated" not in attributes
+
+
 def test_get_otel_instrumentation() -> None:
     """Test getting global OTEL instrumentation instance."""
     otel1 = get_otel_instrumentation(service_name="test-service", enabled=True)

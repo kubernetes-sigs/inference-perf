@@ -1418,13 +1418,13 @@ class LoadGenerator:
                 self.session_metrics_collector.record_metric(session_metric)
             if session_id in session_spans:
                 if not session_completed:
-                    span_error: Optional[str] = "Session cut short at stage boundary"
+                    span_error: Optional[str] = None
                 else:
                     # Same check as the in-loop completion path: a session that failed
                     # during the grace is terminal, but must not be traced as OK.
                     session_state = self.datagen.get_session_state(session_id)
                     span_error = "Session failed" if session_state is not None and session_state.failed else None
-                otel_instr.end_session_span(session_spans[session_id], span_error)
+                otel_instr.end_session_span(session_spans[session_id], span_error, truncated=not session_completed)
                 del session_spans[session_id]
             self.datagen.cleanup_session(session_id)
 
