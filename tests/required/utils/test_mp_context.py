@@ -13,15 +13,19 @@
 # limitations under the License.
 """Tests for the forkserver that load generator workers and managers start from."""
 
+import importlib
 import subprocess
 import sys
 import textwrap
+from multiprocessing.context import SpawnContext, SpawnProcess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+import inference_perf.utils.mp_context as mp_module
 from inference_perf.loadgen.load_generator import Worker
-from inference_perf.utils.mp_context import MP_CONTEXT
+from inference_perf.utils.mp_context import MP_CONTEXT, start_forkserver
 
 # Run as a file, not with -c: the forkserver child finds probe() by re-running this path.
 # Nothing from inference_perf is imported at the top: the server preloads "__main__" by
@@ -79,3 +83,34 @@ def test_forkserver_starts_preloaded_and_single_threaded(tmp_path: Path, first: 
 # Fails if Worker goes back to subclassing the stdlib ForkServerProcess.
 def test_worker_starts_through_the_preloading_process() -> None:
     assert issubclass(Worker, MP_CONTEXT.Process)
+
+
+# Verifies that MP_CONTEXT exposes the multiprocessing primitives required by the load
+# generator, metrics collectors, and request queues.
+def test_mp_context_exposes_standard_multiprocessing_interface() -> None:
+    assert hasattr(MP_CONTEXT, "Process")
+    assert hasattr(MP_CONTEXT, "Value")
+    assert hasattr(MP_CONTEXT, "Event")
+    assert hasattr(MP_CONTEXT, "Queue")
+    assert hasattr(MP_CONTEXT, "SimpleQueue")
+    assert hasattr(MP_CONTEXT, "JoinableQueue")
+    assert hasattr(MP_CONTEXT, "Manager")
+
+
+# Verifies that start_forkserver() is callable without raising an exception.
+def test_start_forkserver_is_callable_without_error() -> None:
+    start_forkserver()
+
+
+# Simulates the Windows platform import path where forkserver is unavailable.
+# Expects MP_CONTEXT to fall back to SpawnContext, PreloadedForkServerProcess to subclass
+# SpawnProcess, and start_forkserver() to be a callable no-op.
+def test_windows_platform_fallback() -> None:
+    with patch.object(sys, "platform", "win32"):
+        try:
+            importlib.reload(mp_module)
+            assert isinstance(mp_module.MP_CONTEXT, SpawnContext)
+            assert issubclass(mp_module.PreloadedForkServerProcess, SpawnProcess)
+            mp_module.start_forkserver()
+        finally:
+            importlib.reload(mp_module)
