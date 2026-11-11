@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import List, TypedDict
 
 from inference_perf.workload.arrangement import Arrangement, Node
 from inference_perf.workload.record import Record, SyntheticPart, Turn
@@ -38,6 +38,15 @@ from inference_perf.workload.sources.base import Workload, WorkloadSource
 
 MOONCAKE_BLOCK_SIZE = 512
 _FIELDS = ("timestamp", "input_length", "output_length", "hash_ids")
+
+
+class MooncakeRow(TypedDict):
+    """One trace line after _parse_line has checked every field."""
+
+    timestamp: int
+    input_length: int
+    output_length: int
+    hash_ids: List[int]
 
 
 class MooncakeSource(WorkloadSource):
@@ -75,7 +84,7 @@ class MooncakeSource(WorkloadSource):
                 nodes.append(Node(id=record_id, record_id=record_id, turn=1, send_at_ms=entry["timestamp"]))
         return Workload(source_id=path.name, records=records, arrangement=Arrangement(nodes=nodes))
 
-    def _parse_line(self, line: str, line_num: int, path: Path) -> Dict[str, Any]:
+    def _parse_line(self, line: str, line_num: int, path: Path) -> MooncakeRow:
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as e:
@@ -91,4 +100,9 @@ class MooncakeSource(WorkloadSource):
         hash_ids = entry["hash_ids"]
         if not isinstance(hash_ids, list) or not all(isinstance(h, int) and not isinstance(h, bool) for h in hash_ids):
             raise ValueError(f"{path}:{line_num}: hash_ids must be a list of integers")
-        return entry
+        return MooncakeRow(
+            timestamp=entry["timestamp"],
+            input_length=entry["input_length"],
+            output_length=entry["output_length"],
+            hash_ids=hash_ids,
+        )
