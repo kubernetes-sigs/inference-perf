@@ -21,7 +21,7 @@ of the distribution rather than counting it as 0. A labelled metric has no
 series until its first observation, so a text-only run exports none of these.
 """
 
-from typing import Any, Callable, Optional, Union
+from typing import Callable, Optional, Union
 
 from prometheus_client import Counter, Histogram  # noqa: TID251 (declares each spec's metric_type)
 
@@ -93,7 +93,7 @@ def _observe_frames(side: Side) -> Callable[[Histogram, RequestLifecycleMetric],
     return observe
 
 
-def _media_specs(direction: str, verb: str, side: Side) -> tuple[MetricSpec[Any], ...]:
+def _media_specs(direction: str, verb: str, side: Side) -> tuple[Union[MetricSpec[Counter], MetricSpec[Histogram]], ...]:
     """The five media metrics for one direction: input (sent) or output (received)."""
     return (
         MetricSpec(
@@ -143,7 +143,7 @@ def _media_specs(direction: str, verb: str, side: Side) -> tuple[MetricSpec[Any]
     )
 
 
-MEDIA_SPECS: tuple[MetricSpec[Any], ...] = (
+MEDIA_SPECS: tuple[Union[MetricSpec[Counter], MetricSpec[Histogram]], ...] = (
     *_media_specs("input", "sent", request_media),
     *_media_specs("output", "received", response_media),
 )

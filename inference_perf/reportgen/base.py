@@ -230,10 +230,10 @@ MEDIA_FIELDS: dict[str, tuple[str, ...]] = {
 
 def summarize_media(
     payloads: List[Optional[Union[Images, Videos, Audios]]], modality: str, percentiles: List[float]
-) -> dict[str, Any]:
+) -> dict[str, Optional[dict[str, float]]]:
     """One modality's report block: media per request, then each field over the instances that measured it."""
     instances = [instance for payload in payloads if payload is not None for instance in payload.instances]
-    block: dict[str, Any] = {
+    block: dict[str, Optional[dict[str, float]]] = {
         "count": summarize([float(payload.count) if payload is not None else 0.0 for payload in payloads], percentiles)
     }
     for field in MEDIA_FIELDS[modality]:

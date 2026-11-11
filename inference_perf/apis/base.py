@@ -15,7 +15,7 @@
 from abc import abstractmethod
 from typing import Any, List, Optional
 from aiohttp import ClientResponse
-from pydantic import BaseModel, Field, SerializeAsAny, computed_field, model_serializer
+from pydantic import BaseModel, Field, SerializeAsAny, SerializerFunctionWrapHandler, computed_field, model_serializer
 from inference_perf.payloads import Audios, Images, RequestBody, RequestMetrics, Videos
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
@@ -23,7 +23,7 @@ from inference_perf.config import APIConfig, APIType
 
 # Undecorated so mutation testing reaches it: mutmut skips the body of the
 # decorated serializer that calls this.
-def _drop_absent_media(dumped: dict[str, Any]) -> dict[str, Any]:
+def _drop_absent_media(dumped: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in dumped.items() if value is not None or key not in ("image", "video", "audio")}
 
 
@@ -39,7 +39,7 @@ class ResponseMetrics(BaseModel):
     audio: Optional[Audios] = None
 
     @model_serializer(mode="wrap")
-    def _omit_absent_media(self, handler: Any) -> dict[str, Any]:
+    def _omit_absent_media(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
         """Drop the media fields from a response that returned no media.
 
         Keeps per_request_lifecycle_metrics.json byte-identical for text runs,
