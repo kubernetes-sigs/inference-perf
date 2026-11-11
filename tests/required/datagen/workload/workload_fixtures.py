@@ -15,41 +15,40 @@
 test helpers in this tree (a second conftest.py would collide with
 tests/optional's under mypy)."""
 
+import tempfile
 from pathlib import Path
-from typing import Any, List, cast
+
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import WhitespaceSplit
+from transformers import PreTrainedTokenizerFast
 
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
-# A word-level tokenizer with no HF dependency: token id i is the word "w{i}",
-# encode splits on whitespace, decode joins with spaces, and count_tokens is
-# the word count plus `bos` (0 by default) so a test can make the count
-# disagree with the id list the way a real BOS token does.
-class WordTokenizer:
-    vocab_size = 2000
-    all_special_ids: List[int] = []
-
+# A word-level tokenizer with no Hub download: token id i is the word "w{i}"
+# for i < 2000, encode splits on whitespace, decode joins with spaces, and
+# count_tokens is the word count plus `bos` (0 by default) so a test can make
+# the count disagree with the id list the way a real BOS token does.
+class WordTokenizer(CustomTokenizer):
     def __init__(self, bos: int = 0) -> None:
+        # skips CustomTokenizer.__init__, which loads from the Hub
+        words = Tokenizer(WordLevel({f"w{i}": i for i in range(2000)}, unk_token="w0"))
+        words.pre_tokenizer = WhitespaceSplit()
+        # the constructor is untyped, so load through from_pretrained like a real tokenizer
+        with tempfile.TemporaryDirectory() as directory:
+            words.save(str(Path(directory) / "tokenizer.json"))
+            self.tokenizer = PreTrainedTokenizerFast.from_pretrained(directory)
         self.bos = bos
-
-    def has_chat_template(self) -> bool:
-        return False
-
-    def encode(self, text: str, add_special_tokens: bool = True) -> List[int]:
-        return [int(w[1:]) for w in text.split()]
-
-    def decode(self, ids: List[int], skip_special_tokens: bool = True) -> str:
-        return " ".join(f"w{i}" for i in ids)
 
     def count_tokens(self, text: str, add_special_tokens: bool = True) -> int:
         return len(text.split()) + (self.bos if add_special_tokens else 0)
 
-    def get_tokenizer(self) -> Any:
-        return self
 
-
+# new_word_tokenizer() counts "w1 w2" as 2 tokens and encodes it as [1, 2].
+# new_word_tokenizer(bos=1) counts it as 3 and still encodes it as [1, 2].
 def new_word_tokenizer(bos: int = 0) -> CustomTokenizer:
-    return cast(CustomTokenizer, WordTokenizer(bos=bos))
+    return WordTokenizer(bos=bos)
 
 
 # A corpus of 2000 distinct words, written to disk so the materializer loads

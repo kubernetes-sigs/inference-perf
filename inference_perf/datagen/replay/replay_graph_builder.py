@@ -97,7 +97,7 @@ def message_tokens(msg: ReplayMessage) -> int:
     return estimate_tokens(message_content_text(msg))
 
 
-def _coerce_text(value: Any) -> str:
+def _coerce_text(value: object) -> str:
     """Flatten a text value that may be a string or a list of content blocks.
 
     Recorded ``text`` / tool-result values are usually strings, but some traces

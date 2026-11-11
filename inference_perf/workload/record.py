@@ -25,7 +25,7 @@ data, not behaviour: nothing here knows how to tokenize, schedule or send.
 from __future__ import annotations
 
 import math
-from typing import Annotated, Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Dict, List, Literal, Optional, Union
 
 from pydantic import Field, model_validator
 
@@ -115,7 +115,7 @@ class Record(StrictBaseModel):
     id: str
     turns: List[Turn] = Field(min_length=1)
     session_id: Optional[str] = None
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, object] = {}
 
     def assistant_turn_indices(self) -> List[int]:
         """Indices of the turns a request can elicit."""
