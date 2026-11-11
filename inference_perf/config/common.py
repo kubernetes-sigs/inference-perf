@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from math import sqrt
-from typing import Annotated, Any, Callable, Optional, Union
+from typing import Annotated, Callable, Optional, Union
 
 from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, ValidationInfo, model_validator
 
@@ -145,7 +145,7 @@ class LegacyDistributionBlock:
 
 def _rewrite_legacy_block(
     *, integer: bool, io: bool = False, mean_in_bounds: bool = False
-) -> Callable[[Any, ValidationInfo], Any]:
+) -> Callable[[object, ValidationInfo], object]:
     """A before-validator that turns a legacy distribution block into its expression value.
 
     A dict (from YAML or the nested CLI flags) or a Distribution instance is
@@ -157,7 +157,7 @@ def _rewrite_legacy_block(
     that would clamp every draw onto one bound.
     """
 
-    def rewrite(value: Any, info: ValidationInfo) -> Any:
+    def rewrite(value: object, info: ValidationInfo) -> object:
         if not isinstance(value, (dict, Distribution)):
             return value
         from inference_perf.utils.numeric.distribution import compile_legacy_distribution
@@ -184,7 +184,7 @@ def _rewrite_legacy_block(
     return rewrite
 
 
-def _validate_expression_string(value: Any) -> Any:
+def _validate_expression_string(value: Union[float, str]) -> Union[float, str]:
     if isinstance(value, str):
         validate_length_expression(value)
     return value
