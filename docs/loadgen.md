@@ -340,7 +340,7 @@ load:
     },
     "send_duration": 29.60411316808313,
     "requested_rate": 1.0,
-    "achieved_rate": 1.0133726968840155
+    "achieved_rate": 0.9795936069878817
   },
 ```
 
