@@ -19,7 +19,7 @@ same derivation the report uses.
 """
 
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Mapping, Optional, Tuple
 
 import pytest
 from prometheus_client import Counter, Gauge, Histogram  # noqa: TID251 (throwaway metrics for these tests)
@@ -35,8 +35,8 @@ from inference_perf.apis.base import (
 )
 from inference_perf.config import APIConfig, Config, LoadConfig, StageGenType, StandardLoadStage, SweepConfig
 from inference_perf.observability.metrics import MetricsHub, MetricStability, RunContext, StageContext, build_metrics
-from inference_perf.observability.metrics.sets import ALL_SPECS
-from inference_perf.observability.metrics.sets.core import output_tokens
+from inference_perf.observability.metrics.sets import ALL_SPECS, core
+from inference_perf.observability.metrics.sets.core import output_len_by_channel, output_tokens
 from inference_perf.payloads import RequestMetrics, Text
 
 
@@ -258,6 +258,77 @@ def test_token_counters_sum_successful_requests_only() -> None:
     assert _sample(hub, "inference_perf_output_tokens_total", stage="1") == 3.0
 
 
+# --- output channels (#1039) ----------------------------------------------------
+
+
+# Stands in for the per-channel split #917 stores: output_len_by_channel returns the
+# split given for each request's response, and None for any other response.
+def _route_splits(monkeypatch: pytest.MonkeyPatch, *pairs: Tuple[RequestLifecycleMetric, Mapping[str, int]]) -> None:
+    table = {id(metric.info.response_metrics): split for metric, split in pairs}
+
+    def fake(response_metrics: object) -> Optional[Mapping[str, int]]:
+        return table.get(id(response_metrics))
+
+    monkeypatch.setattr(core, "output_len_by_channel", fake)
+
+
+# Feeds a response with no stored split, which is every response until #917 lands.
+# Expects None, and no per-channel series after the hub observes it.
+def test_output_channels_absent_without_a_split() -> None:
+    request = _streamed(client_output_tokens=41)
+    assert output_len_by_channel(request.info.response_metrics) is None
+    assert output_len_by_channel(None) is None
+    hub = _streaming_hub()
+    hub.observe_request(request)
+    assert _sample(hub, "inference_perf_output_len_total", stage="0", channel="text") is None
+    assert _sample(hub, "inference_perf_output_len_requests_total", stage="0", channel="tool") is None
+
+
+# One turn that answers in 4 text tokens after 26 reasoning tokens and a 15-token
+# tool call. Expects each channel's count in output_len and one request on each.
+def test_output_channels_count_one_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    turn = _streamed(client_output_tokens=45)
+    _route_splits(monkeypatch, (turn, {"text": 4, "reasoning": 26, "tool": 15}))
+    hub = _streaming_hub()
+    hub.observe_request(turn)
+    for channel, tokens in (("text", 4.0), ("reasoning", 26.0), ("tool", 15.0)):
+        assert _sample(hub, "inference_perf_output_len_total", stage="0", channel=channel) == tokens
+        assert _sample(hub, "inference_perf_output_len_requests_total", stage="0", channel=channel) == 1.0
+
+
+# Stage 0: the turn above, a 1-token text-only turn and a failed turn that had split 7/7/7.
+# Stage 1: a tool-only turn of 9. Expects text 5 over 2 requests, reasoning 26 over 1
+# and tool 15 over 1 in stage 0, the failure counted nowhere, a zero series for the
+# channels stage 1 did not use, and tool 9 over 1 there.
+def test_output_channels_sum_successes_and_count_only_used_channels(monkeypatch: pytest.MonkeyPatch) -> None:
+    full = _streamed(client_output_tokens=45)
+    text_only = _streamed(client_output_tokens=1)
+    failed = _streamed(client_output_tokens=21, error="TimeoutError")
+    tool_only = _streamed(stage_id=1, client_output_tokens=9)
+    _route_splits(
+        monkeypatch,
+        (full, {"text": 4, "reasoning": 26, "tool": 15}),
+        (text_only, {"text": 1, "reasoning": 0}),
+        (failed, {"text": 7, "reasoning": 7, "tool": 7}),
+        (tool_only, {"tool": 9}),
+    )
+    hub = _streaming_hub(stages=2)
+    for request in (full, text_only, failed, tool_only):
+        hub.observe_request(request)
+
+    assert _sample(hub, "inference_perf_output_len_total", stage="0", channel="text") == 5.0
+    assert _sample(hub, "inference_perf_output_len_requests_total", stage="0", channel="text") == 2.0
+    assert _sample(hub, "inference_perf_output_len_total", stage="0", channel="reasoning") == 26.0
+    assert _sample(hub, "inference_perf_output_len_requests_total", stage="0", channel="reasoning") == 1.0
+    assert _sample(hub, "inference_perf_output_len_total", stage="0", channel="tool") == 15.0
+    assert _sample(hub, "inference_perf_output_len_requests_total", stage="0", channel="tool") == 1.0
+    assert _sample(hub, "inference_perf_output_len_total", stage="1", channel="tool") == 9.0
+    assert _sample(hub, "inference_perf_output_len_requests_total", stage="1", channel="tool") == 1.0
+    for channel in ("text", "reasoning"):
+        assert _sample(hub, "inference_perf_output_len_total", stage="1", channel=channel) == 0.0
+        assert _sample(hub, "inference_perf_output_len_requests_total", stage="1", channel=channel) == 0.0
+
+
 # --- latency ------------------------------------------------------------------
 
 
@@ -313,8 +384,9 @@ def test_ttft_and_tpot_absent_on_unary_runs() -> None:
 # --- conventions (the checkable half of #628) -----------------------------------
 
 # "cause" is bounded the same way "error_type" is: an exception class name, a
-# signal name, or an exit code, never a message or an id.
-ALLOWED_LABELS = {"stage", "status", "error_type", "cause"}
+# signal name, or an exit code, never a message or an id. "channel" is one of
+# text, reasoning and tool.
+ALLOWED_LABELS = {"stage", "status", "error_type", "cause", "channel"}
 
 
 # Walks every spec in ALL_SPECS. Expects unique inference_perf_-prefixed names with
