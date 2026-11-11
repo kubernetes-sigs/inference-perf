@@ -13,7 +13,7 @@
 # limitations under the License.
 """Datagens sampling their lengths from expression-string config values."""
 
-from typing import Any
+from collections.abc import Iterable
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,27 +23,35 @@ from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.datagen.synthetic.shared_prefix_datagen import SharedPrefixDataGenerator
 from inference_perf.datagen.synthetic.synthetic_datagen import SyntheticDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from transformers import PreTrainedTokenizerBase
 
 
-class DummyTokenizer:
+# Numbers in, numbers out: "7 8" encodes to [7, 8] and [7, 8] decodes to "7 8". Other
+# text encodes to [4, 5, 6] repeated 10 times. Subclasses the HF base so it types as one.
+class DummyTokenizer(PreTrainedTokenizerBase):
     vocab_size = 1000
     all_special_ids = [1, 2, 3]
 
-    def encode(self, text: str) -> list[int]:
+    def __init__(self) -> None:
+        pass
+
+    def encode(self, text: object, *args: object, **kwargs: object) -> list[int]:
         try:
-            return [int(t) for t in text.split()]
+            return [int(t) for t in str(text).split()]
         except ValueError:
             return [4, 5, 6] * 10
 
-    def decode(self, tokens: list[int], **kwargs: Any) -> str:
-        return " ".join(str(t) for t in tokens)
+    def decode(self, token_ids: object, *args: object, **kwargs: object) -> str:
+        assert isinstance(token_ids, Iterable)
+        return " ".join(str(t) for t in token_ids)
 
 
+# A CustomTokenizer over DummyTokenizer that counts whitespace-separated words: "a b c" -> 3.
 class DummyCustomTokenizer(CustomTokenizer):
     def __init__(self) -> None:
         pass
 
-    def get_tokenizer(self) -> Any:
+    def get_tokenizer(self) -> DummyTokenizer:
         return DummyTokenizer()
 
     def count_tokens(self, text: str, add_special_tokens: bool = True) -> int:
