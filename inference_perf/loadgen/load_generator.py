@@ -19,7 +19,6 @@ from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
 from inference_perf.apis import InferenceAPIData
-from inference_perf.apis.base import LazyLoadInferenceAPIData
 from inference_perf.apis.user_session import LocalUserSession
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.client.modelserver.otel_instrumentation import get_otel_instrumentation
@@ -1686,8 +1685,6 @@ class LoadGenerator:
         for _ in range(num_requests):
             request_data = next(data_generator)
             request_data.stage_id = stage_id
-            if isinstance(request_data, LazyLoadInferenceAPIData):
-                request_data.active_worker_count = active_workers
             lora_adapter = self._get_lora_adapter()
             worker_id = request_data.preferred_worker_id
             if worker_id >= 0:

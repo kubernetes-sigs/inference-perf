@@ -98,17 +98,20 @@ its next turn is dispatched as soon as that delay finishes. Every stage's `concu
 be less than or equal to `num_conversations`.
 
 When concurrency is smaller than the blueprint pool, each execution slot keeps its current
-blueprint until all of that conversation's turns finish. It then takes the oldest available
-blueprint from its worker's pool and returns its previous blueprint to the back of that pool.
+blueprint until all of that conversation's turns finish. It then takes the next blueprint its
+worker's own token stream named and returns its previous blueprint to the back of that queue.
 The new conversation starts with fresh context and a new session ID. With enough completed
 requests, this exercises the whole pool rather than repeatedly replaying an initial subset.
 Short runs may stop before every blueprint completes; completion order and variable turn counts
 also mean blueprint request counts need not be equal.
 
-For a stage with W active workers, blueprint i belongs to worker `i % W`, matching queue routing.
-Concurrency is divided across those workers, including uneven splits. Blueprints never rotate
-across workers within a stage. When all blueprints are active, a completed slot reuses its own
-blueprint because no other blueprint is available. Each stage resets this scheduling state.
+A worker only ever runs blueprints named by the requests routed to it, so this pool follows the
+existing `preferred_worker_id` routing rather than tracking a second, separately computed
+partition. When `num_workers` divides `num_conversations` those pools are disjoint; when it does
+not, routing itself already hands one worker tokens for more than one blueprint share, and the
+pool simply mirrors that. When every blueprint a worker can reach is already active, a completed
+slot reuses its own blueprint because nothing else is free. Each stage resets this scheduling
+state, and a blueprint first reached in a later stage picks up that stage's shared system prompt.
 Tool latency continues to occupy the conversation's slot before the next turn or rollover.
 
 For example, the `batch-summarization-rag` catalog sweep has 30 one-turn blueprints and concurrency
