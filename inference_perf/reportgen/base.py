@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import heapq
 import logging
 import json
@@ -37,6 +38,7 @@ from inference_perf.client.server_metrics.base import ModelServerMetrics, StageR
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import (
+    RequestLifecycleMetricsReportConfig,
     Config,
     PrometheusMetricsReportConfig,
     ReportConfig,
@@ -1138,6 +1140,31 @@ def build_per_request_lifecycle_entry(
     return entry
 
 
+def _copy_for_stage_report(metric: RequestLifecycleMetric) -> RequestLifecycleMetric:
+    """Copy a metric deep enough that correcting its token timings leaves the original as it was."""
+    response_metrics = metric.info.response_metrics
+    info = metric.info.model_copy(update={"response_metrics": response_metrics.model_copy() if response_metrics else None})
+    return metric.model_copy(update={"info": info})
+
+
+def _corrected_before_br_partial(
+    metric: RequestLifecycleMetric, lifecycle_config: RequestLifecycleMetricsReportConfig
+) -> bool:
+    """Whether the end-of-run pass has corrected this metric's token timings by the time it builds the BR partial.
+
+    generate_reports corrects in place, in every lifecycle report that summarizes or computes
+    latencies for a successful request, before it builds the BR partials (and enriches sessions).
+    The stage-end pass applies the same corrections, so its partials match.
+    """
+    if metric.error is not None:
+        return False
+    if lifecycle_config.summary or lifecycle_config.per_stage:
+        return True
+    if lifecycle_config.per_request and lifecycle_config.per_request_fields.computed_metrics:
+        return True
+    return metric.info.lora_adapter is not None and bool(lifecycle_config.per_adapter or lifecycle_config.per_adapter_stage)
+
+
 class ReportGenerator:
     def __init__(
         self,
@@ -1151,6 +1178,11 @@ class ReportGenerator:
         self.config = config
         self.datagen = datagen
         self.session_metrics_collector: Optional[SessionMetricsCollector] = None
+        self._tokenizer: Optional[CustomTokenizer] = None
+        # One eid for the whole invocation, and one uid per stage, so the BR
+        # partials written at stage end and at the end of the run are the same.
+        self._br_run_eid: Optional[str] = None
+        self._br_run_uids: dict[int, str] = {}
 
     def get_metrics_collector(self) -> RequestMetricCollector:
         """
@@ -1198,7 +1230,7 @@ class ReportGenerator:
         use_server_output_tokens = report_config.request_lifecycle.use_server_output_tokens
         max_error_messages = report_config.request_lifecycle.max_error_messages
 
-        tokenizer = self._build_tokenizer()
+        tokenizer = self._get_tokenizer()
 
         # Filter out the preprocessing stage -1
         request_metrics = [
@@ -1226,36 +1258,11 @@ class ReportGenerator:
                 if metric.stage_id is not None:
                     stage_buckets[metric.stage_id].append(metric)
             for stage_id, metrics in stage_buckets.items():
-                stage_rate = runtime_parameters.stages[stage_id].rate
-                concurrency_level = runtime_parameters.stages[stage_id].concurrency_level
-                if concurrency_level is not None:
-                    report_file = ReportFile(
-                        name=f"stage_{stage_id}_lifecycle_metrics",
-                        contents=summarize_requests(
-                            metrics,
-                            percentiles,
-                            stage_rate,
-                            concurrency_level,
-                            goodput_config=report_config.goodput,
-                            tokenizer=tokenizer,
-                            use_server_output_tokens=use_server_output_tokens,
-                            max_error_messages=max_error_messages,
-                        ).model_dump(),
+                lifecycle_reports.append(
+                    self._stage_lifecycle_report(
+                        stage_id, metrics, runtime_parameters.stages[stage_id], report_config, tokenizer
                     )
-                else:
-                    report_file = ReportFile(
-                        name=f"stage_{stage_id}_lifecycle_metrics",
-                        contents=summarize_requests(
-                            metrics,
-                            percentiles,
-                            stage_rate,
-                            goodput_config=report_config.goodput,
-                            tokenizer=tokenizer,
-                            use_server_output_tokens=use_server_output_tokens,
-                            max_error_messages=max_error_messages,
-                        ).model_dump(),
-                    )
-                lifecycle_reports.append(report_file)
+                )
 
         if report_config.request_lifecycle.per_request:
             fields = report_config.request_lifecycle.per_request_fields
@@ -1294,20 +1301,11 @@ class ReportGenerator:
                 if metric.stage_id is not None and metric.info.lora_adapter is not None:
                     adapter_stage_buckets[(metric.info.lora_adapter, metric.stage_id)].append(metric)
             for (adapter, stage_id), metrics in adapter_stage_buckets.items():
-                stage_rate = runtime_parameters.stages[stage_id].rate
-                report_file = ReportFile(
-                    name=f"adapter_{adapter}_stage_{stage_id}_lifecycle_metrics",
-                    contents=summarize_requests(
-                        metrics,
-                        percentiles,
-                        stage_rate,
-                        goodput_config=report_config.goodput,
-                        tokenizer=tokenizer,
-                        use_server_output_tokens=use_server_output_tokens,
-                        max_error_messages=max_error_messages,
-                    ).model_dump(),
+                lifecycle_reports.append(
+                    self._adapter_stage_lifecycle_report(
+                        adapter, stage_id, metrics, runtime_parameters.stages[stage_id], report_config, tokenizer
+                    )
                 )
-                lifecycle_reports.append(report_file)
 
         # Per-stage Prometheus summaries for the BR0.2 partials, kept only if the whole
         # section succeeds: no partial carries metrics the native report dropped.
@@ -1352,50 +1350,20 @@ class ReportGenerator:
             # alongside the native inference-perf reports. Downstream composers
             # (llm-d-benchmark CLI, wrappers, ad-hoc yq merges) layer their
             # own partials on top to produce a full BR0.2 document.
-            # Imported here rather than at module top: the br.v0_2 adapter
-            # imports effective_output_tokens from this module.
-            from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_experiment_eid, generate_run_uid
-
             br_stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
             for metric in request_metrics:
                 if metric.stage_id is not None:
                     br_stage_buckets[metric.stage_id].append(metric)
-            # One eid for the whole invocation: run.eid is what lets a
-            # composer group the per-stage partials as a single experiment.
-            br_run_eid = generate_experiment_eid()
             for br_stage_id in sorted(set(br_stage_buckets) | session_stage_ids):
-                # run.time needs the stage's wall-clock window: the request
-                # timestamps are monotonic and can't be mapped to epoch here.
-                stage_info = runtime_parameters.stages.get(br_stage_id)
-                stage_metrics = stage_server_metrics.get(br_stage_id)
-                partial = build_partial_report(
-                    br_stage_buckets.get(br_stage_id, []),
-                    tokenizer,
-                    run_uid=generate_run_uid(br_stage_id),
-                    run_eid=br_run_eid,
-                    use_server_output_tokens=use_server_output_tokens,
-                    stage_start=stage_info.start_time if stage_info else None,
-                    stage_end=stage_info.end_time if stage_info else None,
-                    session_metrics=session_metrics_by_stage.get(br_stage_id, []),
-                    sessions_not_completed=(
-                        stage_info.sessions_not_completed_active + stage_info.sessions_not_completed_pending
-                        if stage_info
-                        else 0
-                    ),
-                    # The component is labelled with the server type (#799).
-                    server_metrics=(
-                        {self.config.server.type.value: stage_metrics}
-                        if stage_metrics is not None and self.config.server is not None
-                        else None
-                    ),
-                    # A lower bound would read as the stage's drop rate, so only an exact count is used.
-                    dropped_requests=stage_info.dropped_requests if stage_info and stage_info.dropped_requests_exact else None,
-                )
                 lifecycle_reports.append(
-                    ReportFile(
-                        name=f"inference-perf.partial.stage_{br_stage_id}",
-                        file_type="yaml",
-                        contents=partial,
+                    self._br_partial_report(
+                        br_stage_id,
+                        br_stage_buckets.get(br_stage_id, []),
+                        runtime_parameters.stages.get(br_stage_id),
+                        tokenizer,
+                        use_server_output_tokens,
+                        session_metrics_by_stage.get(br_stage_id, []),
+                        stage_server_metrics.get(br_stage_id),
                     )
                 )
 
@@ -1425,6 +1393,204 @@ class ReportGenerator:
             logger.exception("Report validation failed; continuing without validation report")
 
         return lifecycle_reports
+
+    async def generate_stage_reports(self, report_config: ReportConfig, stage_info: StageRuntimeInfo) -> List[ReportFile]:
+        """Build the reports of one finished stage, ahead of the end-of-run pass.
+
+        Returns only the files the end-of-run pass writes for this stage, with the
+        same contents: object storage keeps the first upload of a name, so these
+        are the copies that stay there. Returns none if some of the stage's
+        metrics have not reached the collector. Run-wide files (summaries, per-request and
+        per-session lists, Prometheus, validation) are left to the end of the run;
+        so are the stage's Prometheus metrics, which are queried after the scrape
+        that covers the end of the stage, and, when those are on, its BR0.2
+        partial, which carries them.
+        """
+        # Workers have handed over this stage's metrics, but they can still be on
+        # their way to this process.
+        stage_id = stage_info.stage_id
+        if not await self.metrics_collector.wait_for_recorded(stage_id):
+            # Object storage keeps the first copy of a file, so a stage whose
+            # missing metrics may still turn up is only written at the end.
+            logger.warning("Stage %d: its reports will be written at the end of the run", stage_id)
+            return []
+        request_metrics = [m for m in self.metrics_collector.snapshot() if m.stage_id == stage_id]
+        session_metrics = []
+        if self.session_metrics_collector:
+            session_metrics = [m for m in self.session_metrics_collector.get_metrics() if m.stage_id == stage_id]
+        return await asyncio.to_thread(self._build_stage_reports, report_config, stage_info, request_metrics, session_metrics)
+
+    def _build_stage_reports(
+        self,
+        report_config: ReportConfig,
+        stage_info: StageRuntimeInfo,
+        request_metrics: List[RequestLifecycleMetric],
+        session_metrics: List[SessionLifecycleMetric],
+    ) -> List[ReportFile]:
+        stage_id = stage_info.stage_id
+        lifecycle_config = report_config.request_lifecycle
+        tokenizer = self._get_tokenizer()
+        # Build on copies: these reports correct token timings and enrich sessions
+        # in place, and the end-of-run pass must find the metrics as it would have
+        # without this one.
+        request_metrics = [_copy_for_stage_report(m) for m in request_metrics]
+        session_metrics = [m.model_copy() for m in session_metrics]
+        for m in request_metrics:
+            if _corrected_before_br_partial(m, lifecycle_config):
+                correct_streamed_response_metrics(m, tokenizer)
+
+        reports: List[ReportFile] = []
+        if request_metrics:
+            if lifecycle_config.per_stage:
+                reports.append(self._stage_lifecycle_report(stage_id, request_metrics, stage_info, report_config, tokenizer))
+            if lifecycle_config.per_adapter_stage:
+                adapter_buckets: dict[Optional[str], List[RequestLifecycleMetric]] = defaultdict(list)
+                for m in request_metrics:
+                    if m.info.lora_adapter is not None:
+                        adapter_buckets[m.info.lora_adapter].append(m)
+                for adapter, metrics in adapter_buckets.items():
+                    reports.append(
+                        self._adapter_stage_lifecycle_report(adapter, stage_id, metrics, stage_info, report_config, tokenizer)
+                    )
+
+        # Sessions are enriched before the BR partial, as in the end-of-run pass:
+        # the partial carries the same per-session totals as the session reports.
+        session_config = report_config.session_lifecycle
+        stranded_sessions = stage_info.sessions_not_completed_active or stage_info.sessions_not_completed_pending
+        session_stage = False
+        if self.session_metrics_collector and session_config:
+            self._enrich_sessions(session_metrics, request_metrics, lifecycle_config.use_server_output_tokens)
+            session_stage = bool(session_metrics or stranded_sessions)
+        else:
+            session_metrics = []
+
+        # With per-stage Prometheus reports on, the end-of-run partial carries the
+        # stage's server metrics, which are only queried then. Object storage keeps
+        # the first copy of a file, so the partial is left to the end of the run.
+        partial_needs_prometheus = bool(report_config.prometheus and report_config.prometheus.per_stage)
+        if (request_metrics or session_stage) and not partial_needs_prometheus:
+            reports.append(
+                self._br_partial_report(
+                    stage_id,
+                    request_metrics,
+                    stage_info,
+                    tokenizer,
+                    lifecycle_config.use_server_output_tokens,
+                    session_metrics,
+                    None,
+                )
+            )
+
+        if session_stage and session_config and session_config.per_stage:
+            reports.append(
+                self._stage_session_report(
+                    stage_id,
+                    session_metrics,
+                    stage_info,
+                    lifecycle_config.percentiles,
+                    lifecycle_config.max_error_messages,
+                )
+            )
+        return reports
+
+    def _get_tokenizer(self) -> Optional[CustomTokenizer]:
+        # Built once, on first use, and shared by the stage-end and end-of-run
+        # passes: loading it is slow, and both passes must count tokens alike.
+        if self._tokenizer is None:
+            self._tokenizer = self._build_tokenizer()
+        return self._tokenizer
+
+    def _stage_lifecycle_report(
+        self,
+        stage_id: int,
+        metrics: List[RequestLifecycleMetric],
+        stage_info: StageRuntimeInfo,
+        report_config: ReportConfig,
+        tokenizer: Optional[CustomTokenizer],
+    ) -> ReportFile:
+        lifecycle_config = report_config.request_lifecycle
+        return ReportFile(
+            name=f"stage_{stage_id}_lifecycle_metrics",
+            contents=summarize_requests(
+                metrics,
+                lifecycle_config.percentiles,
+                stage_info.rate,
+                stage_info.concurrency_level,
+                goodput_config=report_config.goodput,
+                tokenizer=tokenizer,
+                use_server_output_tokens=lifecycle_config.use_server_output_tokens,
+                max_error_messages=lifecycle_config.max_error_messages,
+            ).model_dump(),
+        )
+
+    def _adapter_stage_lifecycle_report(
+        self,
+        adapter: Optional[str],
+        stage_id: int,
+        metrics: List[RequestLifecycleMetric],
+        stage_info: StageRuntimeInfo,
+        report_config: ReportConfig,
+        tokenizer: Optional[CustomTokenizer],
+    ) -> ReportFile:
+        lifecycle_config = report_config.request_lifecycle
+        return ReportFile(
+            name=f"adapter_{adapter}_stage_{stage_id}_lifecycle_metrics",
+            contents=summarize_requests(
+                metrics,
+                lifecycle_config.percentiles,
+                stage_info.rate,
+                goodput_config=report_config.goodput,
+                tokenizer=tokenizer,
+                use_server_output_tokens=lifecycle_config.use_server_output_tokens,
+                max_error_messages=lifecycle_config.max_error_messages,
+            ).model_dump(),
+        )
+
+    def _br_partial_report(
+        self,
+        stage_id: int,
+        metrics: List[RequestLifecycleMetric],
+        stage_info: Optional[StageRuntimeInfo],
+        tokenizer: Optional[CustomTokenizer],
+        use_server_output_tokens: bool,
+        session_metrics: List[SessionLifecycleMetric],
+        server_metrics: Optional[ModelServerMetrics],
+    ) -> ReportFile:
+        # Imported here rather than at module top: the br.v0_2 adapter
+        # imports effective_output_tokens from this module.
+        from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_experiment_eid, generate_run_uid
+
+        # One eid for the whole invocation: run.eid is what lets a
+        # composer group the per-stage partials as a single experiment.
+        if self._br_run_eid is None:
+            self._br_run_eid = generate_experiment_eid()
+        if stage_id not in self._br_run_uids:
+            self._br_run_uids[stage_id] = generate_run_uid(stage_id)
+
+        # run.time needs the stage's wall-clock window: the request
+        # timestamps are monotonic and can't be mapped to epoch here.
+        partial = build_partial_report(
+            metrics,
+            tokenizer,
+            run_uid=self._br_run_uids[stage_id],
+            run_eid=self._br_run_eid,
+            use_server_output_tokens=use_server_output_tokens,
+            stage_start=stage_info.start_time if stage_info else None,
+            stage_end=stage_info.end_time if stage_info else None,
+            session_metrics=session_metrics,
+            sessions_not_completed=(
+                stage_info.sessions_not_completed_active + stage_info.sessions_not_completed_pending if stage_info else 0
+            ),
+            # The component is labelled with the server type (#799).
+            server_metrics=(
+                {self.config.server.type.value: server_metrics}
+                if server_metrics is not None and self.config.server is not None
+                else None
+            ),
+            # A lower bound would read as the stage's drop rate, so only an exact count is used.
+            dropped_requests=stage_info.dropped_requests if stage_info and stage_info.dropped_requests_exact else None,
+        )
+        return ReportFile(name=f"inference-perf.partial.stage_{stage_id}", file_type="yaml", contents=partial)
 
     def summarize_sessions(
         self,
@@ -1777,41 +1943,13 @@ class ReportGenerator:
                 ):
                     stage_buckets[stage_id] = []
             for stage_id, stage_metrics in stage_buckets.items():
-                # Get stage runtime info and build metadata
-                stage_info = runtime_parameters.stages.get(stage_id)
-                stage_summary = self.summarize_sessions(
-                    metrics=stage_metrics,
-                    stage_infos=[stage_info] if stage_info else [],
-                    percentiles=percentiles,
-                    max_error_messages=max_error_messages,
-                )
-
-                if stage_info:
-                    # The status is recorded at the point the stage actually terminated
-                    # (see load_generator.py), not inferred here from durations.
-                    status_str = _STAGE_STATUS_LABELS.get(stage_info.status, "FAILED")
-
-                    # Build stage metadata
-                    stage_metadata = {
-                        "stage_id": stage_id,
-                        "status": status_str,
-                        "max_stage_duration_configured": stage_info.max_stage_duration,
-                        "duration_configured": stage_info.duration,
-                        "actual_duration": stage_info.end_time - stage_info.start_time,
-                        "teardown_duration": stage_info.teardown_duration,
-                        "dropped_requests": stage_info.dropped_requests,
-                        "dropped_requests_exact": stage_info.dropped_requests_exact,
-                        "concurrent_sessions": stage_info.concurrency_level,
-                        "session_rate": stage_info.rate if stage_info.rate > 0 else None,
-                    }
-
-                    # Insert stage_metadata as first key
-                    stage_summary = {"stage_metadata": stage_metadata, **stage_summary}
-
                 reports.append(
-                    ReportFile(
-                        name=f"stage_{stage_id}_session_lifecycle_metrics",
-                        contents=stage_summary,
+                    self._stage_session_report(
+                        stage_id,
+                        stage_metrics,
+                        runtime_parameters.stages.get(stage_id),
+                        percentiles,
+                        max_error_messages,
                     )
                 )
 
@@ -1824,6 +1962,45 @@ class ReportGenerator:
             )
 
         return reports
+
+    def _stage_session_report(
+        self,
+        stage_id: int,
+        stage_metrics: List[SessionLifecycleMetric],
+        stage_info: Optional[StageRuntimeInfo],
+        percentiles: List[float],
+        max_error_messages: int,
+    ) -> ReportFile:
+        stage_summary = self.summarize_sessions(
+            metrics=stage_metrics,
+            stage_infos=[stage_info] if stage_info else [],
+            percentiles=percentiles,
+            max_error_messages=max_error_messages,
+        )
+
+        if stage_info:
+            # The status is recorded at the point the stage actually terminated
+            # (see load_generator.py), not inferred here from durations.
+            status_str = _STAGE_STATUS_LABELS.get(stage_info.status, "FAILED")
+
+            # Build stage metadata
+            stage_metadata = {
+                "stage_id": stage_id,
+                "status": status_str,
+                "max_stage_duration_configured": stage_info.max_stage_duration,
+                "duration_configured": stage_info.duration,
+                "actual_duration": stage_info.end_time - stage_info.start_time,
+                "teardown_duration": stage_info.teardown_duration,
+                "dropped_requests": stage_info.dropped_requests,
+                "dropped_requests_exact": stage_info.dropped_requests_exact,
+                "concurrent_sessions": stage_info.concurrency_level,
+                "session_rate": stage_info.rate if stage_info.rate > 0 else None,
+            }
+
+            # Insert stage_metadata as first key
+            stage_summary = {"stage_metadata": stage_metadata, **stage_summary}
+
+        return ReportFile(name=f"stage_{stage_id}_session_lifecycle_metrics", contents=stage_summary)
 
     def generate_prometheus_metrics_report(
         self,
