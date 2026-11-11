@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import copy
 import datetime
-from typing import Any, Dict, List, Mapping
+from typing import Dict, List, Mapping
 
 import yaml
 from pydantic import ValidationError
@@ -35,7 +35,7 @@ from .partial_report import build_partial_report
 from .schema import BenchmarkReportV021
 
 
-def load_base_report(path: str) -> Dict[str, Any]:
+def load_base_report(path: str) -> Dict[str, object]:
     """Read a base report and check it. Raises ValueError naming what is wrong."""
     try:
         with open(path) as f:
@@ -77,7 +77,7 @@ def load_base_report(path: str) -> Dict[str, Any]:
     return document
 
 
-def apply_base_report(partial: Mapping[str, Any], base: Mapping[str, Any]) -> Dict[str, Any]:
+def apply_base_report(partial: Mapping[str, object], base: Mapping[str, object]) -> Dict[str, object]:
     """``partial`` with ``base`` merged over it, map by map."""
     # load_base_report rejects every leaf inference-perf writes, so the two only
     # overlap on DEFAULTED leaves, where the base wins.
@@ -105,7 +105,7 @@ def _null_paths(node: object, path: str = "") -> List[str]:
 # datetime as an ISO-8601 string, the same as the fields inference-perf writes.
 def _iso_datetimes(node: object) -> None:
     if isinstance(node, dict):
-        entries: List[tuple[Any, object]] = list(node.items())
+        entries = list(node.items())
     elif isinstance(node, list):
         entries = list(enumerate(node))
     else:

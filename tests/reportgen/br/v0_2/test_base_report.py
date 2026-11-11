@@ -14,7 +14,7 @@
 """Tests for loading a BR0.2 base report and building partials on top of it."""
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
 import pytest
 import yaml
@@ -22,9 +22,9 @@ import yaml
 from inference_perf.config.reportgen.config import BenchmarkReportConfig, ReportConfig
 from inference_perf.reportgen.br.v0_2 import apply_base_report, load_base_report
 
-from .base_report_helpers import generate_reports, partial_validation_errors, partials
+from .base_report_helpers import at, generate_reports, partial_validation_errors, partials
 
-STACK_COMPONENT: Dict[str, Any] = {
+STACK_COMPONENT: Dict[str, object] = {
     "metadata": {"label": "vllm-0", "cfg_id": "vllm"},
     "standardized": {"kind": "generic", "tool": "vllm", "tool_version": "0.11.0"},
     "native": {"args": {"--max-num-seqs": 256}},
@@ -32,7 +32,7 @@ STACK_COMPONENT: Dict[str, Any] = {
 
 
 # Writes doc as YAML to tmp_path/base.yaml and returns the path.
-def _write(tmp_path: Path, doc: Any) -> str:
+def _write(tmp_path: Path, doc: object) -> str:
     path = tmp_path / "base.yaml"
     path.write_text(yaml.safe_dump(doc))
     return str(path)
@@ -143,9 +143,9 @@ def test_load_turns_timestamps_into_iso_strings(tmp_path: Path) -> None:
         "        - name: vllm-0\n"
         "          ready_timestamp: 2026-11-06T09:58:30Z\n"
     )
-    startup = load_base_report(str(path))["results"]["observability"]["pod_startup_times"]
-    assert startup["collected_at"] == "2026-11-06T10:00:00+00:00"
-    assert startup["pods"][0]["ready_timestamp"] == "2026-11-06T09:58:30+00:00"
+    startup = at(load_base_report(str(path)), "results", "observability", "pod_startup_times")
+    assert at(startup, "collected_at") == "2026-11-06T10:00:00+00:00"
+    assert at(startup, "pods", 0, "ready_timestamp") == "2026-11-06T09:58:30+00:00"
 
 
 # The partial keeps run.uid and results. The base adds run.description and the stack.
@@ -171,7 +171,9 @@ def test_apply_keeps_the_base_eid() -> None:
 def test_apply_copies_base_values() -> None:
     base = {"scenario": {"stack": [{"metadata": {"label": "a", "cfg_id": "c"}}]}}
     merged = apply_base_report({}, base)
-    merged["scenario"]["stack"][0]["metadata"]["label"] = "changed"
+    metadata = at(merged, "scenario", "stack", 0, "metadata")
+    assert isinstance(metadata, dict)
+    metadata["label"] = "changed"
     assert base["scenario"]["stack"][0]["metadata"]["label"] == "a"
 
 
@@ -194,6 +196,7 @@ def test_generate_reports_drops_a_base_that_broke_mid_run(tmp_path: Path) -> Non
     stages = partials(reports)
     assert sorted(stages) == [0, 1]
     for partial in stages.values():
-        assert "description" not in partial["run"]
-        assert partial["run"]["uid"].startswith("inference-perf-stage-")
+        run = at(partial, "run")
+        assert isinstance(run, dict) and "description" not in run
+        assert run["uid"].startswith("inference-perf-stage-")
     assert partial_validation_errors(reports) == []

@@ -14,7 +14,7 @@
 """Shared fixtures for the base-report tests: a two-stage run through the real ``generate_reports``."""
 
 import asyncio
-from typing import Any, Dict, List, cast
+from typing import Dict, List, Union
 from unittest.mock import Mock
 
 from inference_perf.apis import ErrorResponseInfo, InferenceInfo, RequestLifecycleMetric, StreamedResponseMetrics
@@ -72,14 +72,14 @@ def make_stage_metrics() -> Dict[int, List[RequestLifecycleMetric]]:
 
 # Runs the real generate_reports over make_stage_metrics() with report_config and
 # returns {filename: contents}, e.g. "inference-perf.partial.stage_0.yaml" and "validation.json".
-def generate_reports(report_config: ReportConfig) -> Dict[str, Any]:
+def generate_reports(report_config: ReportConfig) -> Dict[str, object]:
     stage_metrics = make_stage_metrics()
     collector = Mock(spec=RequestMetricCollector)
     collector.get_metrics.return_value = [m for metrics in stage_metrics.values() for m in metrics]
     config = Mock(spec=Config)
     config.tokenizer = None
     config.model_dump.return_value = {"load": {"stages": [{"rate": 1.0}, {"rate": 1.0}]}}
-    generator = ReportGenerator(metrics_client=None, metrics_collector=collector, config=cast(Config, config))
+    generator = ReportGenerator(metrics_client=None, metrics_collector=collector, config=config)
     stages = {
         stage_id: StageRuntimeInfo(
             stage_id=stage_id,
@@ -96,12 +96,38 @@ def generate_reports(report_config: ReportConfig) -> Dict[str, Any]:
 
 
 # The partial files out of generate_reports' output, e.g. {0: {...}, 1: {...}}.
-def partials(reports: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
+def partials(reports: Dict[str, object]) -> Dict[int, Dict[str, object]]:
     prefix = "inference-perf.partial.stage_"
-    return {int(name[len(prefix) : -len(".yaml")]): contents for name, contents in reports.items() if name.startswith(prefix)}
+    found: Dict[int, Dict[str, object]] = {}
+    for name, contents in reports.items():
+        if name.startswith(prefix):
+            assert isinstance(contents, dict), name
+            found[int(name[len(prefix) : -len(".yaml")])] = contents
+    return found
 
 
 # Every error validation.json recorded against a partial file. A clean run gives [].
-def partial_validation_errors(reports: Dict[str, Any]) -> List[Any]:
-    groups = reports["validation.json"]["reports"]
-    return [error for name, group in groups.items() if name.startswith("inference-perf.partial.") for error in group["errors"]]
+def partial_validation_errors(reports: Dict[str, object]) -> List[object]:
+    groups = at(reports, "validation.json", "reports")
+    assert isinstance(groups, dict)
+    errors: List[object] = []
+    for name in groups:
+        if name.startswith("inference-perf.partial."):
+            found = at(groups, name, "errors")
+            assert isinstance(found, list)
+            errors.extend(found)
+    return errors
+
+
+# The value under a path of keys and list indexes, asserting each step exists.
+# at({"pods": [{"name": "a"}]}, "pods", 0, "name") == "a".
+def at(document: object, *path: Union[str, int]) -> object:
+    node = document
+    for step in path:
+        if isinstance(step, int):
+            assert isinstance(node, list) and step < len(node), f"no [{step}] in {node!r}"
+            node = node[step]
+        else:
+            assert isinstance(node, dict) and step in node, f"no {step!r} in {node!r}"
+            node = node[step]
+    return node

@@ -26,7 +26,7 @@ from inference_perf.config import read_config
 from inference_perf.config.reportgen.config import BenchmarkReportConfig
 from inference_perf.reportgen.br.v0_2 import apply_base_report, load_base_report
 
-from .base_report_helpers import generate_reports, partial_validation_errors, partials
+from .base_report_helpers import at, generate_reports, partial_validation_errors, partials
 
 EXAMPLES_DIR = Path(__file__).parent / "base_report_examples"
 EXAMPLES = sorted(path.name for path in EXAMPLES_DIR.iterdir() if path.is_dir())
@@ -53,13 +53,17 @@ def test_example_config_builds_every_partial_on_its_base(example: str, monkeypat
 
     stages = partials(reports)
     assert sorted(stages) == [0, 1]
-    assert stages[0]["results"]["request_performance"]["aggregate"]["requests"]["total"] == 4
-    assert stages[1]["results"]["request_performance"]["aggregate"]["requests"]["total"] == 2
+    assert at(stages[0], "results", "request_performance", "aggregate", "requests", "total") == 4
+    assert at(stages[1], "results", "request_performance", "aggregate", "requests", "total") == 2
+    base_run = base.get("run", {})
+    assert isinstance(base_run, dict)
     for stage_id, partial in stages.items():
         expected = apply_base_report(bare[stage_id], base)
+        expected_run = at(expected, "run")
+        assert isinstance(expected_run, dict)
         # Generated per call, so the two runs differ here and nowhere else.
-        expected["run"]["uid"] = partial["run"]["uid"]
-        if "eid" not in base.get("run", {}):
-            expected["run"]["eid"] = partial["run"]["eid"]
+        expected_run["uid"] = at(partial, "run", "uid")
+        if "eid" not in base_run:
+            expected_run["eid"] = at(partial, "run", "eid")
         assert partial == expected
     assert partial_validation_errors(reports) == []
