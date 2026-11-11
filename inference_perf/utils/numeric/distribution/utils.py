@@ -221,7 +221,7 @@ def sample_lengths(
     rng: Optional[np.random.Generator] = None,
 ) -> NDArray[np.int_]:
     """Sample integer lengths from any length-field config value; see :func:`sample_values`."""
-    return cast(NDArray[np.int_], sample_values(value, count, rng, integer=True).astype(int))
+    return sample_values(value, count, rng, integer=True).astype(np.int_)
 
 
 def value_ceiling(value: Union[int, float, "Distribution", str]) -> Optional[float]:

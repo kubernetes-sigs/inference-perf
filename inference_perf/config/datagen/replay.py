@@ -137,7 +137,7 @@ class ConversationReplayConfig(StrictBaseModel):
         mode="after",
     )
     @classmethod
-    def validate_value_expressions(cls, value: Any) -> Any:
+    def validate_value_expressions(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
         # An expression string is checked when the config loads; sampling sites build their own Expression.
         if isinstance(value, str):
             validate_length_expression(value)
@@ -415,7 +415,7 @@ class ContextCompactionConfig(BaseModel):
 
     @field_validator("trigger_tokens", "target_tokens", mode="after")
     @classmethod
-    def validate_value_expressions(cls, value: Any) -> Any:
+    def validate_value_expressions(cls, value: Union[Distribution, str]) -> Union[Distribution, str]:
         # An expression string is checked when the config loads; sampling sites build their own Expression.
         if isinstance(value, str):
             validate_length_expression(value)
@@ -604,7 +604,7 @@ class SyntheticAgenticConfig(SessionReplayConfig):
         mode="after",
     )
     @classmethod
-    def validate_value_expressions(cls, value: Any) -> Any:
+    def validate_value_expressions(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
         # An expression string is checked when the config loads; sampling sites build their own Expression.
         if isinstance(value, str):
             validate_length_expression(value)
