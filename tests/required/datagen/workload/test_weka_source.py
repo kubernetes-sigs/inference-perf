@@ -14,7 +14,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import pytest
 
@@ -23,11 +23,14 @@ from inference_perf.workload.sources import load_workload
 from inference_perf.workload.sources.weka import WekaSource
 
 
-def call(t: float, n_in: int, n_out: int, hash_ids: List[int], api_time: float) -> Dict[str, Any]:
+# call(0.0, 14, 3, [1, 2, 3], 0.5) is one Weka call sent at t=0s with 14 input
+# and 3 output tokens over prefix blocks [1, 2, 3], taking 0.5s.
+def call(t: float, n_in: int, n_out: int, hash_ids: List[int], api_time: float) -> Dict[str, object]:
     return {"t": t, "type": "n", "model": "m", "in": n_in, "out": n_out, "hash_ids": hash_ids, "api_time": api_time}
 
 
-def trace(trace_id: str, requests: List[Dict[str, Any]], tool_tokens: int = 0, system_tokens: int = 0) -> Dict[str, Any]:
+# trace("T", rounds) is the Weka trace "T" holding those requests, block size 4, model "m".
+def trace(trace_id: str, requests: List[Dict[str, object]], tool_tokens: int = 0, system_tokens: int = 0) -> Dict[str, object]:
     return {
         "id": trace_id,
         "models": ["m"],
@@ -38,7 +41,8 @@ def trace(trace_id: str, requests: List[Dict[str, Any]], tool_tokens: int = 0, s
     }
 
 
-def write(tmp_path: Path, *traces: Dict[str, Any]) -> Path:
+# write(tmp_path, a, b) writes each trace to <id>.json under tmp_path and returns tmp_path.
+def write(tmp_path: Path, *traces: Dict[str, object]) -> Path:
     for t in traces:
         (tmp_path / f"{t['id']}.json").write_text(json.dumps(t))
     return tmp_path
