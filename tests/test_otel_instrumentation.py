@@ -71,18 +71,6 @@ def test_record_response_metrics_disabled() -> None:
     )
 
 
-# Hooks an in-memory exporter onto the tracer provider otel uses and returns it, so a test
-# can inspect spans that finish after this call.
-def _capture_spans(otel: OTelInstrumentation) -> "InMemorySpanExporter":
-    pytest.importorskip("opentelemetry.sdk")
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    exporter = InMemorySpanExporter()
-    otel._provider.add_span_processor(SimpleSpanProcessor(exporter))
-    return exporter
-
-
 # A deliberately truncated session. Expects status UNSET and the explicit truncation
 # attribute, so trace-based error counts agree with the session report.
 def test_end_session_span_marks_truncation_without_error_status() -> None:
