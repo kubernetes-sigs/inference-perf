@@ -14,7 +14,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Dict, List, Sequence
 
 import pytest
 
@@ -23,6 +23,8 @@ from inference_perf.workload.sources import Workload
 from inference_perf.workload.sources.tracelab import TraceLabSource
 
 
+# One TraceLab line: rnd("claude:A", 0, 200, 0, 30, t0, t1) is round 0 of session claude:A,
+# a 200-token prompt with nothing cached and 30 output tokens, arriving at t0 and done at t1.
 def rnd(
     session: str,
     index: int,
@@ -32,7 +34,7 @@ def rnd(
     start: str,
     end: str,
     model: str = "claude-opus-4-8",
-) -> Dict[str, Any]:
+) -> Dict[str, object]:
     return {
         "session_id": session,
         "round_index": index,

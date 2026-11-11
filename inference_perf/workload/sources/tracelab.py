@@ -47,7 +47,7 @@ import math
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, TypedDict
 
 from inference_perf.workload.arrangement import Arrangement, Node
 from inference_perf.workload.record import Record, SyntheticPart, Turn
@@ -57,6 +57,23 @@ from inference_perf.workload.sources.base import Workload, WorkloadSource
 # what the engines it was captured against use.
 TRACELAB_BLOCK_SIZE = 64
 _FIELDS = ("session_id", "round_index", "input_tokens_total", "prefix_tokens", "output_tokens", "timing_events")
+
+
+class TimingEvent(TypedDict):
+    timestamp: str
+
+
+class TraceLabRow(TypedDict):
+    """One trace line after _parse_line has checked the fields load reads."""
+
+    session_id: str
+    round_index: int
+    input_tokens_total: int
+    prefix_tokens: int
+    output_tokens: int
+    timing_events: List[TimingEvent]
+    # not checked, so it is whatever JSON value the line carries, or None when absent
+    model: object
 
 
 def _parse_iso_ms(ts: str) -> int:
@@ -69,7 +86,7 @@ def _parse_iso_ms(ts: str) -> int:
 class _Round:
     """One parsed line, kept until its session is complete."""
 
-    def __init__(self, entry: Dict[str, Any]) -> None:
+    def __init__(self, entry: TraceLabRow) -> None:
         self.index: int = entry["round_index"]
         self.input_tokens: int = entry["input_tokens_total"]
         self.prefix_tokens: int = entry["prefix_tokens"]
@@ -77,7 +94,7 @@ class _Round:
         stamps = [_parse_iso_ms(e["timestamp"]) for e in entry["timing_events"]]
         self.start_ms: int = min(stamps)
         self.end_ms: int = max(stamps)
-        self.model: Optional[str] = entry.get("model")
+        self.model: object = entry["model"]
 
 
 class TraceLabSource(WorkloadSource):
@@ -153,7 +170,7 @@ class TraceLabSource(WorkloadSource):
             )
         return nodes
 
-    def _parse_line(self, line: str, line_num: int, path: Path) -> Dict[str, Any]:
+    def _parse_line(self, line: str, line_num: int, path: Path) -> TraceLabRow:
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as e:
@@ -180,4 +197,12 @@ class TraceLabSource(WorkloadSource):
                 _parse_iso_ms(event["timestamp"])
             except ValueError as err:
                 raise ValueError(f"{path}:{line_num}: bad timestamp {event['timestamp']!r}") from err
-        return entry
+        return TraceLabRow(
+            session_id=entry["session_id"],
+            round_index=entry["round_index"],
+            input_tokens_total=entry["input_tokens_total"],
+            prefix_tokens=entry["prefix_tokens"],
+            output_tokens=entry["output_tokens"],
+            timing_events=[TimingEvent(timestamp=event["timestamp"]) for event in events],
+            model=entry.get("model"),
+        )

@@ -14,7 +14,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType, WorkloadReplayConfig
 from inference_perf.datagen.replay.replay_graph_session_datagen import SessionChatCompletionAPIData
@@ -23,7 +23,9 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from workload_fixtures import new_word_tokenizer, write_corpus
 
 
-def rnd(session: str, index: int, total: int, prefix: int, out: int, start: str, end: str) -> Dict[str, Any]:
+# One TraceLab line: rnd("claude:A", 0, 200, 0, 30, t0, t1) is round 0 of session claude:A,
+# a 200-token prompt with nothing cached and 30 output tokens, arriving at t0 and done at t1.
+def rnd(session: str, index: int, total: int, prefix: int, out: int, start: str, end: str) -> Dict[str, object]:
     return {
         "session_id": session,
         "round_index": index,
