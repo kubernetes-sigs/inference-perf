@@ -581,7 +581,8 @@ class TestGeneratePrometheusMetricsReport:
         # 25 hits over 100 queries, reported as a percentage.
         assert successes["prefix_cache_hit_percent"]["mean"] == pytest.approx(25.0)
 
-    def test_cache_hit_percent_is_zero_when_nothing_queried_the_cache(self) -> None:
+    # 0 cache queries means no hit rate can be computed; must report null, not 0.0%.
+    def test_cache_hit_percent_is_null_when_nothing_queried_the_cache(self) -> None:
         client = _prometheus_client()
         gen = _make_generator(metrics_client=client)
         metrics = ModelServerMetrics(
@@ -597,7 +598,7 @@ class TestGeneratePrometheusMetricsReport:
                 _runtime({}), PrometheusMetricsReportConfig(summary=True, per_stage=False)
             )
 
-        assert reports[0].contents["successes"]["prefix_cache_hit_percent"]["mean"] == 0.0
+        assert reports[0].contents["successes"]["prefix_cache_hit_percent"]["mean"] is None
 
     def test_per_stage_emits_one_report_per_configured_stage(self) -> None:
         client = _prometheus_client()
@@ -671,6 +672,7 @@ class TestSummarizePrometheusMetricsMissing:
         # Healthy fields keep their values.
         assert summary["request_latency"] == {"mean": 0.5, "median": 0.4, "p90": 0.9, "p99": 1.1}
 
+    # A missing hit/query count must not render as 0%.
     def test_missing_cache_counts_yield_null_hit_percent(self) -> None:
         """A missing hit/query count must not render as 0%."""
         summary = summarize_prometheus_metrics(
@@ -681,6 +683,34 @@ class TestSummarizePrometheusMetricsMissing:
         ).model_dump()["successes"]
 
         assert summary["prefix_cache_hit_percent"] == {"mean": None}
+
+    # Zero queries or undeclared counters (defaulting to total=0.0) produce null hit percent.
+    def test_zero_cache_queries_yields_null_hit_percent(self) -> None:
+        summary = summarize_prometheus_metrics(
+            ModelServerMetrics(
+                prefix_cache_hits=CounterResult(total=0.0),
+                prefix_cache_queries=CounterResult(total=0.0),
+                external_prefix_cache_hits=CounterResult(total=0.0),
+                external_prefix_cache_queries=CounterResult(total=0.0),
+                mm_cache_hits=CounterResult(total=0.0),
+                mm_cache_queries=CounterResult(total=0.0),
+            )
+        ).model_dump()["successes"]
+
+        assert summary["prefix_cache_hit_percent"] == {"mean": None}
+        assert summary["external_prefix_cache_hit_percent"] == {"mean": None}
+        assert summary["mm_cache_hit_percent"] == {"mean": None}
+
+    # When queries > 0 and hits == 0, hit percent should be 0.0%, not null.
+    def test_zero_cache_hits_with_positive_queries_yields_zero_hit_percent(self) -> None:
+        summary = summarize_prometheus_metrics(
+            ModelServerMetrics(
+                prefix_cache_hits=CounterResult(total=0.0),
+                prefix_cache_queries=CounterResult(total=50.0),
+            )
+        ).model_dump()["successes"]
+
+        assert summary["prefix_cache_hit_percent"] == {"mean": 0.0}
 
     def test_partially_missing_quantile_reports_null_value(self) -> None:
         """One failed quantile reports that value as null while the rest of the metric stays."""
