@@ -30,9 +30,19 @@ class RateOverWindow(Trigger, spec_cls=TriggerRateOverWindow):
         self._fired = False
 
     def update(self, s: HitSample) -> None:
-        now = s.ts
-        self.buf.append(s)
-        cutoff = now - self.size
+        if not self.buf or s.ts >= self.buf[-1].ts:
+            self.buf.append(s)
+        else:
+            for offset, sample in enumerate(reversed(self.buf)):
+                if s.ts >= sample.ts:
+                    self.buf.insert(len(self.buf) - offset, s)
+                    break
+            else:
+                self.buf.appendleft(s)
+        # Sorted order keeps the latest time at the tail, even for stale arrivals.
+        # A nonnegative window cannot evict that tail, so it retains the latest
+        # time seen until reset clears the buffer.
+        cutoff = self.buf[-1].ts - self.size
         while self.buf and self.buf[0].ts < cutoff:
             self.buf.popleft()
         total = len(self.buf)
