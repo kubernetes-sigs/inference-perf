@@ -78,8 +78,8 @@ def rate_tolerance(n: int, arrival: str) -> float:
 def observed_send_rate(entries: Sequence[Dict[str, Any]]) -> Tuple[float, float]:
     """Recompute (send_duration, achieved_rate) from raw per-request starts.
 
-    Same arithmetic as reportgen's ``summarize_requests``: request count over
-    the span from first send to last send. Because it is the same arithmetic,
+    Same arithmetic as reportgen's ``summarize_requests``: the n - 1 gaps
+    between n sends over the span from first send to last send. Because it is the same arithmetic,
     the reported value can be diffed against it to check reportgen.
 
     It only sees the first and last send. What happens between them is
@@ -91,7 +91,7 @@ def observed_send_rate(entries: Sequence[Dict[str, Any]]) -> Tuple[float, float]
     send_duration = starts[-1] - starts[0]
     if send_duration <= 0:
         raise ValueError("all requests share one send timestamp; no rate to observe")
-    return send_duration, len(starts) / send_duration
+    return send_duration, (len(starts) - 1) / send_duration
 
 
 def arrival_bin_counts(entries: Sequence[Dict[str, Any]], bins: int) -> List[int]:

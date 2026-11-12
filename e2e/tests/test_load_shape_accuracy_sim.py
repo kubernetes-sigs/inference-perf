@@ -173,7 +173,7 @@ async def test_achieved_rate_matches_configured_rate(arrival: str):
 
     Three separate claims, deliberately not collapsed into one:
 
-    1. reportgen's `achieved_rate` is the count over the span of send times,
+    1. reportgen's `achieved_rate` is the gaps over the span of send times,
        recomputed here from the raw per-request timestamps. Checking the
        reported value against the independent recomputation is what makes
        this more than a restatement of the tool's own summary.
@@ -442,15 +442,14 @@ def test_rate_tolerance_is_a_function_of_n_and_arrival():
         rate_tolerance(1, "constant")
 
 
-# 4 requests at 0, 1, 2, 3s. Pins send_duration=3.0 and achieved_rate=4/3,
-# the same count-over-span arithmetic reportgen uses.
+# 4 requests at 0, 1, 2, 3s. Pins send_duration=3.0 and achieved_rate=3/3,
+# the same gaps-over-span arithmetic reportgen uses.
 def test_observed_send_rate_matches_reportgen_arithmetic():
     entries = [{"start_time": t, "end_time": t + 0.5} for t in [0.0, 1.0, 2.0, 3.0]]
     send_duration, rate = observed_send_rate(entries)
     assert send_duration == pytest.approx(3.0)
-    # 4 requests spanning 3s: this is count/span, the same edge effect
-    # reportgen has, which is exactly why rate_tolerance accounts for it.
-    assert rate == pytest.approx(4.0 / 3.0)
+    # 4 requests spanning 3s are 3 gaps, so the 1.0/s they were sent at.
+    assert rate == pytest.approx(1.0)
 
 
 # 10 requests at 0, 1, ..., 9s in 5 slices. Pins counts [2, 2, 2, 2, 2]: the
@@ -462,14 +461,14 @@ def test_arrival_bin_counts_slices_the_send_window():
         arrival_bin_counts(entries, 1)
 
 
-# 400 requests configured at 40 qps for 10s: one at t=0 and 399 at t=10.
-# observed_send_rate reads exactly 40 qps (400/10) and passes the rate
+# 401 requests configured at 40 qps for 10s: one at t=0 and 400 at t=10.
+# observed_send_rate reads exactly 40 qps (400 gaps / 10s) and passes the rate
 # check; assert_arrivals_spread fails it, with 4 empty slices out of 5.
 def test_arrivals_spread_rejects_a_burst_the_rate_check_accepts():
-    entries = [{"start_time": 0.0, "end_time": 0.5}] + [{"start_time": 10.0, "end_time": 10.5}] * 399
+    entries = [{"start_time": 0.0, "end_time": 0.5}] + [{"start_time": 10.0, "end_time": 10.5}] * 400
     _, rate = observed_send_rate(entries)
     assert rate == pytest.approx(40.0)
-    assert abs(rate - 40.0) / 40.0 <= rate_tolerance(400, "constant")
+    assert abs(rate - 40.0) / 40.0 <= rate_tolerance(401, "constant")
     with pytest.raises(AssertionError, match="not spread"):
         assert_arrivals_spread(entries)
 

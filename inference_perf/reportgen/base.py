@@ -881,9 +881,10 @@ def summarize_requests(
     }
 
     if stage_rate is not None:
+        # n sends span n - 1 gaps, so the sustained rate is (n - 1) / send_duration (#821).
         # Guard against zero send_duration to avoid ZeroDivisionError when all
         # requests have identical start times or there is only a single request.
-        achieved_rate = len(metrics) / send_duration if send_duration > 0 else 0.0
+        achieved_rate = (len(metrics) - 1) / send_duration if send_duration > 0 else 0.0
         load_summary = {
             "count": len(metrics),
             "schedule_delay": summarize(schedule_deltas, percentiles),
