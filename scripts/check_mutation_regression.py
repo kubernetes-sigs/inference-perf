@@ -116,25 +116,22 @@ DOC_LINE = f"What each failure means and how to pass: {DOC_URL}"
 CHILD_PLUGIN = "mutation_child_hits"
 CHILD_PLUGIN_SOURCE = '''"""Carry what a forked child does back to the test that started it."""
 
-import ctypes
 import os
 import resource
 import signal
 from pathlib import Path
 
 import pytest
+from mutation_orphan_guard import die_with_parent, note_parent
 
 HITS_DIR = Path(os.environ.get("MUTATION_HITS_DIR", "."))
 MEMORY_HEADROOM = int(os.environ.get("MUTATION_MEMORY_HEADROOM", "0"))
 # mutmut's exit code for a timeout
 TIMEOUT_EXIT = 36
-# prctl option: signal this process when its parent exits
-PR_SET_PDEATHSIG = 1
 _current = None
 _count = 0
 _registered = False
 _timer_armed = False
-_forked_from = None
 
 
 def pytest_configure(config):
@@ -142,7 +139,7 @@ def pytest_configure(config):
     # pytest.main can run more than once in a process, and a forked child inherits the handler
     if not _registered:
         _registered = True
-        os.register_at_fork(before=_note_parent, after_in_child=_in_child)
+        os.register_at_fork(before=note_parent, after_in_child=_in_child)
     _cap_memory()
 
 
@@ -198,28 +195,8 @@ def pytest_runtest_setup(item):
     _current = HITS_DIR / f"{os.getpid()}-{_count}.hits"
 
 
-def _note_parent():
-    global _forked_from
-    _forked_from = os.getpid()
-
-
-def _die_with_parent():
-    # mutmut ends a mutant's run with os._exit or a kill. Both skip the exit hook that stops daemon
-    # processes, so a Worker the test left waiting would outlive the run and keep its memory.
-    if "__mutmut_" not in os.environ.get("MUTANT_UNDER_TEST", ""):
-        return
-    try:
-        ctypes.CDLL(None).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
-    except (OSError, AttributeError):
-        # no prctl off Linux
-        return
-    # a parent that left before the call above never sends the signal
-    if os.getppid() != _forked_from:
-        os._exit(1)
-
-
 def _in_child():
-    _die_with_parent()
+    die_with_parent()
     # only mutmut's stats run records hits. A mutant run reaches the child through the environment
     if os.environ.get("MUTANT_UNDER_TEST") != "stats" or _current is None:
         return
@@ -248,6 +225,54 @@ def pytest_runtest_teardown(item, nextitem):
     state()._stats.update(_current.read_text().split())
     _current.unlink()
 '''
+# mutmut ends a mutant's run with os._exit or a kill. Both skip the exit hook that stops daemon
+# processes, so a Worker the test left waiting would outlive the run and keep its memory. The child
+# plugin's fork hook covers what a test forks itself. Workers are forked by multiprocessing's
+# forkserver, which starts by exec and so runs no fork hook, and each Worker holds the pipe that
+# keeps the server up. STARTUP_SOURCE is the harness directory's sitecustomize: it runs the guard in
+# every interpreter started under a mutant, the server included.
+ORPHAN_GUARD = "mutation_orphan_guard"
+ORPHAN_GUARD_SOURCE = '''"""End a process started or forked under a mutant when its parent exits."""
+
+import os
+import signal
+
+# prctl option: signal this process when its parent exits
+PR_SET_PDEATHSIG = 1
+_forked_from = None
+
+
+def _signal_on_parent_exit():
+    if "__mutmut_" not in os.environ.get("MUTANT_UNDER_TEST", ""):
+        return False
+    # imported here so an interpreter outside a mutant's run pays nothing at startup
+    import ctypes
+
+    try:
+        ctypes.CDLL(None).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    except (OSError, AttributeError):
+        # no prctl off Linux
+        return False
+    return True
+
+
+def note_parent():
+    global _forked_from
+    _forked_from = os.getpid()
+
+
+def die_with_parent():
+    # a parent that left before the prctl call never sends the signal
+    if _signal_on_parent_exit() and os.getppid() != _forked_from:
+        os._exit(1)
+
+
+def guard_started_process():
+    if _signal_on_parent_exit():
+        os.register_at_fork(before=note_parent, after_in_child=die_with_parent)
+'''
+STARTUP_SOURCE = f"import {ORPHAN_GUARD}\n\n{ORPHAN_GUARD}.guard_started_process()\n"
+
 CHILD_COVERAGE_CONFIG = """[tool.coverage.run]
 source = ["inference_perf"]
 concurrency = ["multiprocessing"]
@@ -425,6 +450,8 @@ def harness_dir() -> Path:
     plugin = HARNESS_DIR / f"{CHILD_PLUGIN}.py"
     if not plugin.exists():
         plugin.write_text(CHILD_PLUGIN_SOURCE)
+        (HARNESS_DIR / f"{ORPHAN_GUARD}.py").write_text(ORPHAN_GUARD_SOURCE)
+        (HARNESS_DIR / "sitecustomize.py").write_text(STARTUP_SOURCE)
         (HARNESS_DIR / "coverage.toml").write_text(CHILD_COVERAGE_CONFIG)
     return HARNESS_DIR
 
