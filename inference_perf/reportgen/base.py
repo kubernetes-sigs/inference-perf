@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 import numpy as np
-from pydantic import BaseModel, model_serializer
+from pydantic import BaseModel, ValidationError, model_serializer
 
 from inference_perf.apis.base import is_stage_teardown_cancelled
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
@@ -121,8 +121,8 @@ def make_concise_label(error_type: str, error_msg: str) -> str:
     (_HTTP_CODE_LABELS), then message-specific patterns (_HTTP_ERROR_LABELS),
     else "other".
     For non-HTTP errors, matches against _NON_HTTP_ERROR_LABELS, falling back to a
-    lowercased error_type. An InBandError skips the patterns: its label is always
-    ``inbanderror``.
+    lowercased error_type. An InBandError or a schema ValidationError skips the
+    patterns: its label is its lowercased type.
     """
     if error_type.startswith("HTTP Error "):
         try:
@@ -136,9 +136,10 @@ def make_concise_label(error_type: str, error_msg: str) -> str:
             if pattern.search(error_msg):
                 return f"{code} - {label}"
         return f"{code} - other"
-    # An in-band error's message is the server's own text. A "connect" or "timeout"
-    # in it must not file the failure with the client's transport errors.
-    if error_type == InBandError.__name__:
+    # An in-band error's message is the server's own text, and a schema failure's
+    # message quotes the body. A "connect" or "timeout" in either must not file the
+    # failure with the client's transport errors.
+    if error_type in (InBandError.__name__, ValidationError.__name__):
         return error_type.lower()
     for pattern, label in _NON_HTTP_ERROR_LABELS:
         if pattern.search(error_msg):
