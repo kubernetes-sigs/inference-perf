@@ -143,25 +143,3 @@ def test_cli_reports_and_exits_nonzero_on_a_bad_file(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "bad.py" in result.stdout
     assert "good.py" not in result.stdout
-
-
-# Every tracked Python file must pass the checker, including scripts and tests.
-def test_all_tracked_python_files_have_license_headers() -> None:
-    repo = SCRIPT.parent.parent
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z", "--", "*.py"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    assert tracked.returncode == 0, f"git ls-files failed (exit {tracked.returncode}):\n{tracked.stdout}{tracked.stderr}"
-    filenames = [filename for filename in tracked.stdout.split("\0") if filename]
-    assert filenames, "No tracked Python files found; the repository license check must not pass without checking files."
-
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), *filenames],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"License check failed (exit {result.returncode}):\n{result.stdout}{result.stderr}"

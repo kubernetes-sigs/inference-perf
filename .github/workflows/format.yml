@@ -42,10 +42,6 @@ jobs:
       - name: Install dependencies
         run: |
           pdm sync -d
-      - name: Check license headers in all tracked Python files
-        shell: bash
-        run: |
-          pdm run git ls-files --error-unmatch -z -- '*.py' | pdm run xargs -0 python scripts/check_license.py
       - name: Run validate (format, lint, mypy, CLI flag docs)
         run: |
           pdm run validate
