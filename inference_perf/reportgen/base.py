@@ -574,9 +574,9 @@ def calculate_goodput_metrics(
 
 
 def _ratio(num: Optional[float], den: Optional[float]) -> Optional[float]:
-    if num is None or den is None:
+    if num is None or den is None or den <= 0:
         return None
-    return (num / den) * 100.0 if den > 0 else 0.0
+    return (num / den) * 100.0
 
 
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
