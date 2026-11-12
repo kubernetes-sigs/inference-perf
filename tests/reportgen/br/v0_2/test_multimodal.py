@@ -206,3 +206,51 @@ def test_video_pixels_sum_frames_per_instance(mixed_requests: list[RequestLifecy
     assert stats["min"] == 400
     assert stats["max"] == 3600
     assert stats["p50"] == pytest.approx(2000)
+
+
+# The text request gains an image sent by URL (nothing measured) and a 500-pixel,
+# 50-byte video whose frame count was never seen. Expects image filesize over the
+# measured 10 and 30 only (mean 20), video pixels still 400..3600 with the frameless
+# video left out, and video filesize including its 50 bytes: (20 + 60 + 50) / 3.
+def test_unmeasured_media_stays_out_of_br_statistics(mixed_requests: list[RequestLifecycleMetric]) -> None:
+    text = mixed_requests[1]
+    text.info.request_metrics.image = Images(count=1, instances=[Image()])
+    text.info.request_metrics.video = Videos(count=1, instances=[Video(pixels=500, bytes=50, aspect_ratio=1)])
+
+    multimodal = _aggregate(mixed_requests)["requests"]["multimodal"]
+
+    assert multimodal["image"]["count"]["mean"] == 1.5
+    assert multimodal["image"]["filesize"]["mean"] == 20
+    assert multimodal["video"]["pixels"]["min"] == 400
+    assert multimodal["video"]["pixels"]["max"] == 3600
+    assert multimodal["video"]["filesize"]["mean"] == pytest.approx(130 / 3)
+
+
+# The text request gains a 10-frame video whose resolution was never seen. Expects
+# video pixels still 400..3600 with that video left out, and its frame count kept:
+# frames over 2, 6 and 10 (mean 6).
+def test_video_without_resolution_stays_out_of_br_pixels(mixed_requests: list[RequestLifecycleMetric]) -> None:
+    text = mixed_requests[1]
+    text.info.request_metrics.video = Videos(count=1, instances=[Video(frames=10)])
+
+    video = _aggregate(mixed_requests)["requests"]["multimodal"]["video"]
+
+    assert video["pixels"]["min"] == 400
+    assert video["pixels"]["max"] == 3600
+    assert video["pixels"]["mean"] == pytest.approx(2000)
+    assert video["frames"]["max"] == 10
+    assert video["frames"]["mean"] == pytest.approx(6)
+
+
+# The first request's response also returns an image. Expects no response media in
+# the report yet: v0.2.1 has no field for it and rejects unknown keys, which
+# _aggregate checks by validating the report it builds.
+def test_response_media_not_in_br_until_the_schema_declares_it(mixed_requests: list[RequestLifecycleMetric]) -> None:
+    mixed_requests[0].info.response_metrics = UnaryResponseMetrics(
+        output_tokens=2, image=Images(count=1, instances=[Image(pixels=1, bytes=1, aspect_ratio=1)])
+    )
+
+    aggregate = _aggregate(mixed_requests)
+
+    assert "output_multimodal" not in aggregate["requests"]
+    assert not [key for key in aggregate["throughput"] if key.startswith("output_image")]
