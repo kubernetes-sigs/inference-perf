@@ -13,7 +13,7 @@
 # limitations under the License.
 """Unit tests for results.observability.components in the BR0.2 partial (#799, row 1)."""
 
-from typing import Any, Dict, Optional
+from typing import Dict, List, Optional
 
 from inference_perf.client.modelserver.metrics import CounterResult, GaugeResult
 from inference_perf.client.server_metrics import ModelServerMetrics
@@ -32,17 +32,24 @@ def _stage_summary() -> ModelServerMetrics:
     )
 
 
-def _observability(server_metrics: Optional[Dict[str, ModelServerMetrics]]) -> Optional[Dict[str, Any]]:
+def _observability(server_metrics: Optional[Dict[str, ModelServerMetrics]]) -> Optional[Dict[str, object]]:
     partial = build_partial_report([], tokenizer=None, run_uid="uid", server_metrics=server_metrics)
-    observability: Optional[Dict[str, Any]] = partial["results"].get("observability")
+    observability: Optional[Dict[str, object]] = partial["results"].get("observability")
     return observability
 
 
-def _aggregate(summary: ModelServerMetrics) -> Dict[str, Any]:
+def _components(observability: Dict[str, object]) -> List[Dict[str, object]]:
+    components = observability["components"]
+    assert isinstance(components, list)
+    return components
+
+
+def _aggregate(summary: ModelServerMetrics) -> Dict[str, object]:
     observability = _observability({"vllm": summary})
     assert observability is not None
-    [component] = observability["components"]
-    aggregate: Dict[str, Any] = component["aggregate"]
+    [component] = _components(observability)
+    aggregate = component["aggregate"]
+    assert isinstance(aggregate, dict)
     return aggregate
 
 
@@ -50,7 +57,7 @@ def test_component_label_is_the_server_type() -> None:
     observability = _observability({"vllm": _stage_summary()})
 
     assert observability is not None
-    assert [c["component_label"] for c in observability["components"]] == ["vllm"]
+    assert [c["component_label"] for c in _components(observability)] == ["vllm"]
 
 
 def test_kv_cache_usage_is_a_fraction_with_percentiles() -> None:

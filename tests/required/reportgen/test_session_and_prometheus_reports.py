@@ -50,6 +50,7 @@ from inference_perf.config.reportgen.config import (
 )
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.reportgen.base import ReportGenerator, summarize_prometheus_metrics
+from inference_perf.utils.report_file import ReportFile
 
 PERCENTILES = [50.0, 90.0]
 
@@ -724,14 +725,14 @@ def _partial_generator(server: Optional[ModelServerType]) -> ReportGenerator:
     return ReportGenerator(metrics_client=_prometheus_client(), metrics_collector=collector, config=config)
 
 
-async def _stage_0_partial(gen: ReportGenerator, per_stage: bool) -> Tuple[Dict[str, Any], int]:
+async def _stage_0_partial(gen: ReportGenerator, per_stage: bool) -> Tuple[ReportFile, int]:
     report_config = ReportConfig(prometheus=PrometheusMetricsReportConfig(summary=False, per_stage=per_stage))
     with (
         patch.object(PrometheusMetricsClient, "wait"),
         patch.object(PrometheusMetricsClient, "collect_metrics_for_stage", return_value=_server_metrics()) as collect,
     ):
         reports = await gen.generate_reports(report_config, _runtime({0: _stage_info(0)}))
-    partial: Dict[str, Any] = next(r.contents for r in reports if r.name == "inference-perf.partial.stage_0")
+    partial = next(r for r in reports if r.name == "inference-perf.partial.stage_0")
     return partial, collect.call_count
 
 
@@ -739,25 +740,25 @@ class TestPrometheusComponentInPartial:
     async def test_per_stage_metrics_fill_the_component(self) -> None:
         partial, _ = await _stage_0_partial(_partial_generator(ModelServerType.VLLM), per_stage=True)
 
-        [component] = partial["results"]["observability"]["components"]
+        [component] = partial.contents["results"]["observability"]["components"]
         assert component["component_label"] == "vllm"
         assert component["aggregate"]["waiting_requests"]["mean"] == 3.0
 
     async def test_the_label_follows_the_server_type(self) -> None:
         partial, _ = await _stage_0_partial(_partial_generator(ModelServerType.SGLANG), per_stage=True)
 
-        assert [c["component_label"] for c in partial["results"]["observability"]["components"]] == ["sglang"]
+        assert [c["component_label"] for c in partial.contents["results"]["observability"]["components"]] == ["sglang"]
 
     async def test_no_component_without_per_stage_metrics(self) -> None:
         partial, collections = await _stage_0_partial(_partial_generator(ModelServerType.VLLM), per_stage=False)
 
         assert collections == 0
-        assert "observability" not in partial["results"]
+        assert "observability" not in partial.contents["results"]
 
     async def test_no_component_without_a_server_type(self) -> None:
         partial, _ = await _stage_0_partial(_partial_generator(None), per_stage=True)
 
-        assert "observability" not in partial["results"]
+        assert "observability" not in partial.contents["results"]
 
     async def test_a_later_call_without_per_stage_has_no_component(self) -> None:
         gen = _partial_generator(ModelServerType.VLLM)
@@ -765,7 +766,7 @@ class TestPrometheusComponentInPartial:
 
         partial, _ = await _stage_0_partial(gen, per_stage=False)
 
-        assert "observability" not in partial["results"]
+        assert "observability" not in partial.contents["results"]
 
     async def test_a_failed_collection_leaves_no_component(self) -> None:
         """Stage 1's query raises after stage 0's was collected: the native Prometheus
@@ -781,5 +782,5 @@ class TestPrometheusComponentInPartial:
             reports = await gen.generate_reports(report_config, _runtime({0: _stage_info(0), 1: _stage_info(1)}))
 
         assert not any("prometheus" in r.name for r in reports)
-        partial: Dict[str, Any] = next(r.contents for r in reports if r.name == "inference-perf.partial.stage_0")
-        assert "observability" not in partial["results"]
+        partial = next(r for r in reports if r.name == "inference-perf.partial.stage_0")
+        assert "observability" not in partial.contents["results"]
