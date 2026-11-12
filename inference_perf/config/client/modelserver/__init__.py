@@ -14,9 +14,11 @@
 from inference_perf.config.client.modelserver.config import (
     ModelServerClientConfig,
     ModelServerType,
+    WaitFor,
 )
 
 __all__ = [
     "ModelServerClientConfig",
     "ModelServerType",
+    "WaitFor",
 ]

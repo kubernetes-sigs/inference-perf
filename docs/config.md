@@ -300,6 +300,7 @@ server:
   api_key: ""                                         # Optional API key for authenticated endpoints
   cert_path: ""                                       # Optional path to a client TLS certificate (mutual TLS)
   key_path: ""                                        # Optional path to the private key for cert_path
+  wait_for: ready                                     # What to wait for before the first request (ready|reachable|none)
 ```
 
 `server.type` selects the model server (vLLM by default). Verified servers are vLLM,
@@ -328,6 +329,31 @@ servers that serve exactly one model need no model identifier at all. The lookup
 
 The same `/v1/models` lookup validates LoRA adapter names when
 `load.lora_traffic_split` is configured.
+
+`server.wait_for` sets what the client waits for before the first request. The wait
+polls the profile's readiness route (`/health` for vLLM, `/v1/models` for SGLang and
+TGI) once a second for up to 600 seconds:
+
+- `ready` (default): until the route answers 200. A 404 means the route is not served
+  there, and the run starts without waiting.
+- `reachable`: until the route gives any HTTP response. A gateway in front of a pool
+  that has scaled to zero answers 503, and the run's first requests are what bring the
+  servers up. A probe that connects and then gets no response within 5 seconds also
+  counts, since such a gateway may hold it until a backend exists.
+- `none`: no wait.
+
+With `reachable` or `none`, the client sends nothing else to the server before the
+run. `server.model_name` is required, the tokenizer loads from
+`tokenizer.pretrained_model_name_or_path` or else `server.model_name` with no `root`
+fallback, and LoRA adapter names are not checked.
+
+```yaml
+server:
+  type: vllm
+  base_url: http://gateway:80
+  model_name: Qwen/Qwen3-8B
+  wait_for: reachable
+```
 
 Example — let both the model name and the tokenizer be auto-detected:
 
