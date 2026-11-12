@@ -97,7 +97,7 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 
 - **`load_summary`**: Details about the requested vs achieved load.
 - **`successes`**: Metrics for successful requests.
-- **`failures`**: Metrics for failed requests, including the per-label error breakdown. A request fails on a non-200 status, on a transport error, or on a 200 whose body is not a completion: a body or stream frame carrying a top-level `error` (label `inbanderror`, `error_msg` is the JSON of that body or frame) or one with neither completion content nor `usage` (label `emptyresponseerror`). The body is kept as `response` in the per-request report either way.
+- **`failures`**: Metrics for failed requests, including the per-label error breakdown. A request fails on a non-200 status, on a transport error, or on a 200 whose body is not a completion: a body or stream frame carrying a top-level `error` (label `inbanderror`, `error_msg` is the JSON of that body or frame), a unary body whose `choices` or `usage` is not shaped like a completion's (label `validationerror`, for example a choice with no `message` or `text`), or one with neither completion content nor `usage` (label `emptyresponseerror`). The body is kept as `response` in the per-request report in every case.
 
   The `by_label` keys and the `error_type` label on the runtime counter
   `inference_perf_request_errors_total` ([runtime_metrics.md](./runtime_metrics.md)) start from
