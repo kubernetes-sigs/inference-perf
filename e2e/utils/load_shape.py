@@ -53,8 +53,10 @@ def rate_tolerance(n: int, arrival: str) -> float:
     them to sum to exactly ``duration``, so the schedule has no cumulative
     drift. The only random term left in reportgen's
     ``send_duration = max(start) - min(start)`` is the one gap that n points
-    do not span. That gap is Exp(1/rate), so the relative error is Exp(1)/n
-    and P(error > k/n) = e^-k. k = 12 puts the false-failure rate near 1e-5.
+    do not span. That gap is Exp(1/rate), and achieved_rate divides the n - 1
+    gaps it does span by it, so the relative error is (Exp(1) - 1)/n: centred
+    on zero, never below -1/n, and P(error > k/n) = e^-(k+1). k = 12 puts the
+    false-failure rate near 2e-6.
 
     ``poisson``: ``PoissonLoadTimer`` draws a Poisson(rate) count per second,
     so the time to emit n requests has standard deviation sqrt(n)/rate around
