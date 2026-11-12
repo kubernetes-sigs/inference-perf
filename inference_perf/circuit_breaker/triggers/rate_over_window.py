@@ -13,7 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 import collections
-import datetime
 from typing import Deque
 from .base import Trigger, HitSample
 from inference_perf.config.circuit_breaker import TriggerRateOverWindow
@@ -23,7 +22,7 @@ class RateOverWindow(Trigger, spec_cls=TriggerRateOverWindow):
     """Open when hit rate over a time window crosses threshold."""
 
     def __init__(self, window_sec: float, threshold: float, min_samples: int = 0):
-        self.size = datetime.timedelta(seconds=window_sec)
+        self.size = float(window_sec)
         self.th = threshold
         self.min = min_samples
         self.buf: Deque[HitSample] = collections.deque()
