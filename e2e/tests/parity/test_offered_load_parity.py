@@ -107,8 +107,9 @@ class OfferedLoad:
     ignore_eos_flags: Set[bool]
     lifecycle: List[Dict[str, float]]
 
-    # Average arrival rate: request count over the time from first to last
-    # arrival. 600 requests whose first and last arrivals are 15s apart = 40/s.
+    # Average arrival rate: the gaps between arrivals over the time from first
+    # to last arrival. 600 requests whose first and last arrivals are 15s apart
+    # are 599 gaps, so 599 / 15 = 39.93/s.
     @property
     def realized_rate(self) -> float:
         return observed_send_rate(self.lifecycle)[1]
