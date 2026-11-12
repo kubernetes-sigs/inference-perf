@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientResponse
+from pydantic import ValidationError
 
 from inference_perf.apis import UnaryResponseMetrics
 from inference_perf.apis import chat as chat_module
@@ -557,3 +558,63 @@ async def test_materialize_pre_encoded_image_webp_mime() -> None:
     payload = await data.to_request_body(effective_model_name="gpt-vlm", max_tokens=10, ignore_eos=False, streaming=False)
     image_blocks = [c for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
     assert image_blocks[0]["image_url"]["url"].startswith("data:image/webp;base64,")
+
+
+# Unary chat bodies that are not a completion even though usage is present: a choice with
+# no message, a string message, a list content, choices as a dict, usage as a list. Each
+# must raise ValidationError. On main the first one was a zero-token success.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"choices": [{"index": 0, "finish_reason": "stop"}], "usage": {"prompt_tokens": 3}},
+        {"choices": [{"message": "hello"}], "usage": {"prompt_tokens": 3}},
+        {"choices": [{"message": {"content": ["hello"]}}], "usage": {"prompt_tokens": 3}},
+        {"choices": {"message": {"content": "hello"}}, "usage": {"prompt_tokens": 3}},
+        {"choices": [{"message": {"content": "hello"}}], "usage": [3]},
+    ],
+)
+async def test_process_response_non_streaming_malformed_body_raises_validation_error(body: dict[str, object]) -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    with pytest.raises(ValidationError):
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+
+# Unary chat bodies shaped the way TGI, vLLM, SGLang and gateways send them, all with
+# content "hello there" (2 tokens): finish_reason stop_sequence, abort, repetition and null, a
+# metadata dict with a non-string value, a custom service_tier, and no id/object/created/
+# model/index/total_tokens anywhere. Each is a success and usage comes back unchanged.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "choice_extra, body_extra",
+    [
+        ({"finish_reason": "stop_sequence"}, {}),
+        ({"finish_reason": "abort"}, {}),
+        ({"finish_reason": "repetition"}, {}),
+        ({"finish_reason": None}, {}),
+        ({"finish_reason": "stop"}, {"metadata": {"weight_version": 3}}),
+        ({"finish_reason": "stop"}, {"service_tier": "premium"}),
+        ({}, {}),
+    ],
+)
+async def test_process_response_non_streaming_accepts_engine_specific_fields(
+    choice_extra: dict[str, object], body_extra: dict[str, object]
+) -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    usage = {"prompt_tokens": 42, "completion_tokens": None}
+    body = {
+        "choices": [{"message": {"role": "assistant", "content": "hello there"}, **choice_extra}],
+        "usage": usage,
+        **body_extra,
+    }
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    info = await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
+    assert info.response_metrics.output_tokens == 2
+    assert info.response_metrics.server_usage == {"prompt_tokens": 42, "completion_tokens": None}
