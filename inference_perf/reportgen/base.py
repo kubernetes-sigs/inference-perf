@@ -900,7 +900,12 @@ def summarize_requests(
         x for x in metrics if x.error is not None and not is_stage_teardown_cancelled(x.error)
     ]
 
-    total_time = max(x.end_time for x in metrics) - min(x.start_time for x in metrics)
+    # The throughput window spans the requests that got an answer. A cancelled request's end_time is when the load
+    # generator cancelled it, up to stage_teardown_grace_seconds after the stage ended, so counting it would stretch
+    # benchmark_time_seconds and lower every *_per_sec figure compared with the same run had those requests finished
+    # before the stage did. Only when every request was cancelled does the window fall back to all of them.
+    answered = (all_successful + all_failed) or metrics
+    total_time = max(x.end_time for x in answered) - min(x.start_time for x in answered)
 
     schedule_deltas = [x.start_time - x.scheduled_time for x in metrics]
     send_duration = max(x.start_time for x in metrics) - min(x.start_time for x in metrics)
