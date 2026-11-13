@@ -14,7 +14,7 @@
 """Expression strings as config values for length and IO distribution fields.
 
 The fields that accepted int/Distribution also accept an expression string
-(``"Normal(512, 200)"``), validated at config-load time. Dataset generators
+(``"floor(Normal(512, 200))"``), validated at config-load time. Dataset generators
 use the IO distribution's min/max as filter bounds, so strings there are a
 config error rather than a runtime crash.
 """
@@ -30,8 +30,8 @@ class TestSharedPrefixLengthExpressions:
     # stores it verbatim for the datagen to sample from.
     @pytest.mark.parametrize("field", ["system_prompt_len", "question_len", "output_len"])
     def test_expression_string_accepted(self, field: str) -> None:
-        sp = SharedPrefix(**{field: "Normal(50, 10)"})
-        assert getattr(sp, field) == "Normal(50, 10)"
+        sp = SharedPrefix(**{field: "floor(Normal(50, 10))"})
+        assert getattr(sp, field) == "floor(Normal(50, 10))"
 
     # A misspelled distribution name ("Nrml") fails at config-load time with
     # a field validation error, not at first sample.
@@ -48,7 +48,7 @@ class TestSharedPrefixLengthExpressions:
     # ambiguous, exactly like an inline Distribution plus the legacy field.
     def test_expression_conflicts_with_legacy_distribution(self) -> None:
         with pytest.raises(ValidationError, match="one or the other"):
-            SharedPrefix(question_len="Normal(50, 10)", question_distribution=Distribution(mean=50.0, min=1, max=100))
+            SharedPrefix(question_len="floor(Normal(50, 10))", question_distribution=Distribution(mean=50.0, min=1, max=100))
 
     # The pre-existing forms keep working: a plain int and an inline
     # Distribution parse to their own types, not strings.
@@ -65,18 +65,18 @@ class TestDataConfigDistributionExpressions:
     def test_expression_string_accepted_for_sampling_types(self, gen_type: DataGenType) -> None:
         config = DataConfig(
             type=gen_type,
-            input_distribution="LogNormal(5.0, 0.5)",
-            output_distribution="Uniform(10, 100)",
+            input_distribution="floor(LogNormal(5.0, 0.5))",
+            output_distribution="floor(Uniform(10, 100))",
         )
-        assert config.input_distribution == "LogNormal(5.0, 0.5)"
-        assert config.output_distribution == "Uniform(10, 100)"
+        assert config.input_distribution == "floor(LogNormal(5.0, 0.5))"
+        assert config.output_distribution == "floor(Uniform(10, 100))"
 
     # shareGPT filters its dataset by the distribution's min/max, which an
     # expression string does not define; the scope validator rejects it at
     # config-load time.
     def test_expression_string_rejected_for_dataset_types(self) -> None:
         with pytest.raises(ValidationError, match="only supported by"):
-            DataConfig(type=DataGenType.ShareGPT, input_distribution="Normal(512, 200)")
+            DataConfig(type=DataGenType.ShareGPT, input_distribution="floor(Normal(512, 200))")
 
     # Invalid expression strings fail field validation before the scope check.
     def test_invalid_expression_rejected(self) -> None:
@@ -88,3 +88,21 @@ class TestDataConfigDistributionExpressions:
     def test_distribution_form_unchanged(self) -> None:
         config = DataConfig(type=DataGenType.Synthetic, input_distribution=Distribution(mean=512.0, min=10, max=1024))
         assert isinstance(config.input_distribution, Distribution)
+
+
+class TestWholeNumberExpressions:
+    # A continuous expression on a whole-number field is rejected at config load, and the error carries both
+    # fixes to paste. Input: question_len 'Normal(50, 10)'. Expected: the message names 'floor(Normal(50, 10))'
+    # and 'floor(Normal(50, 10) + 1/2)'.
+    def test_continuous_expression_rejected_with_the_floor_form(self) -> None:
+        with pytest.raises(ValidationError, match=r"floor\(Normal\(50, 10\)\)'.*floor\(Normal\(50, 10\) \+ 1/2\)"):
+            SharedPrefix(question_len="Normal(50, 10)")
+
+    # A discrete distribution needs no wrapper. Input: question_len 'Poisson(50)'. Expected: stored as written.
+    def test_discrete_expression_accepted(self) -> None:
+        assert SharedPrefix(question_len="Poisson(50)").question_len == "Poisson(50)"
+
+    # The IO fields follow the same rule. Input: output_distribution 'Uniform(10, 100)'. Expected: rejected.
+    def test_io_field_rejects_continuous_expression(self) -> None:
+        with pytest.raises(ValidationError, match="not whole numbers"):
+            DataConfig(type=DataGenType.Synthetic, output_distribution="Uniform(10, 100)")

@@ -160,19 +160,19 @@ class TestSampleLengths:
         direct = sample_from_distribution(config, 100, np.random.default_rng(12))
         np.testing.assert_array_equal(via_lengths, direct)
 
-    # An expression string samples as written and rounds to integers:
-    # Uniform(10, 20) draws stay in [10, 20], and no bound is clamped on top
+    # An integer-valued expression string samples as written: floor(Uniform(10, 20))
+    # draws are integers in [10, 20], and no bound is clamped on top
     # (the expression author owns the range).
-    def test_expression_string_rounds_to_ints(self) -> None:
-        result = sample_lengths("Uniform(10, 20)", 1000, np.random.default_rng(13))
+    def test_expression_string_samples_ints(self) -> None:
+        result = sample_lengths("floor(Uniform(10, 20))", 1000, np.random.default_rng(13))
         assert np.issubdtype(result.dtype, np.integer)
         assert result.min() >= 10
         assert result.max() <= 20
 
     # Same seed, same array for the expression path.
     def test_expression_string_reproducible(self) -> None:
-        a = sample_lengths("Normal(100, 10)", 50, np.random.default_rng(14))
-        b = sample_lengths("Normal(100, 10)", 50, np.random.default_rng(14))
+        a = sample_lengths("floor(Normal(100, 10))", 50, np.random.default_rng(14))
+        b = sample_lengths("floor(Normal(100, 10))", 50, np.random.default_rng(14))
         np.testing.assert_array_equal(a, b)
 
     # count must be positive, matching sample_from_distribution's contract.

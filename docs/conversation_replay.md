@@ -102,7 +102,8 @@ be less than or equal to `num_conversations`.
 All fields live under `data.conversation_replay`:
 
 Every distribution field below also accepts an [expression](./expressions.md) string.
-Token and turn counts are rounded to whole numbers; `tool_call_latency_sec` keeps fractional seconds.
+Token and turn counts are whole numbers, so their expressions must be too (see
+[Whole numbers](./expressions.md#whole-numbers)). `tool_call_latency_sec` takes fractional seconds.
 With `max_model_len` set, `output_tokens_per_turn` needs a finite upper bound (see
 [Value ranges](./expressions.md#value-ranges)), so cap an unbounded expression with `Min(...)`.
 
@@ -112,8 +113,8 @@ data:
   type: conversation_replay
   conversation_replay:
     turns_per_conversation: "Min(Poisson(30), 57)"
-    input_tokens_per_turn: "Min(LogNormal(7, 1), 24000)"
-    output_tokens_per_turn: "Uniform(62, 3600)"
+    input_tokens_per_turn: "floor(Min(LogNormal(7, 1), 24000))"
+    output_tokens_per_turn: "floor(Uniform(62, 3600))"
     tool_call_latency_sec: "Uniform(0.1, 0.4)"
     max_model_len: 32768
 ```

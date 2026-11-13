@@ -60,11 +60,11 @@ class DummyCustomTokenizer(CustomTokenizer):
 
 def _expression_data_config(gen_type: DataGenType) -> DataConfig:
     # Uniform supports keep the expected value ranges checkable: input lengths
-    # land in [10, 20] and output lengths in [5, 10] after rounding.
+    # land in [10, 20] and output lengths in [5, 10].
     return DataConfig(
         type=gen_type,
-        input_distribution="Uniform(10, 20)",
-        output_distribution="Uniform(5, 10)",
+        input_distribution="floor(Uniform(10, 20))",
+        output_distribution="floor(Uniform(5, 10))",
     )
 
 
@@ -159,8 +159,8 @@ class TestSharedPrefixExpressionLengths:
         sp = SharedPrefix(
             num_groups=3,
             num_prompts_per_group=4,
-            question_len="Uniform(5, 15)",
-            output_len="Uniform(20, 30)",
+            question_len="floor(Uniform(5, 15))",
+            output_len="floor(Uniform(20, 30))",
             seed=42,
         )
         generator = SharedPrefixDataGenerator(
@@ -179,7 +179,7 @@ class TestSharedPrefixExpressionLengths:
     # generation deterministic.
     def test_expression_lengths_reproducible(self) -> None:
         def build() -> SharedPrefixDataGenerator:
-            sp = SharedPrefix(num_groups=2, num_prompts_per_group=3, question_len="Uniform(5, 15)", seed=7)
+            sp = SharedPrefix(num_groups=2, num_prompts_per_group=3, question_len="floor(Uniform(5, 15))", seed=7)
             return SharedPrefixDataGenerator(
                 APIConfig(type=APIType.Completion),
                 DataConfig(type=DataGenType.SharedPrefix, shared_prefix=sp),

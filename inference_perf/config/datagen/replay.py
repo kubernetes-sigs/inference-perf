@@ -16,7 +16,12 @@ from typing import Any, Dict, List, Optional, Union, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from inference_perf.config.common import Distribution, StrictBaseModel, validate_length_expression
+from inference_perf.config.common import (
+    Distribution,
+    StrictBaseModel,
+    validate_length_expression,
+    validate_seconds_expression,
+)
 
 
 class TraceFormat(Enum):
@@ -133,7 +138,6 @@ class ConversationReplayConfig(StrictBaseModel):
         "turns_per_conversation",
         "input_tokens_per_turn",
         "output_tokens_per_turn",
-        "tool_call_latency_sec",
         mode="after",
     )
     @classmethod
@@ -141,6 +145,13 @@ class ConversationReplayConfig(StrictBaseModel):
         # An expression string is checked when the config loads; sampling sites build their own Expression.
         if isinstance(value, str):
             validate_length_expression(value)
+        return value
+
+    @field_validator("tool_call_latency_sec", mode="after")
+    @classmethod
+    def validate_seconds_expressions(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
+        if isinstance(value, str):
+            validate_seconds_expression(value)
         return value
 
 
@@ -599,8 +610,6 @@ class SyntheticAgenticConfig(SessionReplayConfig):
         "sub_agents_per_spawn",
         "tool_catalog_size_per_agent",
         "parallel_tool_calls_per_step",
-        "tool_call_latency_sec",
-        "user_think_time_sec",
         mode="after",
     )
     @classmethod
@@ -608,6 +617,13 @@ class SyntheticAgenticConfig(SessionReplayConfig):
         # An expression string is checked when the config loads; sampling sites build their own Expression.
         if isinstance(value, str):
             validate_length_expression(value)
+        return value
+
+    @field_validator("tool_call_latency_sec", "user_think_time_sec", mode="after")
+    @classmethod
+    def validate_seconds_expressions(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
+        if isinstance(value, str):
+            validate_seconds_expression(value)
         return value
 
     @model_validator(mode="after")

@@ -10,11 +10,11 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 
 | Field | `t` | Random | Rule |
 | --- | --- | --- | --- |
-| [`data.input_distribution`, `data.output_distribution`](./config.md#data-generation) | no | yes | Rounded to whole tokens. |
-| [`data.shared_prefix.system_prompt_len`, `question_len`, `output_len`](./config.md#data-generation) | no | yes | Rounded to whole tokens. |
-| [`data.conversation_replay` knobs](./conversation_replay.md#configuration-guide) | no | yes | Counts rounded; `tool_call_latency_sec` keeps fractions. |
-| [`data.synthetic_agentic` knobs and `context_compaction`](./synthetic_agentic.md) | no | yes | Counts rounded; latencies keep fractions. |
-| [`data.multimodal.*.count`](./config.md#multimodal-data-generation) | no | yes | Rounded to whole items. |
+| [`data.input_distribution`, `data.output_distribution`](./config.md#data-generation) | no | yes | Whole tokens, see [Whole numbers](#whole-numbers). |
+| [`data.shared_prefix.system_prompt_len`, `question_len`, `output_len`](./config.md#data-generation) | no | yes | Whole tokens, see [Whole numbers](#whole-numbers). |
+| [`data.conversation_replay` knobs](./conversation_replay.md#configuration-guide) | no | yes | Counts are whole numbers; `tool_call_latency_sec` takes fractions. |
+| [`data.synthetic_agentic` knobs and `context_compaction`](./synthetic_agentic.md) | no | yes | Counts are whole numbers; latencies take fractions. |
+| [`data.multimodal.*.count`](./config.md#multimodal-data-generation) | no | yes | Whole items, see [Whole numbers](#whole-numbers). |
 | [`data.multimodal.*.insertion_point`](./config.md#multimodal-data-generation) | no | yes | Provably within [0, 1]. |
 
 ## Grammar
@@ -204,3 +204,24 @@ Some fields need an expression's largest possible value, for example to check th
 | `Min(Normal(50, 10), 99)` | -inf | 99 |
 | `Beta(2, 5)` | 0 | 1 |
 | `Abs(Normal(0, 1))` | 0 | inf |
+
+## Whole numbers
+
+A token length or a count takes an expression only when every value it can take is provably a whole number. Nothing is rounded for you. A discrete distribution such as `Poisson` or `Binomial` is whole-numbered already. Wrap a continuous one in `floor(...)` to round down, `ceiling(...)` to round up, or `floor(... + 1/2)` to round to the nearest. Bounds pass through the wrapper, so `floor(Min(Normal(50, 10), 99))` is at most 99.
+
+| Whole-number expression | Lower | Upper |
+| --- | --- | --- |
+| `Poisson(2)` | 0 | inf |
+| `Min(Poisson(30), 57)` | 0 | 57 |
+| `128 + Binomial(64, 1/2)` | 128 | 192 |
+| `floor(Uniform(64, 256))` | 64 | 256 |
+| `floor(Min(LogNormal(6, 0.5), 4096) + 1/2)` | 0 | 4096 |
+| `floor(Min(Max(Normal(5, 3), 1/2), 20) + 1/2)` | 1 | 20 |
+| `ceiling(Uniform(0, 2))` | 0 | 2 |
+
+| Rejected whole-number expression | Why |
+| --- | --- |
+| `Normal(512, 128)` | Continuous. Write `floor(Normal(512, 128))`. |
+| `Poisson(4) / 2` | Can be 1.5. |
+| `Min(Poisson(30), 57.5)` | The cap is not a whole number. |
+| `Poisson(2) + Uniform(0, 1)` | A continuous term inside the sum. |

@@ -157,7 +157,7 @@ def test_sample_values_fractional() -> None:
 # sample_values in integer mode matches sample_lengths draw for draw: same seed, same Distribution and expression.
 def test_sample_values_integer_matches_sample_lengths() -> None:
     dist = Distribution(type=DistributionType.NORMAL, mean=100, std_dev=20, min=10, max=200)
-    for value in (dist, "Normal(100, 20)", 7):
+    for value in (dist, "floor(Normal(100, 20))", 7):
         a = sample_values(value, 50, np.random.default_rng(3), integer=True)
         b = sample_lengths(value, 50, np.random.default_rng(3))
         assert a.tolist() == b.tolist()
@@ -174,3 +174,11 @@ def test_value_ceiling() -> None:
     assert value_ceiling("Min(LogNormal(6, 0.5), 4096)") == 4096.0
     assert value_ceiling("Normal(50, 10)") == float("inf")
     assert value_ceiling("Piecewise((1, Normal(0, 1) > 0), (2, True))") is None
+
+
+# sample_values enforces the whole-number rule too, for callers that skip config validation. Input:
+# 'Normal(100, 20)' in integer mode. Expected: ValueError. The same string in fractional mode samples.
+def test_sample_values_integer_rejects_continuous_expression() -> None:
+    with pytest.raises(ValueError, match="not whole numbers"):
+        sample_values("Normal(100, 20)", 5, np.random.default_rng(0), integer=True)
+    assert len(sample_values("Normal(100, 20)", 5, np.random.default_rng(0), integer=False)) == 5
