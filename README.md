@@ -38,7 +38,7 @@ It was founded as a part of the inference benchmarking and metrics standardizati
 ### ⏱️ Flexible Load Generation
 - **Load Patterns**: Constant rate, Poisson arrival, and concurrent user simulation.
 - **Multi-Stage Runs**: Define stages with varying rates and durations to find saturation points.
-- **Trace Replay**: Replay real-world traces (e.g., Azure dataset) or OpenTelemetry traces with agentic tree-of-thought simulation and visualization.
+- **Trace Replay**: Replay real-world traces (Azure and Mooncake datasets) or OpenTelemetry traces with agentic tree-of-thought simulation and visualization.
 
 ### 🚀 High Scalability
 - **10k+ QPS**: Scalable to very high load due to optimized multi-process architecture.
