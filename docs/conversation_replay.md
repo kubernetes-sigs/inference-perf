@@ -112,8 +112,8 @@ With `max_model_len` set, `output_tokens_per_turn` needs a finite upper bound (s
 data:
   type: conversation_replay
   conversation_replay:
-    turns_per_conversation: "Min(Poisson(30), 57)"
-    input_tokens_per_turn: "floor(Min(LogNormal(7, 1), 24000))"
+    turns_per_conversation: "Min(1 + Poisson(29), 57)"
+    input_tokens_per_turn: "floor(Min(Max(LogNormal(7, 1), 1), 24000))"
     output_tokens_per_turn: "floor(Uniform(62, 3600))"
     tool_call_latency_sec: "Uniform(0.1, 0.4)"
     max_model_len: 32768

@@ -16,12 +16,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from inference_perf.config.common import (
-    Distribution,
-    StrictBaseModel,
-    validate_length_expression,
-    validate_seconds_expression,
-)
+from inference_perf.config.common import Distribution, StrictBaseModel, check_seconds, check_whole_number
 
 
 class TraceFormat(Enum):
@@ -111,13 +106,17 @@ class ConversationReplayConfig(StrictBaseModel):
     num_conversations: int = Field(200, gt=0, description="Number of conversation blueprints to generate")
     shared_system_prompt_len: int = Field(8359, ge=0, description="Fixed shared system prompt length in tokens")
     dynamic_system_prompt_len: Optional[Union[Distribution, str]] = Field(
-        None, description="Per-conversation dynamic system prompt length distribution"
+        None, description="Per-conversation dynamic system prompt length distribution. At least 0."
     )
     turns_per_conversation: Optional[Union[Distribution, str]] = Field(
-        None, description="Number of turns per conversation distribution"
+        None, description="Number of turns per conversation distribution. At least 1."
     )
-    input_tokens_per_turn: Optional[Union[Distribution, str]] = Field(None, description="Input tokens per turn distribution")
-    output_tokens_per_turn: Optional[Union[Distribution, str]] = Field(None, description="Output tokens per turn distribution")
+    input_tokens_per_turn: Optional[Union[Distribution, str]] = Field(
+        None, description="Input tokens per turn distribution. At least 1."
+    )
+    output_tokens_per_turn: Optional[Union[Distribution, str]] = Field(
+        None, description="Output tokens per turn distribution. At least 1."
+    )
     tool_call_latency_sec: Optional[Union[Distribution, str]] = Field(
         None,
         description=(
@@ -128,30 +127,28 @@ class ConversationReplayConfig(StrictBaseModel):
             "GPU is free to serve other concurrent conversations — correctly "
             "modelling offline agentic workloads. Omit for pure GPU throughput "
             "measurement. Values are in seconds; min/max are whole seconds, "
-            "mean/std_dev may be fractional."
+            "mean/std_dev may be fractional. At least 0."
         ),
     )
     max_model_len: Optional[int] = Field(None, description="Maximum model context length in tokens")
 
-    @field_validator(
-        "dynamic_system_prompt_len",
-        "turns_per_conversation",
-        "input_tokens_per_turn",
-        "output_tokens_per_turn",
-        mode="after",
-    )
+    # an expression string is checked when the config loads; sampling sites build their own Expression
+    @field_validator("dynamic_system_prompt_len", mode="after")
     @classmethod
-    def validate_value_expressions(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
-        # An expression string is checked when the config loads; sampling sites build their own Expression.
-        if isinstance(value, str):
-            validate_length_expression(value)
+    def validate_counts(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
+        check_whole_number(value, 0)
+        return value
+
+    @field_validator("turns_per_conversation", "input_tokens_per_turn", "output_tokens_per_turn", mode="after")
+    @classmethod
+    def validate_positive_counts(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
+        check_whole_number(value, 1)
         return value
 
     @field_validator("tool_call_latency_sec", mode="after")
     @classmethod
-    def validate_seconds_expressions(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
-        if isinstance(value, str):
-            validate_seconds_expression(value)
+    def validate_seconds(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
+        check_seconds(value)
         return value
 
 
@@ -411,7 +408,7 @@ class ContextCompactionConfig(BaseModel):
         description=(
             "When a round's accumulated principal input (message content + advertised tool "
             "catalog) would cross this many tokens, the NEXT round starts fresh with a "
-            "summary block replacing the grown transcript. Sampled per session."
+            "summary block replacing the grown transcript. Sampled per session. At least 1."
         ),
     )
     target_tokens: Union[Distribution, str] = Field(
@@ -420,16 +417,14 @@ class ContextCompactionConfig(BaseModel):
             "Size (tokens) of the summary block that replaces the transcript on compaction. "
             "Sampled per session. Set it to the size you want the post-compaction context to "
             "have -- typically a fraction of the trigger (a real compaction reduces a bloated "
-            "window to ~20-40% of its size)."
+            "window to ~20-40% of its size). At least 1."
         ),
     )
 
     @field_validator("trigger_tokens", "target_tokens", mode="after")
     @classmethod
-    def validate_value_expressions(cls, value: Union[Distribution, str]) -> Union[Distribution, str]:
-        # An expression string is checked when the config loads; sampling sites build their own Expression.
-        if isinstance(value, str):
-            validate_length_expression(value)
+    def validate_positive_counts(cls, value: Union[Distribution, str]) -> Union[Distribution, str]:
+        check_whole_number(value, 1)
         return value
 
 
@@ -447,13 +442,15 @@ class SyntheticAgenticConfig(SessionReplayConfig):
     # Required: load volume + per-turn token sizing (these drive the load, so the user
     # must choose them; there is no neutral default token profile).
     num_sessions: int = Field(..., gt=0, description="Number of sessions (load volume)")
-    input_tokens_per_turn: Union[Distribution, str] = Field(..., description="per-turn input tokens")
-    output_tokens_per_turn: Union[Distribution, str] = Field(..., description="per-turn output tokens (plain-text turns)")
+    input_tokens_per_turn: Union[Distribution, str] = Field(..., description="per-turn input tokens. At least 1.")
+    output_tokens_per_turn: Union[Distribution, str] = Field(
+        ..., description="per-turn output tokens (plain-text turns). At least 1."
+    )
 
     # Structural/content shape: sensible defaults, override to shape the workload.
     turns_per_session: Union[Distribution, str] = Field(
         default_factory=lambda: Distribution(type="fixed", mean=1),
-        description="N user turns to the root agent (each triggers one agent run); default 1 = autonomous single-turn",
+        description="N user turns to the root agent (each triggers one agent run); default 1 = autonomous single-turn. At least 1.",
     )
     fanout_probability: float = Field(
         0.0,
@@ -505,33 +502,33 @@ class SyntheticAgenticConfig(SessionReplayConfig):
             "is a model call that emits a tool call and gets a result. 0 = answer directly (no tool "
             "loop). Then the agent makes one more model call for its final answer, so total model "
             "calls = this value + 1. Drawn fresh for each of the root's turns, and once for each "
-            "sub-agent. Fallback fixed 2."
+            "sub-agent. Fallback fixed 2. At least 0."
         ),
     )
     sub_agents_per_spawn: Optional[Union[Distribution, str]] = Field(
-        None, description="K children per spawn (fallback uniform 2-4)"
+        None, description="K children per spawn (fallback uniform 2-4). At least 0."
     )
     max_depth: int = Field(2, ge=0, description="Hard recursion terminator")
     max_events_per_session: int = Field(64, gt=0, description="Self-limiting event budget")
     tool_catalog_size_per_agent: Optional[Union[Distribution, str]] = Field(
-        None, description="advertised tool-catalog size per agent (fallback fixed 8)"
+        None, description="advertised tool-catalog size per agent (fallback fixed 8). At least 0."
     )
     parallel_tool_calls_per_step: Optional[Union[Distribution, str]] = Field(
-        None, description="parallel tool calls emitted in one step's tool round (fallback fixed 1)"
+        None, description="parallel tool calls emitted in one step's tool round (fallback fixed 1). At least 0."
     )
     tool_call_latency_sec: Optional[Union[Distribution, str]] = Field(
         None,
         description=(
             "Pause between an agent's steps, in seconds, modelling how long a tool takes "
             "to run (the tool round-trip). Held as an offline wait that frees the GPU. "
-            "Omit to use the default (fixed 1s)."
+            "Omit to use the default (fixed 1s). At least 0."
         ),
     )
     user_think_time_sec: Optional[Union[Distribution, str]] = Field(
         None,
         description=(
             "Pause before each follow-up turn (turns 2..N), in seconds, modelling the user's "
-            "read/think/reply time. Omit to use the default (fixed 10s)."
+            "read/think/reply time. Omit to use the default (fixed 10s). At least 0."
         ),
     )
     max_model_len: Optional[int] = Field(
@@ -602,28 +599,25 @@ class SyntheticAgenticConfig(SessionReplayConfig):
         ),
     )
 
+    # an expression string is checked when the config loads; sampling sites build their own Expression
+    @field_validator("input_tokens_per_turn", "output_tokens_per_turn", "turns_per_session", mode="after")
+    @classmethod
+    def validate_positive_counts(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
+        check_whole_number(value, 1)
+        return value
+
     @field_validator(
-        "input_tokens_per_turn",
-        "output_tokens_per_turn",
-        "turns_per_session",
-        "tool_loop_depth",
-        "sub_agents_per_spawn",
-        "tool_catalog_size_per_agent",
-        "parallel_tool_calls_per_step",
-        mode="after",
+        "tool_loop_depth", "sub_agents_per_spawn", "tool_catalog_size_per_agent", "parallel_tool_calls_per_step", mode="after"
     )
     @classmethod
-    def validate_value_expressions(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
-        # An expression string is checked when the config loads; sampling sites build their own Expression.
-        if isinstance(value, str):
-            validate_length_expression(value)
+    def validate_counts(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
+        check_whole_number(value, 0)
         return value
 
     @field_validator("tool_call_latency_sec", "user_think_time_sec", mode="after")
     @classmethod
-    def validate_seconds_expressions(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
-        if isinstance(value, str):
-            validate_seconds_expression(value)
+    def validate_seconds(cls, value: Optional[Union[Distribution, str]]) -> Optional[Union[Distribution, str]]:
+        check_seconds(value)
         return value
 
     @model_validator(mode="after")

@@ -16,7 +16,7 @@ from typing import Optional, Union
 
 from pydantic import AliasChoices, ConfigDict, Field, field_validator, model_validator
 
-from inference_perf.config.common import Distribution, StrictBaseModel, validate_length_expression
+from inference_perf.config.common import Distribution, StrictBaseModel, check_whole_number
 from inference_perf.config.datagen.multimodal import SyntheticMultimodalDatagenConfig
 from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
@@ -65,17 +65,17 @@ class SharedPrefix(StrictBaseModel):
     system_prompt_len: Union[int, Distribution, str] = Field(
         default=100,
         description="Length of the shared system prompt in tokens: a fixed value, a distribution,"
-        " or an expression string like 'Normal(512, 200)'.",
+        " or an expression string like 'floor(Uniform(256, 768))'. At least 0.",
     )
     question_len: Union[int, Distribution, str] = Field(
         default=50,
         description="Length of the question part in tokens: a fixed value, a distribution,"
-        " or an expression string like 'Normal(512, 200)'.",
+        " or an expression string like 'floor(Uniform(256, 768))'. At least 1.",
     )
     output_len: Union[int, Distribution, str] = Field(
         default=50,
         description="Requested output length in tokens: a fixed value, a distribution,"
-        " or an expression string like 'Normal(512, 200)'.",
+        " or an expression string like 'floor(Uniform(256, 768))'. At least 1.",
     )
     max_model_len: Optional[int] = Field(
         default=None,
@@ -104,11 +104,16 @@ class SharedPrefix(StrictBaseModel):
         default=None, description="Attach synthetic multimodal content (images, video, audio) to generated prompts."
     )
 
-    @field_validator("system_prompt_len", "question_len", "output_len", mode="after")
+    @field_validator("system_prompt_len", mode="after")
     @classmethod
-    def validate_length_expressions(cls, value: Union[int, Distribution, str]) -> Union[int, Distribution, str]:
-        if isinstance(value, str):
-            validate_length_expression(value)
+    def validate_system_prompt_len(cls, value: Union[int, Distribution, str]) -> Union[int, Distribution, str]:
+        check_whole_number(value, 0)
+        return value
+
+    @field_validator("question_len", "output_len", mode="after")
+    @classmethod
+    def validate_lengths(cls, value: Union[int, Distribution, str]) -> Union[int, Distribution, str]:
+        check_whole_number(value, 1)
         return value
 
     @model_validator(mode="after")
@@ -150,13 +155,13 @@ class DataConfig(StrictBaseModel):
     input_distribution: Optional[Union[Distribution, str]] = Field(
         default=None,
         description="Input (prompt) length distribution in tokens: a distribution, or (for the 'synthetic' and"
-        " 'random' types) an expression string like 'Normal(512, 200)'. Dataset types use the distribution's"
+        " 'random' types) an expression string like 'floor(Uniform(256, 768))'. At least 1. Dataset types use the distribution's"
         " min/max as filter bounds.",
     )
     output_distribution: Optional[Union[Distribution, str]] = Field(
         default=None,
         description="Output length distribution in tokens: a distribution, or (for the 'synthetic' and"
-        " 'random' types) an expression string like 'Normal(512, 200)'. Dataset types use the distribution's"
+        " 'random' types) an expression string like 'floor(Uniform(256, 768))'. At least 1. Dataset types use the distribution's"
         " min/max as filter bounds.",
     )
     shared_prefix: Optional[SharedPrefix] = Field(
@@ -206,8 +211,7 @@ class DataConfig(StrictBaseModel):
     def validate_distribution_expressions(
         cls, value: Optional[Union[Distribution, str]]
     ) -> Optional[Union[Distribution, str]]:
-        if isinstance(value, str):
-            validate_length_expression(value)
+        check_whole_number(value, 1)
         return value
 
     @model_validator(mode="after")

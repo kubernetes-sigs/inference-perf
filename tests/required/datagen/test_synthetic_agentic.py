@@ -4610,7 +4610,7 @@ def test_fractional_latencies_reach_wait_ms() -> None:
 
 
 # Every synthetic_agentic Distribution knob also takes an expression string. Inputs: turns '3', tool loop depth
-# 'Min(Poisson(2), 3)', input 'floor(Uniform(15, 25))', output 'floor(Min(Normal(10, 2), 14))', tool latency
+# 'Min(Poisson(2), 3)', input 'floor(Uniform(15, 25))', output 'floor(Min(Max(Normal(10, 2), 1), 14))', tool latency
 # 'Uniform(0.1, 0.4)', think time 'Uniform(1, 2)'. Expected: the graph builds, is identical for the same seed
 # (determinism), and every non-zero wait is a tool wait in [100, 400] ms or a think wait in [1000, 2000] ms,
 # with at least one of each.
@@ -4619,7 +4619,7 @@ def test_expression_knobs_build_a_deterministic_graph() -> None:
         turns_per_session="3",
         tool_loop_depth="Min(Poisson(2), 3)",
         input_tokens_per_turn="floor(Uniform(15, 25))",
-        output_tokens_per_turn="floor(Min(Normal(10, 2), 14))",
+        output_tokens_per_turn="floor(Min(Max(Normal(10, 2), 1), 14))",
         tool_call_latency_sec="Uniform(0.1, 0.4)",
         user_think_time_sec="Uniform(1, 2)",
     )
@@ -4633,22 +4633,24 @@ def test_expression_knobs_build_a_deterministic_graph() -> None:
 
 
 # The max_model_len budget reads an expression's provable upper bound. Inputs: max_model_len 1000 with
-# input_tokens_per_turn 'floor(Min(Normal(500, 50), 600))' -> the breakdown shows input(600), the Min cap, and the
-# config is rejected as too small. An unbounded 'floor(Normal(500, 50))' can't be budgeted -> rejected naming that.
+# input_tokens_per_turn 'floor(Min(Max(Normal(500, 50), 1), 600))' -> the breakdown shows input(600), the Min cap, and the
+# config is rejected as too small. An unbounded 'floor(Max(Normal(500, 50), 1))' can't be budgeted -> rejected naming that.
 def test_max_model_len_budgets_expression_upper_bound() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError, match=r"input\(600\)"):
-        _cfg(max_model_len=1000, input_tokens_per_turn="floor(Min(Normal(500, 50), 600))")
+        _cfg(max_model_len=1000, input_tokens_per_turn="floor(Min(Max(Normal(500, 50), 1), 600))")
     with pytest.raises(ValidationError, match="has no provable upper bound"):
-        _cfg(max_model_len=100_000, input_tokens_per_turn="floor(Normal(500, 50))")
+        _cfg(max_model_len=100_000, input_tokens_per_turn="floor(Max(Normal(500, 50), 1))")
 
 
 # Compaction's two knobs take expression strings too; a malformed one fails at config load.
 def test_compaction_accepts_expressions() -> None:
     from pydantic import ValidationError
 
-    cfg = ContextCompactionConfig(trigger_tokens="floor(Uniform(600, 700))", target_tokens="floor(Min(Normal(150, 20), 200))")
+    cfg = ContextCompactionConfig(
+        trigger_tokens="floor(Uniform(600, 700))", target_tokens="floor(Min(Max(Normal(150, 20), 1), 200))"
+    )
     assert cfg.trigger_tokens == "floor(Uniform(600, 700))"
     with pytest.raises(ValidationError, match="unknown function"):
         ContextCompactionConfig(trigger_tokens="foo(3)", target_tokens="100")

@@ -209,6 +209,8 @@ Some fields need an expression's largest possible value, for example to check th
 
 A token length or a count takes an expression only when every value it can take is provably a whole number. Nothing is rounded for you. A discrete distribution such as `Poisson` or `Binomial` is whole-numbered already. Wrap a continuous one in `floor(...)` to round down, `ceiling(...)` to round up, or `floor(... + 1/2)` to round to the nearest. Bounds pass through the wrapper, so `floor(Min(Normal(50, 10), 99))` is at most 99.
 
+Each field also has a range, stated in its description and in [cli_flags.md](./cli_flags.md): a token length is at least 1, a count or a duration at least 0, and `insertion_point` within [0, 1]. The expression's bounds must prove it stays in range when the config loads, so an unbounded `floor(Normal(50, 10))` on a token length is rejected with the form that fits, `Max(floor(Normal(50, 10)), 1)`. An expression whose bounds can't be proven, such as a `Piecewise` mixture, is rejected the same way.
+
 | Whole-number expression | Lower | Upper |
 | --- | --- | --- |
 | `Poisson(2)` | 0 | inf |
