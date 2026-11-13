@@ -18,11 +18,13 @@ from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
-from inference_perf.apis import InferenceAPIData
+from inference_perf.apis import InferenceAPIData, RequestLifecycleMetric
+from inference_perf.apis.request_phase import watch_first_token
 from inference_perf.apis.user_session import LocalUserSession
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.client.modelserver.otel_instrumentation import get_otel_instrumentation
 from inference_perf.circuit_breaker import get_circuit_breaker
+from inference_perf.loadgen.stop_condition import StopConditionMonitor
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.config import (
     LoadConfig,
@@ -61,6 +63,7 @@ from typing import Awaitable, List, Tuple, Optional, NamedTuple, Protocol, Union
 from types import FrameType
 import ctypes
 import time
+from bisect import bisect_right
 import traceback
 import multiprocessing as mp
 from queue import Empty
@@ -279,8 +282,12 @@ class Worker(PreloadedForkServerProcess):
         teardown_grace_seconds: float = 120.0,
         crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"] = None,
         ready_event: Optional[SyncEvent] = None,
+        streaming_requests_counter: Optional["Synchronized[int]"] = None,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
+        # Requests in flight that have received their first token, shared like
+        # active_requests_counter. None leaves the phase untracked.
+        self.streaming_requests_counter = streaming_requests_counter
         self.id = id
         self.client = client
         self.request_queue = request_queue
@@ -399,6 +406,16 @@ class Worker(PreloadedForkServerProcess):
                     permit_acquired: bool,
                 ) -> None:
                     inflight = False
+                    streaming = False
+
+                    def first_token() -> None:
+                        nonlocal streaming
+                        if streaming or self.streaming_requests_counter is None:
+                            return
+                        with self.streaming_requests_counter.get_lock():
+                            self.streaming_requests_counter.value += 1
+                        streaming = True
+
                     try:
                         current_time = time.perf_counter()
                         sleep_time = request_time - current_time
@@ -466,6 +483,7 @@ class Worker(PreloadedForkServerProcess):
                             self.active_requests_counter.value += 1
                             inflight = True
 
+                        watch_first_token(first_token)
                         await self.client.process_request(request_data, stage_id, request_time, lora_adapter)
                     except CancelledError:
                         pass
@@ -476,6 +494,9 @@ class Worker(PreloadedForkServerProcess):
                         with self.active_requests_counter.get_lock():
                             if inflight:
                                 self.active_requests_counter.value -= 1
+                        if streaming and self.streaming_requests_counter is not None:
+                            with self.streaming_requests_counter.get_lock():
+                                self.streaming_requests_counter.value -= 1
                         try:
                             request_data.on_request_finished()
                         except Exception:
@@ -702,8 +723,11 @@ class LoadGenerator:
         session_metrics_collector: Optional[SessionMetricsCollector] = None,
         stage_observer: Optional[StageLifecycleObserver] = None,
         metrics_registry: Optional[CollectorRegistry] = None,
+        use_server_output_tokens: bool = False,
     ) -> None:
         self.datagen = datagen
+        # The report's output-token rule, so a stop condition's tpot and ntpot are the report's.
+        self.use_server_output_tokens = use_server_output_tokens
         self.stage_observer = stage_observer
         # The registry the progress bars read. Without one the run is silent
         # rather than showing bars built from some second set of counters.
@@ -712,6 +736,12 @@ class LoadGenerator:
         # counter the workers maintain; the in-process run() path counts locally.
         self._active_requests_counter: Optional["Synchronized[int]"] = None
         self._local_in_flight = 0
+        # Of those, the ones that have received their first token.
+        self._streaming_requests_counter: Optional["Synchronized[int]"] = None
+        self._local_streaming = 0
+        # The running rate stage's scheduled send times, in order, and its finished counter:
+        # what queued is derived from. None between stages and for stages with no send schedule.
+        self._stage_schedule: Optional[Tuple[List[float], "Synchronized[int]"]] = None
         # The in-process run() path has no worker counters to sample, so it
         # keeps its own. Reset per stage, like the shared ones.
         self._local_finished = 0
@@ -726,6 +756,9 @@ class LoadGenerator:
         # run window is measured from here rather than from process startup.
         self.load_start_time: Optional[float] = None
         self.circuit_breakers = [get_circuit_breaker(breaker_name) for breaker_name in load_config.circuit_breakers]
+        # The running stage's measured stop condition, fed by observe_result;
+        # None while no stage with one is running.
+        self._stop_monitor: Optional[StopConditionMonitor] = None
         self.sweep_config = load_config.sweep
         self.interrupt_sig = False
         self.session_metrics_collector = session_metrics_collector
@@ -786,16 +819,50 @@ class LoadGenerator:
             return int(self._active_requests_counter.value)
         return self._local_in_flight
 
+    def requests_by_phase(self) -> Dict[str, int]:
+        """Requests this run is holding, sampled live, by phase.
+
+        ``waiting`` and ``streaming`` split the requests in flight on whether the
+        first token has arrived. ``queued`` is the requests of the running stage
+        that are due by their schedule and not yet sent: those due, less those
+        finished or in flight. It is 0 where there is no send schedule to be
+        behind: concurrent and session stages, and the in-process path.
+        """
+        in_flight = self.in_flight_requests()
+        if self._streaming_requests_counter is not None:
+            streaming = int(self._streaming_requests_counter.value)
+        else:
+            streaming = self._local_streaming
+        # the two counters are read one after the other, so clamp rather than report a negative phase
+        streaming = max(0, min(streaming, in_flight))
+        queued = 0
+        if self._stage_schedule is not None:
+            schedule, finished = self._stage_schedule
+            due = bisect_right(schedule, time.perf_counter())
+            queued = max(0, due - int(finished.value) - in_flight)
+        return {"queued": queued, "waiting": in_flight - streaming, "streaming": streaming}
+
     def stage_count(self) -> int:
         """Stages this run executes, sampled live: a sweep replaces them after preprocess."""
         return len(self.stages)
 
     async def _track_in_flight(self, request: Awaitable[None]) -> None:
         self._local_in_flight += 1
+        streaming = False
+
+        def first_token() -> None:
+            nonlocal streaming
+            if not streaming:
+                streaming = True
+                self._local_streaming += 1
+
+        watch_first_token(first_token)
         try:
             await request
         finally:
             self._local_in_flight -= 1
+            if streaming:
+                self._local_streaming -= 1
             self._local_finished += 1
 
     def _stage_started(self, context: StageContext) -> None:
@@ -808,6 +875,44 @@ class LoadGenerator:
         self._open_stage = None
         if self.stage_observer is not None:
             self.stage_observer.on_stage_end(context)
+
+    def observe_result(self, metric: RequestLifecycleMetric) -> None:
+        """Feed one observed result to the running stage's stop condition.
+
+        Registered as a request metric collector observer, next to the circuit
+        breakers, so it runs in this process as results are drained.
+        """
+        if self._stop_monitor is not None:
+            self._stop_monitor.observe(metric, time.perf_counter(), self.requests_by_phase())
+
+    def _stop_condition_held(self, stage_id: int, stop_monitor: Optional[StopConditionMonitor]) -> bool:
+        """True once the stage's measured stop condition has held; logs when and with what values.
+
+        Called from the stage loop, so it also gives the condition its once-a-second
+        evaluation while no result arrives.
+        """
+        if stop_monitor is None:
+            return False
+        stop_monitor.tick(time.perf_counter(), self.requests_by_phase())
+        if stop_monitor.met_at is None:
+            return False
+        logger.info(
+            "Stage %d: stop condition %r held at t=%.2fs with %s; ending the stage",
+            stage_id,
+            stop_monitor.predicate.raw,
+            stop_monitor.met_at,
+            stop_monitor.values_when_met,
+        )
+        return True
+
+    def _stop_monitor_for(
+        self, stage_id: int, stage: Union[StandardLoadStage, TraceSessionReplayLoadStage]
+    ) -> Optional[StopConditionMonitor]:
+        """A monitor for a stage whose stop condition reads measured terms; None when it ends on its deadline alone."""
+        predicate, settings = stage.predicate, stage.stop_settings
+        if predicate is None or settings is None or not predicate.measured_symbols:
+            return None
+        return StopConditionMonitor(stage_id, predicate, settings.hold, self.use_server_output_tokens)
 
     async def _run_reported_stage(self, stage_id: int, runner: Awaitable[None]) -> None:
         """Run one stage so its observer sees exactly one start and one end, however the runner exits."""
@@ -925,7 +1030,12 @@ class LoadGenerator:
         max_stage_duration = (
             stage.max_stage_duration if stage.max_stage_duration else stage.timeout
         )  # timeout is deprecated, kept for legacy
-        duration = stage.duration
+        # The stop condition's deadline: duration itself, or when stop_condition holds on time alone.
+        duration = stage.effective_duration
+        stop_monitor = self._stop_monitor_for(stage_id, stage)
+        if stop_monitor is not None:
+            stop_monitor.start(start_time)
+            self._stop_monitor = stop_monitor
 
         # A duration-bounded stage draws sessions without limit: indices past the corpus
         # resolve to further plays, so it fills its window instead of ending with the corpus.
@@ -1047,6 +1157,9 @@ class LoadGenerator:
             # this a session could be started microseconds after the deadline only to be
             # cut short immediately.
             if duration is not None and time.perf_counter() - start_time >= duration:
+                return False
+            # Same for a measured stop: a result observed mid-burst can make it hold.
+            if stop_monitor is not None and stop_monitor.met_at is not None:
                 return False
 
             # Check concurrency limit (0 = unlimited)
@@ -1263,6 +1376,12 @@ class LoadGenerator:
                 # Clean up completed session data to prevent memory leaks
                 self.datagen.cleanup_session(session_id)
 
+            # A measured stop is a planned stop like the deadline below: status stays RUNNING so
+            # the stage reports COMPLETED, and sessions still running are swept as truncated
+            # after teardown. Checked before admission so nothing starts once it has held.
+            if self._stop_condition_held(stage_id, stop_monitor):
+                break
+
             # Try to start new sessions to fill the pool
             while should_start_next_session():
                 session_idx = next_session_index
@@ -1324,14 +1443,16 @@ class LoadGenerator:
         if stage_task:
             stage_task.close()
             stage_task = None
+        stop_condition_met_at = stop_monitor.met_at if stop_monitor is not None else None
+        self._stop_monitor = None
 
         # A duration-bounded stage that exited before its deadline ran out of corpus, so
         # it measured a shorter window than was asked for. Only a generator that cannot
         # replay its corpus reaches here: a cycling one draws further plays instead of
         # running out. Checked here rather than at each break so every early-exit path is
         # covered, and only while the status is still RUNNING — on a failure the shortfall
-        # is not the story.
-        if duration is not None and stage_status == StageStatus.RUNNING:
+        # is not the story. A measured stop condition that held ended it early on purpose.
+        if duration is not None and stage_status == StageStatus.RUNNING and stop_condition_met_at is None:
             elapsed = time.perf_counter() - start_time
             if elapsed < duration:
                 # Kept generic: weka_trace_replay grows its corpus with
@@ -1467,6 +1588,7 @@ class LoadGenerator:
             dropped_requests_exact=teardown.dropped_requests_exact,
             sessions_not_completed_active=sessions_not_completed_active,
             sessions_not_completed_pending=sessions_not_completed_pending,
+            stop_condition_met_at=stop_condition_met_at,
         )
         logger.info("Stage %d - session-based run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
         self._stage_ended(stage_context)
@@ -1617,13 +1739,14 @@ class LoadGenerator:
             teardown_grace_seconds=dead.teardown_grace_seconds,
             crash_queue=dead.crash_queue,
             ready_event=MP_CONTEXT.Event(),
+            streaming_requests_counter=dead.streaming_requests_counter,
         )
 
     async def run_stage(
         self,
         stage_id: int,
         rate: float,
-        duration: int,
+        duration: float,
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
         finished_requests_counter: "Synchronized[int]",
@@ -1634,6 +1757,7 @@ class LoadGenerator:
         concurrency_level: Optional[int] = None,
         progress_ctx: Optional[ProgressBars] = None,
         report_stage: bool = True,
+        stop_monitor: Optional[StopConditionMonitor] = None,
     ) -> None:
         logger.info("Stage %d - run started", stage_id)
 
@@ -1651,6 +1775,9 @@ class LoadGenerator:
         # don't miss the initial scheuled request times
         start_time_epoch = time.time()
         start_time = time.perf_counter() + 1
+        if stop_monitor is not None:
+            stop_monitor.start(start_time)
+            self._stop_monitor = stop_monitor
 
         if isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None:
             num_requests = self.datagen.get_request_count()
@@ -1682,6 +1809,11 @@ class LoadGenerator:
         # requests only ever land on workers that hold a share of it.
         active_workers = self._active_worker_count(concurrency_level)
 
+        # A concurrent stage sends as slots free up, so it has no schedule to fall behind.
+        schedule: Optional[List[float]] = [] if concurrency_level is None else None
+        if schedule is not None:
+            self._stage_schedule = (schedule, finished_requests_counter)
+
         for _ in range(num_requests):
             request_data = next(data_generator)
             request_data.stage_id = stage_id
@@ -1689,8 +1821,13 @@ class LoadGenerator:
             worker_id = request_data.preferred_worker_id
             if worker_id >= 0:
                 worker_id = worker_id % active_workers
+            scheduled_time = next(time_generator)
+            if schedule is not None:
+                schedule.append(scheduled_time)
+            if stop_monitor is not None:
+                stop_monitor.dispatched(scheduled_time)
             request_queue.put(
-                RequestQueueData(stage_id, request_data, next(time_generator), lora_adapter),
+                RequestQueueData(stage_id, request_data, scheduled_time, lora_adapter),
                 worker_id,
             )
 
@@ -1701,6 +1838,8 @@ class LoadGenerator:
 
         stage_status = StageStatus.RUNNING
         while finished_requests_counter.value < num_requests:
+            if self._stop_condition_held(stage_id, stop_monitor):
+                break
             if timeout and start_time + timeout < time.perf_counter():
                 logger.info(f"Loadgen timed out after {timeout:0.2f}s")
                 stage_status = StageStatus.TIMED_OUT
@@ -1728,6 +1867,9 @@ class LoadGenerator:
 
         if stage_task:
             stage_task.close()
+        # Whatever is still unsent is dropped at teardown, not sent late.
+        self._stage_schedule = None
+        self._stop_monitor = None
 
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
@@ -1755,6 +1897,7 @@ class LoadGenerator:
             teardown_duration=teardown_duration,
             dropped_requests=teardown.dropped_requests,
             dropped_requests_exact=teardown.dropped_requests_exact,
+            stop_condition_met_at=stop_monitor.met_at if stop_monitor is not None else None,
         )
         logger.info("Stage %d - run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
         if report_stage:
@@ -1897,6 +2040,8 @@ class LoadGenerator:
         active_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
         skipped_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
         self._active_requests_counter = active_requests_counter
+        streaming_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
+        self._streaming_requests_counter = streaming_requests_counter
         request_phase: SyncEvent = MP_CONTEXT.Event()
         stop_signal: SyncEvent = MP_CONTEXT.Event()
         cancel_signal: SyncEvent = MP_CONTEXT.Event()
@@ -1948,6 +2093,7 @@ class LoadGenerator:
                     teardown_grace_seconds=self.teardown_grace_seconds,
                     crash_queue=self.worker_crash_queue,
                     ready_event=MP_CONTEXT.Event(),
+                    streaming_requests_counter=streaming_requests_counter,
                 )
             )
             self.workers[-1].start()
@@ -2038,7 +2184,7 @@ class LoadGenerator:
                     )
                 elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
                     rate = stage.rate
-                    duration = stage.duration
+                    duration = stage.effective_duration
                     concurrency_level = None
                     await self._run_reported_stage(
                         stage_id,
@@ -2054,6 +2200,7 @@ class LoadGenerator:
                             cancel_signal,
                             concurrency_level=concurrency_level,
                             progress_ctx=progress,
+                            stop_monitor=self._stop_monitor_for(stage_id, stage),
                         ),
                     )
                 else:
@@ -2097,10 +2244,15 @@ class LoadGenerator:
         self, client: ModelServerClient, stage_id: int, stage: StandardLoadStage, progress: ProgressBars
     ) -> None:
         """Send one stage's requests from this process and record its StageRuntimeInfo."""
-        timer = self.get_timer(stage.rate, stage.duration)
+        duration = stage.effective_duration
+        timer = self.get_timer(stage.rate, duration)
         start_time_epoch = time.time()
         start_time = time.perf_counter()
-        end_time = start_time + stage.duration
+        end_time = start_time + duration
+        stop_monitor = self._stop_monitor_for(stage_id, stage)
+        if stop_monitor is not None:
+            stop_monitor.start(start_time)
+            self._stop_monitor = stop_monitor
         stage_status = StageStatus.RUNNING
         logger.info("Stage %d - run started", stage_id)
 
@@ -2110,7 +2262,7 @@ class LoadGenerator:
         self._stage_started(
             StageContext(
                 stage_id=stage_id,
-                planned_requests=int(stage.rate * stage.duration),
+                planned_requests=int(stage.rate * duration),
                 requests_finished=lambda: self._local_finished,
             )
         )
@@ -2134,6 +2286,8 @@ class LoadGenerator:
                     logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
                     stage_status = StageStatus.FAILED
                     break
+                if self._stop_condition_held(stage_id, stop_monitor):
+                    break
                 now = time.perf_counter()
                 if time_index < end_time + _STAGE_END_TOLERANCE:
                     if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
@@ -2142,6 +2296,8 @@ class LoadGenerator:
                         break
                     if time_index > now:
                         await sleep(time_index - time.perf_counter())
+                    if stop_monitor is not None:
+                        stop_monitor.dispatched(time_index)
                     tg.create_task(
                         self._track_in_flight(client.process_request(request_data, stage_id, time_index, lora_adapter))
                     )
@@ -2151,6 +2307,7 @@ class LoadGenerator:
 
         progress.refresh(force=True)
         stage_task.close()  # Clean up after completion
+        self._stop_monitor = None
 
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
@@ -2162,6 +2319,7 @@ class LoadGenerator:
             end_time=time.time(),
             status=stage_status,
             concurrency_level=None,
+            stop_condition_met_at=stop_monitor.met_at if stop_monitor is not None else None,
         )
 
     async def stop(self) -> None:

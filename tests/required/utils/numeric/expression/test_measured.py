@@ -165,7 +165,7 @@ class TestParsing:
     # A parse error names the condition as written, '(avg_over_last(ttft, 5) > 2) |', not the '_term0' placeholder.
     def test_parse_error_shows_the_source_text(self) -> None:
         with pytest.raises(
-            ValueError, match=r"Could not parse predicate '\(t >= 600\) \| \(avg_over_last\(ttft, 5\) > 2\) \|'"
+            ValueError, match=r"Could not parse Predicate '\(t >= 600\) \| \(avg_over_last\(ttft, 5\) > 2\) \|'"
         ):
             Predicate("(t >= 600) | (avg_over_last(ttft, 5) > 2) |")
 
@@ -463,6 +463,195 @@ class TestSignals:
     def test_only_read_signals(self) -> None:
         state = _state_of(Predicate("(t >= 600) | (errors > 1)"))
         assert set(state.values(1.0)) == {"errors"}
+
+
+# One request cancelled at stage teardown that finished at stage time t.
+def _cancelled(t: float) -> Observation:
+    return Observation(t=t, failed=True, cancelled=True)
+
+
+class TestSignalReads:
+    # completed{status="failure"} is one term read from the completed signal with that label and no offset.
+    def test_selector(self) -> None:
+        term = _term('completed{status="failure"}')
+        assert (term.window, term.signal, term.labels, term.offset_s) == ("signal", "completed", (("status", "failure"),), 0.0)
+
+    # 'completed offset 1m30s' is one term read from completed 90 seconds back, with no label.
+    def test_offset(self) -> None:
+        term = _term("completed offset 1m30s")
+        assert (term.window, term.signal, term.labels, term.offset_s) == ("signal", "completed", (), 90.0)
+
+    # A selector and an offset combine, with or without spaces around the braces.
+    @pytest.mark.parametrize("text", ['completed{status="success"} offset 60s', 'completed { status = "success" }  offset 1m'])
+    def test_selector_and_offset(self, text: str) -> None:
+        term = _term(text)
+        assert (term.signal, term.labels, term.offset_s, term.source) == ("completed", (("status", "success"),), 60.0, text)
+
+    # The same read written twice is one term, and a different offset is a second one.
+    def test_same_read_is_one_term(self) -> None:
+        p = Predicate("(t >= 600) | (completed offset 60s > 5) | (completed offset 1m > 9) | (completed offset 30s > 9)")
+        assert sorted(term.offset_s for term in p.terms.values()) == [30.0, 60.0]
+
+    # A bare signal next to a selected one stays a signal: the condition has one term and reads errors directly.
+    def test_bare_signal_is_not_a_term(self) -> None:
+        p = Predicate('(t >= 600) | (errors > 3) | (completed{status="cancelled"} > 0)')
+        assert (len(p.terms), p.signals) == (1, frozenset({"errors"}))
+
+    # The '=' inside a selector is not an equality, while 'completed = 5' beside one still is.
+    def test_selector_is_not_an_equality(self) -> None:
+        Predicate('(t >= 600) | (completed{status="failure"} >= 10)')
+        with pytest.raises(ValueError, match="uses equality"):
+            Predicate('(t >= 600) | (completed{status="failure"} >= 10) | (completed = 5)')
+
+    # Each malformed read is rejected with a message naming what is wrong.
+    @pytest.mark.parametrize(
+        ("text", "message"),
+        [
+            ('completed{status="sucess"}', r"status is one of \['success', 'failure', 'cancelled'\], not 'sucess'"),
+            ('completed{session="a1"}', r"'completed' takes \['status'\], not 'session'"),
+            ('errors{status="failure"}', "'errors' takes no labels"),
+            ('completed{status!="success"}', "only '=' is supported in a selector, not '!='"),
+            ('completed{status=~"s.*"}', "only '=' is supported in a selector, not '=~'"),
+            ('completed{status="success",status="failure"}', "sets status twice"),
+            ("completed{}", 'write a selector as label="value"'),
+            ("completed{status=success}", 'write a selector as label="value"'),
+            ('latency{status="success"}', "'latency' is a series, so read it through a window function"),
+            ('requests{status="success"}', "'requests' is not a signal"),
+            ("in_flight offset 30s", r"applies to \['completed', 'errors'\] only"),
+            ("since_last_completion offset 30s", r"applies to \['completed', 'errors'\] only"),
+            ("completed offset 30", "Signal read 'completed offset 30': '30' is not a duration"),
+            ("t offset 30s", "'t' is not a signal"),
+        ],
+    )
+    def test_rejected(self, text: str, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            Predicate(f"(t >= 600) | ({text} > 0)")
+
+    # Braces or an offset with no signal in front are rejected rather than handed to SymPy.
+    @pytest.mark.parametrize(
+        ("condition", "message"),
+        [
+            ('(t >= 600) | ({status="success"} > 0)', "label selector that does not follow a signal"),
+            ("(t >= 600) | (completed offset > 0)", "'offset' that does not follow a range or a signal"),
+        ],
+    )
+    def test_stray_syntax_is_rejected(self, condition: str, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            Predicate(condition)
+
+    # Two successes, one failure and one cancellation: each status reads its own count and the bare signal reads all 4.
+    def test_selector_counts_one_status(self) -> None:
+        p = Predicate(
+            '(t >= 600) | (completed{status="success"} + 10*completed{status="failure"} '
+            '+ 100*completed{status="cancelled"} + 1000*completed > 0)'
+        )
+        state = _state_of(p)
+        for obs in (_ok(1.0), _ok(2.0), Observation(t=3.0, failed=True), _cancelled(4.0)):
+            state.observe(obs, obs.t)
+        assert state.readings(4.0) == {
+            'completed{status="success"}': 2.0,
+            'completed{status="failure"}': 1.0,
+            'completed{status="cancelled"}': 1.0,
+            "completed": 4.0,
+        }
+
+    # A cancelled request is not a failure: errors and completed{status="failure"} both read 1 of 2 non-successes.
+    def test_cancelled_is_not_an_error(self) -> None:
+        state = _state_of(Predicate('(t >= 600) | (errors + completed{status="failure"} + errors offset 0s > 0)'))
+        state.observe(Observation(t=1.0, failed=True), 1.0)
+        state.observe(_cancelled(2.0), 2.0)
+        assert set(state.values(2.0).values()) == {1.0}
+
+    # Requests finish at 5, 20 and 30. 'completed offset 60s' reads how many had finished 60 s ago:
+    # 0 at t=64.9, 1 at t=65, 2 at t=80, 3 at t=90.
+    def test_offset_reads_the_count_as_it_was(self) -> None:
+        state = _state("completed offset 60s")
+        for t in (5.0, 20.0, 30.0):
+            state.observe(_ok(t), t)
+        assert [_value(state, now) for now in (64.9, 65.0, 80.0, 90.0)] == [0.0, 1.0, 2.0, 3.0]
+
+    # Before the offset lies inside the stage the read has no value, so its comparison is false: NaN at t=59.9, 0 at t=60.
+    def test_offset_is_unknown_before_it_lies_in_the_stage(self) -> None:
+        p = Predicate("(t >= 600) | (completed offset 60s < 1)")
+        state = _state_of(p)
+        assert math.isnan(_value(state, 59.9)) and not p.holds(59.9, state.values(59.9))
+        assert _value(state, 60.0) == 0.0 and p.holds(60.0, state.values(60.0))
+
+    # A selector and an offset together: of a success at 5 and a failure at 6, only the success had finished 60 s before t=70.
+    def test_selector_with_offset(self) -> None:
+        state = _state('completed{status="success"} offset 60s')
+        state.observe(_ok(5.0), 5.0)
+        state.observe(Observation(t=6.0, failed=True), 6.0)
+        assert _value(state, 70.0) == 1.0
+
+    # '200 successes and then 60 s': with successes finishing every 0.1 s, the 200th lands at t=20 and the
+    # condition first holds at t=80, not at 79.9.
+    def test_n_completed_plus_a_wait(self) -> None:
+        p = Predicate('(t >= 600) | ((completed{status="success"} offset 60s) >= 200)')
+        state = _state_of(p)
+        for i in range(1, 301):
+            state.observe(_ok(i / 10), i / 10)
+        assert not p.holds(79.9, state.values(79.9))
+        assert p.holds(80.0, state.values(80.0))
+
+    # The error series skips a cancelled request: after one cancellation a window of 1 is still empty, and one failure fills it.
+    def test_error_series_has_no_sample_for_a_cancellation(self) -> None:
+        state = _state("count_over_last(error, 1)")
+        state.observe(_cancelled(1.0), 1.0)
+        assert math.isnan(_value(state, 1.0))
+        state.observe(Observation(t=2.0, failed=True), 2.0)
+        assert _value(state, 2.0) == 1.0
+
+
+class TestLevels:
+    # in_flight{phase="waiting"} is one term read from in_flight with that label.
+    def test_phase_selector(self) -> None:
+        term = _term('in_flight{phase="waiting"}')
+        assert (term.window, term.signal, term.labels) == ("signal", "in_flight", (("phase", "waiting"),))
+
+    # queued is a phase of its own, not of in_flight, and a level cannot be read in the past.
+    @pytest.mark.parametrize(
+        ("text", "message"),
+        [
+            ('in_flight{phase="queued"}', r"phase is one of \['waiting', 'streaming'\], not 'queued'"),
+            ('in_flight{status="success"}', r"'in_flight' takes \['phase'\], not 'status'"),
+            ('queued{phase="waiting"}', "'queued' takes no labels"),
+            ("queued offset 30s", r"applies to \['completed', 'errors'\] only"),
+        ],
+    )
+    def test_rejected(self, text: str, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            Predicate(f"(t >= 600) | ({text} > 0)")
+
+    # With 5 queued, 3 waiting and 1 streaming: each phase reads its own level and in_flight reads 3 + 1.
+    def test_phases_come_from_the_caller(self) -> None:
+        p = Predicate('(t >= 600) | (queued + in_flight{phase="waiting"} + in_flight{phase="streaming"} + in_flight > 0)')
+        state = _state_of(p)
+        assert state.readings(1.0, phases={"queued": 5, "waiting": 3, "streaming": 1}) == {
+            "queued": 5.0,
+            'in_flight{phase="waiting"}': 3.0,
+            'in_flight{phase="streaming"}': 1.0,
+            "in_flight": 4.0,
+        }
+
+    # Without phases every level is unknown, so its comparison is false; in_flight alone still reads the caller's count.
+    def test_levels_are_unknown_without_phases(self) -> None:
+        p = Predicate('(t >= 600) | (queued > 0) | (in_flight{phase="waiting"} > 0)')
+        state = _state_of(p)
+        assert all(math.isnan(value) for value in state.values(1.0, in_flight=7).values())
+        assert not p.holds(1.0, state.values(1.0, in_flight=7))
+
+    # An in_flight passed by the caller wins over the sum of the phases: 7, not 3 + 1.
+    def test_in_flight_from_the_caller_wins(self) -> None:
+        state = _state_of(Predicate("(t >= 600) | (in_flight > 0)"))
+        assert state.values(1.0, in_flight=7, phases={"waiting": 3, "streaming": 1}) == {"in_flight": 7.0}
+
+    # A stall on unanswered requests only: 4 waiting holds '> 3', and 4 streaming does not.
+    def test_condition_on_one_phase(self) -> None:
+        p = Predicate('(t >= 600) | (in_flight{phase="waiting"} > 3)')
+        state = _state_of(p)
+        assert p.holds(1.0, state.values(1.0, phases={"waiting": 4, "streaming": 0}))
+        assert not p.holds(1.0, state.values(1.0, phases={"waiting": 0, "streaming": 4}))
 
 
 class TestMeasuredState:
