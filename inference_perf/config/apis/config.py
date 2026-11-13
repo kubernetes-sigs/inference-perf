@@ -147,6 +147,10 @@ class APIConfig(StrictBaseModel):
         default=False,
         description="Rewrite tool parameter schemas into the subset strict servers accept (e.g. vLLM with xgrammar): drop keys such as 'default' and 'title', collapse anyOf/oneOf, coerce object-valued additionalProperties to false. Changes the prompt; use only when the server rejects the recorded schemas.",
     )
+    return_token_ids: bool = Field(
+        default=False,
+        description="Ask the server for the token ids of each streamed chunk (vLLM 'return_token_ids') and build the token timeline from them instead of re-tokenizing the text. Makes the client/server token count check exact, tool turns included. Streaming chat and completion only. A server that does not know the field may reject the request.",
+    )
     # Response header carrying a server-assigned session token (e.g. x-session-token
     # from the llm-d-router session affinity plugin). When set, the token received in
     # a session's response is echoed as a request header on subsequent requests of
@@ -163,6 +167,12 @@ class APIConfig(StrictBaseModel):
                 raise ValueError(f"streaming is not supported for the {self.type.value} API")
             if self.response_format is not None:
                 raise ValueError(f"response_format is not supported for the {self.type.value} API")
+        if self.return_token_ids:
+            if self.type not in (APIType.Chat, APIType.Completion):
+                raise ValueError(f"return_token_ids is not supported for the {self.type.value} API")
+            # a unary response has no token timeline to build
+            if not self.streaming:
+                raise ValueError("return_token_ids requires streaming")
         if self.type != APIType.Embeddings and self.embeddings is not None:
             raise ValueError("embeddings options are only valid when type is 'embeddings'")
         if self.type != APIType.Rerank and self.rerank is not None:
