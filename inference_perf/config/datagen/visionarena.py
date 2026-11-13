@@ -63,7 +63,7 @@ class VisionArenaConfig(StrictBaseModel):
     insertion_point: InsertionPoint = Field(
         default=0.0,
         description=(
-            "Placement of the image block(s) within the prompt text. Float in [0.0, 1.0] "
-            "(0=start, 1=end), or a Distribution to sample per request."
+            "Placement of the image block(s) within the prompt text. Float (0=start, 1=end), "
+            "a Distribution to sample per request, or an expression string like 'Beta(2, 5)'. Within [0, 1]."
         ),
     )
