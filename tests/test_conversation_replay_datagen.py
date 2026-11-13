@@ -69,10 +69,10 @@ def _make_config(
         seed=seed,
         num_conversations=num_conversations,
         shared_system_prompt_len=shared_system_prompt_len,
-        dynamic_system_prompt_len="Min(Max(Normal(100, 30), 50), 200)",
-        turns_per_conversation=f"Min(Max(Normal({turns_mean}, 1), {turns_min}), {turns_max})",
-        input_tokens_per_turn="Min(Max(Normal(50, 20), 10), 100)",
-        output_tokens_per_turn="Min(Max(Normal(50, 20), 10), 100)",
+        dynamic_system_prompt_len="floor(Min(Max(Normal(100, 30), 50), 200) + 1/2)",
+        turns_per_conversation=f"floor(Min(Max(Normal({turns_mean}, 1), {turns_min}), {turns_max}) + 1/2)",
+        input_tokens_per_turn="floor(Min(Max(Normal(50, 20), 10), 100) + 1/2)",
+        output_tokens_per_turn="floor(Min(Max(Normal(50, 20), 10), 100) + 1/2)",
     )
     data_config = DataConfig(
         type=DataGenType.ConversationReplay,
@@ -390,9 +390,9 @@ class TestConversationReplayDataGenerator:
             shared_system_prompt_len=50,
             max_model_len=1000,
             turns_per_conversation=1,
-            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            input_tokens_per_turn="floor(Min(Max(Normal(20, 5), 10), 50) + 1/2)",
             # 900 + 200 buffer >= 1000, so no prompt could ever fit.
-            output_tokens_per_turn="Min(Max(Normal(100, 50), 10), 900)",
+            output_tokens_per_turn="floor(Min(Max(Normal(100, 50), 10), 900) + 1/2)",
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
 
@@ -408,7 +408,7 @@ class TestConversationReplayDataGenerator:
             shared_system_prompt_len=50,
             max_model_len=1000,
             turns_per_conversation=1,
-            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            input_tokens_per_turn="floor(Min(Max(Normal(20, 5), 10), 50) + 1/2)",
             # max is well within budget, but fixed sampling ignores it and yields 5000.
             output_tokens_per_turn=5000,
         )
@@ -427,7 +427,7 @@ class TestConversationReplayDataGenerator:
             # 256 fallback + 200 buffer >= 400, so even the default cannot fit.
             max_model_len=400,
             turns_per_conversation=1,
-            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            input_tokens_per_turn="floor(Min(Max(Normal(20, 5), 10), 50) + 1/2)",
             output_tokens_per_turn=None,
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
@@ -444,9 +444,9 @@ class TestConversationReplayDataGenerator:
             shared_system_prompt_len=50,
             max_model_len=1000,
             turns_per_conversation=1,
-            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            input_tokens_per_turn="floor(Min(Max(Normal(20, 5), 10), 50) + 1/2)",
             # 799 + 200 < 1000, so a prompt still fits.
-            output_tokens_per_turn="Min(Max(Normal(100, 50), 10), 799)",
+            output_tokens_per_turn="floor(Min(Max(Normal(100, 50), 10), 799) + 1/2)",
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
 
@@ -461,8 +461,8 @@ class TestConversationReplayDataGenerator:
             num_conversations=2,
             shared_system_prompt_len=50,
             turns_per_conversation=3,
-            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
-            output_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            input_tokens_per_turn="floor(Min(Max(Normal(20, 5), 10), 50) + 1/2)",
+            output_tokens_per_turn="floor(Min(Max(Normal(20, 5), 10), 50) + 1/2)",
             tool_call_latency_sec=5,
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
@@ -495,8 +495,8 @@ class TestConversationReplayDataGenerator:
             num_conversations=2,
             shared_system_prompt_len=50,
             turns_per_conversation=3,
-            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
-            output_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            input_tokens_per_turn="floor(Min(Max(Normal(20, 5), 10), 50) + 1/2)",
+            output_tokens_per_turn="floor(Min(Max(Normal(20, 5), 10), 50) + 1/2)",
             tool_call_latency_sec=latency,
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
@@ -603,8 +603,8 @@ class TestConversationReplayDataGenerator:
             num_conversations=3,
             shared_system_prompt_len=50,
             turns_per_conversation=10,
-            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
-            output_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            input_tokens_per_turn="floor(Min(Max(Normal(20, 5), 10), 50) + 1/2)",
+            output_tokens_per_turn="floor(Min(Max(Normal(20, 5), 10), 50) + 1/2)",
             # LogNormal moment-matched to mean 8s, std 6s, clamped to [1, 30]
             tool_call_latency_sec="Min(Max(LogNormal(1.856, 0.668), 1), 30)",
         )

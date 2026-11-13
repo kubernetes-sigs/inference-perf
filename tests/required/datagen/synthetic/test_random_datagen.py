@@ -51,8 +51,8 @@ def test_random_datagen_yields_string() -> None:
     api_config = APIConfig(type=APIType.Completion, streaming=True)
     data_config = DataConfig(
         type=DataGenType.Random,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     tokenizer = DummyCustomTokenizer()
 
@@ -105,8 +105,8 @@ def test_random_datagen_excludes_special_tokens() -> None:
     api_config = APIConfig(type=APIType.Completion, streaming=True)
     data_config = DataConfig(
         type=DataGenType.Random,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     tokenizer = DummyCustomTokenizer()
 
@@ -138,8 +138,8 @@ def test_random_datagen_use_chat_template_wraps_prompt() -> None:
     data_config = DataConfig(
         type=DataGenType.Random,
         use_chat_template=True,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     tokenizer = ChatTemplateDummyCustomTokenizer()
 
@@ -159,8 +159,8 @@ def test_random_datagen_without_chat_template_leaves_request_untouched() -> None
     api_config = APIConfig(type=APIType.Completion, streaming=True)
     data_config = DataConfig(
         type=DataGenType.Random,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     generator = RandomDataGenerator(api_config, data_config, DummyCustomTokenizer(), total_count=5)
     real_data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=0))
@@ -173,8 +173,8 @@ def test_random_datagen_use_chat_template_requires_template() -> None:
     data_config = DataConfig(
         type=DataGenType.Random,
         use_chat_template=True,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
 
     class NoTemplateDummy(DummyCustomTokenizer):
@@ -191,8 +191,8 @@ def test_random_datagen_use_chat_template_min_length_guard() -> None:
     data_config = DataConfig(
         type=DataGenType.Random,
         use_chat_template=True,
-        input_distribution="Min(Max(Normal(2, 1), 1), 2)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(2, 1), 1), 2) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     with pytest.raises(ValueError, match="chat template overhead"):
         RandomDataGenerator(api_config, data_config, ChatTemplateDummyCustomTokenizer(), total_count=5)

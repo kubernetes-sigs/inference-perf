@@ -16,8 +16,8 @@ tokenizer:
 
 data:
   type: synthetic
-  input_distribution: "Uniform(100, 500)"
-  output_distribution: "Uniform(50, 200)"
+  input_distribution: "floor(Uniform(100, 500) + 1/2)"
+  output_distribution: "floor(Uniform(50, 200) + 1/2)"
   multimodal:
     video:
       # One video per request, placed at the end of the prompt.

@@ -460,7 +460,7 @@ def _render_system_head(
 _FB_STEPS = 2
 _FB_TOOL_DEFS = 8
 # the legacy uniform(2, 4) block's exact compilation: 2 and 4 keep their half-weight edges
-_FB_SUB_AGENTS = "Min(Uniform(2, 5), 4)"
+_FB_SUB_AGENTS = "floor(Min(Uniform(2, 5), 4) + 1/2)"
 _FB_PARALLEL = 1
 # Wait-time fallbacks (seconds), each set to a realistic value for what it models:
 # a tool round-trip is ~1s; a human reading an answer and typing a follow-up is ~10s.
