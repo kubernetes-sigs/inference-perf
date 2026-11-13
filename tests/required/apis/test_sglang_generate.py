@@ -14,12 +14,14 @@
 """Unit tests for SGLang's native /generate route: both streaming modes, the request body and the response parse."""
 
 import json
+import logging
 from typing import AsyncGenerator, Callable, Dict, List, Mapping
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from inference_perf.apis import RequestLifecycleMetric, SGLangGenerateAPIData, StreamedResponseMetrics, UnaryResponseMetrics
+from inference_perf.apis import sglang_generate
 from inference_perf.apis.response_errors import EmptyResponseError, InBandError
 from inference_perf.apis.sglang_generate import parse_stream, server_usage, stream_state
 from inference_perf.config import APIConfig, APIType
@@ -305,6 +307,33 @@ def test_without_the_counts_a_chunk_is_read_as_cumulative(change: Callable[[Dict
         change(chunk)
 
     assert [parse_stream(c, state) for c in chunks] == ["a", "b"]
+
+
+# Chunks "a", "ab", "abc" with no output_ids or meta_info -> read as cumulative ("a", "b", "c") with one
+# warning for the whole stream, since a server that omits the fields omits them from every chunk.
+def test_reading_without_the_counts_warns_once(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(sglang_generate, "_warned_cumulative_fallback", False)
+    state = stream_state()
+
+    with caplog.at_level(logging.WARNING, logger=sglang_generate.__name__):
+        assert [parse_stream({"text": text}, state) for text in ("a", "ab", "abc")] == ["a", "b", "c"]
+
+    warnings = [r for r in caplog.records if r.name == sglang_generate.__name__]
+    assert len(warnings) == 1
+    assert "--incremental-streaming-output" in warnings[0].getMessage()
+
+
+# Chunks with output_ids and completion_tokens, and one with no text -> no warning.
+def test_reading_with_the_counts_does_not_warn(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(sglang_generate, "_warned_cumulative_fallback", False)
+    state = stream_state()
+
+    with caplog.at_level(logging.WARNING, logger=sglang_generate.__name__):
+        parse_stream({"text": "a", "output_ids": [1], "meta_info": {"completion_tokens": 1}}, state)
+        parse_stream({"text": "b", "output_ids": [2], "meta_info": {"completion_tokens": 2}}, state)
+        parse_stream({"meta_info": {"completion_tokens": 2}}, state)
+
+    assert not [r for r in caplog.records if r.name == sglang_generate.__name__]
 
 
 # Two requests streaming at once, each with its own state -> each gets its own text.

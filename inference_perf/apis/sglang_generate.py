@@ -24,6 +24,7 @@ proposed in #909.
 """
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional
 
@@ -35,6 +36,13 @@ from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
+logger = logging.getLogger(__name__)
+
+# Set once parse_stream has warned that a chunk lacked the fields that tell the
+# two streaming modes apart. A server that leaves them out does so on every
+# chunk, so one warning per process is enough.
+_warned_cumulative_fallback = False
 
 
 @dataclass
@@ -55,7 +63,8 @@ def parse_stream(chunk: Mapping[str, object], state: GenerateStreamState) -> Opt
     completion_tokens counts every token generated so far in both modes, so a
     chunk carrying fewer output_ids than that is a delta. The first chunk
     reads the same either way. Without both fields the chunk is read as the
-    server's default, cumulative.
+    server's default, cumulative, which drops text on a delta stream, so the
+    first such chunk logs a warning.
     """
     meta_info = chunk.get("meta_info")
     if isinstance(meta_info, dict):
@@ -65,12 +74,27 @@ def parse_stream(chunk: Mapping[str, object], state: GenerateStreamState) -> Opt
         return None
     output_ids = chunk.get("output_ids")
     completion_tokens = meta_info.get("completion_tokens") if isinstance(meta_info, dict) else None
-    if isinstance(output_ids, list) and isinstance(completion_tokens, int) and len(output_ids) < completion_tokens:
+    if not (isinstance(output_ids, list) and isinstance(completion_tokens, int)):
+        _warn_cumulative_fallback()
+        new = text[state.text_len :]
+    elif len(output_ids) < completion_tokens:
         new = text
     else:
         new = text[state.text_len :]
     state.text_len += len(new)
     return new or None
+
+
+def _warn_cumulative_fallback() -> None:
+    global _warned_cumulative_fallback
+    if _warned_cumulative_fallback:
+        return
+    _warned_cumulative_fallback = True
+    logger.warning(
+        "An SGLang /generate stream chunk has no output_ids or meta_info.completion_tokens, so it is read as "
+        "cumulative output, the server's default. If the server runs with --incremental-streaming-output, "
+        "output text is being dropped. Logged once per process."
+    )
 
 
 def server_usage(meta_info: object) -> Optional[Dict[str, object]]:
