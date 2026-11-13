@@ -31,6 +31,7 @@ from typing import Any, List, Optional, Tuple, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis.request_phase import notify_first_token
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.datagen import DataGenerator
 from inference_perf.loadgen.load_generator import RequestQueueData, Worker
@@ -65,6 +66,22 @@ class _ProbeClient:
             self.active -= 1
 
 
+class _StreamingClient:
+    """Client double whose requests wait for first_token, report it twice, then wait for finish."""
+
+    def __init__(self) -> None:
+        self.first_token = asyncio.Event()
+        self.finish = asyncio.Event()
+
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
+        await self.first_token.wait()
+        notify_first_token()
+        notify_first_token()
+        await self.finish.wait()
+
+
 class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.request_queue: RequestQueue[RequestQueueData] = RequestQueue(1)
@@ -77,6 +94,7 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
         self.finished_counter = mp.Value("i", 0)
         self.active_counter = mp.Value("i", 0)
         self.skipped_counter = mp.Value("i", 0)
+        self.streaming_counter = mp.Value("i", 0)
         self.datagen = MagicMock(spec=DataGenerator)
         # The stage rendezvous is a published sequence number, not a Barrier:
         # the main side publishes stage_boundary_seq and each worker copies it
@@ -114,6 +132,7 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
             force_stop_signal=self.force_stop_signal,
             stage_done_counter=self.stage_done_counter,
             stage_boundary_seq=self.stage_boundary_seq,
+            streaming_requests_counter=self.streaming_counter,
         )
 
     # Queues n requests on channel 0, scheduled at time 0.0, so they dispatch at once.
@@ -237,6 +256,57 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(client.calls), 6)
         self.assertLessEqual(client.max_active, 2)
+
+    # 2 requests that wait, receive a first token and then finish. Expects streaming 0 while both wait,
+    # 2 once each has a first token (reported twice, counted once), and 0 again once they finish.
+    async def test_streaming_counter_follows_the_first_token(self) -> None:
+        client = _StreamingClient()
+        worker = self._make_worker(client)
+        self.request_phase.set()
+        self._put(2)
+
+        task = asyncio.get_event_loop().create_task(worker.loop())
+        await self._wait_until(lambda: self.active_counter.value == 2)
+        self.assertEqual(self.streaming_counter.value, 0)
+        client.first_token.set()
+        await self._wait_until(lambda: self.streaming_counter.value == 2)
+        self.assertEqual(self.active_counter.value, 2)
+        client.finish.set()
+        await self._wait_until(lambda: self.finished_counter.value == 2)
+        await self._end_stage(task)
+
+        self.assertEqual((self.active_counter.value, self.streaming_counter.value), (0, 0))
+
+    # 2 requests cancelled at a stage end while streaming. Expects the streaming counter back at 0.
+    async def test_cancelled_streaming_requests_leave_the_streaming_counter(self) -> None:
+        client = _StreamingClient()
+        client.first_token.set()
+        worker = self._make_worker(client)
+        self.request_phase.set()
+        self._put(2)
+
+        task = asyncio.get_event_loop().create_task(worker.loop())
+        await self._wait_until(lambda: self.streaming_counter.value == 2)
+        await self._end_stage(task, cancel=True)
+
+        self.assertEqual((self.active_counter.value, self.streaming_counter.value), (0, 0))
+
+    # A worker built without a streaming counter serves a request that reports its first token.
+    # Expects the request to finish as usual.
+    async def test_worker_without_a_streaming_counter_ignores_the_first_token(self) -> None:
+        client = _StreamingClient()
+        client.first_token.set()
+        client.finish.set()
+        worker = self._make_worker(client)
+        worker.streaming_requests_counter = None
+        self.request_phase.set()
+        self._put(1)
+
+        task = asyncio.get_event_loop().create_task(worker.loop())
+        await self._wait_until(lambda: self.finished_counter.value == 1)
+        await self._end_stage(task)
+
+        self.assertEqual(self.streaming_counter.value, 0)
 
     # 2 requests that would each run 30 s, then a stage end with cancel and force set.
     # Expects both cancelled right away (active=0, finished=2) and the boundary acked.
