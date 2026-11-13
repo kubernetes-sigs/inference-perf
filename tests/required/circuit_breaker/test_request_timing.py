@@ -106,13 +106,13 @@ async def test_collector_window_uses_request_completion_times(
 # evict 12 and fire with 2/3 hits >= 0.6; retaining 12 would leave only 2/4.
 def test_window_orders_active_samples_by_completion_time() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=0.6, min_samples=3)
-    samples = [HitSample(BASE + timedelta(seconds=t), hit) for t, hit in [(20, 0), (12, 0), (15, 1)]]
+    samples = [HitSample(t, hit) for t, hit in [(20.0, 0), (12.0, 0), (15.0, 1)]]
     for sample in samples:
         trigger.update(sample)
 
     assert trigger.fired() is False
     active_before_eviction = list(trigger.buf)
-    latest = HitSample(BASE + timedelta(seconds=23), 1)
+    latest = HitSample(23.0, 1)
     trigger.update(latest)
 
     assert trigger.fired() is True
@@ -124,9 +124,9 @@ def test_window_orders_active_samples_by_completion_time() -> None:
 # min_samples=2 nor turn the rate into 1/2 and incorrectly latch the trigger.
 def test_expired_late_hit_does_not_fire_window() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=0.5, min_samples=2)
-    newer = HitSample(BASE + timedelta(seconds=20), 0)
+    newer = HitSample(20.0, 0)
     trigger.update(newer)
-    trigger.update(HitSample(BASE + timedelta(seconds=5), 1))
+    trigger.update(HitSample(5.0, 1))
 
     assert trigger.fired() is False
     assert list(trigger.buf) == [newer]
@@ -136,13 +136,13 @@ def test_expired_late_hit_does_not_fire_window() -> None:
 # then fire at 21 with 1/2 hits. An expired 5 trapped behind 20 would yield 1/3.
 def test_expired_late_miss_does_not_hide_later_threshold() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=0.5, min_samples=2)
-    newer = HitSample(BASE + timedelta(seconds=20), 0)
+    newer = HitSample(20.0, 0)
     trigger.update(newer)
-    trigger.update(HitSample(BASE + timedelta(seconds=5), 0))
+    trigger.update(HitSample(5.0, 0))
     active_after_late = list(trigger.buf)
     assert trigger.fired() is False
 
-    latest = HitSample(BASE + timedelta(seconds=21), 1)
+    latest = HitSample(21.0, 1)
     trigger.update(latest)
 
     assert trigger.fired() is True
@@ -154,8 +154,8 @@ def test_expired_late_miss_does_not_hide_later_threshold() -> None:
 # must keep a min=2, threshold=0.5 window closed (dropping 10 would fire it).
 def test_window_retains_sample_exactly_at_cutoff() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=0.5, min_samples=2)
-    for t, hit in [(10, 0), (19, 0), (20, 1)]:
-        trigger.update(HitSample(BASE + timedelta(seconds=t), hit))
+    for t, hit in [(10.0, 0), (19.0, 0), (20.0, 1)]:
+        trigger.update(HitSample(t, hit))
 
     assert trigger.fired() is False
     assert len(trigger.buf) == 3
@@ -165,18 +165,18 @@ def test_window_retains_sample_exactly_at_cutoff() -> None:
 # timeline 1/2 must fire afresh; no previous latest-time state may evict it.
 def test_window_reset_starts_fresh_completion_timeline() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=1, min_samples=2)
-    trigger.update(HitSample(BASE + timedelta(seconds=20), 1))
-    trigger.update(HitSample(BASE + timedelta(seconds=21), 1))
+    trigger.update(HitSample(20.0, 1))
+    trigger.update(HitSample(21.0, 1))
     assert trigger.fired() is True
-    trigger.update(HitSample(BASE + timedelta(seconds=40), 0))
+    trigger.update(HitSample(40.0, 0))
     assert trigger.fired() is True
 
     trigger.reset()
     assert trigger.fired() is False
     assert not trigger.buf
-    trigger.update(HitSample(BASE + timedelta(seconds=1), 1))
+    trigger.update(HitSample(1.0, 1))
     assert trigger.fired() is False
-    trigger.update(HitSample(BASE + timedelta(seconds=2), 1))
+    trigger.update(HitSample(2.0, 1))
     assert trigger.fired() is True
     assert len(trigger.buf) == 2
 
@@ -206,44 +206,11 @@ def test_generic_models_share_request_clock_domain(has_end_time: bool) -> None:
     assert clock.call_count == 2
 
 
-# Map zero, negative, fractional, and long-uptime request seconds without reading
-# the processing clock. Fractional seconds round to the existing datetime microsecond resolution.
-@pytest.mark.parametrize(
-    ("end_time", "expected_microseconds"),
-    [
-        (0.0, 0),
-        (-1.0, -1_000_000),
-        (1_000_000.1234564, 1_000_000_123456),
-        (1_000_000.1234566, 1_000_000_123457),
-        (1_000_000_000.125, 1_000_000_000_125000),
-    ],
-)
-def test_request_time_mapping_preserves_microsecond_precision(end_time: float, expected_microseconds: int) -> None:
-    breaker = SimpleCircuitBreaker(
-        CircuitBreakerConfig(
-            name="precision",
-            metrics=MetricsSpec(matches=["stage_id == `1`"]),
-            triggers=[TriggerRateOverWindow(type="rate_over_window", window_sec=10, threshold=1, min_samples=2)],
-        )
-    )
-    with patch(
-        "inference_perf.circuit_breaker.simple_breaker.time.perf_counter",
-        side_effect=AssertionError("Request completion must not read the processing clock"),
-    ):
-        breaker.feed(_metric(end_time, 1))
-
-    trigger = breaker._triggers[0]
-    assert isinstance(trigger, RateOverWindow)
-    assert len(trigger.buf) == 1
-    assert trigger.buf[0].ts == datetime(2000, 1, 1) + timedelta(microseconds=expected_microseconds)
-    assert trigger.buf[0].ts.tzinfo is None
-
-
 # Arrival 20(miss), 10(miss), 10(hit), 20(hit) retains both duplicate pairs in
 # arrival order within each timestamp, reaching min=4 and firing at exactly 2/4.
 def test_window_retains_equal_timestamps_on_append_and_late_insertion() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=0.5, min_samples=4)
-    samples = [HitSample(BASE + timedelta(seconds=t), hit) for t, hit in [(20, 0), (10, 0), (10, 1), (20, 1)]]
+    samples = [HitSample(t, hit) for t, hit in [(20.0, 0), (10.0, 0), (10.0, 1), (20.0, 1)]]
     for sample in samples[:-1]:
         trigger.update(sample)
         assert trigger.fired() is False
@@ -256,15 +223,15 @@ def test_window_retains_equal_timestamps_on_append_and_late_insertion() -> None:
 
 # Into 10/12/12/16/20, insert a hit at 19 (near tail), 9 (before all), or 12
 # (after both equals). Each preserves all samples and fires at exactly 3/6.
-@pytest.mark.parametrize(("seconds", "position"), [(19, 4), (9, 0), (12, 3)])
-def test_window_late_insertion_positions(seconds: int, position: int) -> None:
+@pytest.mark.parametrize(("seconds", "position"), [(19.0, 4), (9.0, 0), (12.0, 3)])
+def test_window_late_insertion_positions(seconds: float, position: int) -> None:
     trigger = RateOverWindow(window_sec=20, threshold=0.5, min_samples=6)
-    samples = [HitSample(BASE + timedelta(seconds=t), hit) for t, hit in [(10, 0), (12, 1), (12, 0), (16, 1), (20, 0)]]
+    samples = [HitSample(t, hit) for t, hit in [(10.0, 0), (12.0, 1), (12.0, 0), (16.0, 1), (20.0, 0)]]
     for sample in samples:
         trigger.update(sample)
         assert trigger.fired() is False
 
-    late = HitSample(BASE + timedelta(seconds=seconds), 1)
+    late = HitSample(seconds, 1)
     trigger.update(late)
     expected = samples.copy()
     expected.insert(position, late)

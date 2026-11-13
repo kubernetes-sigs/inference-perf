@@ -173,18 +173,13 @@ def test_schedule_delay_includes_failed_requests() -> None:
     assert load["schedule_delay"]["max"] == pytest.approx(1.0)
 
 
-# 5 requests at 0,1,2,3,4s. Pins send_duration=4.0 and achieved_rate=1.25 (5/4).
-# The true sustained rate is 1.0/s, so this documents the shipped n/(n-1)
-# overstatement rather than endorsing it.
-def test_achieved_rate_equals_count_over_send_duration() -> None:
-    """Five requests sent over a 4.0s window report 5 / 4.0 = 1.25 per second.
+# 5 requests at 0,1,2,3,4s. Pins send_duration=4.0 and achieved_rate=1.0 (4 gaps / 4.0s).
+def test_achieved_rate_counts_gaps_over_send_duration() -> None:
+    """Five requests sent 1.0s apart report the 1.0/s the generator sustained.
 
-    Note what the reported number is not: those five requests were dispatched at exactly
-    1.0s intervals, so the rate the generator actually sustained is 1.0/s. The report
-    divides the request count, not the number of gaps between requests, by the span from
-    the first send to the last, which overstates the sustained rate by a factor of
-    n / (n - 1). This asserts the shipped definition rather than the intended one; see
-    #821.
+    The send window runs from the first send to the last, so five requests span four
+    gaps. Dividing the request count by it would report 5 / 4.0 = 1.25, overstating
+    the sustained rate by n / (n - 1); dividing the gaps reports 4 / 4.0 = 1.0 (#821).
     """
     load = _load_summary(
         _delayed(start_times=[0.0, 1.0, 2.0, 3.0, 4.0], delays=[0.0, 0.0, 0.0, 0.0, 0.0]),
@@ -194,16 +189,16 @@ def test_achieved_rate_equals_count_over_send_duration() -> None:
     assert load["count"] == 5
     assert load["requested_rate"] == 1.0
     assert load["send_duration"] == pytest.approx(4.0)
-    assert load["achieved_rate"] == pytest.approx(1.25)
+    assert load["achieved_rate"] == pytest.approx(1.0)
 
 
-# 4 requests sent 0.5s apart but each takes 10s to finish. Rate must be 4/1.5 based
+# 4 requests sent 0.5s apart but each takes 10s to finish. Rate must be 3/1.5 based
 # on send times only; slow server responses must not drag it down.
 def test_achieved_rate_tracks_send_duration_not_completion_times() -> None:
     """Slow responses must not drag the achieved rate down.
 
-    Sends are 0.5s apart, so the four requests span 1.5s and the reported rate is
-    4 / 1.5. Each request then takes 10s to come back, which moves every end_time but
+    Sends are 0.5s apart, so the four requests span three gaps over 1.5s and the
+    reported rate is 3 / 1.5. Each request then takes 10s to come back, which moves every end_time but
     must leave the load-side rate untouched: `achieved_rate` describes dispatch, and
     conflating it with completion would hide a generator that is keeping up against a
     server that is not.
@@ -213,7 +208,7 @@ def test_achieved_rate_tracks_send_duration_not_completion_times() -> None:
     load = _load_summary(metrics, stage_rate=8.0)
 
     assert load["send_duration"] == pytest.approx(1.5)
-    assert load["achieved_rate"] == pytest.approx(4.0 / 1.5)
+    assert load["achieved_rate"] == pytest.approx(3.0 / 1.5)
     assert load["requested_rate"] == 8.0
 
 

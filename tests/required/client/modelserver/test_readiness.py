@@ -15,8 +15,8 @@
 
 Client construction always polls a readiness route until it answers 200, before model
 auto-detection: the profile's own route when it names one (vLLM: ``/health``), otherwise
-``/v1/models``. A 404 means the route is not served, so the run carries on; anything else
-is polled until ``readiness_timeout_sec`` runs out. No network: ``requests.get`` and the
+``/v1/models``. A 404 means the route is not served, so the run carries on; a 401 or 403
+fails at once (#1034); anything else is polled until ``readiness_timeout_sec`` runs out. No network: ``requests.get`` and the
 clock are faked.
 """
 
@@ -185,6 +185,37 @@ def test_404_route_is_not_waited_for() -> None:
     _build(mock_get, clock)
     mock_get.assert_called_once()
     assert clock.sleeps == []
+
+
+# /health answers 401 or 403 -> raises after one probe, naming the URL and the status, with no sleep.
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_failure_is_not_waited_for(status: int) -> None:
+    mock_get = MagicMock(return_value=_response(status))
+    clock = FakeClock()
+    with pytest.raises(Exception, match=rf"{HEALTH_URL} answered HTTP {status}"):
+        _build(mock_get, clock)
+    mock_get.assert_called_once()
+    assert clock.sleeps == []
+
+
+# SGLang (no readiness route) with a wrong api_key: /v1/models answers 401 -> raises at once, not after 600 s.
+def test_auth_failure_on_models_fallback_route() -> None:
+    mock_get = MagicMock(return_value=_response(401))
+    clock = FakeClock()
+    with pytest.raises(Exception, match=rf"{MODELS_URL} answered HTTP 401"):
+        _build(mock_get, clock, client_cls=SGlangModelServerClient, api_key="wrong")
+    mock_get.assert_called_once()
+    assert clock.now == 0.0
+
+
+# /health answers 503, then 403 -> the wait ends on the 403 after one sleep instead of polling to the budget.
+def test_auth_failure_ends_the_wait_after_earlier_failures() -> None:
+    mock_get = MagicMock(side_effect=[_response(503), _response(403)])
+    clock = FakeClock()
+    with pytest.raises(Exception, match=r"answered HTTP 403"):
+        _build(mock_get, clock)
+    assert mock_get.call_count == 2
+    assert clock.sleeps == [1.0]
 
 
 # /health answers 404 after one 503 -> the wait ends on the 404 instead of polling to the budget.
