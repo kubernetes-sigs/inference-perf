@@ -108,7 +108,7 @@ if not files:
 sys.exit(subprocess.run([sys.executable, "scripts/check_license.py", *files]).returncode)
 '''], help = "Verify license headers in all tracked Python files"}
 lint = {cmd = "ruff check", help = "Lint code with ruff"}
-type-check = {cmd = "mypy --strict ./inference_perf ./tests ./e2e/known_bad.py ./scripts/check_type_escapes.py ./scripts/classify_changes.py", help = "Strict mypy over inference_perf, tests, the e2e known-bad helper, the type-escape ratchet and the change classifier"}
+type-check = {cmd = "mypy --strict ./inference_perf ./tests ./e2e/known_bad.py ./scripts/check_type_escapes.py ./scripts/classify_changes.py ./scripts/label_pr.py", help = "Strict mypy over inference_perf, tests, the e2e known-bad helper, the type-escape ratchet, the change classifier and the PR labeler"}
 "check:type-escapes" = {cmd = "python scripts/check_type_escapes.py", help = "Verify the totals of Any, cast(, type: ignore and mypy overrides did not rise vs main"}
 "check:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py --check", help = "Verify docs/cli_flags.md is in sync with the CLI"}
 "update:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py", help = "Regenerate docs/cli_flags.md from the CLI"}
