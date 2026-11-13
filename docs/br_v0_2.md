@@ -87,6 +87,21 @@ describe the recorded sessions only.
 The block is omitted entirely for a stage that ran no sessions, so partials from
 non-session workloads are unchanged.
 
+With `report.prometheus.per_stage` on, `results.observability.components` holds
+one entry for the model server, labelled with the server type (`vllm`,
+`sglang`, `tgi`), built from the stage's Prometheus summary:
+
+| Field | Units | Statistics | From |
+|---|---|---|---|
+| `kv_cache_usage` | fraction | mean, p50, p90, p99 | `kv_cache_usage` |
+| `running_requests` | count | mean, p50, p90, p99 | `num_requests_running` |
+| `waiting_requests` | count | mean, p50, p90, p99 | `queue_length` |
+| `preemptions` | count | mean, the stage total | `num_preemptions_total` |
+| `cache_hit_rate` | percent | mean | prefix cache hits over queries in the stage, times 100 |
+
+A metric the server does not expose, or whose query returned nothing, is left
+out, as is `cache_hit_rate` for a stage with no cache queries.
+
 `run.uid` is generated per stage. A composer is free to overwrite it during
 merge.
 

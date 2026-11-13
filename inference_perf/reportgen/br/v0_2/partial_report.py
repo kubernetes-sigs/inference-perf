@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric
+from inference_perf.client.server_metrics import ModelServerMetrics
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 from .adapter import build_results
@@ -69,6 +70,7 @@ def build_partial_report(
     stage_end: float | None = None,
     session_metrics: List[SessionLifecycleMetric] | None = None,
     sessions_not_completed: int = 0,
+    server_metrics: Mapping[str, ModelServerMetrics] | None = None,
 ) -> Dict[str, Any]:
     """Build the inference-perf partial of a BR0.2 report for one stage.
 
@@ -100,6 +102,9 @@ def build_partial_report(
     without a metric — still active or never dispatched when the stage was cut
     short. It is added to ``results.session_performance.sessions.total`` so a
     truncated stage does not look like a clean run.
+
+    ``server_metrics`` maps a component label to the stage's Prometheus
+    summary and fills ``results.observability.components``.
     """
     run = Run(uid=run_uid, eid=run_eid, time=_build_run_time(stage_start, stage_end))
     results = build_results(
@@ -108,6 +113,7 @@ def build_partial_report(
         use_server_output_tokens,
         session_metrics=session_metrics,
         sessions_not_completed=sessions_not_completed,
+        server_metrics=server_metrics,
     )
 
     return {
