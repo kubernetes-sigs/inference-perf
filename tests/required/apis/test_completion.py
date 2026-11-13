@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ClientResponse
+from pydantic import ValidationError
 
 from inference_perf.apis import ChatCompletionAPIData, ChatMessage, UnaryResponseMetrics
 from inference_perf.apis.completion import CompletionAPIData
@@ -296,3 +297,55 @@ async def test_process_response_streaming_no_content_with_usage_is_a_success() -
     assert info.request_metrics.text.input_tokens == 3
     assert info.response_metrics is not None
     assert info.response_metrics.server_usage == {"prompt_tokens": 3, "completion_tokens": 0}
+
+
+# Unary completion bodies that are not a completion even though usage is present: a choice
+# with no text, a null text, a string choice, choices as a dict, usage as a list. Each must
+# raise ValidationError. On main the first one was a zero-token success.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"choices": [{"index": 0, "finish_reason": "stop"}], "usage": {"prompt_tokens": 3}},
+        {"choices": [{"text": None}], "usage": {"prompt_tokens": 3}},
+        {"choices": ["hello"], "usage": {"prompt_tokens": 3}},
+        {"choices": {"text": "hello"}, "usage": {"prompt_tokens": 3}},
+        {"choices": [{"text": "hello"}], "usage": [3]},
+    ],
+)
+async def test_process_response_non_streaming_malformed_body_raises_validation_error(body: dict[str, object]) -> None:
+    data = CompletionAPIData(prompt="hi")
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    with pytest.raises(ValidationError):
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+
+# Unary completion bodies shaped the way TGI, vLLM and SGLang send them, all with text
+# "hello there" (2 tokens): finish_reason stop_sequence, abort and null, logprobs as a list of floats,
+# and no id/object/created/model/index/total_tokens anywhere. Each is a success and usage
+# comes back unchanged.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "choice_extra",
+    [
+        {"finish_reason": "stop_sequence"},
+        {"finish_reason": "abort"},
+        {"finish_reason": None},
+        {"finish_reason": "stop", "logprobs": [-0.1, -0.2]},
+        {},
+    ],
+)
+async def test_process_response_non_streaming_accepts_engine_specific_fields(choice_extra: dict[str, object]) -> None:
+    data = CompletionAPIData(prompt="hi")
+    body = {"choices": [{"text": "hello there", **choice_extra}], "usage": {"prompt_tokens": 42, "completion_tokens": None}}
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    info = await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+    assert data.model_response == "hello there"
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
+    assert info.response_metrics.output_tokens == 2
+    assert info.response_metrics.server_usage == {"prompt_tokens": 42, "completion_tokens": None}
