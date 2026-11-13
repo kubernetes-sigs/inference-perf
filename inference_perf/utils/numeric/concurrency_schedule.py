@@ -13,11 +13,12 @@
 # limitations under the License.
 """An integer concurrency level that follows a piecewise-linear expression of ``t``.
 
-The expression is rounded down: the level in effect at ``t`` is
-``floor(value(t))``, so a stage never runs more requests at once than the
-expression asks for. Because the expression is piecewise linear, every time
-the level changes is exact (a line crosses an integer at one known ``t``), so
-the load generator can sleep until the next change instead of polling.
+The expression says how it becomes a whole number: ``floor(...)`` or
+``ceiling(...)`` around a piecewise-linear line, or a step function whose steps
+are whole numbers already. ``floor(... + 1/2)`` rounds to the nearest. Because
+the line is piecewise linear, every time the level changes is exact (a line
+crosses an integer at one known ``t``), so the load generator can sleep until
+the next change instead of polling.
 """
 
 from __future__ import annotations
@@ -36,35 +37,81 @@ def _slack(value: float) -> float:
     return _TOLERANCE * max(1.0, abs(value))
 
 
+def _split_rounding(raw: Union[int, str]) -> tuple[Union[int, str], Optional[str]]:
+    """The line under a top-level floor() or ceiling(), and which one; the whole value and None otherwise.
+
+    Read from the text, not the parsed tree: sympy rewrites floor(1 + t) as
+    floor(t) + 1, which would lose the wrapper.
+    """
+    if isinstance(raw, int):
+        return raw, None
+    text = raw.strip()
+    for rounding in ("floor", "ceiling"):
+        if text.startswith(f"{rounding}(") and text.endswith(")") and _closes_at_end(text, len(rounding)):
+            return text[len(rounding) + 1 : -1].strip(), rounding
+    return raw, None
+
+
+# True when the parenthesis opened at text[open_at] is the one closed by the last character
+def _closes_at_end(text: str, open_at: int) -> bool:
+    depth = 0
+    for i in range(open_at, len(text)):
+        depth += {"(": 1, ")": -1}.get(text[i], 0)
+        if depth == 0:
+            return i == len(text) - 1
+    return False
+
+
 class ConcurrencySchedule:
     """A concurrency level over stage time ``t``, from a number or an expression.
 
     Args:
-        raw: An integer, or an expression string such as ``"Min(1 + t/6, 64)"``.
-            An expression must be piecewise linear in ``t`` (see
-            :class:`PiecewiseLinear`), at least 1 at every ``t >= 0``, and
-            bounded above. A concurrent stage has no fixed duration, so the
-            bounds are proved over all ``t >= 0``; a ramp that would keep
-            growing must be capped, e.g. with ``Min(..., 64)``.
+        raw: An integer, or an expression string such as ``"floor(Min(1 + t/6, 64))"``.
+            The line under ``floor``/``ceiling`` must be piecewise linear in
+            ``t`` (see :class:`PiecewiseLinear`); without one, the expression
+            must be a step function of whole numbers. The level must be at
+            least 1 at every ``t >= 0`` and bounded above. A concurrent stage
+            has no fixed duration, so the bounds are proved over all
+            ``t >= 0``; a ramp that would keep growing must be capped, e.g.
+            with ``Min(..., 64)``.
 
     Raises:
-        ValueError: If the expression is not piecewise linear, can fall below
-            1, or is unbounded above.
+        ValueError: If the expression is not piecewise linear, takes values
+            that are not whole numbers without saying how to round them, can
+            fall below 1, or is unbounded above.
     """
 
     def __init__(self, raw: Union[int, str]) -> None:
         self.raw = raw
-        self._line = PiecewiseLinear(raw)
+        line, self._rounding = _split_rounding(raw)
+        self._ceiling = self._rounding == "ceiling"
+        self._line = PiecewiseLinear(line)
+        if self._rounding is None and not all(s.slope == 0 and float(s.intercept).is_integer() for s in self._line.segments):
+            raise ValueError(
+                f"Concurrency {raw!r} takes values that are not whole numbers. Write 'floor({raw})' to round down,"
+                f" 'floor({raw} + 1/2)' to round to the nearest, or 'ceiling({raw})' to round up."
+            )
         lower, upper = self._line.bounds
         if upper == float("inf"):
-            raise ValueError(f"Concurrency {raw!r} grows without limit as t increases; cap it, e.g. 'Min({raw}, 64)'.")
-        if lower + _slack(lower) < 1:
+            raise ValueError(
+                f"Concurrency {raw!r} grows without limit as t increases; cap it, e.g. '{self._rounded(f'Min({line}, 64)')}'."
+            )
+        if self._level_of(lower) < 1:
             below = self._first_time_below_one()
             raise ValueError(
-                f"Concurrency {raw!r} falls below 1 at t={below:g}; it must be at least 1 at every t, e.g. 'Max(1, {raw})'."
+                f"Concurrency {raw!r} falls below 1 at t={below:g}; it must be at least 1 at every t,"
+                f" e.g. '{self._rounded(f'Max(1, {line})')}'."
             )
         self.initial = self.level_at(0.0)
-        self.peak = int(math.floor(upper + _slack(upper)))
+        self.peak = self._level_of(upper)
+
+    def _rounded(self, line: str) -> str:
+        return line if self._rounding is None else f"{self._rounding}({line})"
+
+    def _level_of(self, value: float) -> int:
+        if self._ceiling:
+            return int(math.ceil(value - _slack(value)))
+        return int(math.floor(value + _slack(value)))
 
     @property
     def is_constant(self) -> bool:
@@ -81,6 +128,11 @@ class ConcurrencySchedule:
         """
         segment = self._line.segment_at(t)
         value = segment.value(t)
+        if self._ceiling:
+            # mirror image of the floor case: rising off an integer k, the level is k + 1 straight after
+            if segment.slope > 0:
+                return int(math.floor(value + _slack(value))) + 1
+            return int(math.ceil(value - _slack(value)))
         if segment.slope < 0:
             return int(math.ceil(value - _slack(value))) - 1
         return int(math.floor(value + _slack(value)))
@@ -90,7 +142,7 @@ class ConcurrencySchedule:
         current = self.level_at(t)
         segment: Optional[Segment] = self._line.segment_at(t)
         while segment is not None:
-            crossing = _crossing(segment, current, t)
+            crossing = _crossing(segment, current, t, self._ceiling)
             if crossing is not None and crossing < segment.end:
                 return crossing
             if segment.end == float("inf"):
@@ -102,11 +154,13 @@ class ConcurrencySchedule:
         return None
 
     def _first_time_below_one(self) -> float:
+        # the level is below 1 once the line is below 1 (floor) or at most 0 (ceiling)
+        threshold = 0.0 if self._ceiling else 1.0
         for segment in self._line.segments:
-            if segment.value(segment.start) < 1:
+            if self._level_of(segment.value(segment.start)) < 1:
                 return segment.start
             if segment.slope < 0:
-                crossing = (1 - segment.intercept) / segment.slope
+                crossing = (threshold - segment.intercept) / segment.slope
                 if crossing < segment.end:
                     return crossing
         return 0.0
@@ -115,14 +169,14 @@ class ConcurrencySchedule:
         return f"ConcurrencySchedule({self.raw!r})"
 
 
-def _crossing(segment: Segment, level: int, after: float) -> Optional[float]:
+def _crossing(segment: Segment, level: int, after: float, ceiling: bool) -> Optional[float]:
     """When ``segment`` next moves the level off ``level``, strictly after ``after``."""
     if segment.slope > 0:
-        # Rising: the level becomes level + 1 when the value reaches it.
-        target = level + 1
+        # Rising: a floor becomes level + 1 when the value reaches it, a ceiling once the value passes level.
+        target = level if ceiling else level + 1
     elif segment.slope < 0:
-        # Falling: the level becomes level - 1 once the value drops below level.
-        target = level
+        # Falling: a floor becomes level - 1 once the value drops below level, a ceiling when it reaches level - 1.
+        target = level - 1 if ceiling else level
     else:
         return None
     crossing = (target - segment.intercept) / segment.slope

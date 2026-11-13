@@ -13,8 +13,9 @@
 # limitations under the License.
 """Tests for ``ConcurrencySchedule``: an integer level that follows an expression of t.
 
-The level is the expression rounded down, it changes only at exact times, and
-the expression must stay at least 1 and bounded for every t >= 0.
+The expression says how it is rounded (floor, ceiling, or whole-numbered
+steps), the level changes only at exact times, and it must stay at least 1 and
+bounded for every t >= 0.
 """
 
 import math
@@ -53,20 +54,35 @@ class TestLevels:
     def test_step(self) -> None:
         assert _changes("Piecewise((8, t < 60), (32, True))", 100) == [(0.0, 8), (60.0, 32)]
 
-    # A ramp is rounded down: 1 + t/2 is level 1 until t=2, 2 until t=4, ...
+    # floor() rounds a ramp down: 1 + t/2 is level 1 until t=2, 2 until t=4, ...
     # and a cap of 4 means the last change is to 4 at t=6.
     def test_rising_ramp_rounds_down(self) -> None:
-        assert _changes("Min(1 + t/2, 4)", 100) == [(0.0, 1), (2.0, 2), (4.0, 3), (6.0, 4)]
+        assert _changes("floor(Min(1 + t/2, 4))", 100) == [(0.0, 1), (2.0, 2), (4.0, 3), (6.0, 4)]
+
+    # ceiling() rounds it up: 0.5 + t/2 is level 1 until it passes 1 at t=1, then 2 until t=3, ...
+    # and 4 from t=5, where the value passes 3.
+    def test_rising_ramp_rounds_up(self) -> None:
+        assert _changes("ceiling(Min(0.5 + t/2, 4))", 100) == [(0.0, 1), (1.0, 2), (3.0, 3), (5.0, 4)]
+
+    # floor(... + 1/2) rounds to the nearest: 1 + t/2 is level 1 until it reaches 1.5 at t=1, then 2 until t=3, ...
+    def test_rising_ramp_rounds_to_nearest(self) -> None:
+        assert _changes("floor(Min(1 + t/2, 4) + 1/2)", 100) == [(0.0, 1), (1.0, 2), (3.0, 3), (5.0, 4)]
+
+    # Falling under ceiling(), the level drops when the value reaches the integer below:
+    # 4.5 - t/2 is 5 at the start, 4 from t=1 (value 4), 3 from t=3, 2 from t=5, 1 from t=7.
+    def test_falling_ramp_rounds_up(self) -> None:
+        assert _changes("ceiling(Max(1, 4.5 - t/2))", 100) == [(0.0, 5), (1.0, 4), (3.0, 3), (5.0, 2), (7.0, 1)]
 
     # Falling, the level drops the moment the value goes below an integer:
     # 4.5 - t/2 is 4 until t=1, then 3 from t=1 (value 4 exactly, and below
     # straight after), 2 from t=3, 1 from t=5, and stays 1 (floored by Max).
     def test_falling_ramp_drops_as_the_value_passes_each_integer(self) -> None:
-        assert _changes("Max(1, 4.5 - t/2)", 100) == [(0.0, 4), (1.0, 3), (3.0, 2), (5.0, 1)]
+        assert _changes("floor(Max(1, 4.5 - t/2))", 100) == [(0.0, 4), (1.0, 3), (3.0, 2), (5.0, 1)]
 
-    # A non-integer cap: Min(1 + t, 2.5) peaks at level 2 (2.5 rounded down).
-    def test_peak_is_rounded_down(self) -> None:
-        assert ConcurrencySchedule("Min(1 + t, 2.5)").peak == 2
+    # A non-integer cap: floor(Min(1 + t, 2.5)) peaks at level 2, ceiling(...) at 3.
+    def test_peak_follows_the_rounding(self) -> None:
+        assert ConcurrencySchedule("floor(Min(1 + t, 2.5))").peak == 2
+        assert ConcurrencySchedule("ceiling(Min(1 + t, 2.5))").peak == 3
 
     # Float error must not cost a whole level: 0.7 + 0.1*t reaches 4 at t=33,
     # but in floats the crossing is t=32.99999999999999, where the value is
@@ -74,7 +90,7 @@ class TestLevels:
     # Expected: the change found there is to level 4, not a change that
     # leaves the level at 3.
     def test_float_error_does_not_lose_a_level(self) -> None:
-        schedule = ConcurrencySchedule("Max(1, Min(0.7 + 0.1*t, 40))")
+        schedule = ConcurrencySchedule("floor(Max(1, Min(0.7 + 0.1*t, 40)))")
         change = schedule.next_change_after(32.5)
         assert change is not None and change == pytest.approx(33.0)
         assert schedule.level_at(change) == 4
@@ -86,18 +102,39 @@ class TestLevels:
 
 
 class TestRejected:
-    # An uncapped ramp grows forever. Expected: rejected, suggesting a Min cap.
+    # An uncapped ramp grows forever. Expected: rejected, suggesting a Min cap inside the rounding:
+    # floor(1 + t) -> 'floor(Min(1 + t, 64))'. sympy would rewrite floor(1 + t) as floor(t) + 1, so this
+    # also pins that the wrapper is read from the text.
     def test_unbounded(self) -> None:
-        with pytest.raises(ValueError, match=r"grows without limit as t increases; cap it, e.g. 'Min\(1 \+ t, 64\)'"):
-            ConcurrencySchedule("1 + t")
+        with pytest.raises(ValueError, match=r"grows without limit as t increases; cap it, e.g. 'floor\(Min\(1 \+ t, 64\)\)'"):
+            ConcurrencySchedule("floor(1 + t)")
+
+    # A ramp with no rounding takes fractional values. Input: 'Min(1 + t/6, 64)'. Expected: rejected, naming
+    # the floor(), nearest and ceiling() forms.
+    def test_unrounded_ramp(self) -> None:
+        with pytest.raises(ValueError, match=r"not whole numbers. Write 'floor\(Min\(1 \+ t/6, 64\)\)'.*'ceiling\("):
+            ConcurrencySchedule("Min(1 + t/6, 64)")
+
+    # A step function needs no rounding only when every step is whole: 8 then 32 is fine, 8 then 32.5 is not.
+    def test_fractional_step(self) -> None:
+        with pytest.raises(ValueError, match="not whole numbers"):
+            ConcurrencySchedule("Piecewise((8, t < 60), (32.5, True))")
+
+    # Rounding counts only around the whole expression: a floor() inside a sum is not piecewise linear,
+    # including 'floor(Min(t, 3)) + floor(Min(t, 2))', which starts with floor( and ends with ) but is two floors.
+    @pytest.mark.parametrize("raw", ["1 + floor(Min(t, 10))", "floor(Min(t, 3)) + floor(Min(t, 2))"])
+    def test_nested_rounding(self, raw: str) -> None:
+        with pytest.raises(ValueError, match="not piecewise linear"):
+            ConcurrencySchedule(raw)
 
     # Values below 1 are rejected, naming the first t it happens at.
     @pytest.mark.parametrize(
         "raw, at",
         [
             ("0", "t=0"),
-            ("Min(t, 10)", "t=0"),
-            ("Max(0.5, 10 - t)", "t=9"),
+            ("floor(Min(t, 10))", "t=0"),
+            ("floor(Max(0.5, 10 - t))", "t=9"),
+            ("ceiling(Max(-1, 10 - t))", "t=10"),
             ("Piecewise((4, t < 30), (0, True))", "t=30"),
         ],
     )
@@ -108,7 +145,7 @@ class TestRejected:
     # Non-linear shapes are rejected by PiecewiseLinear with its own message.
     def test_nonlinear(self) -> None:
         with pytest.raises(ValueError, match="not piecewise linear"):
-            ConcurrencySchedule("Min(1 + t**2, 64)")
+            ConcurrencySchedule("floor(Min(1 + t**2, 64))")
 
 
 # 200 seeded capped ramps (up, hold, down), each checked on a 0.05s grid.
@@ -120,7 +157,7 @@ def test_levels_match_rounding_down_everywhere() -> None:
         # Rounded first, so the string and the reference use the same numbers.
         start, slope, cap = round(rng.uniform(1, 5), 3), round(rng.uniform(0.05, 3), 3), round(rng.uniform(10, 80), 3)
         top, down = round(cap + rng.uniform(5, 200), 3), round(slope / 2, 3)
-        raw = f"Max(1, Min({start} + {slope}*t, {cap}, {top} - {down}*t))"
+        raw = f"floor(Max(1, Min({start} + {slope}*t, {cap}, {top} - {down}*t)))"
         schedule = ConcurrencySchedule(raw)
         changes = [t for t, _ in _changes(raw, 400)][1:]
         for i in range(8000):
@@ -130,5 +167,25 @@ def test_levels_match_rounding_down_everywhere() -> None:
             value = max(1.0, min(start + slope * t, cap, top - down * t))
             # Between changes the level is the value rounded down.
             assert schedule.level_at(t) == math.floor(value + 1e-9), f"{raw} at t={t}"
+        levels = [level for _, level in _changes(raw, 400)]
+        assert all(a != b for a, b in zip(levels, levels[1:], strict=False)), f"{raw}: a change that changes nothing"
+
+
+# The same 200 seeded ramps under ceiling(). Expected: the level at every grid point equals the expression
+# rounded up, and walking next_change_after visits every change with no spurious ones.
+def test_levels_match_rounding_up_everywhere() -> None:
+    rng = random.Random(0)
+    for _ in range(200):
+        start, slope, cap = round(rng.uniform(1, 5), 3), round(rng.uniform(0.05, 3), 3), round(rng.uniform(10, 80), 3)
+        top, down = round(cap + rng.uniform(5, 200), 3), round(slope / 2, 3)
+        raw = f"ceiling(Max(1, Min({start} + {slope}*t, {cap}, {top} - {down}*t)))"
+        schedule = ConcurrencySchedule(raw)
+        changes = [t for t, _ in _changes(raw, 400)][1:]
+        for i in range(8000):
+            t = i * 0.05
+            if any(abs(t - c) < 1e-6 for c in changes):
+                continue
+            value = max(1.0, min(start + slope * t, cap, top - down * t))
+            assert schedule.level_at(t) == math.ceil(value - 1e-9), f"{raw} at t={t}"
         levels = [level for _, level in _changes(raw, 400)]
         assert all(a != b for a, b in zip(levels, levels[1:], strict=False)), f"{raw}: a change that changes nothing"
