@@ -120,9 +120,9 @@ data:
     num_sessions: 100
     fanout_probability: 0.0
     theme_mix: {generic: 1.0}
-    turns_per_session: "Min(Poisson(3), 8)"
+    turns_per_session: "Min(1 + Poisson(2), 8)"
     tool_loop_depth: "Min(Poisson(2), 4)"
-    input_tokens_per_turn: "floor(Min(LogNormal(7.5, 0.4), 6000))"
+    input_tokens_per_turn: "floor(Min(Max(LogNormal(7.5, 0.4), 1), 6000))"
     output_tokens_per_turn: "150"
     tool_call_latency_sec: "Uniform(0.1, 0.4)"
     user_think_time_sec: "Uniform(5, 15)"
