@@ -13,7 +13,7 @@
 # limitations under the License.
 import time
 from abc import ABC, abstractmethod
-from typing import Generator, Optional, Tuple
+from typing import Generator, List, Optional, Tuple
 import numpy as np
 from inference_perf.utils.trace_reader import TraceReader
 from pathlib import Path
@@ -95,6 +95,18 @@ class PoissonLoadTimer(LoadTimer):
             for _ in range(req_count):
                 next_time = next(time_generator)
                 yield next_time
+
+
+class ArrangementLoadTimer(LoadTimer):
+    """Sends at the offsets a workload's arrangement recorded, in order."""
+
+    def __init__(self, offsets_ms: List[int]) -> None:
+        self._offsets_ms = offsets_ms
+
+    def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        start_time = time.monotonic() if initial is None else initial
+        for offset_ms in self._offsets_ms:
+            yield start_time + offset_ms / 1000.0
 
 
 class TraceReplayLoadTimer(LoadTimer):

@@ -22,10 +22,12 @@ from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
     OTelTraceReplayConfig,
     SyntheticAgenticConfig,
+    TraceLabTraceReplayConfig,
     WekaTraceReplayConfig,
     TraceConfig,
 )
 from inference_perf.config.datagen.visionarena import VisionArenaConfig
+from inference_perf.config.datagen.workload import WorkloadReplayConfig
 
 
 class DataGenType(Enum):
@@ -39,9 +41,11 @@ class DataGenType(Enum):
     BillsumConversations = "billsum_conversations"
     OTelTraceReplay = "otel_trace_replay"
     WekaTraceReplay = "weka_trace_replay"
+    TraceLabTraceReplay = "tracelab_trace_replay"
     ConversationReplay = "conversation_replay"
     VisionArena = "visionarena"
     SyntheticAgentic = "synthetic_agentic"
+    WorkloadReplay = "workload_replay"
 
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
@@ -158,6 +162,10 @@ class DataConfig(StrictBaseModel):
         default=None, description="Weka trace replay settings. Only used by the 'weka_trace_replay' type."
     )
 
+    tracelab_trace_replay: Optional[TraceLabTraceReplayConfig] = Field(
+        default=None, description="TraceLab trace replay settings. Only used by the 'tracelab_trace_replay' type."
+    )
+
     conversation_replay: Optional[ConversationReplayConfig] = Field(
         default=None, description="Synthetic conversation replay settings. Only used by the 'conversation_replay' type."
     )
@@ -168,6 +176,11 @@ class DataConfig(StrictBaseModel):
 
     synthetic_agentic: Optional[SyntheticAgenticConfig] = Field(
         default=None, description="Synthetic agentic sessions settings. Only used by the 'synthetic_agentic' type."
+    )
+
+    workload: Optional[WorkloadReplayConfig] = Field(
+        default=None,
+        description="Recorded workload to replay through the record layer (alpha). Only used by the 'workload_replay' type.",
     )
 
     use_chat_template: bool = Field(
@@ -194,4 +207,10 @@ class DataConfig(StrictBaseModel):
     def validate_synthetic_agentic_scope(self) -> "DataConfig":
         if self.type == DataGenType.SyntheticAgentic and self.synthetic_agentic is None:
             raise ValueError(f"data.type '{self.type.value}' requires 'data.synthetic_agentic' to be configured.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_workload_scope(self) -> "DataConfig":
+        if self.type == DataGenType.WorkloadReplay and self.workload is None:
+            raise ValueError(f"data.type '{self.type.value}' requires 'data.workload' to be configured.")
         return self
