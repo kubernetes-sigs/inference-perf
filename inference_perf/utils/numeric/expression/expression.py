@@ -138,6 +138,24 @@ def _is_expr(value: object) -> TypeGuard[SympyExpr]:
     return isinstance(value, sympy.Expr)
 
 
+def _finite_values(support: object) -> Optional[list[SympyExpr]]:
+    # a finite distribution (Binomial, Die) gives a Python set of its values, not a sympy Set
+    if not isinstance(support, (set, frozenset)):
+        return None
+    values = [sympy.sympify(value) for value in support]
+    return values if all(_is_expr(value) for value in values) else None
+
+
+def _support_is_integer(support: object) -> bool:
+    finite = _finite_values(support)
+    if finite is not None:
+        return all(value.is_integer is True for value in finite)
+    try:
+        return bool(sympy.S.Integers.is_superset(support))
+    except (AttributeError, TypeError, NotImplementedError):
+        return False
+
+
 def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = None) -> object:
     """Parse a config value into a sympy object, shared by both grammars.
 
@@ -167,6 +185,9 @@ def _interval(expr: SympyNode, duration: Optional[float]) -> Optional[tuple[Symp
         return expr, expr
     if _is_random_symbol(expr):
         support = expr.pspace.distribution.set
+        finite = _finite_values(support)
+        if finite is not None:
+            return sympy.Min(*finite), sympy.Max(*finite)
         try:
             return support.inf, support.sup
         except (AttributeError, NotImplementedError):
@@ -188,6 +209,11 @@ def _interval(expr: SympyNode, duration: Optional[float]) -> Optional[tuple[Symp
         # Min/Max are monotone in every argument, and AccumBounds does not
         # reduce them, so combine the endpoints directly.
         return expr.func(*(lo for lo, _hi in parts)), expr.func(*(hi for _lo, hi in parts))
+    if isinstance(expr, (sympy.floor, sympy.ceiling)):
+        # monotone, so the endpoints map straight through; AccumBounds has no rule for them
+        lo, hi = parts[0]
+        rounding = sympy.floor if isinstance(expr, sympy.floor) else sympy.ceiling
+        return rounding(lo), rounding(hi)
     try:
         result = expr.func(*(lo if lo == hi else AccumBounds(lo, hi) for lo, hi in parts))
     except (TypeError, ValueError, NotImplementedError):
@@ -431,6 +457,38 @@ class Expression:
         if found is None:
             return None
         return float(found[0]), float(found[1])
+
+    def is_within(self, minimum: Optional[float] = None, maximum: Optional[float] = None) -> bool:
+        """True when :attr:`bounds` proves every value lies in ``[minimum, maximum]``.
+
+        A side left as ``None`` is open. An expression with no provable bounds
+        is never within, so a field that must stay in range rejects it rather
+        than finding out while sampling.
+        """
+        found = self.bounds
+        if found is None:
+            return False
+        lower, upper = found
+        return (minimum is None or lower >= minimum) and (maximum is None or upper <= maximum)
+
+    @property
+    def is_integer_valued(self) -> bool:
+        """True when every value the expression can take is provably an integer.
+
+        sympy does not know a discrete random variable is integer-valued, so each
+        one is stood in for by an integer symbol when its support is a subset of
+        the integers, and by a real symbol otherwise. ``Poisson(2) + 1`` and
+        ``floor(Normal(512, 128))`` prove, ``Normal(512, 128)`` and
+        ``Poisson(2) / 2`` do not.
+        """
+        if _is_expr(self._expr) and self._expr.is_number:
+            return float(self._expr).is_integer()
+        stand_ins: dict[SympyNode, SympyNode] = {
+            rv: sympy.Dummy(integer=True) if _support_is_integer(rv.pspace.distribution.set) else sympy.Dummy(real=True)
+            for rv in self._expr.atoms(sympy.stats.rv.RandomSymbol)
+            if _is_random_symbol(rv)
+        }
+        return self._expr.xreplace(stand_ins).is_integer is True
 
     @property
     def is_constant(self) -> bool:

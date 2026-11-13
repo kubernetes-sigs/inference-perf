@@ -66,6 +66,7 @@ lint = [
 ]
 test = [
     "pytest>=8.3.4",
+    "hypothesis>=6.146.0",
     "pytest-asyncio>=1.2.0",
     "ipykernel>=6.29.5",
     "pytest-cov>=7.0.0",
