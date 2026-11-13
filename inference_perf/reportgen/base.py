@@ -31,6 +31,7 @@ from inference_perf.apis.base import is_stage_teardown_cancelled
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.apis.chat import reasoning_field
 from inference_perf.apis.response_errors import InBandError
+from inference_perf.payloads import Audios, Images, Videos
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageRuntimeInfo, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
@@ -217,6 +218,35 @@ def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str
         key = "median" if p == 50 else f"p{p:g}"
         result[key] = float(np.percentile(items, p))
     return result
+
+
+# Per-instance fields each modality's report block summarizes after its count.
+MEDIA_FIELDS: dict[str, tuple[str, ...]] = {
+    "image": ("pixels", "bytes", "aspect_ratio"),
+    "video": ("frames", "pixels", "bytes", "aspect_ratio", "seconds"),
+    "audio": ("seconds", "bytes"),
+}
+
+
+def summarize_media(
+    payloads: List[Optional[Union[Images, Videos, Audios]]], modality: str, percentiles: List[float]
+) -> dict[str, Optional[dict[str, float]]]:
+    """One modality's report block: media per request, then each field over the instances that measured it."""
+    instances = [instance for payload in payloads if payload is not None for instance in payload.instances]
+    block: dict[str, Optional[dict[str, float]]] = {
+        "count": summarize([float(payload.count) if payload is not None else 0.0 for payload in payloads], percentiles)
+    }
+    for field in MEDIA_FIELDS[modality]:
+        # None means the client never saw the bytes, so it stays out rather than counting as 0.
+        block[field] = summarize(
+            [float(value) for instance in instances if (value := getattr(instance, field)) is not None], percentiles
+        )
+    return block
+
+
+def media_rate(payloads: List[Optional[Union[Images, Videos, Audios]]], total_time: float) -> float:
+    """Media instances per second over the run window."""
+    return sum(payload.count for payload in payloads if payload is not None) / total_time if total_time > 0 else 0.0
 
 
 def extract_cached_prompt_tokens(server_usage: Optional[dict[str, Any]]) -> Optional[tuple[int, int]]:
@@ -870,7 +900,12 @@ def summarize_requests(
         x for x in metrics if x.error is not None and not is_stage_teardown_cancelled(x.error)
     ]
 
-    total_time = max(x.end_time for x in metrics) - min(x.start_time for x in metrics)
+    # The throughput window spans the requests that got an answer. A cancelled request's end_time is when the load
+    # generator cancelled it, up to stage_teardown_grace_seconds after the stage ended, so counting it would stretch
+    # benchmark_time_seconds and lower every *_per_sec figure compared with the same run had those requests finished
+    # before the stage did. Only when every request was cancelled does the window fall back to all of them.
+    answered = (all_successful + all_failed) or metrics
+    total_time = max(x.end_time for x in answered) - min(x.start_time for x in answered)
 
     schedule_deltas = [x.start_time - x.scheduled_time for x in metrics]
     send_duration = max(x.start_time for x in metrics) - min(x.start_time for x in metrics)
@@ -943,26 +978,12 @@ def summarize_requests(
     valid_ttfo = [v for v in ttfo_values if v is not None]
 
     request_sizes = [len(x.request_data.encode("utf-8")) for x in all_successful]
-    all_images = []
-    all_videos = []
-    all_audios = []
-    for success in all_successful:
-        if success.info.request_metrics.image:
-            all_images.extend(success.info.request_metrics.image.instances)
-        if success.info.request_metrics.video:
-            all_videos.extend(success.info.request_metrics.video.instances)
-        if success.info.request_metrics.audio:
-            all_audios.extend(success.info.request_metrics.audio.instances)
-
-    image_counts = [
-        safe_float(s.info.request_metrics.image.count if s.info.request_metrics.image else 0) for s in all_successful
-    ]
-    video_counts = [
-        safe_float(s.info.request_metrics.video.count if s.info.request_metrics.video else 0) for s in all_successful
-    ]
-    audio_counts = [
-        safe_float(s.info.request_metrics.audio.count if s.info.request_metrics.audio else 0) for s in all_successful
-    ]
+    request_media = {
+        modality: [getattr(s.info.request_metrics, modality) for s in all_successful] for modality in MEDIA_FIELDS
+    }
+    response_media = {
+        modality: [getattr(s.info.response_metrics, modality, None) for s in all_successful] for modality in MEDIA_FIELDS
+    }
 
     successes_dict: dict[str, Any] = {
         "count": len(all_successful),
@@ -997,29 +1018,14 @@ def summarize_requests(
                 else 0.0
             ),
             "requests_per_sec": (len(all_successful) / total_time if total_time > 0 else 0.0),
-            "images_per_sec": (sum(image_counts) / total_time if total_time > 0 else 0.0),
-            "videos_per_sec": (sum(video_counts) / total_time if total_time > 0 else 0.0),
-            "audios_per_sec": (sum(audio_counts) / total_time if total_time > 0 else 0.0),
+            "images_per_sec": media_rate(request_media["image"], total_time),
+            "videos_per_sec": media_rate(request_media["video"], total_time),
+            "audios_per_sec": media_rate(request_media["audio"], total_time),
         },
         "request_size_bytes": summarize([float(x) for x in request_sizes], percentiles),
-        "image": {
-            "count": summarize(image_counts, percentiles),
-            "pixels": summarize([safe_float(inst.pixels) for inst in all_images], percentiles),
-            "bytes": summarize([safe_float(inst.bytes) for inst in all_images], percentiles),
-            "aspect_ratio": summarize([safe_float(inst.aspect_ratio) for inst in all_images], percentiles),
-        },
-        "video": {
-            "count": summarize(video_counts, percentiles),
-            "frames": summarize([safe_float(inst.frames) for inst in all_videos], percentiles),
-            "pixels": summarize([safe_float(inst.pixels) for inst in all_videos], percentiles),
-            "bytes": summarize([safe_float(inst.bytes) for inst in all_videos], percentiles),
-            "aspect_ratio": summarize([safe_float(inst.aspect_ratio) for inst in all_videos], percentiles),
-        },
-        "audio": {
-            "count": summarize(audio_counts, percentiles),
-            "seconds": summarize([safe_float(inst.seconds) for inst in all_audios], percentiles),
-            "bytes": summarize([safe_float(inst.bytes) for inst in all_audios], percentiles),
-        },
+        "image": summarize_media(request_media["image"], "image", percentiles),
+        "video": summarize_media(request_media["video"], "video", percentiles),
+        "audio": summarize_media(request_media["audio"], "audio", percentiles),
         "prompt_tokens": summarize_prompt_token_usage(all_successful, percentiles),
         "output_len": summarize(
             [
@@ -1041,6 +1047,12 @@ def summarize_requests(
     }
     if goodput_metrics:
         successes_dict["goodput_metrics"] = goodput_metrics
+    # Response media is reported only when some response returned it, so a text
+    # run's report keeps its shape.
+    for modality, payloads in response_media.items():
+        if any(payload is not None for payload in payloads):
+            successes_dict[f"output_{modality}"] = summarize_media(payloads, modality, percentiles)
+            successes_dict["throughput"][f"output_{modality}s_per_sec"] = media_rate(payloads, total_time)
 
     return ResponsesSummary(
         # A cancelled request fits neither recovered nor failed_after_retry, so it
@@ -1296,11 +1308,18 @@ class ReportGenerator:
                 )
                 lifecycle_reports.append(report_file)
 
+        # Per-stage Prometheus summaries for the BR0.2 partials, kept only if the whole
+        # section succeeds: no partial carries metrics the native report dropped.
+        stage_server_metrics: Dict[int, ModelServerMetrics] = {}
         if report_config.prometheus:
             # This runs after the load has already been sent; a failure here must cost the
             # Prometheus section, not the lifecycle reports the run already produced.
             try:
-                lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
+                collected: Dict[int, ModelServerMetrics] = {}
+                lifecycle_reports.extend(
+                    self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus, collected)
+                )
+                stage_server_metrics = collected
             except Exception:
                 logger.exception("Prometheus metrics report generation failed; continuing without it")
 
@@ -1347,6 +1366,7 @@ class ReportGenerator:
                 # run.time needs the stage's wall-clock window: the request
                 # timestamps are monotonic and can't be mapped to epoch here.
                 stage_info = runtime_parameters.stages.get(br_stage_id)
+                stage_metrics = stage_server_metrics.get(br_stage_id)
                 partial = build_partial_report(
                     br_stage_buckets.get(br_stage_id, []),
                     tokenizer,
@@ -1360,6 +1380,12 @@ class ReportGenerator:
                         stage_info.sessions_not_completed_active + stage_info.sessions_not_completed_pending
                         if stage_info
                         else 0
+                    ),
+                    # The component is labelled with the server type (#799).
+                    server_metrics=(
+                        {self.config.server.type.value: stage_metrics}
+                        if stage_metrics is not None and self.config.server is not None
+                        else None
                     ),
                 )
                 lifecycle_reports.append(
@@ -1797,12 +1823,16 @@ class ReportGenerator:
         return reports
 
     def generate_prometheus_metrics_report(
-        self, runtime_parameters: PerfRuntimeParameters, report_config: PrometheusMetricsReportConfig
+        self,
+        runtime_parameters: PerfRuntimeParameters,
+        report_config: PrometheusMetricsReportConfig,
+        stage_metrics: Optional[Dict[int, ModelServerMetrics]] = None,
     ) -> List[ReportFile]:
         """
         Report summary of the metrics collected by the metrics client during the run.
         Args:
             runtime_parameters (PerfRuntimeParameters): The runtime parameters containing the model server client, query eval time in the metrics db, duration.
+            stage_metrics: if given, filled with each stage's collected metrics.
         """
         prometheus_metrics_reports: List[ReportFile] = []
 
@@ -1828,6 +1858,8 @@ class ReportGenerator:
             for stage_id in runtime_parameters.stages:
                 collected_metrics = self.metrics_client.collect_metrics_for_stage(runtime_parameters, stage_id)
                 if collected_metrics is not None:
+                    if stage_metrics is not None:
+                        stage_metrics[stage_id] = collected_metrics
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_prometheus_metrics",
                         contents=summarize_prometheus_metrics(collected_metrics).model_dump(),

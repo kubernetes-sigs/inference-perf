@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import tomllib
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 
 def load_pdm_scripts() -> dict[str, Any]:
@@ -35,3 +39,38 @@ def test_every_pdm_script_has_help() -> None:
         if not name.startswith("_") and not (isinstance(spec, dict) and spec.get("help"))
     ]
     assert not missing, f"pdm scripts missing a `help` text (shown by `pdm run --list`): {missing}"
+
+
+# A temporary index contains a valid, missing, or incorrect header, or no Python files.
+# Running outside a Git repository must also fail rather than skip the check.
+@pytest.mark.parametrize(
+    ("scenario", "expected_output"),
+    [
+        ("valid", "All files passed license check."),
+        ("missing", "File missing or incorrect license header: sample with spaces.py"),
+        ("incorrect", "File missing or incorrect license header: sample with spaces.py"),
+        ("empty", "No tracked Python files found."),
+        ("git_failure", "CalledProcessError"),
+    ],
+)
+def test_license_script(scenario: str, expected_output: str, tmp_path: Path) -> None:
+    source = Path(__file__).resolve().parents[1] / "scripts" / "check_license.py"
+    checker = tmp_path / "scripts" / "check_license.py"
+    checker.parent.mkdir()
+    checker.write_bytes(source.read_bytes())
+    if scenario != "git_failure":
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
+    if scenario in {"valid", "missing", "incorrect"}:
+        content = source.read_bytes()
+        if scenario == "missing":
+            content = b"pass\n"
+        elif scenario == "incorrect":
+            content = content.replace(b"The Kubernetes Authors.", b"The Wrong Authors.", 1)
+        sample = tmp_path / "sample with spaces.py"
+        sample.write_bytes(content)
+        subprocess.run(["git", "add", "--", sample.name], cwd=tmp_path, check=True, capture_output=True)
+
+    command = load_pdm_scripts()["check:license"]["cmd"]
+    result = subprocess.run([sys.executable, *command[1:]], cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == (0 if scenario == "valid" else 1), result.stdout + result.stderr
+    assert expected_output in result.stdout + result.stderr
