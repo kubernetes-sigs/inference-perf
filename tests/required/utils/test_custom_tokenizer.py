@@ -17,7 +17,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -112,10 +112,10 @@ class TestLoadTimeoutValidation(unittest.TestCase):
 
 # A word-level tokenizer (vocabulary "a", "b") loaded from tmp_path, with model_max_length 4.
 # `truncation` is written into tokenizer.json as shipped (None: disabled).
-def _word_tokenizer(tmp_path: Path, truncation: Optional[dict[str, Any]] = None) -> CustomTokenizer:
-    spec: dict[str, Any] = {
+def _word_tokenizer(tmp_path: Path, truncation: Optional[Mapping[str, object]] = None) -> CustomTokenizer:
+    spec: dict[str, object] = {
         "version": "1.0",
-        "truncation": truncation,
+        "truncation": dict(truncation) if truncation is not None else None,
         "padding": None,
         "added_tokens": [],
         "normalizer": None,

@@ -307,7 +307,8 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
     # thread, A still goes out on time.
     async def test_open_loop_builds_lazy_requests_off_the_event_loop(self) -> None:
         client = _TimingProbeClient()
-        self.datagen = cast(Any, _SlowLazyGenerator(build_seconds=0.4))
+        slow = _SlowLazyGenerator(build_seconds=0.4)
+        self.datagen = MagicMock(spec=_SlowLazyGenerator, wraps=slow)
         worker = self._make_worker(client, open_loop=True)
         self.request_phase.set()
         now = time.perf_counter()

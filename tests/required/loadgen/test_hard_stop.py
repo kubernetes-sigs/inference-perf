@@ -17,11 +17,13 @@ import asyncio
 import multiprocessing as mp
 import time
 import unittest
-from typing import Any, List, Optional
+from typing import List, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from inference_perf.apis import InferenceAPIData
+from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.config import LoadConfig, LoadType, StandardLoadStage, TraceSessionReplayLoadStage
 from inference_perf.datagen import DataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
@@ -116,7 +118,9 @@ class _HangingClient:
         self.started: List[float] = []
         self.cancelled: List[float] = []
 
-    async def process_request(self, data: Any, stage_id: int, scheduled_time: float, lora: Optional[str] = None) -> None:
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora: Optional[str] = None
+    ) -> None:
         self.started.append(scheduled_time)
         try:
             await asyncio.sleep(3600)
@@ -132,9 +136,11 @@ class _HangingClient:
 async def test_in_process_hard_stop_cancels_in_flight_requests_at_planned_end() -> None:
     load_generator = _make_load_generator(hard_stop=True, num_workers=0, rate=20, duration=1)
     client = _HangingClient()
+    model_server = MagicMock(spec=ModelServerClient)
+    model_server.process_request = client.process_request
 
     started = time.perf_counter()
-    await load_generator.run(client)  # type: ignore[arg-type]
+    await load_generator.run(model_server)
     elapsed = time.perf_counter() - started
 
     assert 0.95 <= elapsed < 1.6
