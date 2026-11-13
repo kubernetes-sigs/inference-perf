@@ -100,7 +100,7 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 - **`failures`**: Metrics for failed requests, including the per-label error breakdown. A request fails on a non-200 status, on a transport error, or on a 200 whose body is not a completion: a body or stream frame carrying a top-level `error` (label `inbanderror`, `error_msg` is the JSON of that body or frame) or one with neither completion content nor `usage` (label `emptyresponseerror`). The body is kept as `response` in the per-request report either way.
 
   The `by_label` keys and the `error_type` label on the runtime counter
-  `inference_perf_request_errors_total` ([runtime_metrics.md](./runtime_metrics.md)) start from
+  `inference_perf_requests_total` ([runtime_metrics.md](./runtime_metrics.md)) start from
   the same string on each failed request: the client's exception class, or `HTTP Error <status>`.
   The counter exports that string unchanged. The report shortens it: an HTTP error becomes
   `<code> - <label>`, with the label taken from the status code, else from patterns in the
