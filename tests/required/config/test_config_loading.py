@@ -319,16 +319,18 @@ def test_conversation_replay_rejects_concurrency_above_conversation_count() -> N
         )
 
 
-# 4 conversations and concurrency_level 'Min(1 + t, 6)', which starts at 1 and peaks at 6.
+# 4 conversations and concurrency_level 'floor(Min(1 + t, 6))', which starts at 1 and peaks at 6.
 # Rejected: the peak is what has to fit in the conversation count.
 def test_conversation_replay_rejects_an_expression_whose_peak_exceeds_conversation_count() -> None:
-    with pytest.raises(ValueError, match=r"concurrency_level \(Min\(1 \+ t, 6\)\) cannot exceed.*num_conversations \(4\)"):
+    with pytest.raises(
+        ValueError, match=r"concurrency_level \(floor\(Min\(1 \+ t, 6\)\)\) cannot exceed.*num_conversations \(4\)"
+    ):
         Config.model_validate(
             {
                 "data": {"type": "conversation_replay", "conversation_replay": {"num_conversations": 4}},
                 "load": {
                     "type": "concurrent",
-                    "stages": [{"num_requests": 10, "concurrency_level": "Min(1 + t, 6)"}],
+                    "stages": [{"num_requests": 10, "concurrency_level": "floor(Min(1 + t, 6))"}],
                 },
             }
         )

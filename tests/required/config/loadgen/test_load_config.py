@@ -88,11 +88,11 @@ def test_concurrent_load_stage_integer_is_a_constant_schedule() -> None:
     assert (stage.concurrency_schedule.initial, stage.peak_concurrency) == (10, 10)
 
 
-# An expression is kept as written and compiled: 'Min(1 + t/6, 64)' starts at
+# An expression is kept as written and compiled: 'floor(Min(1 + t/6, 64))' starts at
 # 1 and peaks at 64.
 def test_concurrent_load_stage_accepts_an_expression() -> None:
-    stage = ConcurrentLoadStage(num_requests=100, concurrency_level="Min(1 + t/6, 64)")
-    assert stage.concurrency_level == "Min(1 + t/6, 64)"
+    stage = ConcurrentLoadStage(num_requests=100, concurrency_level="floor(Min(1 + t/6, 64))")
+    assert stage.concurrency_level == "floor(Min(1 + t/6, 64))"
     assert not stage.concurrency_schedule.is_constant
     assert (stage.concurrency_schedule.initial, stage.peak_concurrency) == (1, 64)
 
@@ -103,8 +103,9 @@ def test_concurrent_load_stage_accepts_an_expression() -> None:
     "level, message",
     [
         ("Min(1 + t**2, 64)", "not piecewise linear"),
-        ("1 + t", "grows without limit"),
-        ("Max(0.5, 10 - t)", "falls below 1 at t=9"),
+        ("floor(1 + t)", "grows without limit"),
+        ("Min(1 + t/6, 64)", "not whole numbers"),
+        ("floor(Max(0.5, 10 - t))", "falls below 1 at t=9"),
         ("Normal(10, 2)", "random variable"),
     ],
 )
@@ -114,24 +115,24 @@ def test_concurrent_load_stage_rejects_unrunnable_expressions(level: str, messag
 
 
 # Pydantic does not re-validate on assignment, so the schedule must follow a
-# reassigned level: 10 -> 'Min(2 + t, 5)' gives initial 2 and peak 5.
+# reassigned level: 10 -> 'floor(Min(2 + t, 5))' gives initial 2 and peak 5.
 def test_concurrent_load_stage_schedule_follows_reassignment() -> None:
     stage = ConcurrentLoadStage(num_requests=100, concurrency_level=10)
-    stage.concurrency_level = "Min(2 + t, 5)"
+    stage.concurrency_level = "floor(Min(2 + t, 5))"
     assert (stage.concurrency_schedule.initial, stage.peak_concurrency) == (2, 5)
 
 
 # A YAML config with an expression level loads through read_config.
-# Input: a concurrent load block with concurrency_level 'Min(1 + t/6, 64)'.
+# Input: a concurrent load block with concurrency_level 'floor(Min(1 + t/6, 64))'.
 # Expected: the stage keeps the string and peaks at 64.
 def test_concurrent_expression_loads_from_yaml(tmp_path: Path) -> None:
     path = tmp_path / "config.yml"
     path.write_text(
-        "load:\n  type: concurrent\n  stages:\n    - num_requests: 200\n      concurrency_level: 'Min(1 + t/6, 64)'\n"
+        "load:\n  type: concurrent\n  stages:\n    - num_requests: 200\n      concurrency_level: 'floor(Min(1 + t/6, 64))'\n"
     )
     stage = read_config(str(path)).load.stages[0]
     assert isinstance(stage, ConcurrentLoadStage)
-    assert stage.concurrency_level == "Min(1 + t/6, 64)"
+    assert stage.concurrency_level == "floor(Min(1 + t/6, 64))"
     assert stage.peak_concurrency == 64
 
 

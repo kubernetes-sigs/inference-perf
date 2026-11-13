@@ -178,10 +178,10 @@ class TestLoadGeneratorConcurrency(unittest.TestCase):
     def test_routable_workers_counts_the_peak_level(self) -> None:
         self.assertEqual(self.load_generator._routable_workers(None), 4)
         self.assertEqual(self.load_generator._routable_workers(ConcurrencySchedule(3)), 3)
-        self.assertEqual(self.load_generator._routable_workers(ConcurrencySchedule("Min(1 + t, 8)")), 4)
+        self.assertEqual(self.load_generator._routable_workers(ConcurrencySchedule("floor(Min(1 + t, 8))")), 4)
         self.mock_datagen.is_preferred_worker_requested.return_value = True
         self.mock_datagen.preferred_worker_count.return_value = 2
-        self.assertEqual(self.load_generator._routable_workers(ConcurrencySchedule("Min(1 + t, 8)")), 2)
+        self.assertEqual(self.load_generator._routable_workers(ConcurrencySchedule("floor(Min(1 + t, 8))")), 2)
 
 
 class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):

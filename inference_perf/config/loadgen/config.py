@@ -65,8 +65,9 @@ class ConcurrentLoadStage(LoadStage):
     num_requests: int = Field(..., gt=0, description="Number of requests to send")
     concurrency_level: Union[int, str] = Field(
         ...,
-        description="Concurrency level: an integer, or a piecewise-linear expression of stage time t such as "
-        "'Min(1 + t/6, 64)', rounded down. See docs/expressions.md.",
+        description="Concurrency level: an integer, or an expression of stage time t such as "
+        "'floor(Min(1 + t/6, 64))', a piecewise-linear line under floor() or ceiling() or a step function of whole "
+        "numbers. At least 1. See docs/config.md#concurrency-expressions.",
     )
 
     # These fields are set at runtime for load generation but should not be configured
