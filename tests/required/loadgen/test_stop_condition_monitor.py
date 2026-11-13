@@ -15,8 +15,8 @@
 
 Signals are exact and end the stage on the result that flipped them. A windowed
 term has no value until its window is complete, and ``hold`` asks for the
-condition on several consecutive evaluations. The per-result values it feeds
-the terms are pinned to the report's definitions.
+condition on several consecutive evaluations. The values it feeds the terms
+are the report's, and the levels come from the load generator's phases.
 """
 
 from typing import Optional
@@ -31,9 +31,10 @@ from inference_perf.apis import (
     StreamedResponseMetrics,
     UnaryResponseMetrics,
 )
-from inference_perf.loadgen.stop_condition import StopConditionMonitor, per_result_values
+from inference_perf.apis.base import stage_teardown_cancelled_error
+from inference_perf.loadgen.stop_condition import StopConditionMonitor
 from inference_perf.payloads import RequestMetrics, Text
-from inference_perf.reportgen.base import compute_request_latency_metrics, summarize_requests
+from inference_perf.reportgen.base import series_values
 from inference_perf.utils.numeric.expression import Predicate
 
 
@@ -70,6 +71,18 @@ def _result(
         info=InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=1)), response_metrics=response),
         error=ErrorResponseInfo(error_type="TimeoutError", error_msg="timed out") if error else None,
     )
+
+
+# The load generator's requests_by_phase() with the given counts, 0 for a phase left out.
+def _phases(queued: int = 0, waiting: int = 0, streaming: int = 0) -> dict[str, int]:
+    return {"queued": queued, "waiting": waiting, "streaming": streaming}
+
+
+# A result the load generator cancelled at stage teardown, ended 0.1s after it started at clock 100.
+def _cancelled() -> RequestLifecycleMetric:
+    metric = _result()
+    metric.error = stage_teardown_cancelled_error()
+    return metric
 
 
 # A monitor for `condition` on stage 0 started at clock 100, with hold `hold`.
@@ -171,9 +184,9 @@ def test_not_started_or_already_met() -> None:
 # (since_last_completion > 5))' with 2 requests in flight holds at the tick at clock 106 (t=6), not at 105.
 def test_tick_ends_a_stall() -> None:
     monitor = _monitor("(t >= 300) | ((in_flight > 0) & (since_last_completion > 5))")
-    monitor.tick(105.0, in_flight=2)
+    monitor.tick(105.0, phases=_phases(waiting=2))
     assert monitor.met_at is None
-    monitor.tick(106.0, in_flight=2)
+    monitor.tick(106.0, phases=_phases(waiting=2))
     assert monitor.met_at == 6.0
     assert monitor.values_when_met == {"in_flight": 2.0, "since_last_completion": 6.0}
 
@@ -240,50 +253,78 @@ def test_only_needed_positions_are_kept() -> None:
     assert len(plain._sent_positions) == 0
 
 
-# per_result_values matches the report for a streamed success of 5 tokens, 0.3s long, first token at 0.05s,
-# scheduled 0.02s before it started: latency 0.3, ttft 0.05, tpot (0.3 - 0.05) / 4, ntpot 0.3 / 5 and
-# schedule_delay 0.02, each equal to the report's field.
-def test_per_result_values_match_the_report() -> None:
-    streamed = _result(0.3, output_tokens=5, ttft=0.05, scheduled=99.98)
-    report = compute_request_latency_metrics(streamed)
-    load_summary = summarize_requests([streamed], [50.0]).load_summary
-    values = per_result_values(streamed)
-    assert values == pytest.approx(
-        {
-            "latency": report["request_latency"],
-            "ttft": report["time_to_first_token"],
-            "tpot": report["time_per_output_token"],
-            "ntpot": report["normalized_time_per_output_token"],
-            "schedule_delay": load_summary["schedule_delay"]["mean"],
-        }
+# A term reads the report's number. A streamed success of 5 tokens, 0.3s long, first token at 0.05s: the value
+# 'avg_over_last(ttft, 1)' ends the stage on is series_values' ttft, 0.05.
+def test_term_reads_the_report_value() -> None:
+    streamed = _result(0.3, output_tokens=5, ttft=0.05)
+    monitor = _monitor("(t >= 300) | (avg_over_last(ttft, 1) > 0.01)")
+    monitor.observe(streamed, now=101.0)
+    assert monitor.met_at == 1.0
+    assert monitor.values_when_met == {"avg_over_last(ttft, 1)": pytest.approx(series_values(streamed)["ttft"])}
+    assert series_values(streamed)["ttft"] == pytest.approx(0.05)
+
+
+# A response that arrived in one chunk has a ttft in the report, so it has one here: 'avg_over_last(ttft, 1) > 0.01'
+# ends the stage on a one-token stream whose only chunk landed 0.05s in.
+def test_one_chunk_stream_has_a_ttft() -> None:
+    monitor = _monitor("(t >= 300) | (avg_over_last(ttft, 1) > 0.01)")
+    monitor.observe(_result(0.3, output_tokens=1, ttft=0.05), now=101.0)
+    assert monitor.met_at == 1.0
+
+
+# With use_server_output_tokens, ntpot divides by the server's count as the report does: 5 streamed tokens,
+# server says 11, 0.3s long, so 'avg_over_last(ntpot, 1)' reads 0.3 / 11.
+def test_term_follows_server_output_tokens() -> None:
+    monitor = StopConditionMonitor(
+        0, Predicate("(t >= 300) | (avg_over_last(ntpot, 1) > 0)"), hold=1, use_server_output_tokens=True
     )
-    assert values["tpot"] == pytest.approx((0.3 - 0.05) / 4)
-    assert values["schedule_delay"] == pytest.approx(0.02)
+    monitor.start(100.0)
+    monitor.observe(_result(0.3, output_tokens=5, ttft=0.05, server_output_tokens=11), now=101.0)
+    assert monitor.values_when_met == {"avg_over_last(ntpot, 1)": pytest.approx(0.3 / 11)}
 
 
-# A streamed response needs two chunk timestamps for ttft and two output tokens for tpot: one timestamp gives
-# neither, and two timestamps with one output token give ttft but no tpot.
-def test_per_result_values_streamed_edges() -> None:
-    one_chunk = _result(0.3, output_tokens=1, ttft=0.05)
-    assert "ttft" not in per_result_values(one_chunk)
-    two_chunks_one_token = _result(0.3, output_tokens=2, ttft=0.05)
-    assert isinstance(two_chunks_one_token.info.response_metrics, StreamedResponseMetrics)
-    two_chunks_one_token.info.response_metrics.output_tokens = 1
-    values = per_result_values(two_chunks_one_token)
-    assert "ttft" in values and "tpot" not in values
+# A request cancelled at teardown is not a failure: three of them leave 'errors >= 3' false, and
+# 'completed{status="cancelled"} >= 3' holds on the third.
+def test_cancelled_result_is_not_an_error() -> None:
+    errors = _monitor("(t >= 300) | (errors >= 3)")
+    cancelled = _monitor('(t >= 300) | (completed{status="cancelled"} >= 3)')
+    for second in (101.0, 102.0, 103.0):
+        errors.observe(_cancelled(), now=second)
+        cancelled.observe(_cancelled(), now=second)
+    assert errors.met_at is None
+    assert cancelled.met_at == 3.0
 
 
-# A unary success has latency and schedule_delay, no output tokens and so no ntpot; a failure has schedule_delay alone.
-def test_per_result_values_unary_and_failed() -> None:
-    assert set(per_result_values(_result(0.2))) == {"latency", "schedule_delay"}
-    assert set(per_result_values(_result(0.2, error=True))) == {"schedule_delay"}
+# 'completed offset 5s >= 2' reads the count as it was 5s ago. Two results finish at stage second 0.1, observed at
+# clock 101 and 102: no value yet. The tick at clock 106 (t=6, so t-5=1 is past both) ends the stage.
+def test_offset_reads_the_count_as_it_was() -> None:
+    monitor = _monitor("(t >= 300) | (completed offset 5s >= 2)")
+    monitor.observe(_result(), now=101.0)
+    monitor.observe(_result(), now=102.0)
+    assert monitor.met_at is None
+    monitor.tick(106.0)
+    assert monitor.met_at == 6.0
 
 
-# With use_server_output_tokens, tpot and ntpot divide by the server's count as the report does: 5 streamed
-# tokens, server says 11, so tpot is (0.3 - 0.05) / 10 and ntpot 0.3 / 11.
-def test_per_result_values_follow_server_output_tokens() -> None:
-    streamed = _result(0.3, output_tokens=5, ttft=0.05, server_output_tokens=11)
-    report = compute_request_latency_metrics(streamed, use_server_output_tokens=True)
-    values = per_result_values(streamed, use_server_output_tokens=True)
-    assert values["tpot"] == pytest.approx(report["time_per_output_token"]) == pytest.approx(0.025)
-    assert values["ntpot"] == pytest.approx(report["normalized_time_per_output_token"]) == pytest.approx(0.3 / 11)
+# The levels come from the phases passed in: with 4 queued, 1 waiting and 2 streaming, 'queued >= 4' and
+# 'in_flight{phase="streaming"} >= 2' each hold on the first tick, and bare in_flight reads 3, waiting plus streaming.
+@pytest.mark.parametrize(
+    "condition, reading",
+    [
+        ("(t >= 300) | (queued >= 4)", {"queued": 4.0}),
+        ('(t >= 300) | (in_flight{phase="streaming"} >= 2)', {'in_flight{phase="streaming"}': 2.0}),
+        ("(t >= 300) | (in_flight >= 3)", {"in_flight": 3.0}),
+    ],
+)
+def test_levels_read_the_phases(condition: str, reading: dict[str, float]) -> None:
+    monitor = _monitor(condition)
+    monitor.tick(101.0, phases=_phases(queued=4, waiting=1, streaming=2))
+    assert monitor.met_at == 1.0
+    assert monitor.values_when_met == reading
+
+
+# With no phases passed, a level has no value and the condition does not hold on it.
+def test_level_without_phases_has_no_value() -> None:
+    monitor = _monitor("(t >= 300) | (queued >= 0)")
+    monitor.tick(101.0)
+    assert monitor.met_at is None
