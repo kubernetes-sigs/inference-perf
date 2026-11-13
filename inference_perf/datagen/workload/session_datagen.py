@@ -26,6 +26,7 @@ from inference_perf.datagen.workload.prompts import RecordPrompter
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.workload.arrangement import Node
 from inference_perf.workload.materialize import BlockTextMaterializer
+from inference_perf.workload.record import Record
 from inference_perf.workload.sources import Workload, load_workload
 
 
@@ -47,6 +48,10 @@ class WorkloadSessionGenerator(ReplayGraphSessionGeneratorBase):
     session metrics) is the shared session runtime, unchanged. A recorded
     assistant turn that reappears in a later prompt is replaced there by the
     live reply of the node that elicited it.
+
+    A format with a config block of its own subclasses this: it passes the
+    workload it parsed and its block as `replay_config`, and may override how
+    its sessions are named.
     """
 
     def __init__(
@@ -58,8 +63,11 @@ class WorkloadSessionGenerator(ReplayGraphSessionGeneratorBase):
         base_seed: Optional[int] = None,
         num_workers: int = 1,
         workload: Optional[Workload] = None,
+        replay_config: Optional[SessionReplayConfig] = None,
     ) -> None:
-        replay_config = config.workload.session if config.workload and config.workload.session else SessionReplayConfig()
+        if replay_config is None:
+            replay_config = config.workload.session if config.workload and config.workload.session else SessionReplayConfig()
+        self._session_config = replay_config
         super().__init__(
             api_config,
             config,
@@ -94,7 +102,7 @@ class WorkloadSessionGenerator(ReplayGraphSessionGeneratorBase):
         # slot -> session key. Longer than _session_keys once a slot copies an
         # earlier one: a duplicate added up front or a replay added on demand.
         self._slot_keys = list(self._session_keys)
-        session_ids = [f"s{slot}_{_safe_id(key)}" for slot, key in enumerate(self._session_keys)]
+        session_ids = [self._runtime_session_id(slot, key) for slot, key in enumerate(self._session_keys)]
         target = replay_config.duplicate_sessions_target
         if target is not None:
             copies = 0
@@ -112,13 +120,29 @@ class WorkloadSessionGenerator(ReplayGraphSessionGeneratorBase):
         )
         self.initialize_sessions_lazy(session_ids)
 
+    def _runtime_session_id(self, slot: int, session_key: str) -> str:
+        """The id a session runs and is reported under. It must not contain ':'."""
+        return f"s{slot}_{_safe_id(session_key)}"
+
+    def _session_source_id(self, session_key: str) -> str:
+        """What the session reports as its source."""
+        return self.workload.source_id
+
+    def _model_for(self, record: Record) -> str:
+        """The model the graph names for a call. The request itself goes to the server's model."""
+        recorded = str(record.metadata.get("model", ""))
+        if self._session_config.use_static_model:
+            return self._session_config.static_model_name
+        return (self._session_config.model_mapping or {}).get(recorded, recorded)
+
     def _on_cycled_slot(self, session_index: int, source_slot: int) -> None:
         # the base class registers replay slots in index order, one call each
         assert session_index == len(self._slot_keys), f"slot {session_index} registered out of order"
         self._slot_keys.append(self._slot_keys[source_slot])
 
     def _build_session(self, session_index: int) -> Optional[ReplaySession]:
-        nodes = self._nodes_by_session[self._slot_keys[session_index]]
+        session_key = self._slot_keys[session_index]
+        nodes = self._nodes_by_session[session_key]
         session_id = self._session_ids[session_index]
         index_of = {node.id: i for i, node in enumerate(nodes)}
 
@@ -138,13 +162,15 @@ class WorkloadSessionGenerator(ReplayGraphSessionGeneratorBase):
                     trace_id=session_id,
                     t_start_ms=node.send_at_ms or 0,
                     t_end_ms=node.send_at_ms or 0,
-                    model=str(record.metadata.get("model", "")),
+                    model=self._model_for(record),
                     messages=[ReplayMessage(role=m.role, text=m.text) for m in messages],
                     out_message=ReplayMessage(role="assistant", text=recorded_output),
                     prompt_tokens=sum(d for d in declared if d is not None) if all(d is not None for d in declared) else None,
                     completion_tokens=output_turn.output_tokens,
                     temperature=None,
-                    max_tokens_recorded=output_turn.output_tokens,
+                    # graph metadata only: the request's max_tokens is the
+                    # recorded completion length above
+                    max_tokens_recorded=output_turn.output_tokens or self._session_config.default_max_tokens,
                 )
             )
 
@@ -158,5 +184,5 @@ class WorkloadSessionGenerator(ReplayGraphSessionGeneratorBase):
         for i, node in enumerate(nodes):
             graph.events[f"event_{i:03d}_{calls[i].call_id}"].wait_ms = node.think_ms
         return ReplaySession(
-            session_id=session_id, source_id=self.workload.source_id, session_index=session_index, graph=graph
+            session_id=session_id, source_id=self._session_source_id(session_key), session_index=session_index, graph=graph
         )

@@ -159,6 +159,52 @@ def test_session_config_caps_waits(tmp_path: Path) -> None:
     assert second.wait_ms == 1000
 
 
+# A format with a config block of its own passes that block in. Its
+# max_wait_ms of 1000 caps session B's 7500 ms think time although
+# data.workload.session is unset, which alone would leave the wait at 7500.
+def test_a_replay_config_argument_sets_the_session_settings(tmp_path: Path) -> None:
+    data = DataConfig(
+        type=DataGenType.WorkloadReplay,
+        workload=WorkloadReplayConfig(format="test", file="unused"),
+        corpus_file_path=str(write_corpus(tmp_path)),
+    )
+    gen = WorkloadSessionGenerator(
+        APIConfig(type=APIType.Chat),
+        data,
+        new_word_tokenizer(),
+        base_seed=1,
+        workload=session_workload(),
+        replay_config=SessionReplayConfig(max_wait_ms=1000),
+    )
+    _, second = events(gen, 1)
+    assert second.wait_ms == 1000
+    _, unset = events(make_generator(write_corpus(tmp_path), new_word_tokenizer()), 1)
+    assert unset.wait_ms == 7500
+
+
+# A session reports the workload's source id ("trace.jsonl") unless a
+# subclass says otherwise. This one names sessions run0, run1, run2 and
+# reports each session's own key, "claude:A" for the first.
+def test_a_subclass_names_its_sessions_and_their_source(tmp_path: Path) -> None:
+    class Named(WorkloadSessionGenerator):
+        def _runtime_session_id(self, slot: int, session_key: str) -> str:
+            return f"run{slot}"
+
+        def _session_source_id(self, session_key: str) -> str:
+            return session_key
+
+    data = DataConfig(
+        type=DataGenType.WorkloadReplay,
+        workload=WorkloadReplayConfig(format="test", file="unused"),
+        corpus_file_path=str(write_corpus(tmp_path)),
+    )
+    named = Named(APIConfig(type=APIType.Chat), data, new_word_tokenizer(), base_seed=1, workload=session_workload())
+    assert [named.get_session_info(i)["session_id"] for i in range(3)] == ["run0", "run1", "run2"]
+    assert named.get_session_info(0)["source_id"] == "claude:A"
+    default = make_generator(write_corpus(tmp_path), new_word_tokenizer())
+    assert default.get_session_info(0)["source_id"] == "trace.jsonl"
+
+
 # duplicate_sessions_target of 5 over the 3 sessions adds copies of the first
 # two, named after them with a _dup suffix and asking for what they ask for
 # (max_tokens 5 then 6, and 4 then 2). A target of 2 is already met and adds
@@ -191,6 +237,78 @@ def test_indices_past_the_workload_replay_it(tmp_path: Path) -> None:
     padded = make_generator(corpus_path, new_word_tokenizer(), session=SessionReplayConfig(duplicate_sessions_target=5))
     assert [[e.max_tokens for e in events(padded, i)] for i in (6, 8)] == [[4, 2], [5, 6]]
     assert padded.get_session_info(8)["session_id"] == "s0_claude_A_dup1_dup1"
+
+
+# Two one-round sessions recorded on models "recorded" and "other". The graph
+# names the recorded model by default, the mapped one where model_mapping has
+# an entry ("recorded" -> "served", "other" unchanged), and static_model_name
+# for every call when use_static_model is set.
+def test_session_settings_name_the_model_in_the_graph(tmp_path: Path) -> None:
+    # a one-round session of its own, recorded on `model`
+    def one_round(session: str, model: str) -> Record:
+        return Record(
+            id=session,
+            session_id=session,
+            turns=[Turn(role="user", parts=[TextPart(text="w1 w2")]), Turn(role="assistant", output_tokens=3)],
+            metadata={"model": model},
+        )
+
+    workload = Workload(
+        source_id="trace.jsonl",
+        records=[one_round("a", "recorded"), one_round("b", "other")],
+        arrangement=Arrangement(nodes=[Node(id="a", record_id="a", turn=1), Node(id="b", record_id="b", turn=1)]),
+    )
+    data = DataConfig(
+        type=DataGenType.WorkloadReplay,
+        workload=WorkloadReplayConfig(format="test", file="unused"),
+        corpus_file_path=str(write_corpus(tmp_path)),
+    )
+
+    # the model the graph names for the one call of session a, then of session b
+    def models(settings: SessionReplayConfig) -> List[str]:
+        gen = WorkloadSessionGenerator(
+            APIConfig(type=APIType.Chat), data, new_word_tokenizer(), base_seed=1, workload=workload, replay_config=settings
+        )
+        return [gen._get_session(i).graph.events["event_000_" + key].call.model for i, key in enumerate(("a", "b"))]
+
+    assert models(SessionReplayConfig()) == ["recorded", "other"]
+    assert models(SessionReplayConfig(model_mapping={"recorded": "served"})) == ["served", "other"]
+    assert models(SessionReplayConfig(use_static_model=True, static_model_name="static")) == ["static", "static"]
+
+
+# The graph's recorded max_tokens is the assistant turn's count (3), or the
+# session default_max_tokens (77) when the turn recorded zero.
+def test_a_zero_length_output_records_the_default_max_tokens(tmp_path: Path) -> None:
+    # a one-round session of its own that recorded `out` output tokens
+    def one_round(session: str, out: int) -> Record:
+        return Record(
+            id=session,
+            session_id=session,
+            turns=[Turn(role="user", parts=[TextPart(text="w1 w2")]), Turn(role="assistant", output_tokens=out)],
+        )
+
+    workload = Workload(
+        source_id="trace.jsonl",
+        records=[one_round("a", 3), one_round("b", 0)],
+        arrangement=Arrangement(nodes=[Node(id="a", record_id="a", turn=1), Node(id="b", record_id="b", turn=1)]),
+    )
+    data = DataConfig(
+        type=DataGenType.WorkloadReplay,
+        workload=WorkloadReplayConfig(format="test", file="unused"),
+        corpus_file_path=str(write_corpus(tmp_path)),
+    )
+    gen = WorkloadSessionGenerator(
+        APIConfig(type=APIType.Chat),
+        data,
+        new_word_tokenizer(),
+        base_seed=1,
+        workload=workload,
+        replay_config=SessionReplayConfig(default_max_tokens=77),
+    )
+    recorded = [
+        gen._get_session(i).graph.events["event_000_" + key].call.max_tokens_recorded for i, key in enumerate(("a", "b"))
+    ]
+    assert recorded == [3, 77]
 
 
 # A node that depends on a node of another session is refused: claude:A
