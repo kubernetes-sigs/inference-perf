@@ -27,6 +27,7 @@ from typing import Any, Callable, List, NamedTuple, Optional
 
 from aiohttp import ClientResponse
 
+from inference_perf.apis.request_phase import notify_first_token
 from inference_perf.apis.response_errors import InBandError, in_band_error
 from inference_perf.apis.tool_output import chat_tool_call_deltas, tool_argument_deltas, tool_name_deltas
 
@@ -132,6 +133,7 @@ class _SSEStreamParser:
         self.data_lines: List[bytes] = []
         self.skip_lf = False
         self.done = False
+        self._generating = False
 
     def process_data_payload(self, data_bytes: bytes, message_time: float) -> None:
         """Parse JSON payload, extract usage, extract text content, and record metrics."""
@@ -175,6 +177,12 @@ class _SSEStreamParser:
             elif any(fragment for _, fragment in [*names, *arguments]):
                 self.tool_chunks.append(data_str)
                 self.tool_chunk_times.append(message_time)
+            else:
+                return
+            # the first chunk on any channel is the one TTFT is measured to
+            if not self._generating:
+                self._generating = True
+                notify_first_token()
         except (json.JSONDecodeError, IndexError):
             pass
 

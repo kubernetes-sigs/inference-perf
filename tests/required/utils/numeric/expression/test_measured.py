@@ -603,6 +603,57 @@ class TestSignalReads:
         assert _value(state, 2.0) == 1.0
 
 
+class TestLevels:
+    # in_flight{phase="waiting"} is one term read from in_flight with that label.
+    def test_phase_selector(self) -> None:
+        term = _term('in_flight{phase="waiting"}')
+        assert (term.window, term.signal, term.labels) == ("signal", "in_flight", (("phase", "waiting"),))
+
+    # queued is a phase of its own, not of in_flight, and a level cannot be read in the past.
+    @pytest.mark.parametrize(
+        ("text", "message"),
+        [
+            ('in_flight{phase="queued"}', r"phase is one of \['waiting', 'streaming'\], not 'queued'"),
+            ('in_flight{status="success"}', r"'in_flight' takes \['phase'\], not 'status'"),
+            ('queued{phase="waiting"}', "'queued' takes no labels"),
+            ("queued offset 30s", r"applies to \['completed', 'errors'\] only"),
+        ],
+    )
+    def test_rejected(self, text: str, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            Predicate(f"(t >= 600) | ({text} > 0)")
+
+    # With 5 queued, 3 waiting and 1 streaming: each phase reads its own level and in_flight reads 3 + 1.
+    def test_phases_come_from_the_caller(self) -> None:
+        p = Predicate('(t >= 600) | (queued + in_flight{phase="waiting"} + in_flight{phase="streaming"} + in_flight > 0)')
+        state = _state_of(p)
+        assert state.readings(1.0, phases={"queued": 5, "waiting": 3, "streaming": 1}) == {
+            "queued": 5.0,
+            'in_flight{phase="waiting"}': 3.0,
+            'in_flight{phase="streaming"}': 1.0,
+            "in_flight": 4.0,
+        }
+
+    # Without phases every level is unknown, so its comparison is false; in_flight alone still reads the caller's count.
+    def test_levels_are_unknown_without_phases(self) -> None:
+        p = Predicate('(t >= 600) | (queued > 0) | (in_flight{phase="waiting"} > 0)')
+        state = _state_of(p)
+        assert all(math.isnan(value) for value in state.values(1.0, in_flight=7).values())
+        assert not p.holds(1.0, state.values(1.0, in_flight=7))
+
+    # An in_flight passed by the caller wins over the sum of the phases: 7, not 3 + 1.
+    def test_in_flight_from_the_caller_wins(self) -> None:
+        state = _state_of(Predicate("(t >= 600) | (in_flight > 0)"))
+        assert state.values(1.0, in_flight=7, phases={"waiting": 3, "streaming": 1}) == {"in_flight": 7.0}
+
+    # A stall on unanswered requests only: 4 waiting holds '> 3', and 4 streaming does not.
+    def test_condition_on_one_phase(self) -> None:
+        p = Predicate('(t >= 600) | (in_flight{phase="waiting"} > 3)')
+        state = _state_of(p)
+        assert p.holds(1.0, state.values(1.0, phases={"waiting": 4, "streaming": 0}))
+        assert not p.holds(1.0, state.values(1.0, phases={"waiting": 0, "streaming": 4}))
+
+
 class TestMeasuredState:
     # '(t >= 600) | (avg_over_last(error, 4) > 0.5)' holds on exactly the result that pushes the rate past 0.5.
     def test_holds_on_the_flipping_result(self) -> None:
