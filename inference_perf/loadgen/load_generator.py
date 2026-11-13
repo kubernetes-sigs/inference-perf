@@ -883,7 +883,7 @@ class LoadGenerator:
         breakers, so it runs in this process as results are drained.
         """
         if self._stop_monitor is not None:
-            self._stop_monitor.observe(metric, time.perf_counter(), self.in_flight_requests())
+            self._stop_monitor.observe(metric, time.perf_counter(), self.requests_by_phase())
 
     def _stop_condition_held(self, stage_id: int, stop_monitor: Optional[StopConditionMonitor]) -> bool:
         """True once the stage's measured stop condition has held; logs when and with what values.
@@ -893,7 +893,7 @@ class LoadGenerator:
         """
         if stop_monitor is None:
             return False
-        stop_monitor.tick(time.perf_counter(), self.in_flight_requests())
+        stop_monitor.tick(time.perf_counter(), self.requests_by_phase())
         if stop_monitor.met_at is None:
             return False
         logger.info(

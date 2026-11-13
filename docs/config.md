@@ -251,7 +251,7 @@ load:
     stop_condition: "(t >= 300) | (t >= 60)"  # whichever first: 60s
 ```
 
-A condition can also read what the stage measures: window functions over finished requests such as `quantile_over_time(0.99, ttft[30s])` or `avg_over_last(error, 100)`, and the signals `completed`, `errors`, `in_flight` and `since_last_completion`. **Series use short names:** `ttft`, not the report's `time_to_first_token`. See [Measured terms](./expressions.md#measured-terms) for the full list and the rules. A condition must still end on time alone, so a measured term only ever ends a stage before its deadline.
+A condition can also read what the stage measures: window functions over finished requests such as `quantile_over_time(0.99, ttft[30s])` or `avg_over_last(error, 100)`, and the signals `completed`, `errors`, `in_flight`, `queued` and `since_last_completion`. A signal can be narrowed by a label, `completed{status="failure"}`, and a count can be read as it was earlier, `completed offset 60s`. **Series use short names:** `ttft`, not the report's `time_to_first_token`. See [Measured terms](./expressions.md#measured-terms) for the full list and the rules. A condition must still end on time alone, so a measured term only ever ends a stage before its deadline.
 
 The condition is evaluated on every finished request, and once a second while none finish, so a stalled server still ends the stage. The object form adds `hold`, the number of consecutive evaluations the condition must hold on before it ends the stage. A string holds once.
 

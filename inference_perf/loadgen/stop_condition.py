@@ -19,46 +19,23 @@ collector hands to its observers in the main process, the path the circuit
 breakers are fed by, and once a second while no result arrives. The second
 kind of evaluation is what lets a stall (``since_last_completion``) or a time
 range that closes during a quiet spell end the stage.
+
+Each result is valued by ``series_values``, the report's own formulas, so a
+term reads the number the report and the runtime metrics carry.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from typing import Deque, DefaultDict, Dict, Optional
+from typing import Deque, DefaultDict, Dict, Mapping, Optional
 
-from inference_perf.apis import RequestLifecycleMetric, StreamedResponseMetrics
-from inference_perf.reportgen.base import effective_output_tokens
+from inference_perf.apis import RequestLifecycleMetric
+from inference_perf.apis.base import is_stage_teardown_cancelled
+from inference_perf.reportgen.base import series_values
 from inference_perf.utils.numeric.expression import MeasuredState, Observation, Predicate
 
 # Seconds without an evaluation after which the stage loop's tick evaluates the condition.
 TICK_SECONDS = 1.0
-
-
-def per_result_values(metric: RequestLifecycleMetric, use_server_output_tokens: bool = False) -> Dict[str, float]:
-    """One finished request's series values, by the report's definitions.
-
-    Same formulas as ``compute_request_latency_metrics`` and the report's
-    schedule delay, pinned equal by test, without the per-token work the report
-    does. ``schedule_delay`` is for every request, the rest for successful ones.
-    ``ttft`` and ``tpot`` need two or more chunk timestamps: the report re-derives
-    one timestamp per token from the chunks, so a response that arrived in a
-    single chunk has a ttft there and none here.
-    """
-    values = {"schedule_delay": metric.start_time - metric.scheduled_time}
-    if metric.error is not None:
-        return values
-    latency = metric.end_time - metric.start_time
-    values["latency"] = latency
-    response = metric.info.response_metrics
-    tokens = effective_output_tokens(response, use_server_output_tokens)
-    if tokens > 0:
-        values["ntpot"] = latency / tokens
-    if isinstance(response, StreamedResponseMetrics) and len(response.output_token_times) > 1:
-        first, last = response.output_token_times[0], response.output_token_times[-1]
-        values["ttft"] = first - metric.start_time
-        if tokens > 1:
-            values["tpot"] = (last - first) / (tokens - 1)
-    return values
 
 
 class StopConditionMonitor:
@@ -68,6 +45,9 @@ class StopConditionMonitor:
     evaluations before it ends the stage, so a windowed quantile that flaps
     above a threshold for one result does not. Only the running stage's results
     count: a result from an earlier stage drained late is ignored.
+
+    ``phases`` is the load generator's ``requests_by_phase()`` at the moment of
+    the evaluation. ``in_flight`` and ``queued`` have no value without it.
     """
 
     def __init__(self, stage_id: int, predicate: Predicate, hold: int, use_server_output_tokens: bool = False) -> None:
@@ -99,7 +79,7 @@ class StopConditionMonitor:
             self._sent_positions[scheduled_time].append(self._dispatched)
         self._dispatched += 1
 
-    def observe(self, metric: RequestLifecycleMetric, now: float, in_flight: Optional[int] = None) -> None:
+    def observe(self, metric: RequestLifecycleMetric, now: float, phases: Optional[Mapping[str, int]] = None) -> None:
         """Account one observed result and evaluate the condition at clock ``now``."""
         if self._started_at is None or metric.stage_id != self.stage_id or self.met_at is not None:
             return
@@ -108,27 +88,29 @@ class StopConditionMonitor:
             Observation(
                 t=metric.end_time - self._started_at,
                 failed=metric.error is not None,
-                values=per_result_values(metric, self.use_server_output_tokens),
+                values=series_values(metric, self.use_server_output_tokens),
                 sent_index=positions.popleft() if positions else None,
+                # the load generator cut it off at teardown: neither a success nor a failure
+                cancelled=is_stage_teardown_cancelled(metric.error),
             ),
             now - self._started_at,
         )
-        self._evaluate(now, in_flight)
+        self._evaluate(now, phases)
 
-    def tick(self, now: float, in_flight: Optional[int] = None) -> None:
+    def tick(self, now: float, phases: Optional[Mapping[str, int]] = None) -> None:
         """Evaluate the condition at clock ``now`` if nothing has for ``TICK_SECONDS``."""
         if self._started_at is None or self.met_at is not None or now - self._last_evaluation < TICK_SECONDS:
             return
-        self._evaluate(now, in_flight)
+        self._evaluate(now, phases)
 
-    def _evaluate(self, now: float, in_flight: Optional[int]) -> None:
+    def _evaluate(self, now: float, phases: Optional[Mapping[str, int]]) -> None:
         assert self._started_at is not None
         self._last_evaluation = now
         t = now - self._started_at
-        if not self.predicate.holds(t, self.state.values(t, in_flight)):
+        if not self.predicate.holds(t, self.state.values(t, phases=phases)):
             self._consecutive = 0
             return
         self._consecutive += 1
         if self._consecutive >= self.hold:
             self.met_at = t
-            self.values_when_met = self.state.readings(t, in_flight)
+            self.values_when_met = self.state.readings(t, phases=phases)
