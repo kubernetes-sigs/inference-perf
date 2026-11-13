@@ -199,6 +199,7 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         documentation="Prompt tokens of successful requests by stage; rate() gives input throughput.",
         metric_type=Counter,
         labelnames=("stage",),
+        series="prompt_tokens",
         on_request=_count_prompt_tokens,
     ),
     MetricSpec(
@@ -211,6 +212,7 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         ),
         metric_type=Counter,
         labelnames=("stage",),
+        series="output_tokens",
         on_request=_count_output_tokens,
     ),
 )
