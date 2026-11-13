@@ -68,6 +68,12 @@ class _FakeStreamingResponse:
         return content
 
 
+# _FakeStreamingResponse(chunks) typed as the ClientResponse that process_response takes.
+# The SSE parser only reads status, headers and content.iter_any(), which yields the chunks.
+def _streaming_response(chunks: List[bytes]) -> ClientResponse:
+    return cast(ClientResponse, _FakeStreamingResponse(chunks))
+
+
 @pytest.mark.asyncio
 async def test_chat_completion_api_data() -> None:
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="Hello, world!")])
@@ -175,7 +181,7 @@ async def test_process_response_streaming_uses_server_prompt_tokens() -> None:
         b'data: {"choices": [], "usage": {"prompt_tokens": 17, "completion_tokens": 1}}\n\n'
         b"data: [DONE]\n\n"
     )
-    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+    response = _streaming_response([sse])
 
     info = await data.process_response(response, _make_config(streaming=True), tokenizer)
 
@@ -215,7 +221,7 @@ async def test_process_response_non_streaming_no_choices_no_usage_raises() -> No
 async def test_process_response_streaming_no_content_no_usage_raises() -> None:
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
     sse = b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\ndata: [DONE]\n\n'
-    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+    response = _streaming_response([sse])
 
     with pytest.raises(EmptyResponseError) as exc_info:
         await data.process_response(response, _make_config(streaming=True), _make_tokenizer())
@@ -236,9 +242,7 @@ async def test_process_response_streaming_content_only_no_usage_is_a_completion(
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
     sse = b'data: {"choices": [{"delta": {"content": "a b"}}]}\n\ndata: [DONE]\n\n'
 
-    info = await data.process_response(
-        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
-    )
+    info = await data.process_response(_streaming_response([sse]), _make_config(streaming=True), _word_tokenizer())
 
     assert info.response_metrics is not None
     assert info.response_metrics.output_tokens == 2
@@ -251,9 +255,7 @@ async def test_process_response_streaming_reasoning_only_no_usage_is_a_completio
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
     sse = b'data: {"choices": [{"delta": {"reasoning": "a b"}}]}\n\ndata: [DONE]\n\n'
 
-    info = await data.process_response(
-        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
-    )
+    info = await data.process_response(_streaming_response([sse]), _make_config(streaming=True), _word_tokenizer())
 
     assert info.response_metrics is not None
     assert info.response_metrics.output_tokens == 2
@@ -270,9 +272,7 @@ async def test_process_response_streaming_usage_only_is_a_completion() -> None:
         b"data: [DONE]\n\n"
     )
 
-    info = await data.process_response(
-        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
-    )
+    info = await data.process_response(_streaming_response([sse]), _make_config(streaming=True), _word_tokenizer())
 
     assert info.response_metrics is not None
     assert info.response_metrics.output_tokens == 0
@@ -306,9 +306,7 @@ async def test_process_response_streaming_tool_calls_only_no_usage_is_a_completi
         b"data: [DONE]\n\n"
     )
 
-    info = await data.process_response(
-        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
-    )
+    info = await data.process_response(_streaming_response([sse]), _make_config(streaming=True), _word_tokenizer())
 
     assert info.response_metrics is not None
     assert info.response_metrics.output_tokens > 0
@@ -557,3 +555,33 @@ async def test_materialize_pre_encoded_image_webp_mime() -> None:
     payload = await data.to_request_body(effective_model_name="gpt-vlm", max_tokens=10, ignore_eos=False, streaming=False)
     image_blocks = [c for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
     assert image_blocks[0]["image_url"]["url"].startswith("data:image/webp;base64,")
+
+
+# Unary chat body whose choice finished with "tool_calls" and streamed chat whose
+# last delta frame carries finish_reason "length": each must land verbatim on
+# response_metrics.finish_reason ("tool_calls" and "length" respectively).
+@pytest.mark.asyncio
+async def test_process_response_records_finish_reason_unary_and_streaming() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    tokenizer = _make_tokenizer()
+
+    response = MagicMock()
+    response.json = AsyncMock(
+        return_value={
+            "choices": [{"message": {"content": "calling"}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+    )
+    info = await data.process_response(response, _make_config(streaming=False), tokenizer)
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "tool_calls"
+
+    sse = (
+        b'data: {"choices": [{"delta": {"content": "hello"}, "finish_reason": null}]}\n\n'
+        b'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}\n\n'
+        b'data: {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    info = await data.process_response(_streaming_response([sse]), _make_config(streaming=True), tokenizer)
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "length"

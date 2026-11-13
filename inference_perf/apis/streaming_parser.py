@@ -23,7 +23,7 @@ import heapq
 import json
 import re
 import time
-from typing import Any, Callable, List, NamedTuple, Optional
+from typing import Any, Callable, List, Mapping, NamedTuple, Optional
 
 from aiohttp import ClientResponse
 
@@ -71,6 +71,10 @@ class ParsedSSEStream(NamedTuple):
     tool_arguments: List[str]
     tool_calls: List[dict[str, Any]]
     has_tool_calls: bool
+    # The last non-null reason the server gave for ending generation (OpenAI
+    # `choices[0].finish_reason`, Anthropic `message_delta.delta.stop_reason`),
+    # verbatim. None if it never sent one.
+    finish_reason: Optional[str] = None
 
     @property
     def generated_chunk_times(self) -> List[float]:
@@ -80,6 +84,27 @@ class ParsedSSEStream(NamedTuple):
         lists gives one timestamp per chunk, including tool-only deltas.
         """
         return list(heapq.merge(self.chunk_times, self.reasoning_chunk_times, self.tool_chunk_times))
+
+
+def finish_reason_of(data: Mapping[str, object]) -> Optional[str]:
+    """The server's stated reason for ending generation carried by one parsed
+    body or SSE frame, or None if this one carries none.
+
+    OpenAI-shaped payloads put it at ``choices[0].finish_reason`` (null on every
+    streamed chunk but the last content-bearing one); Anthropic puts
+    ``stop_reason`` on the unary body and inside the ``message_delta`` event's
+    ``delta``. The value is returned verbatim, so ``length`` and ``max_tokens``
+    are the two spellings of "the requested budget was delivered".
+    """
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        reason = choices[0].get("finish_reason")
+        if reason:
+            return str(reason)
+    for holder in (data, data.get("delta")):
+        if isinstance(holder, dict) and holder.get("stop_reason"):
+            return str(holder["stop_reason"])
+    return None
 
 
 class StreamInterruptedError(Exception):
@@ -128,6 +153,7 @@ class _SSEStreamParser:
         self.tool_name_parts: dict[int, List[str]] = {}
         self.tool_argument_parts: dict[int, List[str]] = {}
         self.tool_calls: dict[int, dict[str, Any]] = {}
+        self.finish_reason: Optional[str] = None
         self.buffer = bytearray()
         self.data_lines: List[bytes] = []
         self.skip_lf = False
@@ -162,6 +188,8 @@ class _SSEStreamParser:
             arguments = tool_argument_deltas(data)
             for index, fragment in arguments:
                 self.tool_argument_parts.setdefault(index, []).append(fragment)
+            if reason := finish_reason_of(data):
+                self.finish_reason = reason
             reasoning = self.extract_reasoning(data) if self.extract_reasoning is not None else None
             if reasoning:
                 self.reasoning_text_parts.append(reasoning)
@@ -284,6 +312,7 @@ class _SSEStreamParser:
                 for index, call in sorted(self.tool_calls.items())
             ],
             has_tool_calls=bool(self.tool_argument_parts),
+            finish_reason=self.finish_reason,
         )
 
 
