@@ -18,6 +18,11 @@ from pydantic import BaseModel, Field, model_validator
 
 from inference_perf.config.common import Distribution, DistributionType, StrictBaseModel
 
+# Sentinel for "do not clamp inter-event waits". The replay runtime clamps with
+# ``min(event.wait_ms, max_wait_ms)``, so disabling a cap means raising that
+# ceiling instead of reinterpreting 0 (which means "no wait at all").
+UNCAPPED_WAIT_MS = 2**31 - 1
+
 
 class TraceFormat(Enum):
     AZURE_PUBLIC_DATASET = "AzurePublicDataset"
@@ -363,6 +368,94 @@ class WekaTraceReplayConfig(SessionReplayConfig):
             raise ValueError(
                 "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
             )
+        return self
+
+
+class TraceLabTraceReplayConfig(SessionReplayConfig):
+    """Configuration for TraceLab trace replay data generator.
+
+    Replays UW TraceLab coding-agent traces (Claude Code / Codex), where each
+    JSONL row is one LLM invocation with serving-relevant token accounting
+    (``input_tokens_total`` / ``prefix_tokens`` / ``newly_append_tokens`` /
+    ``output_tokens``), tool-call metadata, and timing. See
+    https://tracelab.cs.washington.edu and https://arxiv.org/abs/2606.30560.
+    """
+
+    trace_directory: Optional[str] = Field(None, description="Directory containing TraceLab JSONL trace files")
+    trace_files: Optional[List[str]] = Field(None, description="List of paths to specific TraceLab JSONL trace files")
+    hf_dataset_path: Optional[Union[str, Dict[str, Any]]] = Field(
+        None,
+        description=(
+            "HuggingFace dataset path. Can be:\n"
+            "  - String: 'username/dataset-name'\n"
+            "  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}\n"
+            "Any extra keys in the dict are passed as kwargs to datasets.load_dataset()."
+        ),
+    )
+    filter: Optional[str] = Field(
+        None,
+        description=(
+            "Lambda expression to filter sessions. Applied uniformly to all data sources.\n"
+            "Receives the session dict plus derived aggregates: max_tokens (largest\n"
+            "single-round input+output), total_tokens, and num_rounds.\n"
+            "Example: \"lambda x: x['max_tokens'] < 262144\"\n"
+            "Security: Filter expressions use eval() and should only contain trusted input."
+        ),
+    )
+    num_dataset_entries: int = Field(
+        100,
+        description=(
+            "Max number of sessions to load, applied to every source (local files and HuggingFace). "
+            "Reading stops once this many sessions pass the filter, so a small benchmark does not "
+            "materialize the full corpus."
+        ),
+    )
+    trace_idle_gap_cap_seconds: Optional[float] = Field(
+        60.0,
+        description=(
+            "Cap idle timing gaps between rounds in seconds. Null or <= 0 disables the cap, "
+            "which replays the recorded think time verbatim (useful for KV-cache TTL/eviction "
+            "benchmarks). The runtime clamps every event wait to max_wait_ms, so when "
+            "max_wait_ms is left unset it is raised to match this cap."
+        ),
+    )
+    ignore_trace_delays: bool = Field(
+        False,
+        description=(
+            "Ignore delays from original trace and run back-to-back. Overrides "
+            "trace_idle_gap_cap_seconds: every inter-round gap is set to zero."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_trace_sources(self) -> "TraceLabTraceReplayConfig":
+        # Validate that exactly one of trace_directory, trace_files, or hf_dataset_path is provided
+        sources_provided = sum(
+            [
+                self.trace_directory is not None,
+                self.trace_files is not None,
+                self.hf_dataset_path is not None,
+            ]
+        )
+
+        if sources_provided == 0:
+            raise ValueError("Either trace_directory, trace_files, or hf_dataset_path must be provided")
+        if sources_provided > 1:
+            raise ValueError(
+                "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
+            )
+
+        # Reconcile the two timing knobs. ReplayGraphSessionGeneratorBase
+        # clamps every event wait to max_wait_ms, whose default (15s) would
+        # silently truncate the 60s gap cap (or any larger explicit cap).
+        if "max_wait_ms" not in self.model_fields_set:
+            if self.trace_idle_gap_cap_seconds is not None and self.trace_idle_gap_cap_seconds > 0:
+                self.max_wait_ms = max(self.max_wait_ms, int(self.trace_idle_gap_cap_seconds * 1000.0))
+            else:
+                # Uncapped: raise the runtime clamp out of the way instead of
+                # reinterpreting max_wait_ms=0 (which other replay types use to
+                # mean "no waiting at all").
+                self.max_wait_ms = UNCAPPED_WAIT_MS
         return self
 
 
