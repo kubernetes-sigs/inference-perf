@@ -71,7 +71,8 @@ therefore keeps both and records which is which.
 | `output_tokens` | server `usage.completion_tokens` / `usage.output_tokens`, client `output_len` when the server reports none | Server-side this is an exact count of decode steps |
 | `client_fallback_requests` | n/a | Per side (`prompt`, `output`), how many successful requests carry a client count because the server reported none. Counts requests, not tokens. Nonzero means that distribution mixes sources |
 | `token_count_mismatches` | n/a | Streamed turns without tool calls whose per-chunk client count differs from server usage |
-| `tool_token_count_mismatches` | n/a | Streamed tool turns whose per-chunk client count differs from server usage by more than both 16 tokens and 25% of the larger count |
+| `tool_token_count_mismatches` | n/a | Streamed tool turns whose per-chunk client count differs from server usage by more than both 16 tokens and 25% of the larger count. Exact, with no tolerance, for turns that returned token ids |
+| `requests_with_token_ids` | n/a | How many successful requests returned token ids, so their timeline and mismatch check use the ids. 0 unless `api.return_token_ids` is set and the server supports it |
 
 Usage keys differ by API: OpenAI-compatible servers report `prompt_tokens` and
 `completion_tokens`, the Anthropic Messages API reports `input_tokens` and `output_tokens`.
@@ -99,6 +100,29 @@ worth checking before comparing runs, and before comparing against another tool 
 
 The CLI summary's Token Length Aggregates table labels each column with its source and reports
 any fallbacks in the table caption.
+
+### Token ids from the server
+
+Re-tokenizing streamed text cannot see every generated token. On a tool turn the server also
+generates the template wrapper around each call and an end token, and its tool parser keeps
+those from the client. The count then differs from server usage for a reason that is not an
+accounting bug, which is why tool turns get a tolerance.
+
+With `api.return_token_ids: true`, a server that supports it (vLLM) returns the ids of the
+tokens each streamed chunk generated, and still sends a chunk when the parser kept the text.
+For a response that returned ids:
+
+- The token timeline has one arrival time per id. Nothing is re-tokenized.
+- TTFT and ITL cover tokens whose text never reached the client, so on a tool turn they
+  measure generation and not parser output.
+- The mismatch check compares the id count with server usage exactly. No tolerance, tool
+  turns included. A tool turn still counts under `tool_token_count_mismatches`.
+- `output_len` is unchanged. It stays the client's count of the visible text.
+
+`requests_with_token_ids` says how many successful requests took this path. Read the two
+mismatch counters next to it: a zero from requests that returned ids is an exact agreement,
+a zero from the rest is agreement within the re-tokenized path's limits. A response without
+ids falls back to re-tokenizing, request by request.
 
 ---
 

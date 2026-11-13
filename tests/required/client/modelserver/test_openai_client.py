@@ -55,6 +55,7 @@ def mock_client() -> MagicMock:
     client.api_config.response_format = None
     client.api_config.streaming = False
     client.api_config.clean_tool_schemas = False
+    client.api_config.return_token_ids = False
     client.tokenizer = MagicMock()
     client.metrics_collector = MagicMock()
     client.cert_path = None

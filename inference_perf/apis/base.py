@@ -68,6 +68,9 @@ class StreamedResponseMetrics(ResponseMetrics):
     tool_chunks: List[str] = []
     tool_chunk_times: List[float] = []
     has_tool_calls: bool = False
+    # True when the server returned token ids: output_token_times then holds one
+    # arrival time per id and is not re-tokenized from the chunk text.
+    token_ids_returned: bool = False
 
 
 class InferenceInfo(BaseModel):
