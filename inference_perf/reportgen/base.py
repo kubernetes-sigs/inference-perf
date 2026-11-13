@@ -718,7 +718,14 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     per-request reports all see the same tokenizer-corrected token timings.
     Returns True if the tokenizer-derived token count doesn't match the
     server-reported output count (completion_tokens / output_tokens).
+
+    A response that returned token ids already has one arrival time per id. It
+    is left as is and compared with the server count exactly, tool turns too.
     """
+    if isinstance(m.info.response_metrics, StreamedResponseMetrics) and m.info.response_metrics.token_ids_returned:
+        server_tokens = server_reported_tokens(m.info.response_metrics.server_usage, SERVER_OUTPUT_TOKEN_KEYS)
+        return server_tokens is not None and len(m.info.response_metrics.output_token_times) != server_tokens
+
     if not (
         isinstance(m.info.response_metrics, StreamedResponseMetrics)
         and (
@@ -1038,6 +1045,14 @@ def summarize_requests(
         "output_tokens": summarize_output_token_usage(all_successful, percentiles),
         "token_count_mismatches": mismatched_requests,
         "tool_token_count_mismatches": tool_mismatched_requests,
+        # How many of the requests behind the two counters above were checked
+        # against returned token ids, so a zero there says which check passed.
+        "requests_with_token_ids": sum(
+            1
+            for success in all_successful
+            if isinstance(success.info.response_metrics, StreamedResponseMetrics)
+            and success.info.response_metrics.token_ids_returned
+        ),
         # Keyed by side, not by the sibling field names: the values count requests,
         # and a prompt_tokens/output_tokens key here would read as a token count.
         "client_fallback_requests": {

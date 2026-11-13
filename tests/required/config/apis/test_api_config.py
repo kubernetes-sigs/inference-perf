@@ -184,3 +184,23 @@ def test_rerank_config_rejects_matching_field_names() -> None:
 def test_rerank_config_rejects_reserved_field_names(field: str, reserved: str) -> None:
     with pytest.raises(ValidationError, match="may not be 'model' or 'top_n'"):
         RerankConfig(**{field: reserved})
+
+
+# Streaming chat and streaming completion both accept return_token_ids. It is off by default.
+@pytest.mark.parametrize("api_type", [APIType.Chat, APIType.Completion])
+def test_return_token_ids_accepted_for_streaming_chat_and_completion(api_type: APIType) -> None:
+    assert APIConfig().return_token_ids is False
+    assert APIConfig(type=api_type, streaming=True, return_token_ids=True).return_token_ids is True
+
+
+# return_token_ids on a chat config without streaming is rejected: a unary
+# response has no token timeline to build.
+def test_return_token_ids_requires_streaming() -> None:
+    with pytest.raises(ValidationError, match="return_token_ids requires streaming"):
+        APIConfig(type=APIType.Chat, streaming=False, return_token_ids=True)
+
+
+# return_token_ids on a streaming Anthropic Messages config is rejected: that API returns no ids.
+def test_return_token_ids_rejected_for_anthropic_messages() -> None:
+    with pytest.raises(ValidationError, match="return_token_ids is not supported for the anthropic_messages API"):
+        APIConfig(type=APIType.AnthropicMessages, streaming=True, return_token_ids=True)

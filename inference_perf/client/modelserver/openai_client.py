@@ -644,6 +644,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if self.client.api_config.type != APIType.AnthropicMessages and self.client.api_config.response_format:
             payload["response_format"] = self.client.api_config.response_format.to_api_format()
 
+        # Opt-in: per-chunk token ids give an exact token timeline (#917).
+        if self.client.api_config.return_token_ids:
+            payload["return_token_ids"] = True
+
         headers = _build_request_headers(self.client.api_config, self.client.api_key)
 
         if data.headers:
