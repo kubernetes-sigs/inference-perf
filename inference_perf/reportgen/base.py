@@ -893,10 +893,13 @@ def series_values(m: RequestLifecycleMetric, use_server_output_tokens: bool = Fa
     The runtime metrics read the run's results through this, so they carry the
     numbers the report will. ``schedule_delay`` is there for every request, the
     other series for successful ones. ``error`` is not: it is ``m.error``.
+    ``output_tokens`` is the count ``effective_output_tokens`` gives.
     """
     values = {"schedule_delay": m.start_time - m.scheduled_time}
     if m.error is not None:
         return values
+    values["prompt_tokens"] = float(m.info.request_metrics.text.input_tokens)
+    values["output_tokens"] = float(effective_output_tokens(m.info.response_metrics, use_server_output_tokens))
     latency = compute_request_latency_metrics(m, use_server_output_tokens)
     for name, series in SERIES.items():
         value = latency.get(series.report_field) if series.report_field else None
