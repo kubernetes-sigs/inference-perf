@@ -57,7 +57,7 @@ this test can be retargeted at one later without changing its assertions.
 
 import pytest
 
-from utils.accuracy import assert_successful_run
+from utils.accuracy import assert_successful_run, request_body
 from utils.benchmark import run_benchmark_minimal
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.load_shape import (
@@ -344,6 +344,16 @@ async def test_delivered_concurrency_holds_under_pinned_routing():
     assert_delivered_concurrency(entries, concurrency)
 
 
+# Session ids carry the slot: `conv_{slot}` before a slot's first rollover,
+# `stage_{stage}_slot_{slot}_convo_{n}` after it. Workers are pinned to slots by
+# preferred_worker_id, so slot % num_workers names the worker that ran a
+# conversation.
+def _conversation_slot(session_id: str) -> int:
+    if session_id.startswith("conv_"):
+        return int(session_id.removeprefix("conv_"))
+    return int(session_id.split("_")[3])
+
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
 async def test_conversation_replay_replenishes_ready_conversations():
@@ -381,13 +391,7 @@ async def test_conversation_replay_replenishes_ready_conversations():
 
     by_slot: dict[int, list[dict]] = {}
     for entry in entries:
-        session_id = entry["info"]["extra_info"]["user_session"]
-        if session_id.startswith("conv_"):
-            slot = int(session_id.removeprefix("conv_"))
-        else:
-            # Rollover ids are stage_{stage}_slot_{slot}_convo_{n}.
-            slot = int(session_id.split("_")[3])
-        by_slot.setdefault(slot, []).append(entry)
+        by_slot.setdefault(_conversation_slot(entry["info"]["extra_info"]["user_session"]), []).append(entry)
 
     assert set(by_slot) == set(range(concurrency))
     assert any(len(slot_entries) > 4 for slot_entries in by_slot.values()), "expected at least one conversation rollover"
@@ -403,6 +407,62 @@ async def test_conversation_replay_replenishes_ready_conversations():
     assert gaps
     assert max(gaps) < 0.1, f"slowest conversation handoff took {max(gaps):.3f}s"
     assert sum(gaps) / len(gaps) < 0.2, f"conversation handoffs averaged {sum(gaps) / len(gaps):.3f}s"
+
+
+# 8 blueprints, 4 concurrent slots, 2 workers, 2 turns each. At 24 requests per
+# worker that is three passes over the 4 blueprints each worker is routed, so a
+# scheduler that keeps every slot on its original blueprint (the pre-#1048
+# behaviour) can only ever open the first 2 conversations per worker.
+@pytest.mark.asyncio
+@pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
+async def test_conversation_replay_covers_the_pool_below_concurrency():
+    """A pool larger than the concurrency level must still be fully dispatched."""
+    concurrency, num_workers, pool_size = 4, 2, 8
+    num_requests = 48
+    model_name = TEST_MODEL_NAME
+    model_path = extract_tarball(TEST_MODEL_TARBALL)
+    data = {
+        "type": "conversation_replay",
+        "conversation_replay": {
+            "seed": 42,
+            "num_conversations": pool_size,
+            "shared_system_prompt_len": 16,
+            "turns_per_conversation": {"type": "fixed", "min": 2, "max": 2, "mean": 2},
+            "input_tokens_per_turn": {"type": "fixed", "min": 16, "max": 16, "mean": 16},
+            "output_tokens_per_turn": {"type": "fixed", "min": OUTPUT_TOKENS, "max": OUTPUT_TOKENS, "mean": OUTPUT_TOKENS},
+            "max_model_len": 4096,
+        },
+    }
+
+    async with LLMDInferenceSimRunner(model_name, *_pinned_latency_sim_args(), port=get_free_port()) as sim:
+        result = await run_benchmark_minimal(
+            _concurrent_stage_config(sim, model_name, model_path, data, concurrency, num_workers, num_requests),
+            timeout_sec=180,
+        )
+
+    entries = assert_successful_run(result, num_requests)
+
+    # The prompt a conversation opens with is generated per blueprint, so the
+    # opening request of each session names the blueprint that slot was on.
+    openings: dict[str, dict] = {}
+    for entry in entries:
+        session_id = entry["info"]["extra_info"]["user_session"]
+        opened = openings.get(session_id)
+        if opened is None or entry["start_time"] < opened["start_time"]:
+            openings[session_id] = entry
+
+    by_worker: dict[int, set[str]] = {worker: set() for worker in range(num_workers)}
+    for session_id, entry in openings.items():
+        worker = _conversation_slot(session_id) % num_workers
+        by_worker[worker].add(request_body(entry)["prompt"])
+
+    # Routing hands each worker half of the token stream, so each of its slots
+    # must rotate through its own 4 blueprints and never touch the other half.
+    for worker, prompts in by_worker.items():
+        assert len(prompts) == pool_size // num_workers, (
+            f"worker {worker} dispatched {len(prompts)} blueprints, expected {pool_size // num_workers}"
+        )
+    assert by_worker[0].isdisjoint(by_worker[1]), "a blueprint was dispatched by both workers"
 
 
 # --- Helper self-tests: prove the assertions can actually fail. -------------

@@ -219,6 +219,110 @@ class TestConversationReplayDataGenerator:
         assert third.user_session_id == "conv_0"
         assert third.target_round == 1
 
+    # Four two-turn blueprints must all finish conversations within 32 requests
+    # at concurrency 1 or 2; concurrency 4 pins the existing full-pool behavior.
+    @pytest.mark.parametrize("concurrency", [1, 2, 4])
+    async def test_completed_conversations_cover_pool_below_pool_size(self, concurrency: int) -> None:
+        api_config, data_config = _make_config(num_conversations=4, turns_min=2, turns_max=2, turns_mean=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        prompt_identity: dict[str, tuple[int, int]] = {}
+        for blueprint in gen.blueprints:
+            blueprint.turn_prompts = [f"blueprint_{blueprint.conversation_id}_turn_{turn}" for turn in range(2)]
+            for turn, prompt in enumerate(blueprint.turn_prompts):
+                prompt_identity[prompt] = (blueprint.conversation_id, turn)
+
+        completed_turns: dict[str, list[tuple[int, int]]] = {}
+        completed_blueprints: set[int] = set()
+        data_iter = gen.get_data()
+        for _ in range(32 // concurrency):
+            requests: list[_ConversationReplayAPIData] = []
+            for _ in range(concurrency):
+                lazy = next(data_iter)
+                assert isinstance(lazy, LazyLoadInferenceAPIData)
+                request = gen.load_lazy_data(lazy)
+                assert isinstance(request, _ConversationReplayAPIData)
+                requests.append(request)
+
+            # Complete simulated responses through the session lifecycle before
+            # admitting the next batch; coverage is recorded only after completion.
+            for request in requests:
+                blueprint_id, turn = prompt_identity[request.prompt]
+                session = request.user_session
+                context = await asyncio.wait_for(session.get_context(request.target_round), timeout=1)
+                session.update_context(f"{context} {request.prompt} response")
+                request.on_request_finished()
+                turns = completed_turns.setdefault(request.user_session_id, [])
+                turns.append((blueprint_id, turn))
+                assert turns == [(blueprint_id, expected_turn) for expected_turn in range(len(turns))]
+                if turn == 1:
+                    completed_blueprints.add(blueprint_id)
+
+        assert completed_blueprints == {0, 1, 2, 3}, f"Completed blueprint coverage: {sorted(completed_blueprints)}"
+
+    # A worker is only routed the blueprint indices its own tokens name, so a slot
+    # that rolls over must stay inside that set: tokens for 1 and 3 must only ever
+    # produce conversations for 1 and 3, never for the blueprints it never saw.
+    async def test_rotation_stays_inside_the_tokens_a_worker_sees(self) -> None:
+        api_config, data_config = _make_config(num_conversations=4, turns_min=2, turns_max=2, turns_mean=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        identities: dict[str, tuple[int, int]] = {}
+        for blueprint in gen.blueprints:
+            blueprint.turn_prompts = [f"blueprint_{blueprint.conversation_id}_turn_{turn}" for turn in range(2)]
+            for turn, prompt in enumerate(blueprint.turn_prompts):
+                identities[prompt] = (blueprint.conversation_id, turn)
+
+        routed = (index for index in range(200) if index % 4 in (1, 3))
+        dispatched: set[int] = set()
+        sessions: dict[str, list[tuple[int, int]]] = {}
+        for _ in range(40):
+            index = next(routed)
+            request = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=index, preferred_worker_id=index % 4))
+            assert isinstance(request, _ConversationReplayAPIData)
+            blueprint_id, turn = identities[request.prompt]
+            session = request.user_session
+            context = await asyncio.wait_for(session.get_context(request.target_round), timeout=1)
+            if turn == 0:
+                assert context == gen.blueprints[blueprint_id].system_prompt
+            session.update_context(f"{context} {request.prompt} response")
+            request.on_request_finished()
+            turns = sessions.setdefault(request.user_session_id, [])
+            turns.append((blueprint_id, turn))
+            assert turns == [(blueprint_id, expected) for expected in range(len(turns))]
+            dispatched.add(blueprint_id)
+
+        assert dispatched == {1, 3}
+
+    # A blueprint is generated with stage 0's shared prefix. When stage 1 rotates a
+    # slot onto one it has not run in that stage yet, the new conversation must open
+    # with stage 1's shared prefix, not the prefix baked in at startup.
+    async def test_rollover_in_a_later_stage_uses_that_stage_shared_prompt(self) -> None:
+        api_config, data_config = _make_config(num_conversations=3, turns_min=1, turns_max=1, turns_mean=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        startup_prompt = gen.blueprints[1].system_prompt
+        shared_stage_0 = gen._get_or_generate_shared_prompt(0)
+
+        stage_0 = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=0))
+        assert isinstance(stage_0, _ConversationReplayAPIData)
+        stage_0.on_request_finished()
+
+        # LoadGenerator clears the session registry between stages; the stage-1
+        # request then rolls slot 0 onto blueprint 1.
+        LocalUserSession.clear_instances()
+        opened = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=1))
+        assert isinstance(opened, _ConversationReplayAPIData)
+        assert opened.user_session_id == "conv_0"
+        opened.on_request_finished()
+
+        rotated = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1, stage_id=1))
+        assert isinstance(rotated, _ConversationReplayAPIData)
+        shared_stage_1 = gen._get_or_generate_shared_prompt(1)
+        assert shared_stage_1 != shared_stage_0
+        assert rotated.user_session_id == "stage_1_slot_0_convo_1"
+        assert rotated.user_session.context == gen._build_system_prompt(
+            shared_stage_1, gen.blueprints[1].dynamic_system_prompt
+        )
+        assert rotated.user_session.context != startup_prompt
+
     def test_materialization_failure_does_not_skip_a_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         api_config, data_config = _make_config(num_conversations=1, turns_min=1, turns_max=1, turns_mean=1)
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
