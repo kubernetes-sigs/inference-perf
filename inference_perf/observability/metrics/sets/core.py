@@ -25,6 +25,7 @@ classes and HTTP status codes); nothing per-request goes on a label.
 """
 
 import time
+from functools import partial
 from typing import Any
 
 from prometheus_client import Counter, Gauge  # noqa: TID251 (declares each spec's metric_type)
@@ -32,6 +33,7 @@ from prometheus_client import Counter, Gauge  # noqa: TID251 (declares each spec
 from inference_perf.apis.base import RequestLifecycleMetric, is_stage_teardown_cancelled
 from inference_perf.observability.context import RunContext, StageContext
 from inference_perf.observability.metrics.registry import MetricSpec, ObservedRequest
+from inference_perf.utils.numeric.expression.measured import PHASES
 
 
 def stage_label(metric: RequestLifecycleMetric) -> str:
@@ -51,7 +53,16 @@ def _bind_stage_count(gauge: Gauge, context: RunContext) -> None:
 
 
 def _bind_in_flight(gauge: Gauge, context: RunContext) -> None:
-    gauge.set_function(context.in_flight_requests)
+    for phase in PHASES:
+        gauge.labels(phase).set_function(partial(_requests_in_phase, context, phase))
+
+
+def _bind_queued(gauge: Gauge, context: RunContext) -> None:
+    gauge.set_function(partial(_requests_in_phase, context, "queued"))
+
+
+def _requests_in_phase(context: RunContext, phase: str) -> int:
+    return context.requests_by_phase().get(phase, 0)
 
 
 def _stage_running(gauge: Gauge, context: StageContext) -> None:
@@ -141,10 +152,26 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
     ),
     MetricSpec(
         name="inference_perf_requests_in_flight",
-        documentation="Requests sent to the server and not yet finished, sampled at scrape time.",
+        documentation=(
+            "Requests sent to the server and not yet finished, sampled at scrape time, by phase: "
+            "waiting (no token received yet) or streaming (first token received). "
+            "A request that is not streamed stays in waiting until it finishes."
+        ),
         metric_type=Gauge,
+        labelnames=("phase",),
         signals=("in_flight",),
         on_run_start=_bind_in_flight,
+    ),
+    MetricSpec(
+        name="inference_perf_requests_queued",
+        documentation=(
+            "Requests of the running stage that are due by their schedule and not yet sent, sampled at "
+            "scrape time. Above 0 the load generator is behind its schedule. 0 for stages with no send "
+            "schedule (concurrent and session stages) and for num_workers 0."
+        ),
+        metric_type=Gauge,
+        signals=("queued",),
+        on_run_start=_bind_queued,
     ),
     MetricSpec(
         name="inference_perf_requests",
