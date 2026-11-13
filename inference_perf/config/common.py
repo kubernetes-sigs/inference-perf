@@ -31,14 +31,25 @@ class StrictBaseModel(BaseModel):
 
 
 def validate_length_expression(value: str) -> str:
-    """Validate an expression-string length field at config-load time.
+    """Validate an expression string for a whole-number field: a length, a count or a depth.
 
-    Constructing the Expression is the validation: it raises ValueError for
-    unparseable input, unknown functions or symbols, and the time variable
-    ``t`` (a length never varies with stage time), which pydantic surfaces as
-    a field validation error. The value itself is returned unchanged; sampling
-    sites construct their own Expression from it.
+    Constructing the Expression rejects unparseable input, unknown functions or
+    symbols, and ``t``, since these never vary with stage time. The expression
+    must also be provably integer-valued, so the config says how a continuous
+    draw becomes a whole number instead of the sampler deciding silently.
     """
+    from inference_perf.utils.numeric.expression import Expression
+
+    if not Expression(value, allow_time=False).is_integer_valued:
+        raise ValueError(
+            f"{value!r} can take values that are not whole numbers, and this field is a whole number."
+            f" Write 'floor({value})' to round down, or 'floor({value} + 1/2)' to round to the nearest."
+        )
+    return value
+
+
+def validate_seconds_expression(value: str) -> str:
+    """Validate an expression string for a duration in seconds, which may be fractional."""
     from inference_perf.utils.numeric.expression import Expression
 
     Expression(value, allow_time=False)

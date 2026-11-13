@@ -181,14 +181,14 @@ def sample_values(
       either mode: integer mode returns ``int(mean)`` as it always has, and
       fractional mode returns ``mean`` itself.
     - str: an Expression sampled as written. The expression author owns the
-      value range; nothing is clamped on top.
+      value range and, in integer mode, the rounding: the expression must be
+      integer-valued, so nothing is clamped or rounded on top.
 
     Args:
         value: The configured value.
         count: Number of values to sample.
         rng: Optional numpy Generator for deterministic seeding. If None, creates a default one.
-        integer: Round to whole numbers (counts, token lengths) or keep
-            fractions (seconds).
+        integer: Whole numbers (counts, token lengths) or fractions (seconds).
 
     Returns:
         A float array of ``count`` values, whole-numbered when ``integer``.
@@ -205,8 +205,9 @@ def sample_values(
         if rng is None:
             rng = np.random.default_rng()
         expression = Expression(value, allow_time=False)
-        samples = np.atleast_1d(np.asarray(expression.sample(rng=rng, size=count), dtype=np.float64))
-        return np.round(samples) if integer else samples
+        if integer and not expression.is_integer_valued:
+            raise ValueError(f"{value!r} can take values that are not whole numbers; wrap it in floor().")
+        return np.atleast_1d(np.asarray(expression.sample(rng=rng, size=count), dtype=np.float64))
 
     if not integer and value.type == DistributionType.FIXED:
         return np.full(count, float(value.mean), dtype=np.float64)
