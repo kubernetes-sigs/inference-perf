@@ -95,10 +95,16 @@ class SharedPrefix(StrictBaseModel):
     # Deprecated aliases: folded into question_len/output_len on load and
     # left as None, removed together with the distribution block.
     question_distribution: Optional[LengthValue] = Field(
-        default=None, description="Deprecated: set 'question_len' to the distribution instead. At least 1."
+        default=None,
+        deprecated="Set 'question_len' instead.",
+        description="Deprecated: set 'question_len' to an expression string instead, like 'floor(Uniform(256, 768))'."
+        " At least 1.",
     )
     output_distribution: Optional[LengthValue] = Field(
-        default=None, description="Deprecated: set 'output_len' to the distribution instead. At least 1."
+        default=None,
+        deprecated="Set 'output_len' instead.",
+        description="Deprecated: set 'output_len' to an expression string instead, like 'floor(Uniform(256, 768))'."
+        " At least 1.",
     )
 
     enable_multi_turn_chat: bool = Field(
@@ -128,7 +134,8 @@ class SharedPrefix(StrictBaseModel):
         # them otherwise. The alias then replaces the int and is cleared, so
         # the datagen reads one field.
         for alias, field in (("question_distribution", "question_len"), ("output_distribution", "output_len")):
-            value = getattr(self, alias)
+            # through __dict__: getattr on a deprecated field raises our own DeprecationWarning
+            value = self.__dict__[alias]
             if value is None:
                 continue
             if not isinstance(getattr(self, field), int):
