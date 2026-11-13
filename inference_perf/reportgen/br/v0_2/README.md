@@ -8,7 +8,7 @@ inference-perf writes only the fields it can speak to truthfully from the run it
 
 `results.session_performance` is omitted entirely for a stage that ran no sessions, so a non-session workload emits exactly the partial it emitted before that block was populated. `results.observability.components` carries one entry for the model server, labelled with the server type, from the stage's Prometheus summary; it needs `report.prometheus.per_stage`, and without it the block is absent.
 
-Emission is unconditional and has no config surface: every run drops one `inference-perf.partial.stage_<n>.yaml` per stage, mirroring the existing per-stage lifecycle reports.
+Emission is unconditional: every run drops one `inference-perf.partial.stage_<n>.yaml` per stage, mirroring the existing per-stage lifecycle reports. The one config field, `report.benchmark_report.base_file`, names a partial BR0.2 document each stage's partial is built on. `fillability.py` decides which of its fields a base may set.
 
 ## File layout
 
@@ -17,6 +17,8 @@ Emission is unconditional and has no config surface: every run drops one `infere
 | `schema.py` | inference-perf | Facade that re-exports the BR0.2 models from the `llmd-benchmark-report` package. **Import from here**, not from the package directly, so a schema bump only touches this file. |
 | `adapter.py` | inference-perf | `build_results(request_metrics, tokenizer, use_server_output_tokens, *, session_metrics, server_metrics)`: projects inference-perf `RequestLifecycleMetric`s — and, for session workloads, `SessionLifecycleMetric`s, and the stage's Prometheus summary — into a BR0.2 `Results` object. Pure function, no I/O. |
 | `partial_report.py` | inference-perf | `build_partial_report` / `generate_run_uid` / `generate_experiment_eid`: assemble the per-stage partial dict (`version` + `run` + `results`) with `None` fields stripped so it deep-merges cleanly. |
+| `fillability.py` | inference-perf | `FILLABILITY`: the class of every BR0.2 leaf (fillable, defaulted, written, reserved), plus the schema walk (`schema_leaves`, `document_leaves`) that tests hold it to. |
+| `base_report.py` | inference-perf | `load_base_report` / `apply_base_report`: check a base report at config load and merge it under each stage's partial. |
 | `__init__.py` | inference-perf | Re-exports the inference-perf-owned API surface (`build_results`, `build_partial_report`, `generate_run_uid`, `generate_experiment_eid`). |
 
 ## Schema dependency

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.config.reportgen.config import (
+    BenchmarkReportConfig,
     GoodputConfig,
     PerRequestFieldsConfig,
     PrometheusMetricsReportConfig,
@@ -21,6 +22,7 @@ from inference_perf.config.reportgen.config import (
 )
 
 __all__ = [
+    "BenchmarkReportConfig",
     "GoodputConfig",
     "PerRequestFieldsConfig",
     "PrometheusMetricsReportConfig",

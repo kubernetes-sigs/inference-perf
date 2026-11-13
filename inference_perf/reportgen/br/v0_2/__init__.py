@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .adapter import build_results
+from .base_report import apply_base_report, load_base_report
 from .partial_report import build_partial_report, generate_experiment_eid, generate_run_uid
 
 __all__ = [
+    "apply_base_report",
     "build_results",
     "build_partial_report",
     "generate_experiment_eid",
     "generate_run_uid",
+    "load_base_report",
 ]

@@ -403,6 +403,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--report.session_lifecycle.per_stage` | boolean | Generate a report for each load stage. |
 | `--report.session_lifecycle.per_session` | boolean | Generate a report with per-session details. |
 | `--report.goodput.constraints` | JSON | SLO thresholds in seconds that a request must meet to count as good. Keys: 'ttft', 'tpot', 'itl', 'ntpot', 'request_latency'. |
+| `--report.benchmark_report.base_file` | str | Path to a partial BR0.2 report (YAML) that every inference-perf.partial.stage_<n>.yaml is built on. It may set fields inference-perf does not measure, such as run.description or scenario.stack. Setting a field inference-perf writes is an error at config load. |
 | `--storage.local_storage.path` | str | Directory or object key prefix where report files are written. '{timestamp}' is replaced with the run's start time. |
 | `--storage.local_storage.report_file_prefix` | str | Prefix added to every report file name. |
 | `--storage.google_cloud_storage.path` | str | Directory or object key prefix where report files are written. '{timestamp}' is replaced with the run's start time. |
