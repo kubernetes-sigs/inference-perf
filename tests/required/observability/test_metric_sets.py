@@ -53,7 +53,9 @@ from inference_perf.observability.metrics import (
 )
 from inference_perf.observability.metrics.sets import ALL_SPECS
 from inference_perf.payloads import RequestMetrics, Text
+from inference_perf.reportgen.base import series_values
 from inference_perf.utils.numeric.expression import SERIES, SIGNALS
+from inference_perf.utils.numeric.expression.measured import SIGNAL_LABELS, STATUSES
 
 
 # Builds one streamed request: scheduled and started at 10.0s, four chunks at
@@ -372,6 +374,47 @@ def test_ttft_and_tpot_absent_on_unary_runs() -> None:
 def test_every_expression_term_has_one_runtime_metric(attribute: str, names: dict[str, object]) -> None:
     backed = [getattr(spec, attribute) for spec in ALL_SPECS if getattr(spec, attribute) is not None]
     assert sorted(backed) == sorted(names), f"{attribute}: backed {sorted(backed)}, terms {sorted(names)}"
+
+
+# Walks SIGNAL_LABELS, e.g. completed by status. Expects the metric backing each signal to carry
+# every label the signal can be read by, so completed{status="failure"} names a real series.
+def test_every_signal_label_is_on_its_runtime_metric() -> None:
+    for signal, labels in SIGNAL_LABELS.items():
+        (spec,) = [spec for spec in ALL_SPECS if spec.signal == signal]
+        assert set(labels) <= set(spec.labelnames), f"{signal}: {spec.name} lacks {set(labels) - set(spec.labelnames)}"
+
+
+# One HTTP 503 failure, one request cancelled at stage teardown and one success. Expects the status
+# label of requests_total to take exactly the values a condition may select: success, failure, cancelled.
+def test_request_status_values_are_the_ones_a_condition_selects() -> None:
+    hub = _streaming_hub()
+    hub.observe_request(_streamed(error="HTTP Error 503"))
+    hub.observe_request(_streamed(error=STAGE_TEARDOWN_CANCELLED_ERROR_TYPE))
+    hub.observe_request(_streamed())
+
+    written = {
+        sample.labels["status"]
+        for family in hub.registry.collect()
+        for sample in family.samples
+        if sample.name == "inference_perf_requests_total"
+    }
+    assert written == set(STATUSES)
+
+
+# One success the client counts as 5 output tokens and the server as 8, with a 7-token prompt.
+# Expects the prompt_tokens and output_tokens series to be what the two token counters add:
+# 7 and 5 with use_server_output_tokens off, 7 and 8 with it on.
+@pytest.mark.parametrize(("use_server_output_tokens", "output_tokens"), [(False, 5.0), (True, 8.0)])
+def test_token_series_are_what_the_token_counters_add(use_server_output_tokens: bool, output_tokens: float) -> None:
+    metric = _streamed(client_output_tokens=5, server_completion_tokens=8)
+    metric.info.request_metrics.text.input_tokens = 7
+    hub = _streaming_hub(use_server_output_tokens=use_server_output_tokens)
+    hub.observe_request(metric)
+
+    values = series_values(metric, use_server_output_tokens)
+    assert (values["prompt_tokens"], values["output_tokens"]) == (7.0, output_tokens)
+    assert _sample(hub, "inference_perf_prompt_tokens_total", stage="0") == values["prompt_tokens"]
+    assert _sample(hub, "inference_perf_output_tokens_total", stage="0") == values["output_tokens"]
 
 
 # A spec declaring series="ttfb", which is not a series. Expects a ValueError naming it.
