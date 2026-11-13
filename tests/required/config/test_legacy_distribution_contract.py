@@ -98,8 +98,7 @@ def test_fixed_block_truncates_mean() -> None:
 # the effective question length samples spread over [10, 200] instead of sitting at 50.
 def test_legacy_question_distribution_alias_loads_and_wins() -> None:
     sp = SharedPrefix(question_len=50, question_distribution={"min": 10, "max": 200, "mean": 80, "std_dev": 30})
-    spec = sp.question_distribution if sp.question_distribution is not None else sp.question_len
-    lengths = sample_lengths(spec, 200, np.random.default_rng(0))
+    lengths = sample_lengths(sp.question_len, 200, np.random.default_rng(0))
     assert lengths.min() >= 10 and lengths.max() <= 200
     assert len(set(lengths.tolist())) > 1
 

@@ -330,9 +330,10 @@ def test_shared_prefix_legacy_distribution_compat() -> None:
     sp = config.data.shared_prefix
     assert sp is not None
     # The deprecated alias is rewritten to the expression it stood for and
-    # folded into question_len, which the datagen reads.
+    # folded into question_len, which the datagen reads. Reading the alias warns.
     assert sp.question_len == "floor(Min(Max(Normal(512, 200), 10), 1024) + 1/2)"
-    assert sp.question_distribution is None
+    with pytest.deprecated_call(match="Set 'question_len' instead"):
+        assert sp.question_distribution is None
 
 
 def test_shared_prefix_seed_field() -> None:
