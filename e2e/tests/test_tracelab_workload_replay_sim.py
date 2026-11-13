@@ -104,10 +104,10 @@ def write_tracelab_trace(path: Path) -> Path:
 
 def session_and_round(entry: Dict[str, Any]) -> Tuple[str, int]:
     """The per-request report carries the graph event id, event_NNN_<node id>
-    with ':' replaced by '_', and a TraceLab node id is <session>:<round>."""
+    with ':' replaced by '_', and a TraceLab node id is <session>:round_<i>."""
     event_id = entry["info"]["graph_event_id"]
     node_id = event_id.split("_", 2)[2]
-    session, round_index = node_id.rsplit("_", 1)
+    session, round_index = node_id.rsplit("_round_", 1)
     return session.replace("_", ":", 1), int(round_index)
 
 

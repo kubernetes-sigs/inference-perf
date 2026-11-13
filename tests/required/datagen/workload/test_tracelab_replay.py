@@ -16,8 +16,9 @@ import json
 from pathlib import Path
 from typing import Dict, List
 
-from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType, WorkloadReplayConfig
+from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType, TraceLabTraceReplayConfig, WorkloadReplayConfig
 from inference_perf.datagen.replay.replay_graph_session_datagen import SessionChatCompletionAPIData
+from inference_perf.datagen.replay.tracelab_trace_replay_datagen import TraceLabTraceReplayDataGenerator
 from inference_perf.datagen.workload import WorkloadSessionGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from workload_fixtures import new_word_tokenizer, write_corpus
@@ -102,3 +103,50 @@ def test_compaction_keeps_only_the_covered_blocks(tmp_path: Path) -> None:
     b0, b1 = (str(e.messages[0].content).split() for e in events(gen, 1))
     assert b1[:64] == b0[:64]
     assert b1[64:128] != b0[64:128]
+
+
+# The generator the tracelab_trace_replay block builds over `lines`, seeded
+# with 1 like make_generator.
+def make_block_generator(
+    tmp_path: Path, corpus_path: Path, tokenizer: CustomTokenizer, lines: List[Dict[str, object]]
+) -> TraceLabTraceReplayDataGenerator:
+    trace = tmp_path / "block_trace.jsonl"
+    trace.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    data = DataConfig(
+        type=DataGenType.TraceLabTraceReplay,
+        tracelab_trace_replay=TraceLabTraceReplayConfig(trace_files=[str(trace)]),
+        corpus_file_path=str(corpus_path),
+    )
+    return TraceLabTraceReplayDataGenerator(APIConfig(type=APIType.Chat), data, tokenizer, base_seed=1)
+
+
+# The tracelab_trace_replay block and the TraceLab format name the same
+# sessions: for A and for B, both spellings send the same prompts and ask
+# for the same lengths. Sessions are matched by the id they report as their
+# source under the block, since the block runs them in its own order.
+def test_the_block_and_the_format_send_the_same_requests(tmp_path: Path) -> None:
+    word_tokenizer = new_word_tokenizer()
+    corpus_path = write_corpus(tmp_path)
+    by_format = make_generator(tmp_path, corpus_path, word_tokenizer)
+    by_block = make_block_generator(tmp_path, corpus_path, word_tokenizer, LINES)
+    slot_of = {by_block.get_session_info(i)["source_id"]: i for i in range(by_block.get_session_count())}
+    assert sorted(slot_of) == ["claude:A", "claude:B"]
+    for format_slot, session in enumerate(("claude:A", "claude:B")):
+        expected = [(str(e.messages[0].content), e.max_tokens) for e in events(by_format, format_slot)]
+        sent = [(str(e.messages[0].content), e.max_tokens) for e in events(by_block, slot_of[session])]
+        assert sent == expected and len(sent) == 2
+
+
+# Six one-round sessions s0 to s5 run in a shuffle of their sorted ids seeded
+# with the base seed (1 here), whatever order the file lists them in. A
+# session's runtime id carries its place among the sorted ids, with no ':'.
+def test_the_block_runs_sessions_in_a_seeded_shuffle(tmp_path: Path) -> None:
+    lines = [rnd(f"s{i}", 0, 100, 0, 5, "2026-06-01T10:00:00.000Z", "2026-06-01T10:00:01.000Z") for i in (5, 4, 3, 2, 1, 0)]
+    gen = make_block_generator(tmp_path, write_corpus(tmp_path), new_word_tokenizer(), lines)
+    order = [gen.get_session_info(i)["source_id"] for i in range(gen.get_session_count())]
+    assert order == ["s2", "s3", "s5", "s0", "s4", "s1"]
+    assert [gen.get_session_info(i)["session_id"] for i in range(3)] == [
+        "tracelabtrace2_s2",
+        "tracelabtrace3_s3",
+        "tracelabtrace5_s5",
+    ]

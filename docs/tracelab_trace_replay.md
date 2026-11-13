@@ -9,18 +9,19 @@ concurrently, maintaining causal/dependency fidelity.
 Dataset + paper: https://tracelab.cs.washington.edu / https://arxiv.org/abs/2606.30560
 
 > Note: the public TraceLab trace is sanitized — raw prompts, completions, and tool payloads are removed.
-> Each round's prompt is reconstructed as a single user message holding the whole prompt: the leading
-> `prefix_tokens` of the previous round's prompt are reused and the rest is fresh synthetic text, sized so
-> the message tokenizes to exactly `input_tokens_total` (cache misses share nothing; compacting rounds
-> shrink). Expected outputs are sized to the recorded `output_tokens`, and a round that recorded zero
-> output tokens falls back to `default_max_tokens`. Inter-round spacing comes from `timing_events`
-> timestamps when present, else the round's tool latency.
+> Each round's prompt is rebuilt as a single user message holding the whole prompt: the leading 64-token
+> blocks of the previous round's prompt that `prefix_tokens` covers are reused and the rest is fresh
+> synthetic text, sized so the message tokenizes to exactly `input_tokens_total`, counting the special
+> tokens the tokenizer adds (cache misses share nothing; compacting rounds shrink). Each request asks for
+> the recorded `output_tokens`. A round that recorded zero output tokens asks for the client's default length.
+> Inter-round spacing comes from `timing_events` timestamps when present, else the previous round's tool
+> latency.
 >
 > KV-cache profile: every prompt is the offline-built one, so a server with prefix caching can reuse the
-> leading `prefix_tokens` of the previous round when that text is unchanged. Prompt reuse is tracked in
-> token space (the previous round's token ids are kept, not re-tokenized from text) and the shared run is
-> decoded without special tokens, so a BOS-prepending tokenizer (gemma, Llama 3, Mistral) cannot shift every
-> later token by one position per round and zero out prefix-cache block hits. A round with
+> leading blocks of the previous round. Prompt text is built from blocks named by id, and a block id is
+> the same text everywhere in its session, so a round that reuses the previous round's leading blocks
+> sends the same leading text whatever special tokens the tokenizer (gemma, Llama 3, Mistral) adds. Reuse
+> is in whole blocks: up to 63 tokens at the end of a recorded prefix are sent as fresh text. A round with
 > `prefix_tokens = 0` (cache miss) shares nothing and reprocesses the whole prompt, and a compacting
 > round truncates the shared prefix so reuse stops at the divergence point. Live model outputs are never
 > fed back into later prompts: unlike OTel/Weka replay, a round's response does not change its
@@ -51,11 +52,10 @@ Dataset + paper: https://tracelab.cs.washington.edu / https://arxiv.org/abs/2606
    that reappears after another session is a hard error instead of silently replacing the rounds already
    read — sort the file by `session_id` or export one file per session.
 2. **Graph Compilation**: each round becomes one LLM call in a linear session chain. The call's input is
-   a single synthetic user message reconstructed from the recorded token accounting; round predecessors
-   are linked only for ordering and timing, using a linear O(n) predecessor finder (the generic
-   text-matching finder is O(n²) and can never match here, since prompts are user messages). Because that
-   message is not a predecessor's assistant output, replay never substitutes live model output into a
-   later prompt.
+   a single synthetic user message rebuilt from the recorded token accounting, and each round depends on
+   the round before it, for ordering and timing only. Because that message is not a predecessor's
+   assistant output, replay never substitutes live model output into a later prompt. Sessions are built
+   when they are first run, so only the recorded numbers are held for the ones still waiting.
    Rounds are ordered by submission timestamp (tie-breaking on `round_index`, then `round_id`) when the
    trace carries timestamps, so duplicate `(session_id, round_index)` rows and rows whose index disagrees
    with their timestamps still replay in recorded order.
@@ -132,3 +132,7 @@ report:
 
 See the [Reporting section of config.md](config.md#reporting) for `per_request_fields` options (recommended to
 drop raw payloads for large-prompt replay runs, as in the Weka doc).
+
+The format runs on the workload record layer. `data.type: workload_replay` with `format: TraceLab` reads the
+same local files without this block: no Hugging Face source, filter, session cap or gap cap. See
+[loadgen.md](loadgen.md#tracelab).

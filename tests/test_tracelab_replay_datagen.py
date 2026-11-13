@@ -28,15 +28,9 @@ from pydantic import ValidationError
 
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, DataConfig, DataGenType
 from inference_perf.config.datagen.replay import UNCAPPED_WAIT_MS, TraceLabTraceReplayConfig
-from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
-    RawCall,
-    find_predecessors_by_text_matching,
-)
-from inference_perf.datagen.replay.replay_graph_types import ReplayMessage
 from inference_perf.datagen.replay.tracelab_trace_replay_datagen import (
     FilterExpressionError,
     TraceLabTraceReplayDataGenerator,
-    _find_tracelab_predecessors,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -212,7 +206,16 @@ def _mock_tokenizer() -> MagicMock:
     # passes; the codec has no special tokens to add or skip.
     tok.get_tokenizer().encode = lambda text, **kwargs: list(range(len(text)))
     tok.get_tokenizer().decode = lambda toks, **kwargs: "x" * len(toks)
+    tok.count_tokens = lambda text, add_special_tokens=True: len(text)
     return tok
+
+
+# Sessions are built on demand, in whichever process runs them. These tests
+# read every session, so this builds them all and hands the generator back.
+def _built(gen: TraceLabTraceReplayDataGenerator) -> TraceLabTraceReplayDataGenerator:
+    for index in range(gen.get_session_count()):
+        gen._ensure_session_built(index)
+    return gen
 
 
 def _make_gen(
@@ -222,7 +225,7 @@ def _make_gen(
     api_cfg = APIConfig(type=APIType.Chat, streaming=False)
     data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
     data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=trace_files, **overrides)
-    return TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+    return _built(TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer()))
 
 
 # Same as _make_gen but for the Hugging Face source, which takes either a repo
@@ -231,7 +234,7 @@ def _make_hf_gen(hf_dataset_path: Any, **overrides: Any) -> TraceLabTraceReplayD
     api_cfg = APIConfig(type=APIType.Chat, streaming=False)
     data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
     data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(hf_dataset_path=hf_dataset_path, **overrides)
-    return TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+    return _built(TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer()))
 
 
 def _tokenize_messages(tokenizer: MagicMock, messages: List[Any]) -> int:
@@ -471,7 +474,8 @@ def test_tracelab_wait_placement_after_round_with_tools(tmp_path: Path) -> None:
     assert events[2].wait_ms == 0
     # Round 2 has tools but is last round -> no next round to apply wait
     # events[2].wait_ms is 0 (no successor)
-    assert events[2].t_start_ms == 1000  # round 2 starts after round 1's wait (0)
+    # t_start_ms is the recorded send offset now, and these rows record none.
+    assert [e.t_start_ms for e in events] == [0, 0, 0]
 
 
 def test_tracelab_session_key_no_provider_duplication(tmp_path: Path) -> None:
@@ -590,7 +594,7 @@ def test_tracelab_hf_join_uses_tool_calls_config() -> None:
         api_cfg = APIConfig(type=APIType.Chat, streaming=False)
         data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
         data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(hf_dataset_path="UW-SyFI/TraceLab")
-        gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+        gen = _built(TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer()))
 
     assert gen.get_session_count() == 1
     session = gen.sessions[0]
@@ -700,11 +704,13 @@ def test_tracelab_determinism_across_subprocesses(tmp_path: Path) -> None:
         "from inference_perf.datagen.replay.tracelab_trace_replay_datagen import TraceLabTraceReplayDataGenerator;"
         "tok = MagicMock();"
         "tok.get_tokenizer().encode = lambda text, **kw: list(range(len(text)));"
-        "tok.get_tokenizer().decode = lambda toks, **kw: '<%d:%d>' % (toks[0], len(toks)) if toks else '';"
+        "tok.get_tokenizer().decode = lambda toks, **kw: ''.join(chr(97 + t % 26) for t in toks);"
+        "tok.count_tokens = lambda text, add_special_tokens=True: len(text);"
         "api_cfg = APIConfig(type=APIType.Chat, streaming=False);"
         "data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay);"
         "data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=[sys.argv[1]]);"
         "gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=tok);"
+        "[gen._ensure_session_built(i) for i in range(gen.get_session_count())];"
         "out = {};"
         "[(out.setdefault(s.source_id, {}).__setitem__(e.event_id, "
         "''.join((mm.get('content', '') if isinstance(mm, dict) else mm.text) for mm in e.call.messages))) "
@@ -725,6 +731,8 @@ def test_tracelab_determinism_across_subprocesses(tmp_path: Path) -> None:
         )
         assert proc.returncode == 0, f"seed {seed} failed:\n{proc.stderr[-2000:]}"
         outputs.append(proc.stdout)
+    prompts = [text for events in json.loads(outputs[0]).values() for text in events.values()]
+    assert prompts and all(prompts), f"expected a built prompt for every round, got {prompts!r}"
     assert outputs[0] == outputs[1], "prompts differ across hash seeds"
 
 
@@ -825,7 +833,7 @@ def test_tracelab_num_dataset_entries_caps_hf_rounds(tmp_path: Path) -> None:
         api_cfg = APIConfig(type=APIType.Chat, streaming=False)
         data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
         data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(hf_dataset_path="UW-SyFI/TraceLab", num_dataset_entries=2)
-        gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+        gen = _built(TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer()))
 
     assert gen.get_session_count() == 2
     assert rounds.read == 4
@@ -1113,7 +1121,7 @@ def test_tracelab_dotted_stem_and_gzipped_json_array(tmp_path: Path) -> None:
     api_cfg = APIConfig(type=APIType.Chat, streaming=False)
     data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
     data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_directory=str(traces))
-    gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+    gen = _built(TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer()))
 
     assert {s.source_id for s in gen.sessions if s is not None} == {"sess-A", "sess-B"}
 
@@ -1203,7 +1211,7 @@ def test_tracelab_small_corpus_fills_long_prompt(tmp_path: Path) -> None:
     data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
     data_cfg.corpus_file_path = str(corpus)
     data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=[str(trace_file)])
-    gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+    gen = _built(TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer()))
 
     (session,) = [s for s in gen.sessions if s is not None]
     (event,) = list(session.graph.events.values())
@@ -1240,10 +1248,10 @@ def test_tracelab_zero_output_tokens_uses_default_max_tokens(tmp_path: Path) -> 
     assert events[1].max_tokens_recorded == 7
 
 
-# With a real BOS-adding tokenizer (gemma-3-270m, bos_token_id=2), round i's
-# tokenized prompt must start with its recorded prefix_tokens of round i-1's ids:
-# a per-round <bos> would shift every later token right by one and misalign
-# every fixed-size KV-cache block from block 0 onward.
+# With a real BOS-adding tokenizer (gemma-3-270m, bos_token_id=2), each prompt
+# tokenizes to its recorded length with the <bos> counted, and round i starts
+# with the blocks of round i-1 that its recorded prefix covers: 200 and 240
+# prefix tokens both cover three 64-token blocks, so 192 ids are shared.
 def test_tracelab_bos_tokenizer_preserves_prefix_across_rounds(tmp_path: Path) -> None:
     tarball = Path(__file__).resolve().parents[1] / "e2e" / "testdata" / "models" / "google_gemma-3-270m.tar.gz"
     model_dir = tmp_path / "gemma"
@@ -1262,46 +1270,17 @@ def test_tracelab_bos_tokenizer_preserves_prefix_across_rounds(tmp_path: Path) -
     api_cfg = APIConfig(type=APIType.Chat, streaming=False)
     data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
     data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=[str(trace_file)])
-    gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=tokenizer)
+    gen = _built(TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=tokenizer))
 
     (session,) = [s for s in gen.sessions if s is not None]
     events = sorted(session.graph.events.values(), key=lambda e: e.t_start_ms)
     assert len(events) == 3
     prompts = ["".join(m.get("content", "") if isinstance(m, dict) else m.text for m in e.call.messages) for e in events]
+    assert [len(raw.encode(prompt)) for prompt in prompts] == [200, 260, 300]
     ids = [raw.encode(prompt, add_special_tokens=False) for prompt in prompts]
-    assert len(ids[0]) == 200
-    assert ids[1][:200] == ids[0][:200]
-    assert ids[2][:240] == ids[1][:240]
-
-
-# The linear predecessor finder must reproduce the generic O(n^2) text-matching
-# finder exactly for TraceLab's single-user-message rounds (a plain temporal
-# chain), and defer to it unchanged when a call carries assistant messages.
-def test_tracelab_linear_predecessor_finder_matches_generic() -> None:
-    def _call(index: int) -> RawCall:
-        return RawCall(
-            call_id=f"round_{index}",
-            trace_id="s",
-            t_start_ms=index * 1000,
-            t_end_ms=index * 1000,
-            model="m",
-            messages=[ReplayMessage(role="user", text=f"prompt {index}")],
-            out_message=ReplayMessage(role="assistant", text=f"out {index}"),
-            prompt_tokens=10,
-            completion_tokens=5,
-            temperature=0.0,
-            max_tokens_recorded=5,
-        )
-
-    chain = [_call(i) for i in range(3)]
-    assert _find_tracelab_predecessors(chain) == find_predecessors_by_text_matching(chain)
-
-    with_assistant = [_call(0), _call(1)]
-    with_assistant[1].messages = [
-        ReplayMessage(role="user", text="prompt 1"),
-        ReplayMessage(role="assistant", text="out 0"),
-    ]
-    assert _find_tracelab_predecessors(with_assistant) == find_predecessors_by_text_matching(with_assistant)
+    assert ids[1][:192] == ids[0][:192]
+    assert ids[2][:192] == ids[1][:192]
+    assert ids[1][192:256] != ids[0][192:256]
 
 
 # Session shuffling uses a local random.Random(base_seed), so building a
