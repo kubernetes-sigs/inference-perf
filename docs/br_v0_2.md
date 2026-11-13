@@ -160,8 +160,8 @@ time-series block counts as one leaf.
 |---|---|---|---|
 | fillable | yes | never | `run.description`, `scenario.stack`, `results.component_health` |
 | defaulted | yes | when the base does not | `run.eid` |
-| written | no | always | `run.uid`, `run.time`, `results.request_performance.aggregate`, `results.session_performance` |
-| reserved | no | not today | `results.request_performance.aggregate.requests.incomplete`, `results.request_performance.time_series`, `results.observability.drop_rate` |
+| written | no | when it measured it | `run.uid`, `run.time`, `results.request_performance.aggregate`, `results.session_performance`, the server's `results.observability.components` entry |
+| reserved | no | not today | `results.request_performance.time_series`, `results.observability.drop_rate` |
 
 `results.observability` takes keys the schema does not name, and those are
 fillable. A leaf the table does not list, from a newer 0.2.x schema, is fillable
