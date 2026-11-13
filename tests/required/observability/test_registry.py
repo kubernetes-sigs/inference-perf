@@ -105,9 +105,9 @@ def test_requests_counted_at_completion_by_stage_and_status() -> None:
     hub.observe_request(_metric(stage_id=None))
 
     counter = "inference_perf_requests_total"
-    assert hub.registry.get_sample_value(counter, {"stage": "0", "status": "success"}) == 2.0
-    assert hub.registry.get_sample_value(counter, {"stage": "0", "status": "failure"}) == 1.0
-    assert hub.registry.get_sample_value(counter, {"stage": "", "status": "success"}) == 1.0
+    assert hub.registry.get_sample_value(counter, {"stage": "0", "status": "success", "error_type": ""}) == 2.0
+    assert hub.registry.get_sample_value(counter, {"stage": "0", "status": "failure", "error_type": "Timeout"}) == 1.0
+    assert hub.registry.get_sample_value(counter, {"stage": "", "status": "success", "error_type": ""}) == 1.0
 
 
 # Reads run_elapsed_seconds before on_run_start, then twice 10ms apart after it.
@@ -168,7 +168,7 @@ def test_buckets_rejected_for_non_histograms() -> None:
 
 # Observes one stage-1 success, serves the hub's registry on an ephemeral port and
 # fetches /metrics. Expects the scraped body to carry
-# inference_perf_requests_total{stage="1",status="success"} 1.0.
+# inference_perf_requests_total{error_type="",stage="1",status="success"} 1.0.
 def test_hub_registry_served_over_http() -> None:
     hub = build_metrics(Config())
     hub.observe_request(_metric(stage_id=1))
@@ -180,7 +180,7 @@ def test_hub_registry_served_over_http() -> None:
         assert server.bound_port is not None
         with urllib.request.urlopen(f"http://127.0.0.1:{server.bound_port}/metrics", timeout=2) as resp:
             body = resp.read().decode()
-        assert 'inference_perf_requests_total{stage="1",status="success"} 1.0' in body
+        assert 'inference_perf_requests_total{error_type="",stage="1",status="success"} 1.0' in body
     finally:
         server.stop()
 

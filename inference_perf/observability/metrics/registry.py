@@ -146,9 +146,10 @@ class MetricSpec(Generic[MetricT]):
     :class:`ObservedRequest` it is passed; anything it needs about the run
     travels on the :class:`RunContext`.
 
-    ``series`` and ``signal`` name the expression term this metric is the
+    ``series`` and ``signals`` name the expression terms this metric is the
     runtime form of (see docs/expressions.md). Each term is backed by exactly
-    one metric, which test_metric_sets pins.
+    one metric, which test_metric_sets pins. One metric can back several
+    signals: ``errors`` is one status of the counter behind ``completed``.
 
     ``stability`` is the compatibility promise for this one metric; leaving it
     at the default keeps the metric changeable.
@@ -162,7 +163,7 @@ class MetricSpec(Generic[MetricT]):
     stability: MetricStability = MetricStability.ALPHA
     enabled: Callable[[Config], bool] = always
     series: Optional[str] = None
-    signal: Optional[str] = None
+    signals: Tuple[str, ...] = ()
     on_run_start: Optional[Callable[[MetricT, RunContext], None]] = None
     on_stage_start: Optional[Callable[[MetricT, StageContext], None]] = None
     on_stage_end: Optional[Callable[[MetricT, StageContext], None]] = None
@@ -173,8 +174,9 @@ class MetricSpec(Generic[MetricT]):
             raise ValueError(f"metric {self.name!r}: buckets are only valid for Histogram metrics")
         if self.series is not None and self.series not in SERIES:
             raise ValueError(f"metric {self.name!r}: unknown series {self.series!r}; known: {sorted(SERIES)}")
-        if self.signal is not None and self.signal not in SIGNALS:
-            raise ValueError(f"metric {self.name!r}: unknown signal {self.signal!r}; known: {sorted(SIGNALS)}")
+        unknown = sorted(set(self.signals) - set(SIGNALS))
+        if unknown:
+            raise ValueError(f"metric {self.name!r}: unknown signal(s) {unknown}; known: {sorted(SIGNALS)}")
 
 
 class MetricsHub:
