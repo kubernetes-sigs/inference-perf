@@ -40,7 +40,7 @@ sum by (stage) (rate(inference_perf_requests_total{status="failure"}[1m]))
   / sum by (stage) (rate(inference_perf_requests_total[1m]))
 
 # failures by class, the same string the report shortens into its by_label keys
-sum by (stage, error_type) (increase(inference_perf_request_errors_total[5m]))
+sum by (stage, error_type) (increase(inference_perf_requests_total{status="failure"}[5m]))
 
 # p99 time to first token, streaming runs only
 histogram_quantile(0.99, sum by (stage, le) (rate(inference_perf_time_to_first_token_seconds_bucket[1m])))
@@ -56,10 +56,9 @@ histogram_quantile(0.99, sum by (stage, le) (rate(inference_perf_time_to_first_t
 | `inference_perf_stage_start_timestamp_seconds` | Gauge | `ALPHA` | `stage` | Always | Unix time at which the stage started. |
 | `inference_perf_stage_end_timestamp_seconds` | Gauge | `ALPHA` | `stage` | Always | Unix time at which the stage ended, whether it completed or was cut short. |
 | `inference_perf_requests_in_flight` | Gauge | `ALPHA` | none | Always | Requests sent to the server and not yet finished, sampled at scrape time. |
-| `inference_perf_requests_total` | Counter | `ALPHA` | `stage`, `status` | Always | Request attempts that have completed, by stage and final status: success, failure, or cancelled (still in flight when the stage's teardown grace ran out). Incremented when the attempt finishes, fails or is cancelled, not when it is sent. |
+| `inference_perf_requests_total` | Counter | `ALPHA` | `stage`, `status`, `error_type` | Always | Request attempts that have completed, by stage and final status: success, failure, or cancelled (still in flight when the stage's teardown grace ran out). A failure also carries its error class in error_type (the client's exception class or 'HTTP Error <status>'); error_type is empty for the other two. Incremented when the attempt finishes, fails or is cancelled, not when it is sent. |
 | `inference_perf_last_completion_timestamp_seconds` | Gauge | `ALPHA` | `stage` | Always | Unix time at which a request of the stage last finished, success or failure. |
 | `inference_perf_workers_lost_total` | Counter | `ALPHA` | `stage`, `cause` | Always | Worker processes that died during the stage, by stage and cause (the exception class the worker reported, else the signal that killed it, else its exit code). The run replaces a dead worker and carries on, so a non-zero value marks a stage that did not offer the load it was configured for: its results are not comparable with a stage that kept every worker. |
-| `inference_perf_request_errors_total` | Counter | `ALPHA` | `stage`, `error_type` | Always | Failed request attempts by stage and error class (the client's exception class or 'HTTP Error <status>'). |
 | `inference_perf_prompt_tokens_total` | Counter | `ALPHA` | `stage` | Always | Prompt tokens of successful requests by stage; rate() gives input throughput. |
 | `inference_perf_output_tokens_total` | Counter | `ALPHA` | `stage` | Always | Output tokens of successful requests by stage; rate() gives output throughput. Counted as the report's output_tokens_per_sec counts them: the client-side count, or the server's reported count (usage.completion_tokens, or usage.output_tokens on the Anthropic Messages API) under report.request_lifecycle.use_server_output_tokens. |
 | `inference_perf_stage_requests_planned` | Gauge | `ALPHA` | `stage` | Always | Requests the stage set out to issue. Absent for stages whose request count is not known up front. |

@@ -157,7 +157,7 @@ A condition can also read these signals directly, with no window.
 | Signal | Reads | Labels | Runtime metric |
 | --- | --- | --- | --- |
 | `completed` | Requests finished so far in the stage: successes, failures and cancellations. | `status` | `inference_perf_requests_total` |
-| `errors` | Failed requests so far in the stage. A cancelled request is not a failure. | none | `inference_perf_request_errors_total` |
+| `errors` | Failed requests so far in the stage. A cancelled request is not a failure. | none | `inference_perf_requests_total` |
 | `in_flight` | Requests sent and not yet finished. | none | `inference_perf_requests_in_flight` |
 | `since_last_completion` | Seconds since a request last finished, or since the stage started if none has. | none | `inference_perf_last_completion_timestamp_seconds` |
 

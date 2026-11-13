@@ -61,7 +61,7 @@ sum by (stage) (rate(inference_perf_requests_total{{status="failure"}}[1m]))
   / sum by (stage) (rate(inference_perf_requests_total[1m]))
 
 # failures by class, the same string the report shortens into its by_label keys
-sum by (stage, error_type) (increase(inference_perf_request_errors_total[5m]))
+sum by (stage, error_type) (increase(inference_perf_requests_total{{status="failure"}}[5m]))
 
 # p99 time to first token, streaming runs only
 histogram_quantile(0.99, sum by (stage, le) (rate(inference_perf_time_to_first_token_seconds_bucket[1m])))
