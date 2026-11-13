@@ -109,7 +109,7 @@ def test_stream_without_tokens_has_no_ttft() -> None:
 # A streamed success scheduled at 0.0, sent at 0.1, tokens at 0.3/0.5/0.7, ending at 0.8 with
 # 4 client tokens, and a failure scheduled at 1.0 and sent at 1.2. Expects the success's series
 # to be the report's fields (latency 0.7, TTFT 0.2, TPOT 0.4 / 3, NTPOT 0.7 / 4) plus schedule
-# delay 0.1, and the failure to carry schedule delay 0.2 alone.
+# delay 0.1, 5 prompt tokens and 4 output tokens, and the failure to carry schedule delay 0.2 alone.
 def test_series_values_are_the_report_values() -> None:
     success = RequestLifecycleMetric(
         scheduled_time=0.0,
@@ -141,10 +141,20 @@ def test_series_values_are_the_report_values() -> None:
             "tpot": report["time_per_output_token"],
             "ntpot": report["normalized_time_per_output_token"],
             "schedule_delay": 0.1,
+            "prompt_tokens": 5.0,
+            "output_tokens": 4.0,
         }
     )
     assert series_values(success) == pytest.approx(
-        {"latency": 0.7, "ttft": 0.2, "tpot": 0.4 / 3, "ntpot": 0.7 / 4, "schedule_delay": 0.1}
+        {
+            "latency": 0.7,
+            "ttft": 0.2,
+            "tpot": 0.4 / 3,
+            "ntpot": 0.7 / 4,
+            "schedule_delay": 0.1,
+            "prompt_tokens": 5.0,
+            "output_tokens": 4.0,
+        }
     )
     assert series_values(failure) == pytest.approx({"schedule_delay": 0.2})
 

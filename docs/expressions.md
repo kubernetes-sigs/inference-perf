@@ -113,7 +113,9 @@ A condition can read what the stage measures, so it can become true on a latency
 | `tpot` | `time_per_output_token` | s | Successful streamed requests with more than one output token. | `inference_perf_time_per_output_token_seconds` |
 | `ntpot` | `normalized_time_per_output_token` | s | Successful requests with output tokens. | `inference_perf_normalized_time_per_output_token_seconds` |
 | `schedule_delay` | `schedule_delay` | s | Every request: how late it was sent against its schedule. | `inference_perf_schedule_delay_seconds` |
-| `error` | none | 0 or 1 | Every request: 1 if it failed. | `inference_perf_requests_total` |
+| `error` | none | 0 or 1 | Every request that was answered: 1 if it failed. A cancelled request has no sample. | `inference_perf_requests_total` |
+| `prompt_tokens` | none | tokens | Every successful request: tokens in its prompt. | `inference_perf_prompt_tokens_total` |
+| `output_tokens` | none | tokens | Every successful request: output tokens, by the report's count. | `inference_perf_output_tokens_total` |
 
 There is no inter-token latency series. The report re-derives each token's timestamp from the raw response chunks when it writes the report, so a value measured during the run would be a different number under the same name.
 
@@ -154,10 +156,26 @@ A condition can also read these signals directly, with no window.
 
 | Signal | Reads | Runtime metric |
 | --- | --- | --- |
-| `completed` | Requests finished so far in the stage, successes and failures. | `inference_perf_requests_total` |
-| `errors` | Failed requests so far in the stage. | `inference_perf_request_errors_total` |
+| `completed` | Requests finished so far in the stage: successes, failures and cancellations. | `inference_perf_requests_total` |
+| `errors` | Failed requests so far in the stage. A cancelled request is not a failure. | `inference_perf_request_errors_total` |
 | `in_flight` | Requests sent and not yet finished. | `inference_perf_requests_in_flight` |
 | `since_last_completion` | Seconds since a request last finished, or since the stage started if none has. | `inference_perf_last_completion_timestamp_seconds` |
+
+**A signal can be read by label, in PromQL's selector syntax.** A label is a value from a fixed set that the signal's runtime metric carries. Ids and free text, such as a session id or an error message, are never labels. A signal read without a selector is the total over every value. Only `=` is supported.
+
+| Signal | Label | Values |
+| --- | --- | --- |
+| `completed` | `status` | `success`, `failure`, `cancelled` |
+
+**A count can be read as it was earlier, with `offset`.** `completed offset 60s` is the number of requests that had finished 60 seconds ago. It has no value before `t = 60`. `offset` applies to `completed` and `errors`. The other two signals are not counts.
+
+| Signal read | Reads |
+| --- | --- |
+| `completed{status="failure"}` | Failed requests so far, the same number as `errors`. |
+| `completed{status="cancelled"}` | Requests cancelled at stage teardown so far. |
+| `completed offset 60s` | Requests that had finished 60 s ago. |
+| `completed{status="success"} offset 1m30s` | Successful requests that had finished 90 s ago. |
+| `errors offset 30s` | Failed requests that had finished 30 s ago. |
 
 A measured term is the system under test, so it cannot be solved like `t`. The time part of the condition is still proved when the config loads, twice. With every measured comparison false the condition must still become true on time alone: that is the time it holds by. With every measured comparison true it must again become true from some time onward: that is the earliest a measured term can make it hold. So a measured term can only make a condition hold sooner, never keep it from holding.
 
@@ -166,6 +184,8 @@ A measured term is the system under test, so it cannot be solved like `t`. The t
 | `(t >= 600) \| (quantile_over_time(0.99, ttft[30s]) > 2)` | 600 | 0 |
 | `((t >= 60) & (avg_over_last(latency, 100) > 1)) \| (t >= 600)` | 600 | 60 |
 | `(t >= 300) \| (errors >= 10)` | 300 | 0 |
+| `(t >= 300) \| (completed{status="failure"} >= 10)` | 300 | 0 |
+| `(t >= 600) \| ((completed{status="success"} offset 60s) >= 200)` | 600 | 0 |
 | `(t >= 300) \| (avg_over_last(error, 100) > 0.05)` | 300 | 0 |
 | `(t >= 900) \| (avg_over_time(latency[10s]) > 1.5*avg_over_time(latency[10s] offset 10s))` | 900 | 0 |
 | `(t >= 900) \| (avg_over_last(ttft, 20) > 2*avg_over_sent(ttft, 10, 30))` | 900 | 0 |
@@ -181,6 +201,12 @@ A measured term is the system under test, so it cannot be solved like `t`. The t
 | `(t >= 600) \| (median_over_time(ttft[30s]) > 2)` | No median. Use `quantile_over_time(0.5, ttft[30s])`. |
 | `(t >= 600) \| (avg_over_time(ttft[30s:5s]) > 2)` | Subqueries are not supported. |
 | `(t >= 600) \| (avg_over_time(ttft[10s] @ start()) > 2)` | `@` takes a stage second. |
+| `(t >= 600) \| (completed{status="sucess"} >= 10)` | `status` is one of `success`, `failure`, `cancelled`. |
+| `(t >= 600) \| (completed{session="a1"} >= 10)` | `session` is an id, not a label. `completed` takes `status`. |
+| `(t >= 600) \| (completed{status!="success"} >= 10)` | Only `=` is supported in a selector. |
+| `(t >= 600) \| (errors{status="failure"} >= 10)` | `errors` takes no labels. |
+| `(t >= 600) \| (in_flight offset 30s > 100)` | `offset` applies to the counts `completed` and `errors`. |
+| `(t >= 600) \| (latency{status="success"} > 2)` | A series takes no selector. Read it through a window function. |
 | `(t >= 600) or (avg_over_last(ttft, 50) > 2)` | Combine comparisons with `\|` and `&`, not `or` and `and`. |
 
 ## Value ranges

@@ -599,7 +599,8 @@ class Predicate:
     functions over finished requests (``quantile_over_time(0.99, ttft[30s])``,
     ``avg_over_last(latency, 100)``, ``avg_over_sent(ttft, 10, 30)``, see
     :mod:`.measured`) and the signals ``completed``, ``errors``, ``in_flight``
-    and ``since_last_completion``. Those are the system under test and cannot
+    and ``since_last_completion``. A count can be read by status and in the
+    past: ``completed{status="success"} offset 60s``. Those are the system under test and cannot
     be solved, so a comparison on one is evaluated as results arrive. The time
     part is still proved, twice. With every measured comparison false the
     condition must hold from some time onward on its own. That time is
@@ -624,7 +625,8 @@ class Predicate:
         if not isinstance(raw, str):
             raise TypeError(f"Predicate accepts str, got {type(raw).__name__}.")
         self.raw = raw
-        if _EQUALITY_SPELLING.search(raw):
+        # the '=' inside a label selector, completed{status="failure"}, is not an equality
+        if _EQUALITY_SPELLING.search(re.sub(r"\{[^{}]*\}", "", raw)):
             raise ValueError(_equality_message(raw))
         rewritten, self._terms = extract_terms(raw)
         try:
@@ -729,7 +731,7 @@ class Predicate:
 
     @property
     def terms(self) -> Mapping[str, Term]:
-        """The window functions the condition reads, keyed by the symbol each stands for in :attr:`measured_symbols`."""
+        """The window functions and selected or offset signals the condition reads, keyed by their symbol in :attr:`measured_symbols`."""
         return self._terms
 
     @property

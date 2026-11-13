@@ -63,17 +63,29 @@ SERIES: Dict[str, Series] = {
         Series("tpot", "time_per_output_token", "s", "Successful streamed requests with more than one output token."),
         Series("ntpot", "normalized_time_per_output_token", "s", "Successful requests with output tokens."),
         Series("schedule_delay", "schedule_delay", "s", "Every request: how late it was sent against its schedule."),
-        Series("error", None, "0 or 1", "Every request: 1 if it failed."),
+        Series("error", None, "0 or 1", "Every request that was answered: 1 if it failed. A cancelled request has no sample."),
+        Series("prompt_tokens", None, "tokens", "Every successful request: tokens in its prompt."),
+        Series("output_tokens", None, "tokens", "Every successful request: output tokens, by the report's count."),
     )
 }
 
 # Read directly, with no window.
 SIGNALS: Dict[str, str] = {
-    "completed": "Requests finished so far in the stage, successes and failures.",
-    "errors": "Failed requests so far in the stage.",
+    "completed": "Requests finished so far in the stage: successes, failures and cancellations.",
+    "errors": "Failed requests so far in the stage. A cancelled request is not a failure.",
     "in_flight": "Requests sent and not yet finished.",
     "since_last_completion": "Seconds since a request last finished, or since the stage started if none has.",
 }
+
+# A request's final status, the values of the status label on inference_perf_requests_total.
+STATUSES: Tuple[str, ...] = ("success", "failure", "cancelled")
+
+# The labels a signal can be read by, written as a PromQL selector: completed{status="failure"}.
+# Only a label with a fixed set of values is one, and only where the signal's runtime metric carries it.
+SIGNAL_LABELS: Dict[str, Dict[str, Tuple[str, ...]]] = {"completed": {"status": STATUSES}}
+
+# The signals that count requests. Only a count has a value in the past, so only these take 'offset'.
+COUNTERS = frozenset({"completed", "errors"})
 
 # Each description is its row in docs/expressions.md, and test_doc_examples.py
 # checks the doc against these tables in both directions.
@@ -102,10 +114,16 @@ _PLACEHOLDER = "_term"
 _PLACEHOLDER_SPELLING = re.compile(rf"\b{_PLACEHOLDER}\d+\b")
 _SELECTOR = re.compile(r"^(?P<series>[A-Za-z_:][A-Za-z0-9_:]*)\s*\[(?P<range>[^\]]*)\](?P<modifiers>.*)$", re.S)
 _MODIFIER = re.compile(r"\s*(?:(?P<offset>offset)\s+(?P<duration>[^\s@]+)|@\s*(?P<at>[^\s]+))")
+# A signal read with a selector, an offset or both: completed{status="failure"} offset 60s.
+_SIGNAL_READ = re.compile(
+    r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*(?P<labels>\{[^{}]*\}))?(?:\s+offset\s+(?P<duration>[^\s()&|<>=,]+))?"
+)
+_MATCHER = re.compile(r'^\s*(?P<label>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<op>=~|!~|!=|=)\s*"(?P<value>[^"]*)"\s*$')
 _DURATION_PART = re.compile(r"(\d+)(ms|s|m|h)")
 _DURATION_UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
 _NUMBER = re.compile(r"^(\d+(\.\d*)?|\.\d+)$")
 _INTEGER = re.compile(r"^\d+$")
+_SELECTOR_EXAMPLE = "'completed{status=\"failure\"}'"
 _AT_HINT = (
     "'@' takes the stage second the range ends at, e.g. '@ 30'; PromQL's start(), end() and unix timestamps do not apply."
 )
@@ -117,6 +135,8 @@ class Term:
 
     ``window`` is ``"time"`` (``range_s``, ``offset_s``, ``at_s``), ``"last"``
     (``last``) or ``"sent"`` (``sent_start`` up to but excluding ``sent_stop``).
+    A signal read by label or in the past, e.g. ``completed{status="failure"} offset 60s``,
+    is a term too: ``window`` is ``"signal"``, with ``signal``, ``labels`` and ``offset_s``.
     ``source`` is the text as written and does not take part in equality, so
     the same term written twice is evaluated once.
     """
@@ -131,6 +151,8 @@ class Term:
     last: Optional[int] = None
     sent_start: Optional[int] = None
     sent_stop: Optional[int] = None
+    signal: Optional[str] = None
+    labels: Tuple[Tuple[str, str], ...] = ()
     source: str = field(default="", compare=False)
 
 
@@ -140,7 +162,8 @@ class Observation:
 
     ``t`` is the stage time it finished. ``values`` holds the request's value
     for each series it has one for. ``error`` is not passed: it is 1 when
-    ``failed`` and 0 otherwise.
+    ``failed`` and 0 otherwise. ``cancelled`` marks a request the load generator
+    cancelled at stage teardown, which is neither a success nor a failure.
     ``sent_index`` is the request's zero-based position in the stage's dispatch
     order, needed only by ``_over_sent`` terms.
     """
@@ -149,10 +172,18 @@ class Observation:
     failed: bool = False
     values: Mapping[str, float] = field(default_factory=dict)
     sent_index: Optional[int] = None
+    cancelled: bool = False
+
+    @property
+    def status(self) -> str:
+        """The request's final status, one of ``STATUSES``."""
+        if self.cancelled:
+            return "cancelled"
+        return "failure" if self.failed else "success"
 
 
 def extract_terms(raw: str) -> Tuple[str, Dict[str, Term]]:
-    """Replace each window function in ``raw`` with a placeholder symbol.
+    """Replace each window function and each selected or offset signal in ``raw`` with a placeholder symbol.
 
     Returns the rewritten string for SymPy and the term behind each
     placeholder. Raises ``ValueError`` for a malformed term or for PromQL
@@ -175,7 +206,7 @@ def extract_terms(raw: str) -> Tuple[str, Dict[str, Term]]:
         out.append(symbol)
         pos = close + 1
     out.append(raw[pos:])
-    rest = "".join(out)
+    rest = _extract_signal_reads(raw, "".join(out), terms)
     if "[" in rest or "]" in rest:
         raise ValueError(
             f"Predicate {raw!r} has a range selector outside a window function; "
@@ -187,6 +218,67 @@ def extract_terms(raw: str) -> Tuple[str, Dict[str, Term]]:
             f"each parenthesised: '(t >= 600) | (quantile_over_time(0.99, ttft[30s]) > 2)'."
         )
     return rest, terms
+
+
+def _extract_signal_reads(raw: str, text: str, terms: Dict[str, Term]) -> str:
+    """Replace each ``signal{label="value"}`` and ``signal offset <duration>`` in ``text`` with a placeholder symbol."""
+    out: List[str] = []
+    pos = 0
+    for match in _SIGNAL_READ.finditer(text):
+        if match.group("labels") is None and match.group("duration") is None:
+            continue
+        term = _parse_signal_read(match)
+        symbol = next((s for s, existing in terms.items() if existing == term), f"{_PLACEHOLDER}{len(terms)}")
+        terms.setdefault(symbol, term)
+        out.append(text[pos : match.start()])
+        out.append(symbol)
+        pos = match.end()
+    out.append(text[pos:])
+    rest = "".join(out)
+    if "{" in rest or "}" in rest:
+        raise ValueError(
+            f"Predicate {raw!r} has a label selector that does not follow a signal; write e.g. {_SELECTOR_EXAMPLE}."
+        )
+    if re.search(r"\boffset\b", rest):
+        raise ValueError(
+            f"Predicate {raw!r} has an 'offset' that does not follow a range or a signal; "
+            f"write e.g. 'completed offset 60s' or 'avg_over_time(ttft[30s] offset 10s)'."
+        )
+    return rest
+
+
+def _parse_signal_read(match: "re.Match[str]") -> Term:
+    source = match.group(0)
+    name = match.group("name")
+    if name not in SIGNALS:
+        kind = "a series, so read it through a window function" if name in SERIES else "not a signal"
+        raise ValueError(f"Signal read {source!r}: {name!r} is {kind}; the signals are {sorted(SIGNALS)}.")
+    labels: Dict[str, str] = {}
+    if match.group("labels") is not None:
+        allowed = SIGNAL_LABELS.get(name, {})
+        for matcher in match.group("labels")[1:-1].split(","):
+            parsed = _MATCHER.match(matcher)
+            if parsed is None:
+                raise ValueError(f'Signal read {source!r}: write a selector as label="value", e.g. {_SELECTOR_EXAMPLE}.')
+            label, value = parsed.group("label"), parsed.group("value")
+            if parsed.group("op") != "=":
+                raise ValueError(f"Signal read {source!r}: only '=' is supported in a selector, not {parsed.group('op')!r}.")
+            if label not in allowed:
+                takes = f"takes {sorted(allowed)}, not {label!r}" if allowed else "takes no labels"
+                raise ValueError(f"Signal read {source!r}: {name!r} {takes}.")
+            if value not in allowed[label]:
+                raise ValueError(f"Signal read {source!r}: {label} is one of {list(allowed[label])}, not {value!r}.")
+            if label in labels:
+                raise ValueError(f"Signal read {source!r} sets {label} twice.")
+            labels[label] = value
+    offset_s = 0.0
+    if match.group("duration") is not None:
+        if name not in COUNTERS:
+            raise ValueError(
+                f"Signal read {source!r}: 'offset' reads a count as it was earlier, so it applies to {sorted(COUNTERS)} only."
+            )
+        offset_s = _duration(match.group("duration"), source, "Signal read")
+    return Term("", "", "signal", offset_s=offset_s, signal=name, labels=tuple(sorted(labels.items())), source=source)
 
 
 def parse_term(aggregate: str, window: str, inner: str, source: str) -> Term:
@@ -264,11 +356,11 @@ def _parse_selector(aggregate: str, q: Optional[float], selector: str, source: s
     return Term(aggregate, series, "time", q=q, range_s=range_s, offset_s=offset_s or 0.0, at_s=at_s, source=source)
 
 
-def _duration(text: str, source: str) -> float:
+def _duration(text: str, source: str, kind: str = "Window function") -> float:
     """A PromQL duration such as ``30s``, ``1m30s`` or ``500ms``, in seconds."""
     parts = list(_DURATION_PART.finditer(text))
     if not parts or "".join(p.group(0) for p in parts) != text:
-        raise ValueError(f"Window function {source!r}: {text!r} is not a duration; write e.g. 30s, 5m, 1m30s or 500ms.")
+        raise ValueError(f"{kind} {source!r}: {text!r} is not a duration; write e.g. 30s, 5m, 1m30s or 500ms.")
     return sum(int(p.group(1)) * _DURATION_UNITS[p.group(2)] for p in parts)
 
 
@@ -367,7 +459,7 @@ class _Window:
 
 def _samples(obs: Observation, series: str) -> Sequence[float]:
     if series == "error":
-        return (1.0 if obs.failed else 0.0,)
+        return () if obs.cancelled else (1.0 if obs.failed else 0.0,)
     value = obs.values.get(series)
     # A non-finite value is a broken measurement, not a sample.
     if value is None or not math.isfinite(value):
@@ -475,10 +567,44 @@ class _SentEvaluator:
         return math.nan if self._value is None else self._value
 
 
-_Evaluator = Union[_TimeEvaluator, _LastEvaluator, _SentEvaluator]
+class _SignalEvaluator:
+    """``signal{status="s"} offset o``: the requests of that status that had finished by ``now - o``.
+
+    Unknown until ``now - o`` lies inside the stage. Without an offset a request
+    counts as soon as it is observed, as the bare signal does.
+    """
+
+    def __init__(self, term: Term) -> None:
+        assert term.signal is not None
+        self.term = term
+        self._status = "failure" if term.signal == "errors" else dict(term.labels).get("status")
+        self._pending: List[float] = []
+        self._count = 0
+
+    def observe(self, obs: Observation, now: float) -> None:
+        if self._status is not None and obs.status != self._status:
+            return
+        if self.term.offset_s == 0:
+            self._count += 1
+        else:
+            heapq.heappush(self._pending, obs.t)
+
+    def value(self, now: float) -> float:
+        end = now - self.term.offset_s
+        if end < 0:
+            return math.nan
+        while self._pending and self._pending[0] <= end:
+            heapq.heappop(self._pending)
+            self._count += 1
+        return float(self._count)
+
+
+_Evaluator = Union[_TimeEvaluator, _LastEvaluator, _SentEvaluator, _SignalEvaluator]
 
 
 def _evaluator(term: Term) -> _Evaluator:
+    if term.window == "signal":
+        return _SignalEvaluator(term)
     if term.window == "time":
         return _TimeEvaluator(term)
     if term.window == "last":
@@ -517,7 +643,7 @@ class MeasuredState:
         """Account one finished request, observed at stage time ``now``."""
         now = self._clock(now)
         self.completed += 1
-        if obs.failed:
+        if obs.status == "failure":
             self.errors += 1
         self._last_finish = obs.t if self._last_finish is None else max(self._last_finish, obs.t)
         for evaluator in self._evaluators.values():
