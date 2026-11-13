@@ -178,7 +178,8 @@ class Config(StrictBaseModel):
         if conversation_config is None:
             raise ValueError("data.conversation_replay is required when data.type is 'conversation_replay'")
         for stage_index, stage in enumerate(self.load.stages):
-            if isinstance(stage, ConcurrentLoadStage) and stage.concurrency_level > conversation_config.num_conversations:
+            # An expression level must fit at its peak, not just where it starts.
+            if isinstance(stage, ConcurrentLoadStage) and stage.peak_concurrency > conversation_config.num_conversations:
                 raise ValueError(
                     f"load.stages[{stage_index}].concurrency_level ({stage.concurrency_level}) cannot exceed "
                     f"data.conversation_replay.num_conversations ({conversation_config.num_conversations})"

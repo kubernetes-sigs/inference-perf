@@ -893,6 +893,7 @@ def summarize_requests(
     tokenizer: Optional[CustomTokenizer] = None,
     use_server_output_tokens: bool = False,
     max_error_messages: int = 100,
+    stage_concurrency_expression: Optional[str] = None,
 ) -> ResponsesSummary:
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_cancelled: List[RequestLifecycleMetric] = [x for x in metrics if is_stage_teardown_cancelled(x.error)]
@@ -924,6 +925,9 @@ def summarize_requests(
         }
         if stage_concurrency is not None:
             load_summary["concurrency"] = stage_concurrency
+        if stage_concurrency_expression is not None:
+            # A varying level: "concurrency" above is its peak.
+            load_summary["concurrency_expression"] = stage_concurrency_expression
 
     # --- Pre-calculate Metrics for all successful requests ---
     # We maintain 1:1 mapping with 'all_successful' to pass to SLO calculator
@@ -1234,6 +1238,7 @@ class ReportGenerator:
                             tokenizer=tokenizer,
                             use_server_output_tokens=use_server_output_tokens,
                             max_error_messages=max_error_messages,
+                            stage_concurrency_expression=runtime_parameters.stages[stage_id].concurrency_expression,
                         ).model_dump(),
                     )
                 else:
