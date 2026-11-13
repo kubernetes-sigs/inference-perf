@@ -1,0 +1,56 @@
+name: PR Category
+
+# Labels each pull request by what its diff does, posts the names as one
+# comment, and goes red when the pull request doesn't meet the conditions for
+# its kind (#868). Report-only: merge_gate.yml does not list this workflow, so
+# a red run blocks nothing.
+#
+# NOTE: this uses pull_request_target, which runs with write permissions on
+# fork PRs. It must never check out or execute PR code. The checkout below is
+# the base branch, and scripts/label_pr.py reads the PR through the API as data.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
+  # a kind label moving on an issue changes what the PRs linking it must match
+  issues:
+    types: [labeled, unlabeled]
+  # one sweep over every open PR, for labels on PRs opened before this workflow
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+# explicit bash runs every step with -eo pipefail, so a pipe can't swallow a failure
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  categorize:
+    # only a kind label changes the outcome. prow adds and removes many others.
+    if: (github.event.action != 'labeled' && github.event.action != 'unlabeled') || startsWith(github.event.label.name, 'kind/')
+    runs-on: ubuntu-latest
+    # the newest run for a PR replaces older ones. an event the `if` above skips gets a
+    # group of its own, so a label prow adds can never cancel a real run.
+    concurrency:
+      group: >-
+        pr-category-${{ github.event.pull_request.number || github.event.issue.number || 'sweep' }}-${{
+        ((github.event.action != 'labeled' && github.event.action != 'unlabeled') || startsWith(github.event.label.name, 'kind/'))
+        && 'run' || github.run_id }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: Label and check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/label_pr.py --event "$GITHUB_EVENT_PATH"
