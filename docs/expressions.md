@@ -158,7 +158,8 @@ A condition can also read these signals directly, with no window.
 | --- | --- | --- | --- |
 | `completed` | Requests finished so far in the stage: successes, failures and cancellations. | `status` | `inference_perf_requests_total` |
 | `errors` | Failed requests so far in the stage. A cancelled request is not a failure. | none | `inference_perf_requests_total` |
-| `in_flight` | Requests sent and not yet finished. | none | `inference_perf_requests_in_flight` |
+| `in_flight` | Requests sent and not yet finished. | `phase` | `inference_perf_requests_in_flight` |
+| `queued` | Requests due by their schedule and not yet sent. Above 0 the load generator is behind. | none | `inference_perf_requests_queued` |
 | `since_last_completion` | Seconds since a request last finished, or since the stage started if none has. | none | `inference_perf_last_completion_timestamp_seconds` |
 
 **A signal can be read by label, in PromQL's selector syntax.** The Labels column above names the labels a condition can select by, and this table their values. A label is a value from a fixed set that the signal's runtime metric carries. Ids and free text, such as a session id or an error message, are never labels. A signal read without a selector is the total over every value. Only `=` is supported.
@@ -166,8 +167,11 @@ A condition can also read these signals directly, with no window.
 | Signal | Label | Values |
 | --- | --- | --- |
 | `completed` | `status` | `success`, `failure`, `cancelled` |
+| `in_flight` | `phase` | `waiting`, `streaming` |
 
-**A count can be read as it was earlier, with `offset`.** `completed offset 60s` is the number of requests that had finished 60 seconds ago. It has no value before `t = 60`. `offset` applies to `completed` and `errors`. The other two signals are not counts.
+A request in flight is `waiting` until its first token arrives and `streaming` after. A request that is not streamed stays `waiting` until it finishes. `queued` is 0 where there is no send schedule to be behind: `concurrent` and `trace_session_replay` stages, and `num_workers: 0`.
+
+**A count can be read as it was earlier, with `offset`.** `completed offset 60s` is the number of requests that had finished 60 seconds ago. It has no value before `t = 60`. `offset` applies to `completed` and `errors`. The other signals are not counts.
 
 | Signal read | Reads |
 | --- | --- |
@@ -176,6 +180,8 @@ A condition can also read these signals directly, with no window.
 | `completed offset 60s` | Requests that had finished 60 s ago. |
 | `completed{status="success"} offset 1m30s` | Successful requests that had finished 90 s ago. |
 | `errors offset 30s` | Failed requests that had finished 30 s ago. |
+| `in_flight{phase="waiting"}` | Requests sent that have no token yet. |
+| `in_flight{phase="streaming"}` | Requests that have received their first token and not finished. |
 
 A measured term is the system under test, so it cannot be solved like `t`. The time part of the condition is still proved when the config loads, twice. With every measured comparison false the condition must still become true on time alone: that is the time it holds by. With every measured comparison true it must again become true from some time onward: that is the earliest a measured term can make it hold. So a measured term can only make a condition hold sooner, never keep it from holding.
 
@@ -186,6 +192,8 @@ A measured term is the system under test, so it cannot be solved like `t`. The t
 | `(t >= 300) \| (errors >= 10)` | 300 | 0 |
 | `(t >= 300) \| (completed{status="failure"} >= 10)` | 300 | 0 |
 | `(t >= 600) \| ((completed{status="success"} offset 60s) >= 200)` | 600 | 0 |
+| `(t >= 600) \| (queued > 50)` | 600 | 0 |
+| `(t >= 600) \| ((in_flight{phase="waiting"} > 0) & (since_last_completion > 30))` | 600 | 0 |
 | `(t >= 300) \| (avg_over_last(error, 100) > 0.05)` | 300 | 0 |
 | `(t >= 900) \| (avg_over_time(latency[10s]) > 1.5*avg_over_time(latency[10s] offset 10s))` | 900 | 0 |
 | `(t >= 900) \| (avg_over_last(ttft, 20) > 2*avg_over_sent(ttft, 10, 30))` | 900 | 0 |
@@ -205,6 +213,7 @@ A measured term is the system under test, so it cannot be solved like `t`. The t
 | `(t >= 600) \| (completed{session="a1"} >= 10)` | `session` is an id, not a label. `completed` takes `status`. |
 | `(t >= 600) \| (completed{status!="success"} >= 10)` | Only `=` is supported in a selector. |
 | `(t >= 600) \| (errors{status="failure"} >= 10)` | `errors` takes no labels. |
+| `(t >= 600) \| (in_flight{phase="queued"} > 50)` | `queued` is a signal of its own. `phase` is `waiting` or `streaming`. |
 | `(t >= 600) \| (in_flight offset 30s > 100)` | `offset` applies to the counts `completed` and `errors`. |
 | `(t >= 600) \| (latency{status="success"} > 2)` | A series takes no selector. Read it through a window function. |
 | `(t >= 600) or (avg_over_last(ttft, 50) > 2)` | Combine comparisons with `\|` and `&`, not `or` and `and`. |

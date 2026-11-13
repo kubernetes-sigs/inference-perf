@@ -55,7 +55,7 @@ from inference_perf.observability.metrics.sets import ALL_SPECS
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.reportgen.base import series_values
 from inference_perf.utils.numeric.expression import SERIES, SIGNALS
-from inference_perf.utils.numeric.expression.measured import SIGNAL_LABELS, STATUSES
+from inference_perf.utils.numeric.expression.measured import PHASES, SIGNAL_LABELS, STATUSES
 
 
 # Builds one streamed request: scheduled and started at 10.0s, four chunks at
@@ -133,23 +133,41 @@ def _sample(hub: MetricsHub, name: str, **labels: str) -> Optional[float]:
 # --- run and stage state -----------------------------------------------------
 
 
-# A 3-stage run whose RunContext reports 4 requests in flight. Expects stages to
-# read 0 before the run starts and 3 after, and in_flight to track the probe live:
-# 4.0, then 0.0 once the probe returns 0 without any metric call.
-def test_stage_count_and_in_flight_come_from_run_context() -> None:
+# A 3-stage run whose RunContext reports 5 requests queued, 3 waiting and 1 streaming. Expects
+# stages to read 0 before the run starts and 3 after, and the in-flight and queued gauges to
+# track the probe live: waiting 3, streaming 1, queued 5, then all 0 once the probe reports
+# nothing, without any metric call.
+def test_stage_count_and_request_phases_come_from_run_context() -> None:
     hub = _streaming_hub(stages=3)
     assert _sample(hub, "inference_perf_stages") == 0.0
-    in_flight = 4
+    phases = {"queued": 5, "waiting": 3, "streaming": 1}
     hub.on_run_start(
         RunContext(
             config=Config(load=LoadConfig(stages=[StandardLoadStage(rate=1, duration=1)] * 3)),
-            in_flight_requests=lambda: in_flight,
+            requests_by_phase=lambda: phases,
         )
     )
     assert _sample(hub, "inference_perf_stages") == 3.0
-    assert _sample(hub, "inference_perf_requests_in_flight") == 4.0
-    in_flight = 0
-    assert _sample(hub, "inference_perf_requests_in_flight") == 0.0
+    assert _sample(hub, "inference_perf_requests_in_flight", phase="waiting") == 3.0
+    assert _sample(hub, "inference_perf_requests_in_flight", phase="streaming") == 1.0
+    assert _sample(hub, "inference_perf_requests_queued") == 5.0
+    phases = {}
+    assert _sample(hub, "inference_perf_requests_in_flight", phase="waiting") == 0.0
+    assert _sample(hub, "inference_perf_requests_in_flight", phase="streaming") == 0.0
+    assert _sample(hub, "inference_perf_requests_queued") == 0.0
+
+
+# The phase label of the in-flight gauge takes exactly the values a condition may select.
+def test_in_flight_phase_values_are_the_ones_a_condition_selects() -> None:
+    hub = _streaming_hub()
+    hub.on_run_start(RunContext(config=Config()))
+    written = {
+        sample.labels["phase"]
+        for family in hub.registry.collect()
+        for sample in family.samples
+        if sample.name == "inference_perf_requests_in_flight"
+    }
+    assert written == set(PHASES)
 
 
 # A sweep run: the config has no stages, and the load generator's stage count goes
@@ -389,6 +407,7 @@ def test_every_signal_has_one_runtime_metric() -> None:
     backed = [signal for spec in ALL_SPECS for signal in spec.signals]
     assert sorted(backed) == sorted(SIGNALS), f"backed {sorted(backed)}, signals {sorted(SIGNALS)}"
     assert next(spec.name for spec in ALL_SPECS if "errors" in spec.signals) == "inference_perf_requests"
+    assert next(spec.name for spec in ALL_SPECS if "queued" in spec.signals) == "inference_perf_requests_queued"
 
 
 # Walks SIGNAL_LABELS, e.g. completed by status. Expects the metric backing each signal to carry
@@ -442,8 +461,8 @@ def test_spec_with_an_unknown_series_is_rejected() -> None:
 
 # "cause" is bounded the same way "error_type" is: an exception class name, a
 # signal name, or an exit code, never a message or an id. "modality" is one of
-# image, video or audio.
-ALLOWED_LABELS = {"stage", "status", "error_type", "cause", "modality"}
+# image, video or audio. "phase" is waiting or streaming.
+ALLOWED_LABELS = {"stage", "status", "error_type", "cause", "modality", "phase"}
 
 # A histogram observes one quantity per request or media instance, named by its
 # unit: a base unit (seconds, bytes) or a plain count of something (pixels, frames).

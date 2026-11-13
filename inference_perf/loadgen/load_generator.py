@@ -19,6 +19,7 @@ from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
 from inference_perf.apis import InferenceAPIData
+from inference_perf.apis.request_phase import watch_first_token
 from inference_perf.apis.user_session import LocalUserSession
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.client.modelserver.otel_instrumentation import get_otel_instrumentation
@@ -61,6 +62,7 @@ from typing import Awaitable, List, Tuple, Optional, NamedTuple, Protocol, Union
 from types import FrameType
 import ctypes
 import time
+from bisect import bisect_right
 import traceback
 import multiprocessing as mp
 from queue import Empty
@@ -279,8 +281,12 @@ class Worker(PreloadedForkServerProcess):
         teardown_grace_seconds: float = 120.0,
         crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"] = None,
         ready_event: Optional[SyncEvent] = None,
+        streaming_requests_counter: Optional["Synchronized[int]"] = None,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
+        # Requests in flight that have received their first token, shared like
+        # active_requests_counter. None leaves the phase untracked.
+        self.streaming_requests_counter = streaming_requests_counter
         self.id = id
         self.client = client
         self.request_queue = request_queue
@@ -399,6 +405,16 @@ class Worker(PreloadedForkServerProcess):
                     permit_acquired: bool,
                 ) -> None:
                     inflight = False
+                    streaming = False
+
+                    def first_token() -> None:
+                        nonlocal streaming
+                        if streaming or self.streaming_requests_counter is None:
+                            return
+                        with self.streaming_requests_counter.get_lock():
+                            self.streaming_requests_counter.value += 1
+                        streaming = True
+
                     try:
                         current_time = time.perf_counter()
                         sleep_time = request_time - current_time
@@ -466,6 +482,7 @@ class Worker(PreloadedForkServerProcess):
                             self.active_requests_counter.value += 1
                             inflight = True
 
+                        watch_first_token(first_token)
                         await self.client.process_request(request_data, stage_id, request_time, lora_adapter)
                     except CancelledError:
                         pass
@@ -476,6 +493,9 @@ class Worker(PreloadedForkServerProcess):
                         with self.active_requests_counter.get_lock():
                             if inflight:
                                 self.active_requests_counter.value -= 1
+                        if streaming and self.streaming_requests_counter is not None:
+                            with self.streaming_requests_counter.get_lock():
+                                self.streaming_requests_counter.value -= 1
                         try:
                             request_data.on_request_finished()
                         except Exception:
@@ -712,6 +732,12 @@ class LoadGenerator:
         # counter the workers maintain; the in-process run() path counts locally.
         self._active_requests_counter: Optional["Synchronized[int]"] = None
         self._local_in_flight = 0
+        # Of those, the ones that have received their first token.
+        self._streaming_requests_counter: Optional["Synchronized[int]"] = None
+        self._local_streaming = 0
+        # The running rate stage's scheduled send times, in order, and its finished counter:
+        # what queued is derived from. None between stages and for stages with no send schedule.
+        self._stage_schedule: Optional[Tuple[List[float], "Synchronized[int]"]] = None
         # The in-process run() path has no worker counters to sample, so it
         # keeps its own. Reset per stage, like the shared ones.
         self._local_finished = 0
@@ -786,16 +812,50 @@ class LoadGenerator:
             return int(self._active_requests_counter.value)
         return self._local_in_flight
 
+    def requests_by_phase(self) -> Dict[str, int]:
+        """Requests this run is holding, sampled live, by phase.
+
+        ``waiting`` and ``streaming`` split the requests in flight on whether the
+        first token has arrived. ``queued`` is the requests of the running stage
+        that are due by their schedule and not yet sent: those due, less those
+        finished or in flight. It is 0 where there is no send schedule to be
+        behind: concurrent and session stages, and the in-process path.
+        """
+        in_flight = self.in_flight_requests()
+        if self._streaming_requests_counter is not None:
+            streaming = int(self._streaming_requests_counter.value)
+        else:
+            streaming = self._local_streaming
+        # the two counters are read one after the other, so clamp rather than report a negative phase
+        streaming = max(0, min(streaming, in_flight))
+        queued = 0
+        if self._stage_schedule is not None:
+            schedule, finished = self._stage_schedule
+            due = bisect_right(schedule, time.perf_counter())
+            queued = max(0, due - int(finished.value) - in_flight)
+        return {"queued": queued, "waiting": in_flight - streaming, "streaming": streaming}
+
     def stage_count(self) -> int:
         """Stages this run executes, sampled live: a sweep replaces them after preprocess."""
         return len(self.stages)
 
     async def _track_in_flight(self, request: Awaitable[None]) -> None:
         self._local_in_flight += 1
+        streaming = False
+
+        def first_token() -> None:
+            nonlocal streaming
+            if not streaming:
+                streaming = True
+                self._local_streaming += 1
+
+        watch_first_token(first_token)
         try:
             await request
         finally:
             self._local_in_flight -= 1
+            if streaming:
+                self._local_streaming -= 1
             self._local_finished += 1
 
     def _stage_started(self, context: StageContext) -> None:
@@ -1617,6 +1677,7 @@ class LoadGenerator:
             teardown_grace_seconds=dead.teardown_grace_seconds,
             crash_queue=dead.crash_queue,
             ready_event=MP_CONTEXT.Event(),
+            streaming_requests_counter=dead.streaming_requests_counter,
         )
 
     async def run_stage(
@@ -1682,6 +1743,11 @@ class LoadGenerator:
         # requests only ever land on workers that hold a share of it.
         active_workers = self._active_worker_count(concurrency_level)
 
+        # A concurrent stage sends as slots free up, so it has no schedule to fall behind.
+        schedule: Optional[List[float]] = [] if concurrency_level is None else None
+        if schedule is not None:
+            self._stage_schedule = (schedule, finished_requests_counter)
+
         for _ in range(num_requests):
             request_data = next(data_generator)
             request_data.stage_id = stage_id
@@ -1689,8 +1755,11 @@ class LoadGenerator:
             worker_id = request_data.preferred_worker_id
             if worker_id >= 0:
                 worker_id = worker_id % active_workers
+            scheduled_time = next(time_generator)
+            if schedule is not None:
+                schedule.append(scheduled_time)
             request_queue.put(
-                RequestQueueData(stage_id, request_data, next(time_generator), lora_adapter),
+                RequestQueueData(stage_id, request_data, scheduled_time, lora_adapter),
                 worker_id,
             )
 
@@ -1728,6 +1797,8 @@ class LoadGenerator:
 
         if stage_task:
             stage_task.close()
+        # Whatever is still unsent is dropped at teardown, not sent late.
+        self._stage_schedule = None
 
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
@@ -1897,6 +1968,8 @@ class LoadGenerator:
         active_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
         skipped_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
         self._active_requests_counter = active_requests_counter
+        streaming_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
+        self._streaming_requests_counter = streaming_requests_counter
         request_phase: SyncEvent = MP_CONTEXT.Event()
         stop_signal: SyncEvent = MP_CONTEXT.Event()
         cancel_signal: SyncEvent = MP_CONTEXT.Event()
@@ -1948,6 +2021,7 @@ class LoadGenerator:
                     teardown_grace_seconds=self.teardown_grace_seconds,
                     crash_queue=self.worker_crash_queue,
                     ready_event=MP_CONTEXT.Event(),
+                    streaming_requests_counter=streaming_requests_counter,
                 )
             )
             self.workers[-1].start()

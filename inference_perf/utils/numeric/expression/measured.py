@@ -74,6 +74,7 @@ SIGNALS: Dict[str, str] = {
     "completed": "Requests finished so far in the stage: successes, failures and cancellations.",
     "errors": "Failed requests so far in the stage. A cancelled request is not a failure.",
     "in_flight": "Requests sent and not yet finished.",
+    "queued": "Requests due by their schedule and not yet sent. Above 0 the load generator is behind.",
     "since_last_completion": "Seconds since a request last finished, or since the stage started if none has.",
 }
 
@@ -82,10 +83,16 @@ STATUSES: Tuple[str, ...] = ("success", "failure", "cancelled")
 
 # The labels a signal can be read by, written as a PromQL selector: completed{status="failure"}.
 # Only a label with a fixed set of values is one, and only where the signal's runtime metric carries it.
-SIGNAL_LABELS: Dict[str, Dict[str, Tuple[str, ...]]] = {"completed": {"status": STATUSES}}
+# The phases of a request in flight, the values of the phase label on inference_perf_requests_in_flight.
+PHASES: Tuple[str, ...] = ("waiting", "streaming")
+
+SIGNAL_LABELS: Dict[str, Dict[str, Tuple[str, ...]]] = {"completed": {"status": STATUSES}, "in_flight": {"phase": PHASES}}
 
 # The signals that count requests. Only a count has a value in the past, so only these take 'offset'.
 COUNTERS = frozenset({"completed", "errors"})
+
+# The signals that are a level the load generator reports, read from the caller on every evaluation.
+_LEVELS = frozenset({"in_flight", "queued"})
 
 # Each description is its row in docs/expressions.md, and test_doc_examples.py
 # checks the doc against these tables in both directions.
@@ -633,7 +640,11 @@ class MeasuredState:
         self.errors = 0
         self._last_finish: Optional[float] = None
         self._now = 0.0
-        self._evaluators: Dict[str, _Evaluator] = {symbol: _evaluator(term) for symbol, term in self.terms.items()}
+        # A level has no history to keep: its terms are read from what the caller passes to values().
+        self._levels = {symbol: term for symbol, term in self.terms.items() if term.signal in _LEVELS}
+        self._evaluators: Dict[str, _Evaluator] = {
+            symbol: _evaluator(term) for symbol, term in self.terms.items() if symbol not in self._levels
+        }
 
     def _clock(self, now: float) -> float:
         self._now = max(self._now, now)
@@ -649,10 +660,24 @@ class MeasuredState:
         for evaluator in self._evaluators.values():
             evaluator.observe(obs, now)
 
-    def values(self, now: float, in_flight: Optional[int] = None) -> Dict[str, float]:
-        """Each measured symbol's value at stage time ``now``, NaN while unknown."""
+    def values(
+        self, now: float, in_flight: Optional[int] = None, phases: Optional[Mapping[str, int]] = None
+    ) -> Dict[str, float]:
+        """Each measured symbol's value at stage time ``now``, NaN while unknown.
+
+        ``phases`` is the requests the load generator holds in each phase: ``queued``,
+        ``waiting`` and ``streaming``. ``in_flight`` defaults to waiting plus streaming.
+        """
         now = self._clock(now)
         out = {symbol: evaluator.value(now) for symbol, evaluator in self._evaluators.items()}
+        if in_flight is None and phases is not None and all(phase in phases for phase in PHASES):
+            in_flight = sum(phases[phase] for phase in PHASES)
+        for symbol, term in self._levels.items():
+            phase = dict(term.labels).get("phase")
+            if phase is None:
+                out[symbol] = math.nan if in_flight is None else float(in_flight)
+            else:
+                out[symbol] = float(phases[phase]) if phases is not None and phase in phases else math.nan
         signals = self.signals
         if "completed" in signals:
             out["completed"] = float(self.completed)
@@ -662,9 +687,13 @@ class MeasuredState:
             out["since_last_completion"] = now - (self._last_finish if self._last_finish is not None else 0.0)
         if "in_flight" in signals:
             out["in_flight"] = math.nan if in_flight is None else float(in_flight)
+        if "queued" in signals:
+            out["queued"] = float(phases["queued"]) if phases is not None and "queued" in phases else math.nan
         return out
 
-    def readings(self, now: float, in_flight: Optional[int] = None) -> Dict[str, float]:
+    def readings(
+        self, now: float, in_flight: Optional[int] = None, phases: Optional[Mapping[str, int]] = None
+    ) -> Dict[str, float]:
         """:meth:`values` keyed by each term as written, for logs."""
         terms = self.terms
-        return {terms[k].source if k in terms else k: v for k, v in self.values(now, in_flight).items()}
+        return {terms[k].source if k in terms else k: v for k, v in self.values(now, in_flight, phases).items()}
