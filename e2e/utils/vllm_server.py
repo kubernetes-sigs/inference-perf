@@ -69,6 +69,11 @@ ENV_BASE_URL = "E2E_VLLM_BASE_URL"
 # below, which only knows the models this tree starts itself.
 ENV_MODALITIES = "E2E_VLLM_MODALITIES"
 
+# Set to 1 by whoever started the server with a tool-call parser
+# (--enable-auto-tool-choice --tool-call-parser ...) and a model that calls
+# tools. Unset means the tool-call cases skip: opt-125m cannot call a tool.
+ENV_TOOL_CALLS = "E2E_VLLM_TOOL_CALLS"
+
 # Modalities by served model id, for the models e2e/tests/test_vllm_cpu_*.py
 # start or expect. Text-only models are absent (empty set).
 MODALITIES_BY_MODEL = {
@@ -96,6 +101,12 @@ def served_modalities(model: str) -> frozenset[str]:
     if declared is not None:
         return frozenset(m.strip() for m in declared.split(",") if m.strip())
     return MODALITIES_BY_MODEL.get(model, frozenset())
+
+
+# Whether the external server was declared to parse tool calls.
+# E2E_VLLM_TOOL_CALLS=1 -> True, unset or anything else -> False.
+def serves_tool_calls() -> bool:
+    return os.environ.get(ENV_TOOL_CALLS) == "1"
 
 
 class VLLMServerRunner(AsyncContextDecorator):
