@@ -23,7 +23,7 @@ import heapq
 import json
 import re
 import time
-from typing import Any, Callable, List, NamedTuple, Optional
+from typing import Any, Callable, List, Mapping, NamedTuple, Optional
 
 from aiohttp import ClientResponse
 
@@ -71,6 +71,10 @@ class ParsedSSEStream(NamedTuple):
     tool_arguments: List[str]
     tool_calls: List[dict[str, Any]]
     has_tool_calls: bool
+    # One arrival time per token id the server returned (vLLM return_token_ids).
+    # Covers tokens whose text never reaches the client: tool-call wrappers,
+    # the end token, deltas a parser swallowed. Empty when no chunk carried ids.
+    token_id_times: List[float]
 
     @property
     def generated_chunk_times(self) -> List[float]:
@@ -80,6 +84,18 @@ class ParsedSSEStream(NamedTuple):
         lists gives one timestamp per chunk, including tool-only deltas.
         """
         return list(heapq.merge(self.chunk_times, self.reasoning_chunk_times, self.tool_chunk_times))
+
+
+def chunk_token_id_count(data: Mapping[str, object]) -> int:
+    """How many generated token ids a chunk carries, over all its choices."""
+    choices = data.get("choices")
+    if not isinstance(choices, list):
+        return 0
+    return sum(
+        len(token_ids)
+        for choice in choices
+        if isinstance(choice, dict) and isinstance(token_ids := choice.get("token_ids"), list)
+    )
 
 
 class StreamInterruptedError(Exception):
@@ -128,6 +144,7 @@ class _SSEStreamParser:
         self.tool_name_parts: dict[int, List[str]] = {}
         self.tool_argument_parts: dict[int, List[str]] = {}
         self.tool_calls: dict[int, dict[str, Any]] = {}
+        self.token_id_times: List[float] = []
         self.buffer = bytearray()
         self.data_lines: List[bytes] = []
         self.skip_lf = False
@@ -151,6 +168,9 @@ class _SSEStreamParser:
                         self.server_usage = dict(usage)
                     else:
                         self.server_usage.update(usage)
+            # Read before the text: a chunk can carry ids and no delta the client can see.
+            if b"token_ids" in data_bytes:
+                self.token_id_times.extend([message_time] * chunk_token_id_count(data))
             for call in chat_tool_call_deltas(data):
                 index = call["index"]
                 target = self.tool_calls.setdefault(index, {"id": "", "type": "function", "function": {"name": ""}})
@@ -284,6 +304,7 @@ class _SSEStreamParser:
                 for index, call in sorted(self.tool_calls.items())
             ],
             has_tool_calls=bool(self.tool_argument_parts),
+            token_id_times=self.token_id_times,
         )
 
 

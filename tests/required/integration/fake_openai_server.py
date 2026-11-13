@@ -27,7 +27,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import List, Optional, Type
+from typing import Dict, List, Optional, Tuple, Type
 
 from aiohttp import web
 
@@ -37,9 +37,16 @@ class StreamEvent:
     """One scripted SSE delta: which channel carries the text and how long the
     server waits before sending it."""
 
-    channel: str  # "reasoning" | "content"
+    # "tool" streams text as tool-call arguments. "hidden" sends a delta with
+    # no text, the way vLLM does for a token its tool parser swallowed.
+    channel: str  # "reasoning" | "content" | "tool" | "hidden"
     text: str
     delay_before: float = 0.0
+    # Ids of the tokens this event generated. Sent as the choice's token_ids
+    # only to a request that set return_token_ids, as vLLM does.
+    token_ids: Tuple[int, ...] = ()
+    # Function name, on the tool event that opens a call.
+    tool_name: str = ""
 
 
 @dataclass
@@ -56,6 +63,10 @@ class ServedStream:
     arrival_time: float = 0.0
     reasoning_send_times: List[float] = field(default_factory=list)
     content_send_times: List[float] = field(default_factory=list)
+    # One stamp per token id sent, so an event with three ids appears three times.
+    token_id_send_times: List[float] = field(default_factory=list)
+    # The JSON body the client posted.
+    request_body: Dict[str, object] = field(default_factory=dict)
 
 
 class FakeOpenAIServer:
@@ -118,21 +129,34 @@ class FakeOpenAIServer:
         return web.json_response({"object": "list", "data": [{"id": self.model, "object": "model"}]})
 
     async def _handle(self, request: web.Request) -> web.StreamResponse:
-        record = ServedStream(arrival_time=time.perf_counter())
+        record = ServedStream(arrival_time=time.perf_counter(), request_body=await request.json())
+        send_token_ids = record.request_body.get("return_token_ids") is True
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
         self.served.append(record)
         for event in self.script:
             if event.delay_before > 0:
                 await asyncio.sleep(event.delay_before)
-            key = self.reasoning_key if event.channel == "reasoning" else "content"
-            payload = {"choices": [{"delta": {key: event.text}}]}
+            delta: Dict[str, object]
+            if event.channel == "tool":
+                function = {"arguments": event.text, **({"name": event.tool_name} if event.tool_name else {})}
+                delta = {"tool_calls": [{"index": 0, "function": function}]}
+            elif event.channel == "hidden":
+                delta = {}
+            else:
+                delta = {self.reasoning_key if event.channel == "reasoning" else "content": event.text}
+            choice: Dict[str, object] = {"delta": delta}
+            if send_token_ids:
+                choice["token_ids"] = list(event.token_ids)
+            payload = {"choices": [choice]}
             await response.write(f"data: {json.dumps(payload)}\n\n".encode())
             stamp = time.perf_counter()
             if event.channel == "reasoning":
                 record.reasoning_send_times.append(stamp)
-            else:
+            elif event.channel == "content":
                 record.content_send_times.append(stamp)
+            if send_token_ids:
+                record.token_id_send_times.extend([stamp] * len(event.token_ids))
         if self.completion_tokens is not None:
             usage = {"choices": [], "usage": {"completion_tokens": self.completion_tokens}}
             await response.write(f"data: {json.dumps(usage)}\n\n".encode())
