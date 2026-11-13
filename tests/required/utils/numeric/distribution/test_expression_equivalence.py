@@ -159,7 +159,7 @@ class TestSampleLengths:
     def test_compiled_block_matches_sample_from_distribution(self) -> None:
         config = Distribution(type=DistributionType.NORMAL, mean=100.0, min=0, max=1000, std_dev=10.0)
         compiled = compile_legacy_distribution(config)
-        assert compiled == "Min(Max(Normal(100, 10), 0), 1000)"
+        assert compiled == "floor(Min(Max(Normal(100, 10), 0), 1000) + 1/2)"
         via_lengths = sample_lengths(compiled, 5000, np.random.default_rng(12))
         direct = sample_from_distribution(config, 5000, np.random.default_rng(12))
         assert abs(via_lengths.mean() - direct.mean()) < 1.0

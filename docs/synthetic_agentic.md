@@ -160,7 +160,7 @@ data:
   synthetic_agentic:
     num_sessions: 100
     fanout_probability: 0.5                          # ~half the agents delegate
-    sub_agents_per_spawn: "Uniform(1, 3)"
+    sub_agents_per_spawn: "floor(Uniform(1, 3) + 1/2)"
     max_depth: 2
     theme_mix: {generic: {weight: 1.0}}
     tool_loop_depth: 2

@@ -11,7 +11,7 @@ data:
     theme_mix: {generic: {weight: 1.0}}
     turns_per_session: 4
     fanout_probability: 0.0
-    tool_loop_depth: "Uniform(0, 3)"  # VARIES per round
+    tool_loop_depth: "floor(Uniform(0, 3) + 1/2)"  # VARIES per round
     tool_catalog_size_per_agent: 8
     input_tokens_per_turn: 250
     output_tokens_per_turn: 60

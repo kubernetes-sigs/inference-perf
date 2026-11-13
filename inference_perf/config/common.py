@@ -184,18 +184,12 @@ def _rewrite_legacy_block(
     return rewrite
 
 
-def _validate_expression_string(value: Union[float, str]) -> Union[float, str]:
-    if isinstance(value, str):
-        validate_length_expression(value)
-    return value
-
-
 # A whole-number config value (token lengths, counts): a bare int or an
-# expression string. A legacy distribution block is rewritten on load.
+# expression string. A legacy distribution block is rewritten on load. Each
+# field checks the value against its own range with check_whole_number.
 LengthValue = Annotated[
     Union[int, str],
     BeforeValidator(_rewrite_legacy_block(integer=True, io=False)),
-    AfterValidator(_validate_expression_string),
     LegacyDistributionBlock(integer=True),
 ]
 
@@ -205,15 +199,14 @@ LengthValue = Annotated[
 IOLengthValue = Annotated[
     Union[int, str],
     BeforeValidator(_rewrite_legacy_block(integer=True, io=True)),
-    AfterValidator(_validate_expression_string),
     LegacyDistributionBlock(integer=True, io=True),
 ]
 
-# A fractional config value (seconds): a bare number or an expression string.
+# A fractional config value (seconds): a bare number or an expression string,
+# checked with check_seconds.
 ScalarValue = Annotated[
     Union[float, str],
     BeforeValidator(_rewrite_legacy_block(integer=False, io=False)),
-    AfterValidator(_validate_expression_string),
     LegacyDistributionBlock(integer=False),
 ]
 

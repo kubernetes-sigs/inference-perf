@@ -14,8 +14,8 @@ tokenizer:
   pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
 data:
   type: random
-  input_distribution: "Min(Max(Normal(50, 10), 10), 100)"  # min length of the synthetic prompts; max length of the synthetic prompts; mean length of the synthetic prompts; standard deviation of the length of the synthetic prompts
-  output_distribution: "Min(Max(Normal(50, 10), 10), 100)"  # min length of the output to be generated; max length of the output to be generated; mean length of the output to be generated; standard deviation of the length of the output to be generated
+  input_distribution: "floor(Min(Max(Normal(50, 10), 10), 100) + 1/2)"  # min length of the synthetic prompts; max length of the synthetic prompts; mean length of the synthetic prompts; standard deviation of the length of the synthetic prompts
+  output_distribution: "floor(Min(Max(Normal(50, 10), 10), 100) + 1/2)"  # min length of the output to be generated; max length of the output to be generated; mean length of the output to be generated; standard deviation of the length of the output to be generated
 metrics:
   type: prometheus
   prometheus:

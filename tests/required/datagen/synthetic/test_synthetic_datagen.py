@@ -68,8 +68,8 @@ def test_synthetic_datagen_yields_string() -> None:
     api_config = APIConfig(type=APIType.Completion)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     tokenizer = DummyCustomTokenizer()
 
@@ -92,8 +92,8 @@ def test_synthetic_datagen_logs_progress_on_interval(caplog: Any) -> None:
     api_config = APIConfig(type=APIType.Completion)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     generator = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer(), total_count=20)
 
@@ -116,8 +116,8 @@ def test_synthetic_datagen_skips_progress_log_within_interval() -> None:
     api_config = APIConfig(type=APIType.Completion)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     generator = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer(), total_count=20)
 
@@ -163,7 +163,7 @@ def test_synthetic_datagen_embeddings_batches_without_output_distribution() -> N
     api_config = APIConfig(type=APIType.Embeddings, embeddings=EmbeddingsConfig(batch_size=4))
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
     tokenizer = DummyCustomTokenizer()
 
@@ -183,7 +183,7 @@ def test_synthetic_datagen_rerank_batches_without_output_distribution() -> None:
     api_config = APIConfig(type=APIType.Rerank, rerank=RerankConfig(document_count=3))
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
     tokenizer = DummyCustomTokenizer()
 
@@ -200,7 +200,7 @@ def test_synthetic_datagen_rerank_default_document_count() -> None:
     api_config = APIConfig(type=APIType.Rerank)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
     generator = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer(), total_count=5)
 
@@ -214,7 +214,7 @@ def test_synthetic_datagen_rerank_default_document_count() -> None:
 def test_synthetic_datagen_completion_still_requires_output_distribution() -> None:
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
     with pytest.raises(ValueError, match="IODistribution and tokenizer are required"):
         SyntheticDataGenerator(APIConfig(type=APIType.Completion), data_config, DummyCustomTokenizer(), total_count=5)
@@ -242,7 +242,7 @@ def test_synthetic_datagen_sglang_generate() -> None:
 def test_synthetic_datagen_sglang_generate_requires_output_distribution() -> None:
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
 
     with pytest.raises(ValueError, match="IODistribution and tokenizer are required"):
@@ -255,8 +255,8 @@ async def test_synthetic_datagen_chat_yields_chat_completion_data() -> None:
     api_config = APIConfig(type=APIType.Chat)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     tokenizer = DummyCustomTokenizer()
     generator = SyntheticDataGenerator(api_config, data_config, tokenizer, total_count=5)
@@ -293,7 +293,7 @@ async def test_synthetic_datagen_chat_yields_chat_completion_data() -> None:
 def test_synthetic_datagen_chat_requires_output_distribution() -> None:
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution="Min(Max(Normal(15, 2), 10), 20)",
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
 
     with pytest.raises(ValueError, match="IODistribution and tokenizer are required"):

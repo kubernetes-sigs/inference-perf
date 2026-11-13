@@ -25,8 +25,8 @@ data:
     seed: 42
     num_conversations: 50
     shared_system_prompt_len: 1000
-    dynamic_system_prompt_len: "Min(Max(LogNormal(8.129, 0.574), 500), 15000)"
-    turns_per_conversation: "Min(Max(LogNormal(1.221, 0.574), 1), 15)"
-    input_tokens_per_turn: "Min(Max(LogNormal(3.665, 0.703), 10), 1000)"
-    output_tokens_per_turn: "Min(Max(Normal(300, 150), 10), 1000)"
+    dynamic_system_prompt_len: "floor(Min(Max(LogNormal(8.129, 0.574), 500), 15000) + 1/2)"
+    turns_per_conversation: "floor(Min(Max(LogNormal(1.221, 0.574), 1), 15) + 1/2)"
+    input_tokens_per_turn: "floor(Min(Max(LogNormal(3.665, 0.703), 10), 1000) + 1/2)"
+    output_tokens_per_turn: "floor(Min(Max(Normal(300, 150), 10), 1000) + 1/2)"
     tool_call_latency_sec: "Min(Max(LogNormal(3.516, 0.763), 5), 300)"
