@@ -275,6 +275,7 @@ def main_cli() -> None:
                 cert_path=config.server.cert_path,
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
+                wait_for=config.server.wait_for,
             )
             # vllm_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -295,6 +296,7 @@ def main_cli() -> None:
                 cert_path=config.server.cert_path,
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
+                wait_for=config.server.wait_for,
             )
             # sglang_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -315,6 +317,7 @@ def main_cli() -> None:
                 cert_path=config.server.cert_path,
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
+                wait_for=config.server.wait_for,
             )
             # tgi_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer

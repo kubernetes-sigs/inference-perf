@@ -421,6 +421,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--server.api_key` | str | API key sent as a bearer token with each request. Redacted in the logged and saved config. |
 | `--server.cert_path` | str | Path to a client TLS certificate file. |
 | `--server.key_path` | str | Path to the private key for the client TLS certificate. |
+| `--server.wait_for` | Enum (ready, reachable, none) | What to wait for before the first request: 'ready' (the readiness route answers 200 or 404), 'reachable' (any HTTP response) or 'none'. 'reachable' and 'none' require model_name and skip the /v1/models lookups. |
 | `--tokenizer.pretrained_model_name_or_path` | str | HuggingFace model name or local path of the tokenizer to load. |
 | `--tokenizer.trust_remote_code` | boolean | Allow the tokenizer to execute code from its repository when loading. |
 | `--tokenizer.token` | str | HuggingFace access token used to download the tokenizer. Redacted in the logged and saved config. |

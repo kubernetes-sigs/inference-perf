@@ -14,7 +14,7 @@
 
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient, OpenAIMetrics
 from inference_perf.metrics.request_collector import RequestMetricCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig, WaitFor
 from .metrics import GaugeMetric, HistogramMetric, CounterMetric
 from typing import List, Optional
 import logging
@@ -40,6 +40,7 @@ class SGlangModelServerClient(openAIModelServerClient):
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
         lora_config: Optional[List[MultiLoRAConfig]] = None,
+        wait_for: WaitFor = WaitFor.READY,
     ) -> None:
         super().__init__(
             metrics_collector,
@@ -57,6 +58,7 @@ class SGlangModelServerClient(openAIModelServerClient):
             lora_config=lora_config,
             request_retries=request_retries,
             request_retry_backoff_sec=request_retry_backoff_sec,
+            wait_for=wait_for,
         )
         self.metric_filters = [f"model_name='{self.model_name}'", *additional_filters]
 
