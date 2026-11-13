@@ -91,6 +91,18 @@ class WorkloadSessionGenerator(ReplayGraphSessionGeneratorBase):
                 if foreign:
                     raise ValueError(f"node {node.id!r} depends on {foreign} outside its session {session_key!r}")
         self._session_keys = list(self._nodes_by_session)
+        # slot -> session key. Longer than _session_keys once a slot copies an
+        # earlier one: a duplicate added up front or a replay added on demand.
+        self._slot_keys = list(self._session_keys)
+        session_ids = [f"s{slot}_{_safe_id(key)}" for slot, key in enumerate(self._session_keys)]
+        target = replay_config.duplicate_sessions_target
+        if target is not None:
+            copies = 0
+            while len(session_ids) < target:
+                source_slot = copies % len(self._session_keys)
+                copies += 1
+                session_ids.append(f"{session_ids[source_slot]}_dup{copies}")
+                self._slot_keys.append(self._session_keys[source_slot])
 
         corpus_path = Path(config.corpus_file_path) if config.corpus_file_path else None
         self._prompter = RecordPrompter(
@@ -98,10 +110,15 @@ class WorkloadSessionGenerator(ReplayGraphSessionGeneratorBase):
             BlockTextMaterializer(tokenizer, base_seed=self.base_seed, corpus_path=corpus_path),
             special_tokens_in_lengths=workload.special_tokens_in_lengths,
         )
-        self.initialize_sessions_lazy([f"s{slot}_{_safe_id(key)}" for slot, key in enumerate(self._session_keys)])
+        self.initialize_sessions_lazy(session_ids)
+
+    def _on_cycled_slot(self, session_index: int, source_slot: int) -> None:
+        # the base class registers replay slots in index order, one call each
+        assert session_index == len(self._slot_keys), f"slot {session_index} registered out of order"
+        self._slot_keys.append(self._slot_keys[source_slot])
 
     def _build_session(self, session_index: int) -> Optional[ReplaySession]:
-        nodes = self._nodes_by_session[self._session_keys[session_index]]
+        nodes = self._nodes_by_session[self._slot_keys[session_index]]
         session_id = self._session_ids[session_index]
         index_of = {node.id: i for i, node in enumerate(nodes)}
 

@@ -159,6 +159,40 @@ def test_session_config_caps_waits(tmp_path: Path) -> None:
     assert second.wait_ms == 1000
 
 
+# duplicate_sessions_target of 5 over the 3 sessions adds copies of the first
+# two, named after them with a _dup suffix and asking for what they ask for
+# (max_tokens 5 then 6, and 4 then 2). A target of 2 is already met and adds
+# nothing.
+def test_duplicate_sessions_target_adds_copies(tmp_path: Path) -> None:
+    corpus_path = write_corpus(tmp_path)
+    gen = make_generator(corpus_path, new_word_tokenizer(), session=SessionReplayConfig(duplicate_sessions_target=5))
+    assert [gen.get_session_info(i)["session_id"] for i in range(gen.get_session_count())] == [
+        "s0_claude_A",
+        "s1_claude_B",
+        "s2_chat",
+        "s0_claude_A_dup1",
+        "s1_claude_B_dup2",
+    ]
+    assert [[e.max_tokens for e in events(gen, i)] for i in (3, 4)] == [[5, 6], [4, 2]]
+    met = make_generator(corpus_path, new_word_tokenizer(), session=SessionReplayConfig(duplicate_sessions_target=2))
+    assert met.get_session_count() == 3
+
+
+# A stage bounded by time asks for sessions past the end of the workload.
+# Index 3 of 3 sessions replays session 0 (max_tokens 5 then 6), index 4
+# session 1 (4 then 2) and index 5 session 2 (1 then 2), each under its
+# source's id plus _dup1. With two duplicates added first (5 slots), index 6
+# replays slot 1 and index 8 replays slot 3, itself a copy of session 0.
+def test_indices_past_the_workload_replay_it(tmp_path: Path) -> None:
+    corpus_path = write_corpus(tmp_path)
+    gen = make_generator(corpus_path, new_word_tokenizer())
+    assert [[e.max_tokens for e in events(gen, i)] for i in (3, 4, 5)] == [[5, 6], [4, 2], [1, 2]]
+    assert [gen.get_session_info(i)["session_id"] for i in (3, 5)] == ["s0_claude_A_dup1", "s2_chat_dup1"]
+    padded = make_generator(corpus_path, new_word_tokenizer(), session=SessionReplayConfig(duplicate_sessions_target=5))
+    assert [[e.max_tokens for e in events(padded, i)] for i in (6, 8)] == [[4, 2], [5, 6]]
+    assert padded.get_session_info(8)["session_id"] == "s0_claude_A_dup1_dup1"
+
+
 # A node that depends on a node of another session is refused: claude:A
 # and claude:B are different session ids.
 def test_cross_session_dependencies_are_refused() -> None:
