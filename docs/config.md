@@ -91,9 +91,10 @@ data:
     std_dev: 10
     total_count: 100
   # Alternatively (synthetic/random only), either field takes an expression
-  # string (see expressions.md). The expression owns its value range: nothing is clamped.
-  # output_distribution: "LogNormal(5.0, 0.5)"
-  # output_distribution: "100 + Uniform(0, 400)"
+  # string (see expressions.md). The expression owns its value range: nothing is clamped or rounded,
+  # so a continuous distribution goes under floor(...).
+  # output_distribution: "floor(LogNormal(5.0, 0.5))"
+  # output_distribution: "100 + floor(Uniform(0, 400))"
   shared_prefix:              # For shared_prefix type
     num_groups: 10            # Number of shared prefix groups
     num_prompts_per_group: 10 # Unique questions per group
@@ -102,7 +103,7 @@ data:
     output_len: 50            # Default output length (tokens), used when output_distribution is absent
     max_model_len: 225000     # Optional multi-turn context ceiling; defaults to 225000, matching conversation_replay
     # system_prompt_len, question_len, and output_len also accept an inline
-    # distribution or an expression string (see expressions.md), e.g. question_len: "Normal(50, 10)"
+    # distribution or an expression string (see expressions.md), e.g. question_len: "floor(Normal(50, 10))"
     question_distribution:    # Optional: distribution for question lengths (overrides question_len)
       min: 10
       max: 1024
@@ -141,7 +142,7 @@ that release the GIL, such as network and file I/O.
 
 **Note:** For `otel_trace_replay` type, see the [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) section for complete configuration details.
 
-With `enable_multi_turn_chat`, a shared-prefix `output_len` must leave room for a prompt within `max_model_len`. An expression needs a finite upper bound for that check (see [Value ranges](./expressions.md#value-ranges)): `Min(Normal(50, 10), 99)` fits a 300-token context, a bare `Normal(50, 10)` is rejected.
+With `enable_multi_turn_chat`, a shared-prefix `output_len` must leave room for a prompt within `max_model_len`. An expression needs a finite upper bound for that check (see [Value ranges](./expressions.md#value-ranges)): `floor(Min(Normal(50, 10), 99))` fits a 300-token context, an unbounded `floor(Normal(50, 10))` is rejected.
 
 <!-- checked-example -->
 ```yaml
@@ -152,7 +153,7 @@ data:
     num_prompts_per_group: 4
     enable_multi_turn_chat: true
     max_model_len: 300
-    output_len: "Min(Normal(50, 10), 99)"
+    output_len: "floor(Min(Normal(50, 10), 99))"
 ```
 
 #### Multimodal Data Generation
@@ -203,8 +204,8 @@ one that isn't with `Min(Max(..., 0), 1)`.
 ```yaml
 data:
   type: synthetic
-  input_distribution: "Min(LogNormal(6, 0.5), 4096)"
-  output_distribution: "Uniform(64, 256)"
+  input_distribution: "floor(Min(LogNormal(6, 0.5), 4096))"
+  output_distribution: "floor(Uniform(64, 256))"
   multimodal:
     image:
       count: "Poisson(2)"

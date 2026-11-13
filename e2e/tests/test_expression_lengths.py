@@ -39,11 +39,12 @@ RATE = 20
 DURATION = 2
 EXPECTED_REQUESTS = RATE * DURATION
 
-# A clamped normal for the prompt and a flat range for the output, so each has
-# a hard floor and ceiling the wire values can be held to.
-INPUT_EXPRESSION = "Min(Max(Normal(60, 15), 30), 90)"
+# A clamped normal rounded to the nearest token for the prompt and a flat range
+# rounded down for the output, so each has a hard floor and ceiling the wire
+# values can be held to. Lengths are whole numbers, so both say how.
+INPUT_EXPRESSION = "floor(Min(Max(Normal(60, 15), 30), 90) + 1/2)"
 INPUT_BOUNDS = (30, 90)
-OUTPUT_EXPRESSION = "Uniform(8, 24)"
+OUTPUT_EXPRESSION = "floor(Uniform(8, 25))"
 OUTPUT_BOUNDS = (8, 24)
 
 # 40 draws that all came out equal, or nearly so, mean the expression was
@@ -106,3 +107,16 @@ async def test_expression_lengths_reach_the_wire() -> None:
     low, high = INPUT_BOUNDS
     assert all(low <= value <= high for value in inputs), f"prompt length outside [{low}, {high}] tokens: {inputs}"
     assert len(set(inputs)) >= MIN_DISTINCT, f"prompt length barely varies: {sorted(set(inputs))}"
+
+
+# The same run with output_distribution 'Uniform(8, 24)', which can draw fractions. Expected: the CLI
+# exits non-zero before sending anything and prints the floor() form to paste.
+async def test_continuous_length_expression_is_refused_with_the_fix() -> None:
+    async with AbsorberServer(port=get_free_port(), model=MODEL_PATH) as absorber:
+        config = _config(absorber.base_url)
+        config["data"]["output_distribution"] = "Uniform(8, 24)"
+        result = await run_benchmark_minimal(config, timeout_sec=None)
+
+    assert not result.success, "a continuous length expression was accepted"
+    assert "floor(Uniform(8, 24))" in result.stdout, result.stdout[-4000:]
+    assert absorber.requests == []

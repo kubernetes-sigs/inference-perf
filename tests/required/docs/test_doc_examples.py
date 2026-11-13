@@ -38,6 +38,7 @@ from pydantic import BaseModel, ValidationError
 
 from inference_perf.config import DataConfig, LoadConfig
 from inference_perf.config.datagen.multimodal import ImageDatagenConfig
+from inference_perf.config.common import validate_length_expression
 from inference_perf.utils.numeric.expression import SERIES, SIGNALS, Expression, Predicate
 from inference_perf.utils.numeric.expression.measured import AGGREGATES, WINDOWS
 
@@ -102,6 +103,13 @@ def _check_bounds(row: Row) -> None:
     assert Expression(expr).bounds == (_number(row[1]), _number(row[2])), f"{expr}: bounds {Expression(expr).bounds}"
 
 
+# A whole-number example must prove integer-valued, with the claimed bounds. Input: '`Min(Poisson(30), 57)`', 0, 57.
+def _check_whole_number(row: Row) -> None:
+    expr = _code(row[0])
+    assert Expression(expr).is_integer_valued, f"{expr}: not provably whole-numbered"
+    _check_bounds(row)
+
+
 # A condition must become true at the claimed second (2 dp).
 def _check_condition(row: Row) -> None:
     condition, ends_at = _code(row[0]), float(row[1])
@@ -164,6 +172,8 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Rejected expression", "Why"): _rejects(Expression),
     ("Rejected condition", "Why"): _rejects(Predicate),
     ("Rejected insertion_point", "Why"): _rejects(lambda raw: ImageDatagenConfig(insertion_point=raw)),
+    ("Whole-number expression", "Lower", "Upper"): _check_whole_number,
+    ("Rejected whole-number expression", "Why"): _rejects(validate_length_expression),
 }
 
 MODELS: Dict[str, Type[BaseModel]] = {"load": LoadConfig, "data": DataConfig}
