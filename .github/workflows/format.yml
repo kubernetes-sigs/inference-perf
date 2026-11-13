@@ -12,6 +12,12 @@ on:
       - main
       - 'feature/**'
 
+# explicit bash runs every step with -eo pipefail, so a pipe can't swallow a
+# failure. tests/test_check_workflow_shell.py holds every workflow to it.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   validate:
     runs-on: ubuntu-latest

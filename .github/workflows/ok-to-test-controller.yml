@@ -32,6 +32,12 @@ permissions:
   pull-requests: read   # read PR head SHA
   issues: write         # add a reaction to the triggering comment
 
+# explicit bash runs every step with -eo pipefail, so a pipe can't swallow a
+# failure. tests/test_check_workflow_shell.py holds every workflow to it.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   authorize-and-approve:
     # issue_comment fires for both issues and PRs; `issue.pull_request` is only
