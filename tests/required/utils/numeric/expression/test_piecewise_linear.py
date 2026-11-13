@@ -21,17 +21,18 @@ matters: the segments must be the same function, not an approximation.
 
 import math
 import random
-from typing import Any, List, Tuple
+from typing import List, Tuple, Union
 
 import pytest
 import sympy
 
 from inference_perf.utils.numeric.expression import PiecewiseLinear
-from inference_perf.utils.numeric.expression.expression import _T, _parse_raw
+from inference_perf.utils.numeric.expression.expression import _T, _is_expr, _parse_raw
+from inference_perf.utils.numeric.expression.sympy_types import SympyExpr
 
 
 # Each segment as (start, end, slope, intercept), rounded for comparison.
-def _shape(raw: Any) -> List[Tuple[float, float, float, float]]:
+def _shape(raw: Union[str, int, float]) -> List[Tuple[float, float, float, float]]:
     return [(round(s.start, 6), s.end, round(s.slope, 6), round(s.intercept, 6)) for s in PiecewiseLinear(raw).segments]
 
 
@@ -194,11 +195,12 @@ def test_segments_match_direct_evaluation() -> None:
         raw = _random_expression(rng)
         line = PiecewiseLinear(raw)
         expr = _parse_raw("Expression", raw)
+        assert _is_expr(expr)
         try:
             direct = sympy.lambdify([_T], expr, modules=[heaviside, "math"])
         except RecursionError:
             # sympy cannot print some nested conditions (ITE) for math; substitute instead.
-            def direct(t: float, e: Any = expr) -> float:
+            def direct(t: float, e: SympyExpr = expr) -> float:
                 return float(e.subs(_T, sympy.Float(t)))
 
         starts = [s.start for s in line.segments]
