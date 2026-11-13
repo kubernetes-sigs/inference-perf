@@ -129,19 +129,25 @@ def _runtime_metric(attribute: str, name: str) -> str:
 
 
 # A series row must match the code's SERIES entry: name, report field ('none' for no field), unit and samples,
-# and name the runtime metric that declares the series.
+# say 'none' for labels, since a series takes no selector, and name the runtime metric that declares the series.
 def _check_series(row: Row) -> None:
     name = _code(row[0])
     series = SERIES[name]
     assert (series.report_field or "none", series.unit, series.samples) == (_code(row[1]), row[2], row[3]), row
-    assert _code(row[4]) == _runtime_metric("series", name), row
+    assert row[4] == "none", row
+    with pytest.raises(ValueError):
+        Predicate(f'(t >= 600) | ({name}{{status="success"}} > 0)')
+    assert _code(row[5]) == _runtime_metric("series", name), row
 
 
-# A signal row must name a signal the code computes, with the code's description and its runtime metric.
+# A signal row must name a signal the code computes, with the code's description, the labels a condition
+# can select it by ('none' when there are none) and its runtime metric.
 def _check_signal(row: Row) -> None:
     name = _code(row[0])
     assert SIGNALS[name] == row[1], row
-    assert _code(row[2]) == _runtime_metric("signal", name), row
+    assert re.findall(r"`([^`]*)`", row[2]) == sorted(SIGNAL_LABELS.get(name, {})), row
+    assert row[2] != "" and (row[2] == "none") == (name not in SIGNAL_LABELS), row
+    assert _code(row[3]) == _runtime_metric("signal", name), row
 
 
 # A signal label row must match the code's SIGNAL_LABELS entry and its runtime metric must carry the label.
@@ -183,8 +189,8 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Condition", "Holds from (s)"): _check_condition,
     ("Condition", "Holds by (s)", "Can hold from (s)"): _check_measured_condition,
     ("Window function", "Reads"): _check_window_function,
-    ("Series", "Report field", "Unit", "Samples", "Runtime metric"): _check_series,
-    ("Signal", "Reads", "Runtime metric"): _check_signal,
+    ("Series", "Report field", "Unit", "Samples", "Labels", "Runtime metric"): _check_series,
+    ("Signal", "Reads", "Labels", "Runtime metric"): _check_signal,
     ("Signal", "Label", "Values"): _check_signal_label,
     ("Signal read", "Reads"): _check_signal_read,
     ("Aggregate", "Reads"): _check_aggregate,
@@ -242,8 +248,8 @@ def test_every_checked_table_is_present() -> None:
 @pytest.mark.parametrize(
     ("header", "names"),
     [
-        (("Series", "Report field", "Unit", "Samples", "Runtime metric"), set(SERIES)),
-        (("Signal", "Reads", "Runtime metric"), set(SIGNALS)),
+        (("Series", "Report field", "Unit", "Samples", "Labels", "Runtime metric"), set(SERIES)),
+        (("Signal", "Reads", "Labels", "Runtime metric"), set(SIGNALS)),
         (("Signal", "Label", "Values"), set(SIGNAL_LABELS)),
         (("Aggregate", "Reads"), set(AGGREGATES)),
         (("Window", "Selects"), {f"_over_{window}" for window in WINDOWS}),
