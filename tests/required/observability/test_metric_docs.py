@@ -21,7 +21,7 @@ actually shows, and that the check which enforces it runs on the merge path.
 import re
 import tomllib
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Dict, List
 
 import pytest
 from prometheus_client import Counter, Gauge, Histogram  # noqa: TID251 (throwaway metrics for these tests)
@@ -34,7 +34,7 @@ from inference_perf.observability.metrics.coverage import (
     specs_declared_under_sets,
     unaggregated_spec_names,
 )
-from inference_perf.observability.metrics.registry import MetricSpec
+from inference_perf.observability.metrics.registry import MetricSpec, exposition_name
 from inference_perf.observability.metrics.sets import ALL_SPECS
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -50,6 +50,67 @@ LINT_WORKFLOW = "Python Linting and Type Checks"
 # the prose above the table have no such cell and are skipped.
 def documented_names_in_the_file() -> List[str]:
     return re.findall(r"^\| `([a-z_0-9]+)` \|", DOC_PATH.read_text(), re.MULTILINE)
+
+
+# Every name a scrape of the real ALL_SPECS can show, including the _bucket, _sum and _count
+# series of each histogram, which a PromQL example reads by those names.
+def scrapable_names() -> set[str]:
+    names = set(emitted_metric_names())
+    for spec in ALL_SPECS:
+        if spec.metric_type is Histogram:
+            names |= {f"{exposition_name(spec)}{suffix}" for suffix in ("_bucket", "_sum", "_count")}
+    return names
+
+
+# Every inference_perf_* name each text mentions that no scrape can show, keyed by the text's name.
+# {"a.md": "see `inference_perf_gone_total`"} -> {"a.md": ["inference_perf_gone_total"]}. A bare
+# prefix, as in grep '^inference_perf_', names no metric and is skipped.
+def unknown_metric_mentions(texts: Dict[str, str]) -> Dict[str, List[str]]:
+    known = scrapable_names()
+    unknown: Dict[str, List[str]] = {}
+    for name, text in texts.items():
+        stale = sorted(set(re.findall(r"\binference_perf_[a-z0-9_]*[a-z0-9]", text)) - known)
+        if stale:
+            unknown[name] = stale
+    return unknown
+
+
+# Every markdown file in the repo outside hidden and virtualenv directories, keyed by its repo-relative path.
+def markdown_files() -> Dict[str, str]:
+    skipped = {"venv", "node_modules"}
+    return {
+        str(path.relative_to(REPO_ROOT)): path.read_text()
+        for path in sorted(REPO_ROOT.rglob("*.md"))
+        if not any(part.startswith(".") or part in skipped for part in path.relative_to(REPO_ROOT).parts)
+    }
+
+
+# Reads every markdown file in the repo, which covers the hand-written prose in docs/ and the example
+# queries the generator writes into docs/runtime_metrics.md. Expects every inference_perf_* name they
+# mention to be one a scrape can show, so a doc cannot keep naming a metric that was renamed or removed.
+def test_no_doc_mentions_a_metric_that_is_not_exported() -> None:
+    files = markdown_files()
+    assert "docs/runtime_metrics.md" in files and "docs/reports.md" in files
+    assert unknown_metric_mentions(files) == {}
+
+
+# Two texts: one names a counter that does not exist, the other a real counter, a real histogram's
+# _bucket series and the bare prefix. Expects only the first reported, with the name at fault.
+def test_a_mention_of_a_missing_metric_is_reported() -> None:
+    texts = {
+        "stale.md": "failures by class: `inference_perf_request_errors_total`",
+        "fine.md": (
+            "inference_perf_requests_total, rate(inference_perf_time_to_first_token_seconds_bucket[1m]), "
+            "grep '^inference_perf_'"
+        ),
+    }
+    assert unknown_metric_mentions(texts) == {"stale.md": ["inference_perf_request_errors_total"]}
+
+
+# A counter is exported with a _total suffix, so prose that uses the spec name names nothing a scrape shows.
+# Expects 'inference_perf_requests' reported, the way the generated table already refuses it.
+def test_a_counter_mentioned_without_total_is_reported() -> None:
+    assert unknown_metric_mentions({"a.md": "the `inference_perf_requests` counter"}) == {"a.md": ["inference_perf_requests"]}
 
 
 # Scrapes a registry built from the real ALL_SPECS with config gating bypassed, and
