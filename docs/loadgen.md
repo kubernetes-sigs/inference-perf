@@ -4,6 +4,8 @@ Inference Perf generates load at the specified request rate based on a multi-pro
 
 ## Architecture
 
+Worker processes use `forkserver` on Linux and macOS, with the load generator preloaded before workers start. Windows uses a `spawn` context instead because it has no forkserver start method; `start_forkserver()` is a no-op there. This avoids the Windows import error without changing POSIX worker startup. It does not resolve the separate [spawn/pickling limitations](https://github.com/kubernetes-sigs/inference-perf/issues/305) or establish full Windows benchmark support.
+
 ```mermaid
 graph TD
     subgraph TOP [" "]
