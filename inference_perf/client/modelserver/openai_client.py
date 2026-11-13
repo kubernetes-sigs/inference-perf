@@ -283,7 +283,8 @@ class openAIModelServerClient(ModelServerClient):
         """Poll the server's readiness route until it answers 200.
 
         A profile without a readiness route probes ``/v1/models`` instead. A 404 means the
-        route is not served here, so the run carries on without waiting. Any other status
+        route is not served here, so the run carries on without waiting. A 401 or 403 means the
+        credentials are wrong and will not fix themselves, so it raises at once. Any other status
         and any transport error count as not ready yet, for at most
         ``readiness_timeout_sec``; the error raised at the deadline names the last one seen.
         """
@@ -306,6 +307,11 @@ class openAIModelServerClient(ModelServerClient):
                 if response.status_code == 404:
                     logger.info(f"Server does not serve {url}, starting without waiting for it")
                     return
+                if response.status_code in (401, 403):
+                    raise Exception(
+                        f"Server refused the readiness probe: {url} answered HTTP {response.status_code}; "
+                        "check the api_key and any auth headers"
+                    )
                 last_seen = f"HTTP {response.status_code}"
             except requests.RequestException as e:
                 last_seen = f"{type(e).__name__}: {e}"
