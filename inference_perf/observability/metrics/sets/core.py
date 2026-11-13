@@ -67,19 +67,15 @@ def _stamp_stage(gauge: Gauge, context: StageContext) -> None:
 
 
 def _count_request(counter: Counter, request: ObservedRequest) -> None:
-    if request.metric.error is None:
-        status = "success"
-    elif is_stage_teardown_cancelled(request.metric.error):
-        status = "cancelled"
+    error = request.metric.error
+    # error_type is set for a failure only. A cancellation is the load generator's doing, not a server error.
+    if error is None:
+        status, error_type = "success", ""
+    elif is_stage_teardown_cancelled(error):
+        status, error_type = "cancelled", ""
     else:
-        status = "failure"
-    counter.labels(stage_label(request.metric), status).inc()
-
-
-def _count_error(counter: Counter, request: ObservedRequest) -> None:
-    # A cancellation is the load generator's doing, so it is not a server error.
-    if request.metric.error is not None and not is_stage_teardown_cancelled(request.metric.error):
-        counter.labels(stage_label(request.metric), request.metric.error.error_type).inc()
+        status, error_type = "failure", error.error_type
+    counter.labels(stage_label(request.metric), status, error_type).inc()
 
 
 def _count_prompt_tokens(counter: Counter, request: ObservedRequest) -> None:
@@ -147,7 +143,7 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         name="inference_perf_requests_in_flight",
         documentation="Requests sent to the server and not yet finished, sampled at scrape time.",
         metric_type=Gauge,
-        signal="in_flight",
+        signals=("in_flight",),
         on_run_start=_bind_in_flight,
     ),
     MetricSpec(
@@ -155,12 +151,14 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         documentation=(
             "Request attempts that have completed, by stage and final status: success, failure, "
             "or cancelled (still in flight when the stage's teardown grace ran out). "
+            "A failure also carries its error class in error_type (the client's exception class or "
+            "'HTTP Error <status>'); error_type is empty for the other two. "
             "Incremented when the attempt finishes, fails or is cancelled, not when it is sent."
         ),
         metric_type=Counter,
-        labelnames=("stage", "status"),
+        labelnames=("stage", "status", "error_type"),
         series="error",
-        signal="completed",
+        signals=("completed", "errors"),
         on_request=_count_request,
     ),
     MetricSpec(
@@ -168,7 +166,7 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         documentation="Unix time at which a request of the stage last finished, success or failure.",
         metric_type=Gauge,
         labelnames=("stage",),
-        signal="since_last_completion",
+        signals=("since_last_completion",),
         on_request=_stamp_last_completion,
     ),
     MetricSpec(
@@ -183,16 +181,6 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         metric_type=Counter,
         labelnames=("stage", "cause"),
         on_stage_end=_count_workers_lost,
-    ),
-    MetricSpec(
-        name="inference_perf_request_errors",
-        documentation=(
-            "Failed request attempts by stage and error class (the client's exception class or 'HTTP Error <status>')."
-        ),
-        metric_type=Counter,
-        labelnames=("stage", "error_type"),
-        signal="errors",
-        on_request=_count_error,
     ),
     MetricSpec(
         name="inference_perf_prompt_tokens",

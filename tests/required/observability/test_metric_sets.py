@@ -220,38 +220,47 @@ def test_stage_gauges_follow_transitions() -> None:
 # --- request outcomes and tokens ------------------------------------------------
 
 
+# Every requests_total series of the hub as {(status, error_type): value}, for stage 0.
+def _requests_by_status(hub: MetricsHub) -> Dict[tuple[str, str], float]:
+    return {
+        (sample.labels["status"], sample.labels["error_type"]): sample.value
+        for family in hub.registry.collect()
+        for sample in family.samples
+        if sample.name == "inference_perf_requests_total" and sample.labels["stage"] == "0"
+    }
+
+
 # Four stage-0 requests: two HTTP 503 failures, one TimeoutError, one success.
-# Expects errors_total to read 2 for "HTTP Error 503" and 1 for "TimeoutError",
-# requests_total 3 failure / 1 success, and no empty error_type series.
-def test_errors_counted_by_class_and_only_for_failures() -> None:
+# Expects requests_total to read 2 for failure "HTTP Error 503", 1 for failure "TimeoutError"
+# and 1 for success with an empty error_type, and nothing else.
+def test_failures_counted_by_class_and_successes_carry_no_error_type() -> None:
     hub = _streaming_hub()
     hub.observe_request(_streamed(error="HTTP Error 503"))
     hub.observe_request(_streamed(error="HTTP Error 503"))
     hub.observe_request(_streamed(error="TimeoutError"))
     hub.observe_request(_streamed())
 
-    errors = "inference_perf_request_errors_total"
-    assert _sample(hub, errors, stage="0", error_type="HTTP Error 503") == 2.0
-    assert _sample(hub, errors, stage="0", error_type="TimeoutError") == 1.0
-    assert _sample(hub, "inference_perf_requests_total", stage="0", status="failure") == 3.0
-    assert _sample(hub, "inference_perf_requests_total", stage="0", status="success") == 1.0
-    assert 'error_type=""' not in generate_latest(hub.registry).decode(), "successes must not create an error series"
+    assert _requests_by_status(hub) == {
+        ("failure", "HTTP Error 503"): 2.0,
+        ("failure", "TimeoutError"): 1.0,
+        ("success", ""): 1.0,
+    }
 
 
 # Three stage-0 requests: one HTTP 503 failure, one cancelled at stage teardown, one
-# success. Expects requests_total 1 each for failure, cancelled and success, and the
-# cancellation absent from errors_total, which reads 1 for "HTTP Error 503" only.
+# success. Expects requests_total 1 each for failure, cancelled and success, with the
+# cancellation carrying an empty error_type like the success, so it is not counted as an error class.
 def test_cancelled_requests_are_their_own_status_and_not_errors() -> None:
     hub = _streaming_hub()
     hub.observe_request(_streamed(error="HTTP Error 503"))
     hub.observe_request(_streamed(error=STAGE_TEARDOWN_CANCELLED_ERROR_TYPE))
     hub.observe_request(_streamed())
 
-    requests = "inference_perf_requests_total"
-    assert _sample(hub, requests, stage="0", status="failure") == 1.0
-    assert _sample(hub, requests, stage="0", status="cancelled") == 1.0
-    assert _sample(hub, requests, stage="0", status="success") == 1.0
-    assert _sample(hub, "inference_perf_request_errors_total", stage="0", error_type="HTTP Error 503") == 1.0
+    assert _requests_by_status(hub) == {
+        ("failure", "HTTP Error 503"): 1.0,
+        ("cancelled", ""): 1.0,
+        ("success", ""): 1.0,
+    }
     assert STAGE_TEARDOWN_CANCELLED_ERROR_TYPE not in generate_latest(hub.registry).decode()
 
 
@@ -367,20 +376,26 @@ def test_ttft_and_tpot_absent_on_unary_runs() -> None:
 # --- expression terms ---------------------------------------------------------
 
 
-# Walks ALL_SPECS for the series and signal each metric declares. Expects every name in
-# SERIES and SIGNALS backed by exactly one metric, e.g. ttft by
-# inference_perf_time_to_first_token_seconds, so each term reads one runtime metric.
-@pytest.mark.parametrize(("attribute", "names"), [("series", SERIES), ("signal", SIGNALS)])
-def test_every_expression_term_has_one_runtime_metric(attribute: str, names: dict[str, object]) -> None:
-    backed = [getattr(spec, attribute) for spec in ALL_SPECS if getattr(spec, attribute) is not None]
-    assert sorted(backed) == sorted(names), f"{attribute}: backed {sorted(backed)}, terms {sorted(names)}"
+# Walks ALL_SPECS for the series each metric declares. Expects every name in SERIES backed by
+# exactly one metric, e.g. ttft by inference_perf_time_to_first_token_seconds.
+def test_every_series_has_one_runtime_metric() -> None:
+    backed = [spec.series for spec in ALL_SPECS if spec.series is not None]
+    assert sorted(backed) == sorted(SERIES), f"backed {sorted(backed)}, series {sorted(SERIES)}"
+
+
+# Walks ALL_SPECS for the signals each metric declares. Expects every name in SIGNALS backed by
+# exactly one metric: completed and errors both by inference_perf_requests, the other two by their own.
+def test_every_signal_has_one_runtime_metric() -> None:
+    backed = [signal for spec in ALL_SPECS for signal in spec.signals]
+    assert sorted(backed) == sorted(SIGNALS), f"backed {sorted(backed)}, signals {sorted(SIGNALS)}"
+    assert next(spec.name for spec in ALL_SPECS if "errors" in spec.signals) == "inference_perf_requests"
 
 
 # Walks SIGNAL_LABELS, e.g. completed by status. Expects the metric backing each signal to carry
 # every label the signal can be read by, so completed{status="failure"} names a real series.
 def test_every_signal_label_is_on_its_runtime_metric() -> None:
     for signal, labels in SIGNAL_LABELS.items():
-        (spec,) = [spec for spec in ALL_SPECS if spec.signal == signal]
+        (spec,) = [spec for spec in ALL_SPECS if signal in spec.signals]
         assert set(labels) <= set(spec.labelnames), f"{signal}: {spec.name} lacks {set(labels) - set(spec.labelnames)}"
 
 

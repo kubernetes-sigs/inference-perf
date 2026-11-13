@@ -125,7 +125,9 @@ def _check_window_function(row: Row) -> None:
 # The runtime metric a spec declares as the form of series or signal `name`, as a scrape names it.
 # Input: ("series", "ttft") -> "inference_perf_time_to_first_token_seconds".
 def _runtime_metric(attribute: str, name: str) -> str:
-    return next(exposition_name(spec) for spec in ALL_SPECS if getattr(spec, attribute) == name)
+    return next(
+        exposition_name(spec) for spec in ALL_SPECS if name in (spec.signals if attribute == "signals" else (spec.series,))
+    )
 
 
 # A series row must match the code's SERIES entry: name, report field ('none' for no field), unit and samples,
@@ -147,7 +149,7 @@ def _check_signal(row: Row) -> None:
     assert SIGNALS[name] == row[1], row
     assert re.findall(r"`([^`]*)`", row[2]) == sorted(SIGNAL_LABELS.get(name, {})), row
     assert row[2] != "" and (row[2] == "none") == (name not in SIGNAL_LABELS), row
-    assert _code(row[3]) == _runtime_metric("signal", name), row
+    assert _code(row[3]) == _runtime_metric("signals", name), row
 
 
 # A signal label row must match the code's SIGNAL_LABELS entry and its runtime metric must carry the label.
@@ -155,7 +157,7 @@ def _check_signal(row: Row) -> None:
 def _check_signal_label(row: Row) -> None:
     name, label = _code(row[0]), _code(row[1])
     assert list(SIGNAL_LABELS[name][label]) == re.findall(r"`([^`]*)`", row[2]), row
-    assert label in next(spec.labelnames for spec in ALL_SPECS if spec.signal == name), row
+    assert label in next(spec.labelnames for spec in ALL_SPECS if name in spec.signals), row
 
 
 # A signal read example must parse as exactly one term, read from a signal. Input: '`completed offset 60s`'.
