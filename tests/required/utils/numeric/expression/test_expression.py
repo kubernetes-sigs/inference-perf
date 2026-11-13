@@ -80,6 +80,13 @@ class TestVariablePermissions:
         with pytest.raises((ValueError, TypeError)):
             Expression("10 +* 2")
 
+    # '1, 2' parses to a Python tuple and '[1]' to a list. Both are rejected as not a numeric value,
+    # where they used to fail with AttributeError: 'tuple' object has no attribute 'atoms'.
+    @pytest.mark.parametrize("raw", ["1, 2", "[1]"])
+    def test_tuple_or_list_rejected(self, raw: str) -> None:
+        with pytest.raises(ValueError, match="is not a numeric value"):
+            Expression(raw)
+
 
 class TestRandom:
     def test_normal_returns_float(self) -> None:
@@ -324,3 +331,58 @@ def test_bounds_contain_samples(raw: str) -> None:
     lo, hi = expr.bounds
     samples = np.asarray(expr.sample(rng=np.random.default_rng(0), size=20000))
     assert lo <= samples.min() and samples.max() <= hi
+
+
+# is_integer_valued, one case per branch: a whole constant, a fractional constant, an integer-support variable
+# (Poisson), a finite-set variable (Binomial), a real-support variable (Normal), and floor() over one.
+# Expected: True, False, True, True, False, True.
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("512", True),
+        ("512.5", False),
+        ("Poisson(2)", True),
+        ("Binomial(10, 1/2)", True),
+        ("Normal(512, 128)", False),
+        ("floor(Normal(512, 128))", True),
+    ],
+)
+def test_is_integer_valued(raw: str, expected: bool) -> None:
+    assert Expression(raw).is_integer_valued is expected
+
+
+# Arithmetic keeps or loses integrality the way it should. Poisson(2) + 1 and Min(Poisson(2), 20) stay whole,
+# Poisson(2) / 2 and Poisson(2) * 1.5 do not. Expected: True, True, False, False.
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("Poisson(2) + 1", True), ("Min(Poisson(2), 20)", True), ("Poisson(2) / 2", False), ("Poisson(2) * 1.5", False)],
+)
+def test_is_integer_valued_through_arithmetic(raw: str, expected: bool) -> None:
+    assert Expression(raw).is_integer_valued is expected
+
+
+# bounds read through floor/ceiling and a finite support: floor(Uniform(10, 90)) -> (10, 90),
+# ceiling(Uniform(0, 2)) -> (0, 2), Binomial(10, 1/2) -> (0, 10).
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("floor(Uniform(10, 90))", (10.0, 90.0)), ("ceiling(Uniform(0, 2))", (0.0, 2.0)), ("Binomial(10, 1/2)", (0.0, 10.0))],
+)
+def test_bounds_through_rounding_and_finite_support(raw: str, expected: tuple[float, float]) -> None:
+    assert Expression(raw).bounds == expected
+
+
+# is_within against [1, 100], one case per way to fail: inside, below, above, an open side, and no
+# provable bounds. floor(Uniform(1, 100)) -> True; Min(Poisson(3), 50) -> False (can be 0); Uniform(50, 200) ->
+# False; Min(Poisson(3), 100) with only a maximum -> True; a Piecewise mixture -> False (nothing proven).
+@pytest.mark.parametrize(
+    ("raw", "minimum", "maximum", "expected"),
+    [
+        ("floor(Uniform(1, 100))", 1, 100, True),
+        ("Min(Poisson(3), 50)", 1, 100, False),
+        ("Uniform(50, 200)", 1, 100, False),
+        ("Min(Poisson(3), 100)", None, 100, True),
+        ("Piecewise((Poisson(2), Uniform(0, 1) < 0.5), (Poisson(9), True))", 0, None, False),
+    ],
+)
+def test_is_within(raw: str, minimum: float | None, maximum: float | None, expected: bool) -> None:
+    assert Expression(raw).is_within(minimum, maximum) is expected

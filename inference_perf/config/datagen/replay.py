@@ -14,9 +14,9 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union, cast
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from inference_perf.config.common import Distribution, DistributionType, StrictBaseModel
+from inference_perf.config.common import LengthValue, ScalarValue, StrictBaseModel, check_seconds, check_whole_number
 
 
 class TraceFormat(Enum):
@@ -105,13 +105,15 @@ class ConversationReplayConfig(StrictBaseModel):
     seed: int = Field(42, description="Random seed for deterministic generation")
     num_conversations: int = Field(200, gt=0, description="Number of conversation blueprints to generate")
     shared_system_prompt_len: int = Field(8359, ge=0, description="Fixed shared system prompt length in tokens")
-    dynamic_system_prompt_len: Optional[Distribution] = Field(
-        None, description="Per-conversation dynamic system prompt length distribution"
+    dynamic_system_prompt_len: Optional[LengthValue] = Field(
+        None, description="Per-conversation dynamic system prompt length distribution. At least 0."
     )
-    turns_per_conversation: Optional[Distribution] = Field(None, description="Number of turns per conversation distribution")
-    input_tokens_per_turn: Optional[Distribution] = Field(None, description="Input tokens per turn distribution")
-    output_tokens_per_turn: Optional[Distribution] = Field(None, description="Output tokens per turn distribution")
-    tool_call_latency_sec: Optional[Distribution] = Field(
+    turns_per_conversation: Optional[LengthValue] = Field(
+        None, description="Number of turns per conversation distribution. At least 1."
+    )
+    input_tokens_per_turn: Optional[LengthValue] = Field(None, description="Input tokens per turn distribution. At least 1.")
+    output_tokens_per_turn: Optional[LengthValue] = Field(None, description="Output tokens per turn distribution. At least 1.")
+    tool_call_latency_sec: Optional[ScalarValue] = Field(
         None,
         description=(
             "Per-turn tool execution latency distribution in seconds. "
@@ -121,10 +123,29 @@ class ConversationReplayConfig(StrictBaseModel):
             "GPU is free to serve other concurrent conversations — correctly "
             "modelling offline agentic workloads. Omit for pure GPU throughput "
             "measurement. Values are in seconds; min/max are whole seconds, "
-            "mean/std_dev may be fractional."
+            "mean/std_dev may be fractional. At least 0."
         ),
     )
     max_model_len: Optional[int] = Field(None, description="Maximum model context length in tokens")
+
+    # an expression string is checked when the config loads; sampling sites build their own Expression
+    @field_validator("dynamic_system_prompt_len", mode="after")
+    @classmethod
+    def validate_counts(cls, value: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
+        check_whole_number(value, 0)
+        return value
+
+    @field_validator("turns_per_conversation", "input_tokens_per_turn", "output_tokens_per_turn", mode="after")
+    @classmethod
+    def validate_positive_counts(cls, value: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
+        check_whole_number(value, 1)
+        return value
+
+    @field_validator("tool_call_latency_sec", mode="after")
+    @classmethod
+    def validate_seconds(cls, value: Optional[Union[float, str]]) -> Optional[Union[float, str]]:
+        check_seconds(value)
+        return value
 
 
 class SessionReplayConfig(StrictBaseModel):
@@ -378,23 +399,29 @@ class ContextCompactionConfig(BaseModel):
     Both fields are required when the block is present.
     """
 
-    trigger_tokens: Distribution = Field(
+    trigger_tokens: LengthValue = Field(
         ...,
         description=(
             "When a round's accumulated principal input (message content + advertised tool "
             "catalog) would cross this many tokens, the NEXT round starts fresh with a "
-            "summary block replacing the grown transcript. Sampled per session."
+            "summary block replacing the grown transcript. Sampled per session. At least 1."
         ),
     )
-    target_tokens: Distribution = Field(
+    target_tokens: LengthValue = Field(
         ...,
         description=(
             "Size (tokens) of the summary block that replaces the transcript on compaction. "
             "Sampled per session. Set it to the size you want the post-compaction context to "
             "have -- typically a fraction of the trigger (a real compaction reduces a bloated "
-            "window to ~20-40% of its size)."
+            "window to ~20-40% of its size). At least 1."
         ),
     )
+
+    @field_validator("trigger_tokens", "target_tokens", mode="after")
+    @classmethod
+    def validate_positive_counts(cls, value: Union[int, str]) -> Union[int, str]:
+        check_whole_number(value, 1)
+        return value
 
 
 class ThemeSpec(BaseModel):
@@ -411,13 +438,13 @@ class SyntheticAgenticConfig(SessionReplayConfig):
     # Required: load volume + per-turn token sizing (these drive the load, so the user
     # must choose them; there is no neutral default token profile).
     num_sessions: int = Field(..., gt=0, description="Number of sessions (load volume)")
-    input_tokens_per_turn: Distribution = Field(..., description="per-turn input tokens")
-    output_tokens_per_turn: Distribution = Field(..., description="per-turn output tokens (plain-text turns)")
+    input_tokens_per_turn: LengthValue = Field(..., description="per-turn input tokens. At least 1.")
+    output_tokens_per_turn: LengthValue = Field(..., description="per-turn output tokens (plain-text turns). At least 1.")
 
     # Structural/content shape: sensible defaults, override to shape the workload.
-    turns_per_session: Distribution = Field(
-        default_factory=lambda: Distribution(type="fixed", mean=1),
-        description="N user turns to the root agent (each triggers one agent run); default 1 = autonomous single-turn",
+    turns_per_session: LengthValue = Field(
+        default=1,
+        description="N user turns to the root agent (each triggers one agent run); default 1 = autonomous single-turn. At least 1.",
     )
     fanout_probability: float = Field(
         0.0,
@@ -462,38 +489,40 @@ class SyntheticAgenticConfig(SessionReplayConfig):
             "for a deliberately head-less baseline."
         ),
     )
-    tool_loop_depth: Optional[Distribution] = Field(
+    tool_loop_depth: Optional[LengthValue] = Field(
         None,
         description=(
             "How many times an agent goes around its tool loop before answering -- each iteration "
             "is a model call that emits a tool call and gets a result. 0 = answer directly (no tool "
             "loop). Then the agent makes one more model call for its final answer, so total model "
             "calls = this value + 1. Drawn fresh for each of the root's turns, and once for each "
-            "sub-agent. Fallback fixed 2."
+            "sub-agent. Fallback fixed 2. At least 0."
         ),
     )
-    sub_agents_per_spawn: Optional[Distribution] = Field(None, description="K children per spawn (fallback uniform 2-4)")
+    sub_agents_per_spawn: Optional[LengthValue] = Field(
+        None, description="K children per spawn (fallback uniform 2-4). At least 0."
+    )
     max_depth: int = Field(2, ge=0, description="Hard recursion terminator")
     max_events_per_session: int = Field(64, gt=0, description="Self-limiting event budget")
-    tool_catalog_size_per_agent: Optional[Distribution] = Field(
-        None, description="advertised tool-catalog size per agent (fallback fixed 8)"
+    tool_catalog_size_per_agent: Optional[LengthValue] = Field(
+        None, description="advertised tool-catalog size per agent (fallback fixed 8). At least 0."
     )
-    parallel_tool_calls_per_step: Optional[Distribution] = Field(
-        None, description="parallel tool calls emitted in one step's tool round (fallback fixed 1)"
+    parallel_tool_calls_per_step: Optional[LengthValue] = Field(
+        None, description="parallel tool calls emitted in one step's tool round (fallback fixed 1). At least 0."
     )
-    tool_call_latency_sec: Optional[Distribution] = Field(
+    tool_call_latency_sec: Optional[ScalarValue] = Field(
         None,
         description=(
             "Pause between an agent's steps, in seconds, modelling how long a tool takes "
             "to run (the tool round-trip). Held as an offline wait that frees the GPU. "
-            "Omit to use the default (fixed 1s)."
+            "Omit to use the default (fixed 1s). At least 0."
         ),
     )
-    user_think_time_sec: Optional[Distribution] = Field(
+    user_think_time_sec: Optional[ScalarValue] = Field(
         None,
         description=(
             "Pause before each follow-up turn (turns 2..N), in seconds, modelling the user's "
-            "read/think/reply time. Omit to use the default (fixed 10s)."
+            "read/think/reply time. Omit to use the default (fixed 10s). At least 0."
         ),
     )
     max_model_len: Optional[int] = Field(
@@ -564,6 +593,27 @@ class SyntheticAgenticConfig(SessionReplayConfig):
         ),
     )
 
+    # an expression string is checked when the config loads; sampling sites build their own Expression
+    @field_validator("input_tokens_per_turn", "output_tokens_per_turn", "turns_per_session", mode="after")
+    @classmethod
+    def validate_positive_counts(cls, value: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
+        check_whole_number(value, 1)
+        return value
+
+    @field_validator(
+        "tool_loop_depth", "sub_agents_per_spawn", "tool_catalog_size_per_agent", "parallel_tool_calls_per_step", mode="after"
+    )
+    @classmethod
+    def validate_counts(cls, value: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
+        check_whole_number(value, 0)
+        return value
+
+    @field_validator("tool_call_latency_sec", "user_think_time_sec", mode="after")
+    @classmethod
+    def validate_seconds(cls, value: Optional[Union[float, str]]) -> Optional[Union[float, str]]:
+        check_seconds(value)
+        return value
+
     @model_validator(mode="after")
     def validate_pinned_replay_fields(self) -> "SyntheticAgenticConfig":
         # frozen=True only blocks assignment AFTER construction; Pydantic still
@@ -614,31 +664,31 @@ class SyntheticAgenticConfig(SessionReplayConfig):
         # bare turn, because the naive one-turn check happily passes configs
         # (e.g. a 487-tool catalog) that then overrun live.
         #
-        # Worst-case sizing per distribution. The sampler HARD-CLIPS every draw
-        # to [min, max] (sample_from_distribution), so the realized value never
-        # exceeds `max` -- for fixed it is exactly `mean` (max is ignored). We
-        # therefore take the worst case as `max` for every distribution EXCEPT
-        # fixed (which uses `mean`). This matters because Distribution's unset
-        # fields carry stale defaults (`mean` defaults to 512, `max` to 1024),
-        # and only the field a given type actually samples from is meaningful:
-        # a uniform ignores `mean`, a fixed ignores `max`. Reading the wrong one
-        # would inject a bogus 512/1024 into the projection. None-valued optional
-        # knobs fall back to the SAME fixed defaults the generator uses (matched
-        # by value, not import, to avoid a config -> datagen circular import).
+        # Worst-case sizing per knob: a number is its own ceiling, an expression
+        # contributes its provable upper bound. None-valued optional knobs fall
+        # back to the SAME defaults the generator uses (matched by value, not
+        # import, to avoid a config -> datagen circular import).
         if self.max_model_len is None:
             return self
 
         import math
 
-        def _hi(dist: Optional[Distribution], fallback_fixed_mean: float) -> int:
+        from inference_perf.utils.numeric.distribution import value_ceiling
+
+        def _hi(dist: Optional[Union[int, str]], fallback_fixed_mean: float) -> int:
             # Worst-case value a knob can contribute. None => the generator's
-            # fixed fallback (its `mean`). fixed => its `mean`. All other types
-            # are clipped to `max`, so `max` is the true achievable ceiling.
+            # fixed fallback. A number is its own ceiling. An expression string
+            # contributes its provable upper bound, and one without a finite
+            # bound can't be budgeted at all.
             if dist is None:
                 return int(math.ceil(fallback_fixed_mean))
-            if dist.type == DistributionType.FIXED:
-                return int(math.ceil(dist.mean))
-            return int(math.ceil(dist.max))
+            ceiling = value_ceiling(dist)
+            if ceiling is None or math.isinf(ceiling):
+                raise ValueError(
+                    f"{dist!r} has no provable upper bound, so the peak request can't be checked against "
+                    f"max_model_len ({self.max_model_len}). Bound it, e.g. 'Min({dist}, N)', or unset max_model_len."
+                )
+            return int(math.ceil(ceiling))
 
         # ~380 tok per advertised tool: real serialized theme tool schemas
         # (name + description + JSON-Schema params) measure ~235-376 tok each

@@ -36,7 +36,6 @@ from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import (
     _FALLBACK_TOOL_PARAMS,
     DISPATCH_AGENT_NAME,
 )
-from inference_perf.config.common import Distribution
 from inference_perf.config.datagen.replay import SyntheticAgenticConfig, ContextCompactionConfig
 
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
@@ -80,18 +79,17 @@ def test_config_requires_the_four_required_fields() -> None:
 
 
 def test_config_valid_minimal() -> None:
-    from inference_perf.config.common import Distribution
     from inference_perf.config.datagen.replay import SyntheticAgenticConfig
     from inference_perf.config.datagen.replay import BadToolCallHandling
 
     cfg = SyntheticAgenticConfig(
         num_sessions=10,
-        turns_per_session=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
         fanout_probability=0.0,
         theme_mix={"db2_latency_incident": 1.0},
-        input_tokens_per_turn=Distribution(type="fixed", mean=500),
-        output_tokens_per_turn=Distribution(type="fixed", mean=100),
-        tool_call_latency_sec=Distribution(type="fixed", mean=1),
+        input_tokens_per_turn=500,
+        output_tokens_per_turn=100,
+        tool_call_latency_sec=1,
     )
     assert cfg.seed == 42
     assert cfg.max_depth == 2
@@ -105,11 +103,11 @@ def test_config_valid_minimal() -> None:
 def _minimal_synthetic_agentic_kwargs() -> Dict[str, Any]:
     return dict(
         num_sessions=10,
-        turns_per_session=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
         fanout_probability=0.0,
         theme_mix={"db2_latency_incident": 1.0},
-        input_tokens_per_turn=Distribution(type="fixed", mean=500),
-        output_tokens_per_turn=Distribution(type="fixed", mean=100),
+        input_tokens_per_turn=500,
+        output_tokens_per_turn=100,
     )
 
 
@@ -275,13 +273,13 @@ def _word_tok() -> "CustomTokenizer":
 def _cfg(**kw: Any) -> SyntheticAgenticConfig:
     base: Dict[str, Any] = dict(
         num_sessions=5,
-        turns_per_session=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
         fanout_probability=0.0,
         theme_mix={"generic": 1.0},
-        input_tokens_per_turn=Distribution(type="fixed", mean=20),
-        output_tokens_per_turn=Distribution(type="fixed", mean=10),
-        tool_call_latency_sec=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=2),
+        input_tokens_per_turn=20,
+        output_tokens_per_turn=10,
+        tool_call_latency_sec=1,
+        tool_loop_depth=2,
     )
     base.update(kw)
     return SyntheticAgenticConfig(**base)
@@ -312,7 +310,7 @@ def test_determinism_same_index_same_graph() -> None:
 
 
 def test_event_budget_caps_rounds() -> None:
-    cfg = _cfg(turns_per_session=Distribution(type="fixed", mean=100), max_events_per_session=6)
+    cfg = _cfg(turns_per_session=100, max_events_per_session=6)
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
     assert len(g.events) <= 6
 
@@ -324,7 +322,7 @@ def test_fanout_produces_subagents_and_valid_merge() -> None:
     cfg = _cfg(
         fanout_probability=1.0,
         max_depth=2,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_events_per_session=2048,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
@@ -343,7 +341,7 @@ def test_no_agent_beyond_max_depth() -> None:
     cfg = _cfg(
         fanout_probability=1.0,
         max_depth=1,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_events_per_session=2048,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
@@ -366,7 +364,7 @@ def test_agent_first_call_carries_role_appropriate_system_head() -> None:
     cfg = _cfg(
         fanout_probability=1.0,
         max_depth=2,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_events_per_session=2048,
         # above the longest prompt (~540 words in _WordTok units) so each head is
         # the full real prompt + filler, keeping its opening intact for the checks.
@@ -423,9 +421,9 @@ def test_tool_rotation_varies_across_rounds() -> None:
     # tool_defs[0], so each round's first tool call was the SAME tool. A seeded
     # per-agent offset makes rounds start on different tools.
     cfg = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=6),
-        tool_loop_depth=Distribution(type="fixed", mean=1),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=5),
+        turns_per_session=6,
+        tool_loop_depth=1,
+        tool_catalog_size_per_agent=5,
         max_events_per_session=2048,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -439,9 +437,9 @@ def test_answer_text_varies_across_rounds() -> None:
     # Regression: fit_filler ignored its rng and always cycled the word pool from
     # index 0, so every round's terminal answer was byte-identical.
     cfg = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=4),
-        tool_loop_depth=Distribution(type="fixed", mean=0),
-        output_tokens_per_turn=Distribution(type="fixed", mean=40),
+        turns_per_session=4,
+        tool_loop_depth=0,
+        output_tokens_per_turn=40,
         max_events_per_session=2048,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -471,17 +469,17 @@ def test_event_budget_cost_is_k_plus_1_per_round() -> None:
     # (the 3rd would need 3 more, overflowing) and STOPS -- confirming the per-round
     # cost is k+1.
     cfg9 = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=100),
+        turns_per_session=100,
         max_events_per_session=9,
-        tool_loop_depth=Distribution(type="fixed", mean=2),
+        tool_loop_depth=2,
     )
     g9 = build_graph_for_session(cfg9, GENERIC_THEME, _word_tok(), 0)
     assert len(g9.events) == 9, f"expected 3 rounds of (k+1)=3 events, got {len(g9.events)}"
 
     cfg6 = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=100),
+        turns_per_session=100,
         max_events_per_session=6,
-        tool_loop_depth=Distribution(type="fixed", mean=2),
+        tool_loop_depth=2,
     )
     g6 = build_graph_for_session(cfg6, GENERIC_THEME, _word_tok(), 0)
     # exactly 2 full rounds (6 events); the 3rd round can't even start its
@@ -498,8 +496,8 @@ def _budget_cfg(cap: int) -> SyntheticAgenticConfig:
     return _cfg(
         fanout_probability=1.0,
         max_depth=3,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=3),
-        tool_loop_depth=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=3,
+        tool_loop_depth=2,
         max_events_per_session=cap,
     )
 
@@ -624,12 +622,8 @@ def test_input_tokens_per_turn_is_honored() -> None:
     # produce a larger (>=) principal user-turn token count. fit_filler is
     # best-candidate/approximate, so tolerate with >= not exact equality.
     tok = _word_tok()
-    small = build_graph_for_session(
-        _cfg(input_tokens_per_turn=Distribution(type="fixed", mean=20)), GENERIC_THEME, tok, session_index=0
-    )
-    large = build_graph_for_session(
-        _cfg(input_tokens_per_turn=Distribution(type="fixed", mean=300)), GENERIC_THEME, tok, session_index=0
-    )
+    small = build_graph_for_session(_cfg(input_tokens_per_turn=20), GENERIC_THEME, tok, session_index=0)
+    large = build_graph_for_session(_cfg(input_tokens_per_turn=300), GENERIC_THEME, tok, session_index=0)
     small_tokens = tok.count_tokens(_principal_user_content(small))
     large_tokens = tok.count_tokens(_principal_user_content(large))
     assert large_tokens > small_tokens, f"input_tokens_per_turn had no effect: small={small_tokens} large={large_tokens}"
@@ -639,7 +633,7 @@ def test_input_tokens_per_turn_is_honored() -> None:
 
 def test_input_sizing_preserves_determinism_and_objective_text() -> None:
     tok = _word_tok()
-    cfg = _cfg(input_tokens_per_turn=Distribution(type="fixed", mean=300))
+    cfg = _cfg(input_tokens_per_turn=300)
     g1 = build_graph_for_session(cfg, GENERIC_THEME, tok, session_index=2)
     g2 = build_graph_for_session(cfg, GENERIC_THEME, tok, session_index=2)
     # identical event-id list
@@ -691,9 +685,9 @@ def test_parallel_tool_calls_emits_k_calls_and_k_results() -> None:
     # turn's result reconstructs an assistant message with 3 tool_calls AND 3
     # role:tool results, ids matching 1:1 in positional order (inv #3).
     cfg = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        parallel_tool_calls_per_step=Distribution(type="fixed", mean=3),
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
+        parallel_tool_calls_per_step=3,
+        tool_loop_depth=1,
         fanout_probability=0.0,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -720,7 +714,7 @@ def test_parallel_default_is_single_call() -> None:
     # parallel_tool_calls_per_step unset (None -> fallback fixed 1): an ordinary
     # tool turn has exactly 1 call + 1 result (unchanged default behavior).
     cfg = _cfg(
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        tool_loop_depth=1,
         fanout_probability=0.0,
     )
     assert cfg.parallel_tool_calls_per_step is None
@@ -743,10 +737,10 @@ def test_spawn_emits_sub_agents_per_spawn_dispatch_calls_not_parallel_knob() -> 
     # but sub_agents_per_spawn fixed 2, each spawn advertises exactly 2 dispatch
     # calls (the knob does not leak into the spawn width).
     cfg = _cfg(
-        parallel_tool_calls_per_step=Distribution(type="fixed", mean=3),
+        parallel_tool_calls_per_step=3,
         fanout_probability=1.0,
         max_depth=1,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_events_per_session=2048,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -766,8 +760,8 @@ def test_spawn_emits_sub_agents_per_spawn_dispatch_calls_not_parallel_knob() -> 
 
 def test_parallel_tool_calls_preserves_determinism() -> None:
     cfg = _cfg(
-        parallel_tool_calls_per_step=Distribution(type="fixed", mean=3),
-        tool_loop_depth=Distribution(type="fixed", mean=2),
+        parallel_tool_calls_per_step=3,
+        tool_loop_depth=2,
         fanout_probability=0.0,
     )
     g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=1)
@@ -784,8 +778,8 @@ def test_zero_tool_definitions_is_bare_baseline() -> None:
     # tool_catalog_size_per_agent=0 -> NO tools advertised at all, and a
     # catalog-less agent cannot emit a forced tool call, so it just answers.
     cfg = _cfg(
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=0),
-        tool_loop_depth=Distribution(type="fixed", mean=2),
+        tool_catalog_size_per_agent=0,
+        tool_loop_depth=2,
         fanout_probability=0.0,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -823,8 +817,8 @@ def _principal_events_by_round(g: ReplayGraph) -> Any:
 
 def test_interactive_rounds_carry_growing_context() -> None:
     cfg = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=3),
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        turns_per_session=3,
+        tool_loop_depth=1,
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
@@ -869,8 +863,8 @@ def test_round_k_survives_runtime_substitution() -> None:
     )
 
     cfg = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=3),
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        turns_per_session=3,
+        tool_loop_depth=1,
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
@@ -922,8 +916,8 @@ def test_round_k_survives_runtime_substitution() -> None:
 
 def test_interactive_rounds_preserve_determinism() -> None:
     cfg = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=3),
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        turns_per_session=3,
+        tool_loop_depth=1,
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
@@ -978,9 +972,9 @@ def test_dispatch_agent_is_in_tool_definitions() -> None:
     cfg = _cfg(
         fanout_probability=1.0,
         max_depth=1,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_events_per_session=2048,
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        tool_loop_depth=1,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     _assert_inv2_over_graph(g)
@@ -1008,12 +1002,12 @@ def test_dispatch_agent_present_even_with_empty_theme_catalog() -> None:
     # dispatch tool is STRUCTURAL, so the spawn event must advertise exactly
     # [dispatch_agent] (not []).
     cfg = _cfg(
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=0),
+        tool_catalog_size_per_agent=0,
         fanout_probability=1.0,
         max_depth=1,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_events_per_session=2048,
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        tool_loop_depth=1,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     _assert_inv2_over_graph(g)
@@ -1031,7 +1025,7 @@ def test_no_dispatch_agent_when_no_fanout() -> None:
     # dispatch_agent advertised anywhere.
     cfg = _cfg(
         fanout_probability=0.0,
-        tool_loop_depth=Distribution(type="fixed", mean=2),
+        tool_loop_depth=2,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     _assert_inv2_over_graph(g)
@@ -1044,9 +1038,9 @@ def test_inv2_holds_across_fanout_graph() -> None:
     cfg = _cfg(
         fanout_probability=1.0,
         max_depth=2,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_events_per_session=2048,
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        tool_loop_depth=1,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     assert len(g.events) > 4, "fan-out actually materialized"
@@ -1084,8 +1078,8 @@ def test_tool_result_uses_per_tool_template() -> None:
     theme = load_theme("db2_latency_incident")
     cfg = _cfg(
         theme_mix={"db2_latency_incident": 1.0},
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=3),
+        tool_catalog_size_per_agent=1,
+        tool_loop_depth=3,
         fanout_probability=0.0,
     )
     g = build_graph_for_session(cfg, theme, _word_tok(), session_index=0)
@@ -1103,8 +1097,8 @@ def test_tool_result_no_literal_placeholders() -> None:
     theme = load_theme("db2_latency_incident")
     cfg = _cfg(
         theme_mix={"db2_latency_incident": 1.0},
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=3),
+        tool_catalog_size_per_agent=1,
+        tool_loop_depth=3,
         fanout_probability=0.0,
     )
     g = build_graph_for_session(cfg, theme, _word_tok(), session_index=0)
@@ -1126,8 +1120,8 @@ def test_tool_result_content_is_deterministic() -> None:
     theme = load_theme("db2_latency_incident")
     cfg = _cfg(
         theme_mix={"db2_latency_incident": 1.0},
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=3),
+        tool_catalog_size_per_agent=1,
+        tool_loop_depth=3,
         fanout_probability=0.0,
     )
     g1 = build_graph_for_session(cfg, theme, _word_tok(), session_index=7)
@@ -1145,9 +1139,9 @@ def test_generated_fanout_session_has_no_dangling_tool_call_ids() -> None:
     cfg = _cfg(
         fanout_probability=1.0,
         max_depth=2,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_events_per_session=2048,
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        tool_loop_depth=1,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
     assert len(g.events) > 4, "fan-out actually materialized"
@@ -1232,24 +1226,24 @@ def test_theme_mix_weight_block_rejects_negative() -> None:
         ({"max_model_len": 1000, "shared_system_prompt_len": 2000}, True),
         # None: no ceiling configured -> no fail-fast check performed, even for
         # a config whose peak clearly would overrun.
-        ({"max_model_len": None, "input_tokens_per_turn": Distribution(type="fixed", mean=500_000)}, False),
+        ({"max_model_len": None, "input_tokens_per_turn": 500_000}, False),
         # comfortable: small everything, generous ceiling.
         ({"max_model_len": 200_000}, False),
         # CATALOG is counted: a huge catalog alone (2000 tools x ~380 = ~760K)
         # overruns a 131K cap even though every token knob is tiny. The old
         # one-turn check missed this -- it never counted the catalog.
-        ({"max_model_len": 131_072, "tool_catalog_size_per_agent": Distribution(type="fixed", mean=2000)}, True),
+        ({"max_model_len": 131_072, "tool_catalog_size_per_agent": 2000}, True),
         # ...same catalog, ample ceiling -> accepted (the catalog isn't rejected
         # per se; only when it makes the PEAK overrun).
-        ({"max_model_len": 1_000_000, "tool_catalog_size_per_agent": Distribution(type="fixed", mean=2000)}, False),
+        ({"max_model_len": 1_000_000, "tool_catalog_size_per_agent": 2000}, False),
         # OUTPUT is counted: tiny input, but a uniform output whose clip ceiling
         # (max) is enormous -> peak includes that output and overruns.
         (
             {
                 "max_model_len": 131_072,
-                "input_tokens_per_turn": Distribution(type="fixed", mean=100),
-                "output_tokens_per_turn": Distribution(type="uniform", min=5, max=200_000),
-                "tool_loop_depth": Distribution(type="fixed", mean=0),
+                "input_tokens_per_turn": 100,
+                "output_tokens_per_turn": "Min(Uniform(5, 200001), 200000)",
+                "tool_loop_depth": 0,
             },
             True,
         ),
@@ -1258,10 +1252,10 @@ def test_theme_mix_weight_block_rejects_negative() -> None:
         (
             {
                 "max_model_len": 131_072,
-                "input_tokens_per_turn": Distribution(type="fixed", mean=30_000),
-                "output_tokens_per_turn": Distribution(type="fixed", mean=100),
-                "tool_loop_depth": Distribution(type="fixed", mean=0),
-                "turns_per_session": Distribution(type="fixed", mean=10),  # 10 x 30k = 300k
+                "input_tokens_per_turn": 30_000,
+                "output_tokens_per_turn": 100,
+                "tool_loop_depth": 0,
+                "turns_per_session": 10,  # 10 x 30k = 300k
             },
             True,
         ),
@@ -1271,9 +1265,9 @@ def test_theme_mix_weight_block_rejects_negative() -> None:
         (
             {
                 "max_model_len": 40_000,
-                "input_tokens_per_turn": Distribution(type="fixed", mean=50_000),
-                "output_tokens_per_turn": Distribution(type="fixed", mean=100),
-                "tool_loop_depth": Distribution(type="fixed", mean=0),
+                "input_tokens_per_turn": 50_000,
+                "output_tokens_per_turn": 100,
+                "tool_loop_depth": 0,
             },
             True,
         ),
@@ -1284,9 +1278,9 @@ def test_theme_mix_weight_block_rejects_negative() -> None:
         (
             {
                 "max_model_len": 50_000,
-                "input_tokens_per_turn": Distribution(type="uniform", min=10, max=100),
-                "output_tokens_per_turn": Distribution(type="fixed", mean=100),
-                "tool_loop_depth": Distribution(type="fixed", mean=0),
+                "input_tokens_per_turn": "floor(Min(Uniform(10, 101), 100) + 1/2)",
+                "output_tokens_per_turn": 100,
+                "tool_loop_depth": 0,
             },
             False,
         ),
@@ -1324,17 +1318,17 @@ def test_max_model_len_counts_tool_loop_depth() -> None:
 
     common = dict(
         max_model_len=131_072,
-        input_tokens_per_turn=Distribution(type="fixed", mean=5_000),
-        output_tokens_per_turn=Distribution(type="fixed", mean=5_000),
-        turns_per_session=Distribution(type="fixed", mean=1),
+        input_tokens_per_turn=5_000,
+        output_tokens_per_turn=5_000,
+        turns_per_session=1,
     )
     # loop depth 0: peak ~ head + catalog + input + output, well under 131K.
-    cfg = _cfg(tool_loop_depth=Distribution(type="fixed", mean=0), **common)
+    cfg = _cfg(tool_loop_depth=0, **common)
     assert cfg.max_model_len == 131_072
     # loop depth 12: per_turn_loop ~ 5000 + 12*(5000+5000) = 125000, + output
     # pushes the peak over 131K -> rejected.
     with pytest.raises(ValidationError):
-        _cfg(tool_loop_depth=Distribution(type="fixed", mean=12), **common)
+        _cfg(tool_loop_depth=12, **common)
 
 
 def test_max_model_len_message_has_breakdown() -> None:
@@ -1343,7 +1337,7 @@ def test_max_model_len_message_has_breakdown() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError) as ei:
-        _cfg(max_model_len=1000, tool_catalog_size_per_agent=Distribution(type="fixed", mean=500))
+        _cfg(max_model_len=1000, tool_catalog_size_per_agent=500)
     msg = str(ei.value)
     assert "peak request" in msg
     assert "tool_catalog" in msg
@@ -1375,26 +1369,26 @@ def test_no_lone_assistant_input() -> None:
     # input ends in role 'user' or 'tool' -- never 'assistant'.
     shapes = {
         "bare": _cfg(
-            tool_catalog_size_per_agent=Distribution(type="fixed", mean=0),
-            tool_loop_depth=Distribution(type="fixed", mean=2),
+            tool_catalog_size_per_agent=0,
+            tool_loop_depth=2,
             fanout_probability=0.0,
         ),
         "tool_loop": _cfg(
-            tool_loop_depth=Distribution(type="fixed", mean=3),
+            tool_loop_depth=3,
             fanout_probability=0.0,
         ),
         "interactive": _cfg(
-            turns_per_session=Distribution(type="fixed", mean=3),
-            tool_loop_depth=Distribution(type="fixed", mean=1),
+            turns_per_session=3,
+            tool_loop_depth=1,
             fanout_probability=0.0,
             max_events_per_session=2048,
         ),
         "fanout": _cfg(
             fanout_probability=1.0,
             max_depth=2,
-            sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+            sub_agents_per_spawn=2,
             max_events_per_session=2048,
-            tool_loop_depth=Distribution(type="fixed", mean=1),
+            tool_loop_depth=1,
         ),
     }
     for name, cfg in shapes.items():
@@ -1413,8 +1407,8 @@ def test_bare_single_round_is_one_event() -> None:
     # shared_system_prompt_len=0 (head-less baseline) its input is [user]; its
     # expected_output is the (non-empty) answer text; it is NOT a tool call.
     cfg = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=0),
+        turns_per_session=1,
+        tool_catalog_size_per_agent=0,
         fanout_probability=0.0,
         shared_system_prompt_len=0,  # explicit head-less baseline (default is now 1000)
     )
@@ -1428,8 +1422,8 @@ def test_bare_single_round_is_one_event() -> None:
 
     # With a system prompt (the default), the input is [system, user].
     cfg_sys = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=0),
+        turns_per_session=1,
+        tool_catalog_size_per_agent=0,
         fanout_probability=0.0,
         shared_system_prompt_len=16,
     )
@@ -1445,8 +1439,8 @@ def test_shared_system_prompt_len_defaults_to_nonzero() -> None:
     # opens each agent call with a system message.
     cfg = SyntheticAgenticConfig(
         num_sessions=1,
-        input_tokens_per_turn=Distribution(type="fixed", mean=20),
-        output_tokens_per_turn=Distribution(type="fixed", mean=10),
+        input_tokens_per_turn=20,
+        output_tokens_per_turn=10,
     )
     assert cfg.shared_system_prompt_len == 1000
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -1495,9 +1489,9 @@ def test_tool_loop_context_grows() -> None:
     # grow like the OTel reference / real Exgentic (1, 3, 5, 7 for k=3, ignoring
     # any system head). principal + t0 + t1 + t2 = 4 events.
     cfg = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=3),
-        parallel_tool_calls_per_step=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
+        tool_loop_depth=3,
+        parallel_tool_calls_per_step=1,
         fanout_probability=0.0,
         shared_system_prompt_len=0,  # isolate loop growth from the head (default is now 1000)
     )
@@ -1574,9 +1568,9 @@ def test_substitution_survives_all_shapes() -> None:
     # turns are present.
     # --- tool loop --- (head-less so accumulation math stays literal)
     cfg = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=3),
-        parallel_tool_calls_per_step=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
+        tool_loop_depth=3,
+        parallel_tool_calls_per_step=1,
         fanout_probability=0.0,
         shared_system_prompt_len=0,
     )
@@ -1618,9 +1612,9 @@ def test_substitution_survives_all_shapes() -> None:
     fcfg = _cfg(
         fanout_probability=1.0,
         max_depth=1,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_events_per_session=2048,
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        tool_loop_depth=1,
     )
     fg = build_graph_for_session(fcfg, GENERIC_THEME, _word_tok(), session_index=0)
     notifies = [ev for eid, ev in fg.events.items() if ":notify" in eid]
@@ -1767,8 +1761,8 @@ def test_intro_doc_rides_first_user_turn_and_is_deterministic() -> None:
     theme = load_theme("db2_latency_incident")
     cfg = _cfg(
         theme_mix={"db2_latency_incident": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
-        input_tokens_per_turn=Distribution(type="fixed", mean=400),
+        turns_per_session=1,
+        input_tokens_per_turn=400,
         fanout_probability=0.0,
     )
     g1 = build_graph_for_session(cfg, theme, _word_tok(), session_index=0)
@@ -1798,9 +1792,9 @@ def test_only_round_zero_carries_intro_doc() -> None:
     theme = load_theme("db2_latency_incident")
     cfg = _cfg(
         theme_mix={"db2_latency_incident": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=3),
-        tool_loop_depth=Distribution(type="fixed", mean=1),
-        input_tokens_per_turn=Distribution(type="fixed", mean=20),
+        turns_per_session=3,
+        tool_loop_depth=1,
+        input_tokens_per_turn=20,
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
@@ -1946,8 +1940,8 @@ def test_intro_doc_primary_matches_objective(theme_name: str, primary_category: 
     theme = GENERIC_THEME if theme_name == "generic" else load_theme(theme_name)
     cfg = _cfg(
         theme_mix={theme_name: 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
-        input_tokens_per_turn=Distribution(type="fixed", mean=20),
+        turns_per_session=1,
+        input_tokens_per_turn=20,
         fanout_probability=0.0,
     )
     primaries = theme.entities[primary_category]
@@ -1969,8 +1963,8 @@ def test_pinned_entity_coherence_is_deterministic() -> None:
     # Same (config, index) -> byte-identical round-0 turn (pinning is seeded).
     cfg = _cfg(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
-        input_tokens_per_turn=Distribution(type="fixed", mean=20),
+        turns_per_session=1,
+        input_tokens_per_turn=20,
         fanout_probability=0.0,
     )
     g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=3)
@@ -2089,18 +2083,18 @@ def test_forced_tool_events_are_sized_not_zero() -> None:
     # expected_output_tokens is >= TOOL_CALL_MARGIN, so the replay model has room
     # to emit the whole tool call.
     shapes = {
-        "tool_loop": _cfg(tool_loop_depth=Distribution(type="fixed", mean=3), fanout_probability=0.0),
+        "tool_loop": _cfg(tool_loop_depth=3, fanout_probability=0.0),
         "parallel": _cfg(
-            tool_loop_depth=Distribution(type="fixed", mean=2),
-            parallel_tool_calls_per_step=Distribution(type="fixed", mean=3),
+            tool_loop_depth=2,
+            parallel_tool_calls_per_step=3,
             fanout_probability=0.0,
         ),
         "fanout": _cfg(
             fanout_probability=1.0,
             max_depth=2,
-            sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+            sub_agents_per_spawn=2,
             max_events_per_session=2048,
-            tool_loop_depth=Distribution(type="fixed", mean=1),
+            tool_loop_depth=1,
         ),
     }
     for name, cfg in shapes.items():
@@ -2120,7 +2114,7 @@ def test_forced_tool_events_sized_from_their_own_calls() -> None:
     import json as _json
 
     tok = _word_tok()
-    cfg = _cfg(tool_loop_depth=Distribution(type="fixed", mean=3), fanout_probability=0.0)
+    cfg = _cfg(tool_loop_depth=3, fanout_probability=0.0)
     g = build_graph_for_session(cfg, GENERIC_THEME, tok, session_index=0)
     # The tool_calls an event OUTPUTS appear in the SUCCESSOR event's messages
     # (as the reconstructed assistant tool_call). Walk the linear chain by id.
@@ -2151,8 +2145,8 @@ def test_answer_events_keep_output_tokens_not_tool_budget() -> None:
     # the tool-call sizing. With output_tokens_per_turn fixed at 40, the terminal
     # answer event of a tool loop is 40 (its output IS the plain answer).
     cfg = _cfg(
-        tool_loop_depth=Distribution(type="fixed", mean=2),
-        output_tokens_per_turn=Distribution(type="fixed", mean=40),
+        tool_loop_depth=2,
+        output_tokens_per_turn=40,
         fanout_probability=0.0,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -2166,8 +2160,8 @@ def test_answer_events_keep_output_tokens_not_tool_budget() -> None:
 
 def test_forced_tool_sizing_is_deterministic() -> None:
     cfg = _cfg(
-        tool_loop_depth=Distribution(type="fixed", mean=3),
-        parallel_tool_calls_per_step=Distribution(type="fixed", mean=2),
+        tool_loop_depth=3,
+        parallel_tool_calls_per_step=2,
         fanout_probability=0.0,
     )
     g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=5)
@@ -2207,10 +2201,10 @@ def _cfg_all_tools(theme: Theme, **kw: Any) -> SyntheticAgenticConfig:
     actually called."""
     n = len(theme.tool_names) + 2  # forces >=1 suffixed duplicate
     base = dict(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=n),
-        tool_loop_depth=Distribution(type="fixed", mean=n),
-        parallel_tool_calls_per_step=Distribution(type="fixed", mean=3),
+        turns_per_session=1,
+        tool_catalog_size_per_agent=n,
+        tool_loop_depth=n,
+        parallel_tool_calls_per_step=3,
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
@@ -2285,10 +2279,10 @@ def test_emitted_tool_call_args_conform_to_advertised_schema() -> None:
             2,
             lambda theme: _cfg(
                 theme_mix={theme.name: 1.0},
-                turns_per_session=Distribution(type="fixed", mean=1),
-                tool_catalog_size_per_agent=Distribution(type="fixed", mean=1),
-                tool_loop_depth=Distribution(type="fixed", mean=3),
-                parallel_tool_calls_per_step=Distribution(type="fixed", mean=2),
+                turns_per_session=1,
+                tool_catalog_size_per_agent=1,
+                tool_loop_depth=3,
+                parallel_tool_calls_per_step=2,
                 fanout_probability=0.0,
                 max_events_per_session=2048,
             ),
@@ -2389,10 +2383,10 @@ def test_fallback_tool_params_applies_for_theme_without_schemas() -> None:
 
     cfg = _cfg(
         theme_mix={"generic": 1.0},  # theme_mix is unused; we pass `bare` directly
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=2),
-        tool_loop_depth=Distribution(type="fixed", mean=2),
-        parallel_tool_calls_per_step=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
+        tool_catalog_size_per_agent=2,
+        tool_loop_depth=2,
+        parallel_tool_calls_per_step=1,
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
@@ -2483,9 +2477,9 @@ def test_tool_result_echoes_call_service() -> None:
 
     cfg = _cfg(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=3),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=8),
+        turns_per_session=1,
+        tool_loop_depth=3,
+        tool_catalog_size_per_agent=8,
         fanout_probability=0.0,
     )
     checked = 0
@@ -2591,11 +2585,11 @@ def test_fanout_children_pinned_to_parent_entity() -> None:
 
     cfg = _cfg(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
         fanout_probability=1.0,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_depth=1,
-        tool_loop_depth=Distribution(type="fixed", mean=0),
+        tool_loop_depth=0,
         max_events_per_session=512,
     )
 
@@ -2637,11 +2631,11 @@ def test_spawn_output_is_parallel_dispatch_calls_in_one_message() -> None:
     K = 3
     cfg = _cfg(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
         fanout_probability=1.0,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=K),
+        sub_agents_per_spawn=K,
         max_depth=1,
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        tool_loop_depth=1,
         max_events_per_session=512,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -2668,11 +2662,11 @@ def test_notifications_reconstruct_single_assistant_with_matched_stub_results() 
     K = 3
     cfg = _cfg(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
         fanout_probability=1.0,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=K),
+        sub_agents_per_spawn=K,
         max_depth=1,
-        tool_loop_depth=Distribution(type="fixed", mean=0),
+        tool_loop_depth=0,
         max_events_per_session=512,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -2700,9 +2694,9 @@ def test_fanout_graph_is_byte_identical_across_rebuilds() -> None:
     cfg = _cfg(
         theme_mix={"generic": 1.0},
         fanout_probability=1.0,
-        sub_agents_per_spawn=Distribution(type="uniform", min=2, max=3),
+        sub_agents_per_spawn="floor(Min(Uniform(2, 4), 3) + 1/2)",
         max_depth=2,
-        tool_loop_depth=Distribution(type="uniform", min=0, max=2),
+        tool_loop_depth="floor(Min(Uniform(0, 3), 2) + 1/2)",
         max_events_per_session=512,
     )
     for idx in range(3):
@@ -2729,11 +2723,11 @@ def test_subagent_terminal_ends_with_report_directive() -> None:
     # depth 2 so there are BOTH leaf-child terminals AND sub-agent (non-root) merges.
     cfg = _cfg(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
         fanout_probability=1.0,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_depth=2,
-        tool_loop_depth=Distribution(type="fixed", mean=2),
+        tool_loop_depth=2,
         max_events_per_session=512,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -2809,8 +2803,8 @@ def test_root_terminal_ends_with_answer_directive() -> None:
 
     # (a) k>=1 tool loop: only the terminal (answer) turn ends with the nudge.
     cfg_loop = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=3),
+        turns_per_session=1,
+        tool_loop_depth=3,
         fanout_probability=0.0,
     )
     g = build_graph_for_session(cfg_loop, GENERIC_THEME, _word_tok(), 0)
@@ -2823,9 +2817,9 @@ def test_root_terminal_ends_with_answer_directive() -> None:
 
     # (b) k=0 answer-directly turn WITH a catalog: the single principal ends with the nudge.
     cfg_k0 = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=0),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=8),
+        turns_per_session=1,
+        tool_loop_depth=0,
+        tool_catalog_size_per_agent=8,
         fanout_probability=0.0,
     )
     g0 = build_graph_for_session(cfg_k0, GENERIC_THEME, _word_tok(), 0)
@@ -2834,8 +2828,8 @@ def test_root_terminal_ends_with_answer_directive() -> None:
 
     # (c) NO-tools root: no nudge (nothing to steer away from; keeps the bare turn clean).
     cfg_bare = _cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=0),
+        turns_per_session=1,
+        tool_catalog_size_per_agent=0,
         fanout_probability=0.0,
     )
     gb = build_graph_for_session(cfg_bare, GENERIC_THEME, _word_tok(), 0)
@@ -2859,11 +2853,11 @@ def test_nonroot_last_notification_ends_with_report_directive() -> None:
 
     cfg = _cfg(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
         fanout_probability=1.0,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_depth=2,  # children spawn grandchildren -> children's terminal is a notification
-        tool_loop_depth=Distribution(type="fixed", mean=1),
+        tool_loop_depth=1,
         max_events_per_session=512,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
@@ -2906,11 +2900,11 @@ def test_nonroot_last_notification_ends_with_report_directive() -> None:
 def test_report_directive_deterministic() -> None:
     cfg = _cfg(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
         fanout_probability=1.0,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        sub_agents_per_spawn=2,
         max_depth=1,
-        tool_loop_depth=Distribution(type="fixed", mean=3),
+        tool_loop_depth=3,
         max_events_per_session=512,
     )
     g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=3)
@@ -2983,10 +2977,10 @@ def test_research_rag_session_builds_valid_and_deterministic() -> None:
     t = load_theme("research_rag")
     cfg = _cfg(
         theme_mix={"research_rag": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=2),
-        tool_loop_depth=Distribution(type="fixed", mean=3),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=len(t.tool_names)),
-        parallel_tool_calls_per_step=Distribution(type="fixed", mean=2),
+        turns_per_session=2,
+        tool_loop_depth=3,
+        tool_catalog_size_per_agent=len(t.tool_names),
+        parallel_tool_calls_per_step=2,
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
@@ -3192,9 +3186,9 @@ def test_generated_followups_have_no_casing_seam() -> None:
 
     cfg = _cfg(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=4),
-        tool_loop_depth=Distribution(type="fixed", mean=1),
-        input_tokens_per_turn=Distribution(type="fixed", mean=20),
+        turns_per_session=4,
+        tool_loop_depth=1,
+        input_tokens_per_turn=20,
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
@@ -3229,9 +3223,9 @@ def test_region_is_pinned_across_a_multi_round_session() -> None:
     # objective / intro doc / every follow-up must reference the SAME region.
     cfg = _cfg(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=4),
-        tool_loop_depth=Distribution(type="fixed", mean=1),
-        input_tokens_per_turn=Distribution(type="fixed", mean=20),
+        turns_per_session=4,
+        tool_loop_depth=1,
+        input_tokens_per_turn=20,
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
@@ -3302,14 +3296,14 @@ _CODE_CHANGE_WRITE_TOOLS = {"edit_file", "write_file", "apply_patch"}
 def _code_change_cfg(**kw: Any) -> SyntheticAgenticConfig:
     base = dict(
         num_sessions=5,
-        turns_per_session=Distribution(type="fixed", mean=2),
+        turns_per_session=2,
         fanout_probability=0.0,
         theme_mix={"code_change_task": 1.0},
-        input_tokens_per_turn=Distribution(type="fixed", mean=40),
-        output_tokens_per_turn=Distribution(type="fixed", mean=20),
-        tool_call_latency_sec=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=6),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=7),
+        input_tokens_per_turn=40,
+        output_tokens_per_turn=20,
+        tool_call_latency_sec=1,
+        tool_loop_depth=6,
+        tool_catalog_size_per_agent=7,
     )
     base.update(kw)
     return SyntheticAgenticConfig(**base)
@@ -3427,9 +3421,9 @@ def test_write_tool_payload_args_are_sized_code_filler() -> None:
 
     t = load_theme("code_change_task")
     cfg = _code_change_cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=10),  # reach edit/write/apply (tools 8-10)
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=10),
+        turns_per_session=1,
+        tool_loop_depth=10,  # reach edit/write/apply (tools 8-10)
+        tool_catalog_size_per_agent=10,
         fanout_probability=0.0,
     )
     g = build_graph_for_session(cfg, t, _word_tok(), session_index=0)
@@ -3457,8 +3451,8 @@ def test_non_payload_string_arg_keeps_stub() -> None:
 
     t = load_theme("code_change_task")
     cfg = _code_change_cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=8),
+        turns_per_session=1,
+        tool_loop_depth=8,
         fanout_probability=0.0,
     )
     g = build_graph_for_session(cfg, t, _word_tok(), session_index=0)
@@ -3480,9 +3474,9 @@ def test_tool_loop_varies_tools_across_turns() -> None:
 
     t = load_theme("code_change_task")
     cfg = _code_change_cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=6),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=10),
+        turns_per_session=1,
+        tool_loop_depth=6,
+        tool_catalog_size_per_agent=10,
         fanout_probability=0.0,
     )
     g = build_graph_for_session(cfg, t, _word_tok(), session_index=0)
@@ -3503,9 +3497,9 @@ def test_focus_entity_threads_across_the_loop() -> None:
 
     t = load_theme("code_change_task")
     cfg = _code_change_cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=8),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=10),
+        turns_per_session=1,
+        tool_loop_depth=8,
+        tool_catalog_size_per_agent=10,
         fanout_probability=0.0,
     )
 
@@ -3532,9 +3526,9 @@ def test_focus_entity_threads_across_the_loop() -> None:
 def test_code_change_focus_and_payload_deterministic() -> None:
     t = load_theme("code_change_task")
     cfg = _code_change_cfg(
-        turns_per_session=Distribution(type="fixed", mean=1),
-        tool_loop_depth=Distribution(type="fixed", mean=10),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=10),
+        turns_per_session=1,
+        tool_loop_depth=10,
+        tool_catalog_size_per_agent=10,
         fanout_probability=0.0,
     )
     g1 = build_graph_for_session(cfg, t, _word_tok(), session_index=2)
@@ -3648,14 +3642,14 @@ def _compaction_cfg(**kw: Any) -> SyntheticAgenticConfig:
     base = dict(
         num_sessions=1,
         seed=7,
-        turns_per_session=Distribution(type="fixed", mean=6),
+        turns_per_session=6,
         fanout_probability=0.0,
         theme_mix={"generic": 1.0},
-        tool_loop_depth=Distribution(type="fixed", mean=0),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=8),
-        input_tokens_per_turn=Distribution(type="fixed", mean=20),
-        output_tokens_per_turn=Distribution(type="fixed", mean=10),
-        tool_call_latency_sec=Distribution(type="fixed", mean=1),
+        tool_loop_depth=0,
+        tool_catalog_size_per_agent=8,
+        input_tokens_per_turn=20,
+        output_tokens_per_turn=10,
+        tool_call_latency_sec=1,
         shared_system_prompt_len=0,
     )
     base.update(kw)
@@ -3665,8 +3659,8 @@ def _compaction_cfg(**kw: Any) -> SyntheticAgenticConfig:
 def _cc(trigger: Any, target: Any) -> Any:
     """Shorthand for a ContextCompactionConfig with fixed trigger/target token counts."""
     return ContextCompactionConfig(
-        trigger_tokens=Distribution(type="fixed", mean=trigger),
-        target_tokens=Distribution(type="fixed", mean=target),
+        trigger_tokens=trigger,
+        target_tokens=target,
     )
 
 
@@ -3716,7 +3710,7 @@ def test_compaction_fires_mid_session() -> None:
     # round: that round's principal is FRESH (all-unique, no shared/output),
     # i.e. it does NOT slice into the prior principal -> the transcript is dropped.
     cfg = _compaction_cfg(
-        turns_per_session=Distribution(type="fixed", mean=8),
+        turns_per_session=8,
         context_compaction=_cc(655, 12),
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
@@ -3742,7 +3736,7 @@ def test_compaction_summary_block_present_and_sized() -> None:
     # objective). With a small target the turn is much smaller than a grown round
     # would be -> the prefill drop.
     cfg = _compaction_cfg(
-        turns_per_session=Distribution(type="fixed", mean=8),
+        turns_per_session=8,
         context_compaction=_cc(655, 12),
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
@@ -3758,7 +3752,7 @@ def test_compaction_recap_names_real_subject_and_tools() -> None:
     # semantic handoff: it names the session's pinned subject and REAL tool names
     # from the catalog (not generic filler), so it reads like a genuine recap.
     cfg = _compaction_cfg(
-        turns_per_session=Distribution(type="fixed", mean=8),
+        turns_per_session=8,
         context_compaction=_cc(655, 40),
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
@@ -3788,8 +3782,8 @@ def test_compaction_recap_falls_back_to_bare_marker_without_template() -> None:
     # bare theme has tiny content, so its accumulation is small -> use a low trigger.
     cfg = _compaction_cfg(
         theme_mix={"bare": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=8),
-        tool_catalog_size_per_agent=Distribution(type="fixed", mean=2),
+        turns_per_session=8,
+        tool_catalog_size_per_agent=2,
         context_compaction=_cc(90, 12),
     )
     g = build_graph_for_session(cfg, bare, _word_tok(), 0)
@@ -3817,9 +3811,9 @@ def test_compaction_config_requires_both_fields() -> None:
 
     # The nested block requires BOTH trigger_tokens and target_tokens.
     with pytest.raises(ValidationError):
-        ContextCompactionConfig(trigger_tokens=Distribution(type="fixed", mean=655))  # type: ignore[call-arg]
+        ContextCompactionConfig(trigger_tokens=655)  # type: ignore[call-arg]
     with pytest.raises(ValidationError):
-        ContextCompactionConfig(target_tokens=Distribution(type="fixed", mean=12))  # type: ignore[call-arg]
+        ContextCompactionConfig(target_tokens=12)  # type: ignore[call-arg]
     # both set -> accepted, and attaches cleanly to the parent config
     _compaction_cfg(context_compaction=_cc(655, 12))
     # block omitted -> accepted (compaction off)
@@ -3828,7 +3822,7 @@ def test_compaction_config_requires_both_fields() -> None:
 
 def test_compaction_deterministic() -> None:
     cfg = _compaction_cfg(
-        turns_per_session=Distribution(type="fixed", mean=8),
+        turns_per_session=8,
         context_compaction=_cc(655, 12),
     )
     g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 2)
@@ -3861,11 +3855,11 @@ def _notify_chains(g: ReplayGraph) -> Any:
 def _async_fanout_cfg(K: int = 2, **over: Any) -> SyntheticAgenticConfig:
     base: Dict[str, Any] = dict(
         theme_mix={"generic": 1.0},
-        turns_per_session=Distribution(type="fixed", mean=1),
+        turns_per_session=1,
         fanout_probability=1.0,
-        sub_agents_per_spawn=Distribution(type="fixed", mean=K),
+        sub_agents_per_spawn=K,
         max_depth=1,
-        tool_loop_depth=Distribution(type="fixed", mean=0),
+        tool_loop_depth=0,
         max_events_per_session=512,
     )
     base.update(over)
@@ -3928,7 +3922,7 @@ def test_only_last_notification_is_the_terminal() -> None:
     # sized larger than an ack" is a meaningful comparison rather than an artifact of
     # whatever the default happens to be.
     g = build_graph_for_session(
-        _async_fanout_cfg(K, output_tokens_per_turn=Distribution(type="fixed", mean=256)),
+        _async_fanout_cfg(K, output_tokens_per_turn=256),
         GENERIC_THEME,
         _word_tok(),
         session_index=0,
@@ -4014,7 +4008,7 @@ def test_shared_segment_never_overclaims_its_source_message_count() -> None:
     # this, so assert it directly across a deep fan-out graph.
     for idx in range(3):
         g = build_graph_for_session(
-            _async_fanout_cfg(2, max_depth=2, tool_loop_depth=Distribution(type="fixed", mean=1)),
+            _async_fanout_cfg(2, max_depth=2, tool_loop_depth=1),
             GENERIC_THEME,
             _word_tok(),
             session_index=idx,
@@ -4036,7 +4030,7 @@ def test_async_report_segments_reference_real_child_terminals() -> None:
     # declared predecessor (the runtime awaits predecessors before substituting, so a
     # non-predecessor source would be read before it is recorded).
     g = build_graph_for_session(
-        _async_fanout_cfg(3, max_depth=2, tool_loop_depth=Distribution(type="fixed", mean=1)),
+        _async_fanout_cfg(3, max_depth=2, tool_loop_depth=1),
         GENERIC_THEME,
         _word_tok(),
         session_index=0,
@@ -4060,9 +4054,9 @@ def test_async_notification_chain_is_byte_identical_across_rebuilds() -> None:
     cfg = _cfg(
         theme_mix={"generic": 1.0},
         fanout_probability=1.0,
-        sub_agents_per_spawn=Distribution(type="uniform", min=2, max=3),
+        sub_agents_per_spawn="floor(Min(Uniform(2, 4), 3) + 1/2)",
         max_depth=2,
-        tool_loop_depth=Distribution(type="uniform", min=0, max=2),
+        tool_loop_depth="floor(Min(Uniform(0, 3), 2) + 1/2)",
         max_events_per_session=512,
     )
     for idx in range(3):
@@ -4088,9 +4082,9 @@ def test_ack_text_is_short_form_and_distinct_from_the_terminal_answer() -> None:
     # that the acks differ from each other.
     from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import _FB_ACK_TOKENS
 
-    ack_target = _FB_ACK_TOKENS.mean
+    ack_target = _FB_ACK_TOKENS
     g = build_graph_for_session(
-        _async_fanout_cfg(4, output_tokens_per_turn=Distribution(type="fixed", mean=256)),
+        _async_fanout_cfg(4, output_tokens_per_turn=256),
         GENERIC_THEME,
         _word_tok(),
         session_index=0,
@@ -4226,7 +4220,7 @@ def test_spawning_agent_runs_exactly_tool_loop_depth_tool_calls(k: int) -> None:
     for fanout in (0.0, 1.0):
         cfg = _async_fanout_cfg(
             2,
-            tool_loop_depth=Distribution(type="fixed", mean=k),
+            tool_loop_depth=k,
             fanout_probability=fanout,
             max_events_per_session=4096,
         )
@@ -4244,7 +4238,7 @@ def test_spawn_event_consumes_the_last_tool_result() -> None:
     unanswered while keeping the tool-call count at tool_loop_depth.
     """
     k = 3
-    cfg = _async_fanout_cfg(2, tool_loop_depth=Distribution(type="fixed", mean=k), max_events_per_session=4096)
+    cfg = _async_fanout_cfg(2, tool_loop_depth=k, max_events_per_session=4096)
     g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
 
     spawn_ids = [eid for eid in g.events if eid.endswith(":spawn")]
@@ -4594,3 +4588,63 @@ def test_dispatch_description_documents_the_envelope_and_ordering() -> None:
     assert "one at a time" in desc.lower(), "per-report (non-batched) delivery documented"
     assert DISPATCH_AGENT_TOOL_DEF["description"] == desc
     assert DISPATCH_AGENT_TOOL_DEF["function"]["description"] == desc
+
+
+# Tool-call latency and user think time are seconds, so fractions must survive into wait_ms. Inputs: 3 rounds,
+# tool latency fixed 0.25s, think time fixed 0.5s. Expected wait_ms values: 250 on tool turns, 500 on later
+# rounds' first turn, 0 on the very first turn. Integer sampling truncated both to 0.
+def test_fractional_latencies_reach_wait_ms() -> None:
+    cfg = _cfg(
+        turns_per_session=3,
+        tool_call_latency_sec=0.25,
+        user_think_time_sec=0.5,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
+    assert {ev.wait_ms for ev in g.events.values()} == {0, 250, 500}
+
+
+# Every synthetic_agentic Distribution knob also takes an expression string. Inputs: turns '3', tool loop depth
+# 'Min(Poisson(2), 3)', input 'floor(Uniform(15, 25))', output 'floor(Min(Max(Normal(10, 2), 1), 14))', tool latency
+# 'Uniform(0.1, 0.4)', think time 'Uniform(1, 2)'. Expected: the graph builds, is identical for the same seed
+# (determinism), and every non-zero wait is a tool wait in [100, 400] ms or a think wait in [1000, 2000] ms,
+# with at least one of each.
+def test_expression_knobs_build_a_deterministic_graph() -> None:
+    cfg = _cfg(
+        turns_per_session="3",
+        tool_loop_depth="Min(Poisson(2), 3)",
+        input_tokens_per_turn="floor(Uniform(15, 25))",
+        output_tokens_per_turn="floor(Min(Max(Normal(10, 2), 1), 14))",
+        tool_call_latency_sec="Uniform(0.1, 0.4)",
+        user_think_time_sec="Uniform(1, 2)",
+    )
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
+    assert [(e.event_id, e.wait_ms) for e in g1.events.values()] == [(e.event_id, e.wait_ms) for e in g2.events.values()]
+    waits = {e.wait_ms for e in g1.events.values()} - {0}
+    tool_waits = {w for w in waits if 100 <= w <= 400}
+    think_waits = {w for w in waits if 1000 <= w <= 2000}
+    assert tool_waits and think_waits and waits == tool_waits | think_waits, sorted(waits)
+
+
+# The max_model_len budget reads an expression's provable upper bound. Inputs: max_model_len 1000 with
+# input_tokens_per_turn 'floor(Min(Max(Normal(500, 50), 1), 600))' -> the breakdown shows input(600), the Min cap, and the
+# config is rejected as too small. An unbounded 'floor(Max(Normal(500, 50), 1))' can't be budgeted -> rejected naming that.
+def test_max_model_len_budgets_expression_upper_bound() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=r"input\(600\)"):
+        _cfg(max_model_len=1000, input_tokens_per_turn="floor(Min(Max(Normal(500, 50), 1), 600))")
+    with pytest.raises(ValidationError, match="has no provable upper bound"):
+        _cfg(max_model_len=100_000, input_tokens_per_turn="floor(Max(Normal(500, 50), 1))")
+
+
+# Compaction's two knobs take expression strings too; a malformed one fails at config load.
+def test_compaction_accepts_expressions() -> None:
+    from pydantic import ValidationError
+
+    cfg = ContextCompactionConfig(
+        trigger_tokens="floor(Uniform(600, 700))", target_tokens="floor(Min(Max(Normal(150, 20), 1), 200))"
+    )
+    assert cfg.trigger_tokens == "floor(Uniform(600, 700))"
+    with pytest.raises(ValidationError, match="unknown function"):
+        ContextCompactionConfig(trigger_tokens="foo(3)", target_tokens="100")

@@ -5,7 +5,7 @@
 groups = ["default", "analysis", "dev", "lint", "mutation", "otel", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.1"
-content_hash = "sha256:8a2eed7e5b1afb4d216a6333d854c0daa8c3be814d200f37918df44dd4a60be7"
+content_hash = "sha256:a91b31ca36a88abdd7da55bcfd0292dc7b36bef2ebe31d73fc9d8659297ebf9e"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -1398,7 +1398,7 @@ name = "hypothesis"
 version = "6.155.7"
 requires_python = ">=3.10"
 summary = "The property-based testing library for Python"
-groups = ["dev"]
+groups = ["dev", "test"]
 dependencies = [
     "exceptiongroup>=1.0.0; python_version < \"3.11\"",
     "sortedcontainers<3.0.0,>=2.1.0",
@@ -3679,7 +3679,7 @@ files = [
 name = "sortedcontainers"
 version = "2.4.0"
 summary = "Sorted Containers -- Sorted List, Sorted Dict, Sorted Set"
-groups = ["dev"]
+groups = ["dev", "test"]
 files = [
     {file = "sortedcontainers-2.4.0-py2.py3-none-any.whl", hash = "sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0"},
     {file = "sortedcontainers-2.4.0.tar.gz", hash = "sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88"},

@@ -11,12 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
+import math
 from enum import Enum
 from typing import Optional, Union
 
-from pydantic import AliasChoices, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, ConfigDict, Field, field_validator, model_validator
 
-from inference_perf.config.common import Distribution, StrictBaseModel
+from inference_perf.config.common import IOLengthValue, LengthValue, StrictBaseModel, check_whole_number
 from inference_perf.config.datagen.multimodal import SyntheticMultimodalDatagenConfig
 from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
@@ -26,6 +28,9 @@ from inference_perf.config.datagen.replay import (
     TraceConfig,
 )
 from inference_perf.config.datagen.visionarena import VisionArenaConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 class DataGenType(Enum):
@@ -62,14 +67,20 @@ class SharedPrefix(StrictBaseModel):
         description="Number of prompts generated per shared system prompt.",
     )
 
-    system_prompt_len: Union[int, Distribution] = Field(
-        default=100, description="Length of the shared system prompt in tokens: a fixed value or a distribution."
+    system_prompt_len: LengthValue = Field(
+        default=100,
+        description="Length of the shared system prompt in tokens: a fixed value or an expression string"
+        " like 'floor(Uniform(256, 768))'. At least 0.",
     )
-    question_len: Union[int, Distribution] = Field(
-        default=50, description="Length of the question part in tokens: a fixed value or a distribution."
+    question_len: LengthValue = Field(
+        default=50,
+        description="Length of the question part in tokens: a fixed value or an expression string"
+        " like 'floor(Uniform(256, 768))'. At least 1.",
     )
-    output_len: Union[int, Distribution] = Field(
-        default=50, description="Requested output length in tokens: a fixed value or a distribution."
+    output_len: LengthValue = Field(
+        default=50,
+        description="Requested output length in tokens: a fixed value or an expression string"
+        " like 'floor(Uniform(256, 768))'. At least 1.",
     )
     max_model_len: Optional[int] = Field(
         default=None,
@@ -81,13 +92,19 @@ class SharedPrefix(StrictBaseModel):
     )
     seed: Optional[int] = Field(default=None, description="Random seed for reproducible prompt generation.")
 
-    # Legacy distribution fields — kept for backward compatibility.
-    # Prefer using inline distribution syntax on question_len/output_len instead.
-    question_distribution: Optional[Distribution] = Field(
-        default=None, description="Legacy question length distribution. Prefer an inline distribution on 'question_len'."
+    # Deprecated aliases: folded into question_len/output_len on load and
+    # left as None, removed together with the distribution block.
+    question_distribution: Optional[LengthValue] = Field(
+        default=None,
+        deprecated="Set 'question_len' instead.",
+        description="Deprecated: set 'question_len' to an expression string instead, like 'floor(Uniform(256, 768))'."
+        " At least 1.",
     )
-    output_distribution: Optional[Distribution] = Field(
-        default=None, description="Legacy output length distribution. Prefer an inline distribution on 'output_len'."
+    output_distribution: Optional[LengthValue] = Field(
+        default=None,
+        deprecated="Set 'output_len' instead.",
+        description="Deprecated: set 'output_len' to an expression string instead, like 'floor(Uniform(256, 768))'."
+        " At least 1.",
     )
 
     enable_multi_turn_chat: bool = Field(
@@ -98,18 +115,42 @@ class SharedPrefix(StrictBaseModel):
         default=None, description="Attach synthetic multimodal content (images, video, audio) to generated prompts."
     )
 
+    @field_validator("system_prompt_len", mode="after")
+    @classmethod
+    def validate_system_prompt_len(cls, value: Union[int, str]) -> Union[int, str]:
+        check_whole_number(value, 0)
+        return value
+
+    @field_validator("question_len", "output_len", "question_distribution", "output_distribution", mode="after")
+    @classmethod
+    def validate_lengths(cls, value: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
+        check_whole_number(value, 1)
+        return value
+
     @model_validator(mode="after")
-    def validate_no_ambiguous_distributions(self) -> "SharedPrefix":
-        if isinstance(self.question_len, Distribution) and self.question_distribution is not None:
-            raise ValueError(
-                "Cannot specify both inline distribution on 'question_len' and legacy 'question_distribution'."
-                " Use one or the other."
+    def fold_legacy_distribution_aliases(self) -> "SharedPrefix":
+        # A plain int is the only question_len/output_len form the legacy
+        # fields may accompany; an expression string would silently lose to
+        # them otherwise. The alias then replaces the int and is cleared, so
+        # the datagen reads one field.
+        for alias, field in (("question_distribution", "question_len"), ("output_distribution", "output_len")):
+            # through __dict__: getattr on a deprecated field raises our own DeprecationWarning
+            value = self.__dict__[alias]
+            if value is None:
+                continue
+            if not isinstance(getattr(self, field), int):
+                raise ValueError(
+                    f"Cannot specify both inline distribution on '{field}' and legacy '{alias}'. Use one or the other."
+                )
+            shown = f'"{value}"' if isinstance(value, str) else str(value)
+            logger.warning(
+                "shared_prefix.%s is deprecated and will be removed in a future release. Set `%s: %s` instead.",
+                alias,
+                field,
+                shown,
             )
-        if isinstance(self.output_len, Distribution) and self.output_distribution is not None:
-            raise ValueError(
-                "Cannot specify both inline distribution on 'output_len' and legacy 'output_distribution'."
-                " Use one or the other."
-            )
+            setattr(self, field, value)
+            setattr(self, alias, None)
         return self
 
 
@@ -131,13 +172,17 @@ class DataConfig(StrictBaseModel):
         description="Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet",
     )
 
-    input_distribution: Optional[Distribution] = Field(
+    input_distribution: Optional[IOLengthValue] = Field(
         default=None,
-        description="Input (prompt) length distribution in tokens. Only used by the 'synthetic' and 'random' types.",
+        description="Input (prompt) length in tokens: a fixed value or an expression string like"
+        " 'floor(Uniform(256, 768))'. At least 1. The 'synthetic' and 'random' types sample prompt lengths"
+        " from it; dataset types use its provable bounds as token filter bounds.",
     )
-    output_distribution: Optional[Distribution] = Field(
+    output_distribution: Optional[IOLengthValue] = Field(
         default=None,
-        description="Output length distribution in tokens. Only used by the 'synthetic' and 'random' types.",
+        description="Output length in tokens: a fixed value or an expression string like"
+        " 'floor(Uniform(256, 768))'. At least 1. The 'synthetic' and 'random' types sample output lengths"
+        " from it; dataset types use its provable bounds as token filter bounds.",
     )
     shared_prefix: Optional[SharedPrefix] = Field(
         default=None, description="Shared prefix generator settings. Only used by the 'shared_prefix' type."
@@ -180,6 +225,34 @@ class DataConfig(StrictBaseModel):
             " type; setting it with any other type is a config error."
         ),
     )
+
+    @field_validator("input_distribution", "output_distribution", mode="after")
+    @classmethod
+    def validate_distribution_expressions(cls, value: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
+        check_whole_number(value, 1)
+        return value
+
+    @model_validator(mode="after")
+    def validate_dataset_filter_bounds(self) -> "DataConfig":
+        # Dataset generators use input/output_distribution as token filter
+        # bounds, so for them the value has to be provably bounded on both
+        # sides; only the generators that sample lengths from the field can
+        # take an open-ended expression.
+        if self.type in (DataGenType.Synthetic, DataGenType.Random):
+            return self
+        from inference_perf.utils.numeric.distribution import value_bounds
+
+        for name in ("input_distribution", "output_distribution"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            low, high = value_bounds(value)
+            if math.isinf(low) or math.isinf(high):
+                raise ValueError(
+                    f"{name} {value!r} is used by the '{self.type.value}' data generator as token filter bounds, so it"
+                    f" must be provably bounded on both sides, e.g. 'Uniform(10, 1024)' or 'Min(Max({value}, 10), 1024)'."
+                )
+        return self
 
     @model_validator(mode="after")
     def validate_use_chat_template_scope(self) -> "DataConfig":
