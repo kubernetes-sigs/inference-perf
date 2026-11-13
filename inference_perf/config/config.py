@@ -19,7 +19,7 @@ import yaml
 from inference_perf.config.common import StrictBaseModel
 from pydantic import ConfigDict, Field, model_validator
 
-from inference_perf.config.apis import APIConfig
+from inference_perf.config.apis import APIConfig, APIType
 from inference_perf.config.circuit_breaker import CircuitBreakerConfig
 from inference_perf.config.client.filestorage import StorageConfig
 from inference_perf.config.client.modelserver import ModelServerClientConfig
@@ -183,6 +183,17 @@ class Config(StrictBaseModel):
                     f"load.stages[{stage_index}].concurrency_level ({stage.concurrency_level}) cannot exceed "
                     f"data.conversation_replay.num_conversations ({conversation_config.num_conversations})"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_sglang_generate_lora(self) -> "Config":
+        """Reject a LoRA traffic split on /generate, which would send every request to the base model.
+
+        /generate picks an adapter with lora_path, not the model field the split sets, and this
+        API does not send lora_path yet.
+        """
+        if self.api.type == APIType.SGLangGenerate and self.load.lora_traffic_split:
+            raise ValueError("load.lora_traffic_split is not supported with api.type 'sglang_generate'")
         return self
 
 

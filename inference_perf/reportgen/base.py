@@ -655,7 +655,7 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
 
 
 def _chunk_content(data: Any) -> Optional[str]:
-    """Content text from a parsed SSE chunk (chat/completions choices or an Anthropic text delta)."""
+    """Content text from a parsed SSE chunk (chat/completions choices, an Anthropic text delta or a bare text chunk)."""
     if choices := data.get("choices"):
         delta = choices[0]
         text = delta.get("text") or delta.get("delta", {}).get("content")
@@ -668,6 +668,9 @@ def _chunk_content(data: Any) -> Optional[str]:
         block = data.get("content_block") or {}
         if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
             return str(block["text"])
+    elif isinstance(text := data.get("text"), str) and text:
+        # A chunk that is only its new text, as sglang_generate records its chunks.
+        return text
     return None
 
 

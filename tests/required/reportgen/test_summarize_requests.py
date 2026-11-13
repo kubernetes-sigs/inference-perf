@@ -821,6 +821,16 @@ def test_extract_chunk_text_variations() -> None:
     assert _extract_chunk_text(c7) is None
 
 
+# A bare text chunk, as sglang_generate records its chunks: '{"text": " w1"}' -> " w1";
+# an empty or non-string text -> None.
+def test_extract_chunk_text_bare_text_chunk() -> None:
+    from inference_perf.reportgen.base import _extract_chunk_text
+
+    assert _extract_chunk_text('{"text": " w1"}') == " w1"
+    assert _extract_chunk_text('{"text": ""}') is None
+    assert _extract_chunk_text('{"text": 5}') is None
+
+
 def test_correct_streamed_response_metrics_caching_and_vectorization() -> None:
     from unittest.mock import MagicMock
     from inference_perf.reportgen.base import correct_streamed_response_metrics
