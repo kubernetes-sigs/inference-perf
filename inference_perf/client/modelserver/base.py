@@ -14,7 +14,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
-from inference_perf.apis import InferenceAPIData
+from inference_perf.apis import InferenceAPIData, RequestLifecycleMetric
 from .metrics import BaseMetrics
 
 
@@ -60,6 +60,10 @@ class ModelServerClient(ABC):
     def get_prometheus_metric_metadata(self) -> BaseMetrics:
         # assumption: all metrics clients have metrics exported in Prometheus format
         raise NotImplementedError
+
+    async def count_missing_input_tokens(self, metrics: List[RequestLifecycleMetric]) -> None:  # noqa - profiles override this
+        """Fill in the server's input token count of requests that got no usage back."""
+        pass
 
 
 class ModelServerClientSession:

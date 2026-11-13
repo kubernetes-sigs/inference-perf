@@ -159,7 +159,13 @@ class InferencePerfRunner:
         asyncio.run(_run())
 
     def generate_reports(self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
-        return asyncio.run(self.reportgen.generate_reports(report_config=report_config, runtime_parameters=runtime_parameters))
+        async def _generate() -> List[ReportFile]:
+            # After the load has ended and been timed, so these requests to the server fall in
+            # no stage and do not lengthen the run.
+            await self.client.count_missing_input_tokens(self.reportgen.get_metrics_collector().get_metrics())
+            return await self.reportgen.generate_reports(report_config=report_config, runtime_parameters=runtime_parameters)
+
+        return asyncio.run(_generate())
 
     def save_reports(self, reports: List[ReportFile]) -> None:
         for storage_client in self.storage_clients:

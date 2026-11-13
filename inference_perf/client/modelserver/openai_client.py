@@ -57,6 +57,8 @@ _READINESS_POLL_INTERVAL_SEC = 1.0
 _READINESS_PROBE_TIMEOUT_SEC = 5.0
 # Probed when a profile names no readiness route of its own.
 _READINESS_FALLBACK_ROUTE = "/v1/models"
+# Cap on one token-count request, so a server that stopped answering costs one wait, not one per request.
+_TOKEN_COUNT_TIMEOUT_SEC = 5.0
 
 
 class OpenAIMetrics(BaseMetrics):
@@ -97,6 +99,9 @@ class openAIModelServerClient(ModelServerClient):
     readiness_route: Optional[str] = None
     # Budget for the readiness wait. Profiles override it when their boot takes longer.
     readiness_timeout_sec: float = 600.0
+    # Route that answers how many tokens the server counts for a request's input. A profile
+    # without one leaves requests that got no usage back without a server count.
+    token_count_route: Optional[str] = None
 
     def __init__(
         self,
@@ -318,6 +323,50 @@ class openAIModelServerClient(ModelServerClient):
             logger.debug(f"Waiting for {url}: {last_seen}")
             time.sleep(min(_READINESS_POLL_INTERVAL_SEC, max(0.0, deadline - time.monotonic())))
 
+    async def count_missing_input_tokens(self, metrics: List[RequestLifecycleMetric]) -> None:
+        """Ask the server for the input token count of each request that got no usage back.
+
+        A successful request records the server's ``usage.prompt_tokens``. A failed or
+        cancelled one gets no usage, so it recorded 0 input tokens. The runner calls this once
+        after the last stage, so the extra requests fall outside every measured window. Only
+        Completion and Chat requests are counted. A 404 means the route is not served here and
+        a transport error means the server is gone; either ends the pass. Any other status
+        leaves that request as it was.
+        """
+        if self.token_count_route is None or self.api_config.type not in (APIType.Completion, APIType.Chat):
+            return
+        pending = [m for m in metrics if m.error is not None and m.info.request_metrics.text.input_tokens == 0]
+        if not pending:
+            return
+        url = f"{self.uri}{self.token_count_route}"
+        headers = _build_request_headers(self.api_config, self.api_key)
+        timeout = aiohttp.ClientTimeout(total=_TOKEN_COUNT_TIMEOUT_SEC)
+        counted = 0
+        session = openAIModelServerClientSession(self)
+        try:
+            for metric in pending:
+                body = _token_count_body(self.api_config.type, metric.request_data)
+                if body is None:
+                    continue
+                try:
+                    async with session.session.post(url, headers=headers, data=json.dumps(body), timeout=timeout) as response:
+                        if response.status == 404:
+                            logger.info(f"Server does not serve {url}, requests without usage keep no input token count")
+                            break
+                        if response.status != 200:
+                            logger.debug(f"{url} answered HTTP {response.status}, request keeps no input token count")
+                            continue
+                        count = _token_count(await response.text())
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    logger.warning(f"Stopped counting input tokens at {url}: {type(e).__name__}: {e}")
+                    break
+                if count is not None:
+                    metric.info.request_metrics.text.input_tokens = count
+                    counted += 1
+        finally:
+            await session.close()
+        logger.info(f"Counted input tokens for {counted} of {len(pending)} requests without usage at {url}")
+
     def get_supported_models(self) -> List[dict[str, Any]]:
         try:
             timeout = self.timeout if self.timeout is not None else _SUPPORTED_MODELS_TIMEOUT_SEC
@@ -359,6 +408,35 @@ def _build_request_headers(api_config: APIConfig, api_key: Optional[str]) -> dic
     if api_config.headers:
         _update_headers_case_insensitive(headers, api_config.headers)
     return headers
+
+
+def _token_count_body(api_type: APIType, request_data: str) -> Optional[dict[str, object]]:
+    """The token-count body for one recorded request: only the fields that make up its input.
+
+    Completion keeps ``prompt`` and ``add_special_tokens``, Chat keeps ``messages`` and
+    ``tools``; vLLM reads these as TokenizeCompletionRequest and TokenizeChatRequest. Sampling
+    fields such as ``max_tokens`` do not change the count. None when the body is not a JSON object.
+    """
+    try:
+        payload = json.loads(request_data)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    keys = ("model", "prompt", "add_special_tokens") if api_type == APIType.Completion else ("model", "messages", "tools")
+    return {key: payload[key] for key in keys if key in payload}
+
+
+def _token_count(response_content: str) -> Optional[int]:
+    """The ``count`` of a token-count response, or None when the body carries no integer count."""
+    try:
+        body = json.loads(response_content)
+    except ValueError:
+        return None
+    count = body.get("count") if isinstance(body, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return None
+    return count
 
 
 def _strip_embeddings_vectors(response_content: str) -> str:

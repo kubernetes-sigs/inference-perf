@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 class vLLMModelServerClient(openAIModelServerClient):
     # 200 once the engine is up; 503 while it is dead (vllm/entrypoints/serve/instrumentator/health.py).
     readiness_route = "/health"
+    # Takes the completion form (prompt, add_special_tokens) or the chat form (messages, tools)
+    # and answers {"count": N} (vllm/entrypoints/serve/tokenize/protocol.py).
+    token_count_route = "/tokenize"
 
     def __init__(
         self,
