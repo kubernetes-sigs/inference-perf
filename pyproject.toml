@@ -96,6 +96,17 @@ distribution = true
 # reference; tests/test_pdm_scripts.py enforces this.
 format = {cmd = "ruff format", help = "Format code with ruff"}
 "check:format" = {cmd = "ruff format --check", help = "Verify code is formatted, without changing any file"}
+"check:license" = {cmd = ["python", "-c", '''
+import os
+import subprocess
+import sys
+
+paths = subprocess.check_output(["git", "ls-files", "-z", "--", "*.py"]).split(b"\0")
+files = [os.fsdecode(path) for path in paths if path]
+if not files:
+    sys.exit("No tracked Python files found.")
+sys.exit(subprocess.run([sys.executable, "scripts/check_license.py", *files]).returncode)
+'''], help = "Verify license headers in all tracked Python files"}
 lint = {cmd = "ruff check", help = "Lint code with ruff"}
 type-check = {cmd = "mypy --strict ./inference_perf ./tests ./e2e/known_bad.py ./scripts/check_type_escapes.py", help = "Strict mypy over inference_perf, tests, the e2e known-bad helper and the type-escape ratchet"}
 "check:type-escapes" = {cmd = "python scripts/check_type_escapes.py", help = "Verify the totals of Any, cast(, type: ignore and mypy overrides did not rise vs main"}
@@ -104,7 +115,7 @@ type-check = {cmd = "mypy --strict ./inference_perf ./tests ./e2e/known_bad.py .
 "check:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py --check", help = "Verify every exported runtime metric is documented and the doc is in sync with the registry"}
 "update:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py", help = "Regenerate the runtime metrics doc from the registry"}
 check = {composite = ["check:format", "lint"], help = "Fast check: format (verify only) + lint"}
-validate = {composite = ["check:format", "lint", "type-check", "check:type-escapes", "check:cli-flags", "check:runtime-metrics"], help = "Full check: format (verify only), lint, type-check, type-escape ratchet, cli-flags and runtime-metrics doc sync"}
+validate = {composite = ["check:format", "check:license", "lint", "type-check", "check:type-escapes", "check:cli-flags", "check:runtime-metrics"], help = "Full check: format (verify only), license headers, lint, type-check, type-escape ratchet, cli-flags and runtime-metrics doc sync"}
 setup = {shell = "pdm install && pre-commit install --config .pre-push-config.yaml && pre-commit install --config .pre-push-config.yaml --hook-type pre-push", help = "Install dependencies and git hooks"}
 
 "test" = {cmd = "pytest tests", help = "Run unit tests"}
