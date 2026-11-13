@@ -28,6 +28,7 @@ import pytest
 import yaml
 
 from inference_perf.config import (
+    StandardLoadStage,
     APIType,
     Config,
     DataGenType,
@@ -335,3 +336,95 @@ def test_conversation_replay_accepts_concurrency_at_or_below_conversation_count(
 
     assert config.data.type == DataGenType.ConversationReplay
     assert config.load.type == LoadType.CONCURRENT
+
+
+# A YAML file whose stage sets stop_condition 't >= 30' instead of duration loads through read_config; the stage's effective_duration is 30.0.
+def test_read_config_stop_condition_stage() -> None:
+    config_content = {
+        "data": {"type": "mock"},
+        "load": {"type": "constant", "stages": [{"rate": 2, "stop_condition": "t >= 30"}]},
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+    try:
+        config = read_config(tmp_path)
+        stage = config.load.stages[0]
+        assert isinstance(stage, StandardLoadStage)
+        assert stage.duration is None
+        assert stage.stop_condition == "t >= 30"
+        assert stage.effective_duration == 30.0
+    finally:
+        os.remove(tmp_path)
+
+
+# A YAML stage whose stop_condition is the object form {condition: '(t >= 300) |
+# (quantile_over_time(0.99, ttft[30s]) > 2)', hold: 2} loads through read_config with that hold; effective_duration
+# is the 300s deadline.
+def test_read_config_stop_condition_object_form() -> None:
+    config_content = {
+        "data": {"type": "mock"},
+        "load": {
+            "type": "constant",
+            "stages": [
+                {
+                    "rate": 2,
+                    "stop_condition": {"condition": "(t >= 300) | (quantile_over_time(0.99, ttft[30s]) > 2)", "hold": 2},
+                }
+            ],
+        },
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+    try:
+        config = read_config(tmp_path)
+        stage = config.load.stages[0]
+        assert isinstance(stage, StandardLoadStage)
+        assert stage.stop_settings.condition == "(t >= 300) | (quantile_over_time(0.99, ttft[30s]) > 2)"
+        assert stage.stop_settings.hold == 2
+        assert stage.effective_duration == 300.0
+    finally:
+        os.remove(tmp_path)
+
+
+# Writes a config dict to a temporary YAML file and loads it through read_config, the path the CLI takes.
+def _read_config_from(config_content: dict[str, object]) -> Config:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+    try:
+        return read_config(tmp_path)
+    finally:
+        os.remove(tmp_path)
+
+
+# A YAML file with request_interval 0.1 for 3s and no load.type loads through read_config: the defaults
+# read_config merges in do not count as the user setting load.type. The stage sends 30 requests.
+def test_read_config_request_interval_stage_without_load_type() -> None:
+    config = _read_config_from({"data": {"type": "mock"}, "load": {"stages": [{"request_interval": 0.1, "duration": 3}]}})
+
+    stage = config.load.stages[0]
+    assert isinstance(stage, StandardLoadStage)
+    assert stage.request_interval == 0.1
+    assert stage.request_schedule.expected_requests == 30
+
+
+# The same file with load.type: constant written out is still rejected through read_config, naming load.type.
+def test_read_config_request_interval_stage_rejects_a_written_load_type() -> None:
+    with pytest.raises(ValueError, match="load.type"):
+        _read_config_from(
+            {"data": {"type": "mock"}, "load": {"type": "constant", "stages": [{"request_interval": 0.1, "duration": 3}]}}
+        )
+
+
+# load.type passed as a CLI override counts as written too: request_interval with --load.type poisson is rejected.
+def test_read_config_request_interval_stage_rejects_a_cli_load_type() -> None:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump({"data": {"type": "mock"}, "load": {"stages": [{"request_interval": 0.1, "duration": 3}]}}, tmp)
+        tmp_path = tmp.name
+    try:
+        with pytest.raises(ValueError, match="load.type"):
+            read_config(tmp_path, {"load": {"type": "poisson"}})
+    finally:
+        os.remove(tmp_path)

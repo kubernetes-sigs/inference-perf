@@ -80,6 +80,13 @@ class TestVariablePermissions:
         with pytest.raises((ValueError, TypeError)):
             Expression("10 +* 2")
 
+    # '1, 2' parses to a Python tuple and '[1]' to a list. Both are rejected as not a numeric value,
+    # where they used to fail with AttributeError: 'tuple' object has no attribute 'atoms'.
+    @pytest.mark.parametrize("raw", ["1, 2", "[1]"])
+    def test_tuple_or_list_rejected(self, raw: str) -> None:
+        with pytest.raises(ValueError, match="is not a numeric value"):
+            Expression(raw)
+
 
 class TestRandom:
     def test_normal_returns_float(self) -> None:
