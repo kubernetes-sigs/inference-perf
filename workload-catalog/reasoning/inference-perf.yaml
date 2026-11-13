@@ -26,5 +26,5 @@ data:
     num_conversations: 10
     shared_system_prompt_len: 250
     turns_per_conversation: 1
-    input_tokens_per_turn: "Min(Max(LogNormal(6.66, 0.703), 100), 5000)"
-    output_tokens_per_turn: "Min(Max(LogNormal(8.734, 0.712), 500), 32000)"
+    input_tokens_per_turn: "floor(Min(Max(LogNormal(6.66, 0.703), 100), 5000) + 1/2)"
+    output_tokens_per_turn: "floor(Min(Max(LogNormal(8.734, 0.712), 500), 32000) + 1/2)"

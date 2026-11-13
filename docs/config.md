@@ -587,8 +587,8 @@ data:
                             # Input lengths then target the fully templated prompt, so the server-side prefill
                             # token count still matches the configured length. Requires a tokenizer with a chat
                             # template, and every input length must exceed the template's fixed token overhead.
-  input_distribution: "Min(Max(Normal(50, 10), 10), 100)"   # prompt lengths: mean 50, std dev 10, clipped to [10, 100]
-  output_distribution: "Min(Max(Normal(50, 10), 10), 100)"  # output lengths, same shape
+  input_distribution: "floor(Min(Max(Normal(50, 10), 10), 100) + 1/2)"   # prompt lengths: mean 50, std dev 10, clipped to [10, 100]
+  output_distribution: "floor(Min(Max(Normal(50, 10), 10), 100) + 1/2)"  # output lengths, same shape
 metrics:
   type: prometheus
   prometheus:

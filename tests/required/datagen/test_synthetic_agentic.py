@@ -1278,7 +1278,7 @@ def test_theme_mix_weight_block_rejects_negative() -> None:
         (
             {
                 "max_model_len": 50_000,
-                "input_tokens_per_turn": "Min(Uniform(10, 101), 100)",
+                "input_tokens_per_turn": "floor(Min(Uniform(10, 101), 100) + 1/2)",
                 "output_tokens_per_turn": 100,
                 "tool_loop_depth": 0,
             },
@@ -2694,9 +2694,9 @@ def test_fanout_graph_is_byte_identical_across_rebuilds() -> None:
     cfg = _cfg(
         theme_mix={"generic": 1.0},
         fanout_probability=1.0,
-        sub_agents_per_spawn="Min(Uniform(2, 4), 3)",
+        sub_agents_per_spawn="floor(Min(Uniform(2, 4), 3) + 1/2)",
         max_depth=2,
-        tool_loop_depth="Min(Uniform(0, 3), 2)",
+        tool_loop_depth="floor(Min(Uniform(0, 3), 2) + 1/2)",
         max_events_per_session=512,
     )
     for idx in range(3):
@@ -4054,9 +4054,9 @@ def test_async_notification_chain_is_byte_identical_across_rebuilds() -> None:
     cfg = _cfg(
         theme_mix={"generic": 1.0},
         fanout_probability=1.0,
-        sub_agents_per_spawn="Min(Uniform(2, 4), 3)",
+        sub_agents_per_spawn="floor(Min(Uniform(2, 4), 3) + 1/2)",
         max_depth=2,
-        tool_loop_depth="Min(Uniform(0, 3), 2)",
+        tool_loop_depth="floor(Min(Uniform(0, 3), 2) + 1/2)",
         max_events_per_session=512,
     )
     for idx in range(3):

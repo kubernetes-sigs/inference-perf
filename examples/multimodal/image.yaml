@@ -15,12 +15,12 @@ tokenizer:
 
 data:
   type: synthetic
-  input_distribution: "Uniform(100, 500)"
-  output_distribution: "Uniform(50, 200)"
+  input_distribution: "floor(Uniform(100, 500) + 1/2)"
+  output_distribution: "floor(Uniform(50, 200) + 1/2)"
   multimodal:
     image:
       # 1–3 images per request, typically 2.
-      count: "Uniform(1, 3)"
+      count: "floor(Uniform(1, 3) + 1/2)"
       # Place images at the start of the prompt (0.0). Use 1.0 for suffix
       # placement, or a Distribution to vary placement per request.
       insertion_point: 0.0

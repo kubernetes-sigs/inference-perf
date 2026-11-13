@@ -83,8 +83,8 @@ def test_random_datagen_chat_template_exact_prefill_length(chat_tokenizer: Custo
     data_config = DataConfig(
         type=DataGenType.Random,
         use_chat_template=True,
-        input_distribution="Min(Max(Normal(100, 40), 20), 200)",
-        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
+        input_distribution="floor(Min(Max(Normal(100, 40), 20), 200) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     generator = RandomDataGenerator(api_config, data_config, chat_tokenizer, seed=42, total_count=10)
 

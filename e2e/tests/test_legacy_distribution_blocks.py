@@ -40,9 +40,9 @@ DURATION = 2
 EXPECTED_REQUESTS = RATE * DURATION
 
 INPUT_BLOCK = {"type": "normal", "min": 30, "max": 90, "mean": 60, "std_dev": 15}
-INPUT_REPLACEMENT = 'Replace it with `input_distribution: "Min(Max(Normal(60, 15), 30), 90)"`'
+INPUT_REPLACEMENT = 'Replace it with `input_distribution: "floor(Min(Max(Normal(60, 15), 30), 90) + 1/2)"`'
 OUTPUT_BLOCK = {"type": "uniform", "min": 8, "max": 24}
-OUTPUT_REPLACEMENT = 'Replace it with `output_distribution: "Uniform(8, 24)"`'
+OUTPUT_REPLACEMENT = 'Replace it with `output_distribution: "floor(Uniform(8, 24) + 1/2)"`'
 
 # 40 draws that all came out equal, or nearly so, mean the block was collapsed
 # to one number on the way. 40 draws over 17 output values or 61 input values

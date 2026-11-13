@@ -21,7 +21,8 @@ from typing import Callable, Dict, List, Sequence, Set, Tuple
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from inference_perf.config import Config, DataConfig, DataGenType, Distribution, SharedPrefix
+from inference_perf.config import Config, DataConfig, DataGenType, SharedPrefix
+from inference_perf.config.common import LegacyDistributionBlock
 from inference_perf.config.datagen.multimodal import AudioDatagenConfig, ImageDatagenConfig, VideoDatagenConfig
 from inference_perf.config.datagen.replay import ContextCompactionConfig, ConversationReplayConfig, SyntheticAgenticConfig
 from inference_perf.config.datagen.visionarena import VisionArenaConfig
@@ -85,6 +86,7 @@ class Row:
     kind: Kind
     build: Callable[[str, object], object]
     minimum: int = 0
+    stored_as: str = ""  # an alias folds into another field on load
 
 
 def _alone(model: type[BaseModel], required: Dict[str, object]) -> Callable[[str, object], object]:
@@ -103,6 +105,8 @@ ROWS: List[Row] = [
     Row(DataConfig, "output_distribution", WHOLE, _io, minimum=1),
     Row(SharedPrefix, "system_prompt_len", WHOLE, _alone(SharedPrefix, {}), minimum=0),
     *(Row(SharedPrefix, f, WHOLE, _alone(SharedPrefix, {}), minimum=1) for f in ("question_len", "output_len")),
+    Row(SharedPrefix, "question_distribution", WHOLE, _alone(SharedPrefix, {}), minimum=1, stored_as="question_len"),
+    Row(SharedPrefix, "output_distribution", WHOLE, _alone(SharedPrefix, {}), minimum=1, stored_as="output_len"),
     *(Row(m, "count", WHOLE, _alone(m, {})) for m in (ImageDatagenConfig, VideoDatagenConfig, AudioDatagenConfig)),
     *(
         Row(m, "insertion_point", UNIT_INTERVAL, _alone(m, {}))
@@ -148,7 +152,16 @@ def _nested_models(annotation: object) -> List[type[BaseModel]]:
     return found
 
 
-# a field takes an expression when str sits in the same union as Distribution
+# every expression field type carries the LegacyDistributionBlock marker, on the field or on an Annotated member
+def _takes_expression(annotation: object, metadata: List[object]) -> bool:
+    if any(isinstance(item, LegacyDistributionBlock) for item in metadata):
+        return True
+    if typing.get_origin(annotation) is typing.Annotated:
+        inner, *extras = typing.get_args(annotation)
+        return _takes_expression(inner, list(extras))
+    return any(_takes_expression(arg, []) for arg in typing.get_args(annotation))
+
+
 def _expression_fields() -> Set[Tuple[str, str]]:
     seen: Set[type[BaseModel]] = set()
     fields: Set[Tuple[str, str]] = set()
@@ -159,8 +172,7 @@ def _expression_fields() -> Set[Tuple[str, str]]:
             continue
         seen.add(model)
         for name, info in model.model_fields.items():
-            members = _members(info.annotation)
-            if str in members and Distribution in members:
+            if _takes_expression(info.annotation, list(info.metadata)):
                 fields.add((model.__name__, name))
             pending.extend(_nested_models(info.annotation))
     return fields
@@ -187,12 +199,13 @@ def test_every_expression_field_has_a_row() -> None:
     assert _expression_fields() == {(row.model.__name__, row.field) for row in ROWS}
 
 
-# Each accepted example, built from the field's minimum, loads and is stored as written. Example:
-# SharedPrefix.question_len (at least 1) takes '1 + Poisson(3)'.
+# Each accepted example, built from the field's minimum, loads and is stored as written, on the field an
+# alias folds into. Example: SharedPrefix.question_len (at least 1) takes '1 + Poisson(3)';
+# question_distribution='1 + Poisson(3)' lands on question_len.
 @pytest.mark.parametrize(("row", "raw"), _cases(lambda row: row.kind.accepted))
 def test_field_accepts(row: Row, raw: str) -> None:
     raw = raw.format(m=row.minimum)
-    assert getattr(row.build(row.field, raw), row.field) == raw
+    assert getattr(row.build(row.field, raw), row.stored_as or row.field) == raw
 
 
 # Each rejected example fails at config load with its field's reason. Example: question_len='Uniform(10, 20)'

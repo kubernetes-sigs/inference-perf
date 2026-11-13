@@ -26,5 +26,5 @@ data:
     num_conversations: 30
     shared_system_prompt_len: 500
     turns_per_conversation: 1
-    input_tokens_per_turn: "Min(Max(Normal(15000, 22000), 1000), 80000)"
-    output_tokens_per_turn: "Min(Max(Normal(500, 300), 50), 2000)"
+    input_tokens_per_turn: "floor(Min(Max(Normal(15000, 22000), 1000), 80000) + 1/2)"
+    output_tokens_per_turn: "floor(Min(Max(Normal(500, 300), 50), 2000) + 1/2)"

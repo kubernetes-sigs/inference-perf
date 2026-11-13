@@ -124,8 +124,8 @@ def test_shared_prefix_real_tokenizer_small_question_len(question_len_min: int) 
         num_groups=3,
         num_prompts_per_group=50,
         system_prompt_len=100,
-        question_distribution=f"Min(Max(Normal({question_len_min + 2}, 2), {question_len_min}), 20)",
-        output_distribution="Min(Max(Normal(10, 1), 1), 20)",
+        question_distribution=f"floor(Min(Max(Normal({question_len_min + 2}, 2), {question_len_min}), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(10, 1), 1), 20) + 1/2)",
         enable_multi_turn_chat=True,
     )
     data_config = DataConfig(type=DataGenType.SharedPrefix, shared_prefix=shared_prefix_cfg)
@@ -161,8 +161,8 @@ def test_shared_prefix_server_tokens_stable_across_group() -> None:
         num_groups=3,
         num_prompts_per_group=30,
         system_prompt_len=100,
-        question_distribution="Min(Max(Normal(5, 2), 1), 15)",
-        output_distribution="Min(Max(Normal(10, 1), 1), 20)",
+        question_distribution="floor(Min(Max(Normal(5, 2), 1), 15) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(10, 1), 1), 20) + 1/2)",
         enable_multi_turn_chat=True,
     )
     data_config = DataConfig(type=DataGenType.SharedPrefix, shared_prefix=shared_prefix_cfg)

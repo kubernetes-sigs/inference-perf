@@ -266,7 +266,7 @@ def test_shared_prefix_inline_distribution() -> None:
     assert sp.question_len == compile_legacy_distribution(
         Distribution(type="skew_normal", mean=200, std_dev=80, skew=2.5, min=10, max=2000)
     )
-    assert isinstance(sp.question_len, str) and sp.question_len.startswith("Min(Max(200 + 80*(")
+    assert isinstance(sp.question_len, str) and sp.question_len.startswith("floor(Min(Max(200 + 80*(")
 
 
 def test_shared_prefix_fixed_int_unchanged() -> None:
@@ -331,7 +331,7 @@ def test_shared_prefix_legacy_distribution_compat() -> None:
     assert sp is not None
     # The deprecated alias is rewritten to the expression it stood for and
     # folded into question_len, which the datagen reads.
-    assert sp.question_len == "Min(Max(Normal(512, 200), 10), 1024)"
+    assert sp.question_len == "floor(Min(Max(Normal(512, 200), 10), 1024) + 1/2)"
     assert sp.question_distribution is None
 
 
@@ -483,9 +483,9 @@ def test_multimodal_config_parsing() -> None:
         assert config.data.multimodal.image.insertion_point == 0.5
         # uniform blocks with min == max are rewritten to the expression they stood
         # for: an integer uniform over [min, max + 1) clamped back to max.
-        assert config.data.multimodal.image.count == "Min(Uniform(3, 4), 3)"
+        assert config.data.multimodal.image.count == "floor(Min(Uniform(3, 4), 3) + 1/2)"
         assert config.data.multimodal.video is not None
-        assert config.data.multimodal.video.count == "Min(Uniform(1, 2), 1)"
+        assert config.data.multimodal.video.count == "floor(Min(Uniform(1, 2), 1) + 1/2)"
         assert config.data.multimodal.video.profiles is not None
         assert isinstance(config.data.multimodal.video.profiles, VideoProfile)
         assert config.data.multimodal.video.profiles.resolution == "1080p"

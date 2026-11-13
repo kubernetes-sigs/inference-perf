@@ -31,8 +31,8 @@ tokenizer:
 
 data:
   type: synthetic
-  input_distribution: "Min(Max(Normal(50, 10), 10), 100)"
-  output_distribution: "Min(Max(Normal(50, 10), 10), 100)"
+  input_distribution: "floor(Min(Max(Normal(50, 10), 10), 100) + 1/2)"
+  output_distribution: "floor(Min(Max(Normal(50, 10), 10), 100) + 1/2)"
 
 report:
   request_lifecycle:

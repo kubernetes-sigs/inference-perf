@@ -95,10 +95,10 @@ class SharedPrefix(StrictBaseModel):
     # Deprecated aliases: folded into question_len/output_len on load and
     # left as None, removed together with the distribution block.
     question_distribution: Optional[LengthValue] = Field(
-        default=None, description="Deprecated: set 'question_len' to the distribution instead."
+        default=None, description="Deprecated: set 'question_len' to the distribution instead. At least 1."
     )
     output_distribution: Optional[LengthValue] = Field(
-        default=None, description="Deprecated: set 'output_len' to the distribution instead."
+        default=None, description="Deprecated: set 'output_len' to the distribution instead. At least 1."
     )
 
     enable_multi_turn_chat: bool = Field(
@@ -115,9 +115,9 @@ class SharedPrefix(StrictBaseModel):
         check_whole_number(value, 0)
         return value
 
-    @field_validator("question_len", "output_len", mode="after")
+    @field_validator("question_len", "output_len", "question_distribution", "output_distribution", mode="after")
     @classmethod
-    def validate_lengths(cls, value: Union[int, str]) -> Union[int, str]:
+    def validate_lengths(cls, value: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
         check_whole_number(value, 1)
         return value
 
@@ -221,9 +221,7 @@ class DataConfig(StrictBaseModel):
 
     @field_validator("input_distribution", "output_distribution", mode="after")
     @classmethod
-    def validate_distribution_expressions(
-        cls, value: Optional[Union[int, str]]
-    ) -> Optional[Union[int, str]]:
+    def validate_distribution_expressions(cls, value: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
         check_whole_number(value, 1)
         return value
 

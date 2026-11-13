@@ -111,12 +111,8 @@ class ConversationReplayConfig(StrictBaseModel):
     turns_per_conversation: Optional[LengthValue] = Field(
         None, description="Number of turns per conversation distribution. At least 1."
     )
-    input_tokens_per_turn: Optional[LengthValue] = Field(
-        None, description="Input tokens per turn distribution. At least 1."
-    )
-    output_tokens_per_turn: Optional[LengthValue] = Field(
-        None, description="Output tokens per turn distribution. At least 1."
-    )
+    input_tokens_per_turn: Optional[LengthValue] = Field(None, description="Input tokens per turn distribution. At least 1.")
+    output_tokens_per_turn: Optional[LengthValue] = Field(None, description="Output tokens per turn distribution. At least 1.")
     tool_call_latency_sec: Optional[ScalarValue] = Field(
         None,
         description=(
@@ -443,9 +439,7 @@ class SyntheticAgenticConfig(SessionReplayConfig):
     # must choose them; there is no neutral default token profile).
     num_sessions: int = Field(..., gt=0, description="Number of sessions (load volume)")
     input_tokens_per_turn: LengthValue = Field(..., description="per-turn input tokens. At least 1.")
-    output_tokens_per_turn: LengthValue = Field(
-        ..., description="per-turn output tokens (plain-text turns). At least 1."
-    )
+    output_tokens_per_turn: LengthValue = Field(..., description="per-turn output tokens (plain-text turns). At least 1.")
 
     # Structural/content shape: sensible defaults, override to shape the workload.
     turns_per_session: LengthValue = Field(
