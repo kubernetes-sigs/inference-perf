@@ -276,7 +276,9 @@ def _build_aggregate(
 
     # No successes means no measured throughput: emit absence, not zero rates,
     # so a composer can tell an unmeasured window from a measured 0.
-    total_time = _benchmark_window(metrics)
+    # The window spans the requests that got an answer, as in the native report: a cancelled request ends when it
+    # was cancelled, up to stage_teardown_grace_seconds after the stage, which would lower every rate.
+    total_time = _benchmark_window((successful + failed) or metrics)
     throughput = _build_throughput(successful, total_time, use_server_output_tokens) if successful and total_time > 0 else None
 
     return AggregateRequestPerformance(requests=requests, latency=latency, throughput=throughput)
