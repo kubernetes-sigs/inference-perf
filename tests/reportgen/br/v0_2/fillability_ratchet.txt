@@ -62,3 +62,9 @@ run.time.end
 run.time.start
 run.uid
 version
+results.observability.components.component_label
+results.observability.components.aggregate.kv_cache_usage
+results.observability.components.aggregate.cache_hit_rate
+results.observability.components.aggregate.running_requests
+results.observability.components.aggregate.waiting_requests
+results.observability.components.aggregate.preemptions
