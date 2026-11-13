@@ -128,6 +128,64 @@ load:
 - `rate` and `duration` are not allowed and will cause validation errors
 - `sweep` configuration is incompatible with concurrent load type
 
+### Benchmark an overloaded server: open loop and hard stop
+
+Two settings matter when the server may fall behind the offered load, for
+example when sweeping rates past saturation.
+
+**`open_loop`.** By default a worker takes one of its `worker_max_concurrency`
+permits *before* it waits for a request's scheduled time and holds it until the
+request finishes. Once `num_workers * worker_max_concurrency` requests are
+outstanding, later sends go out late: the load quietly becomes closed-loop and
+the server is offered only what it can absorb. With `open_loop: true`, constant,
+poisson and trace_replay requests are sent at their scheduled times however many
+are in flight. Size the connection pool for it (`worker_max_tcp_connections: 0`
+means no limit); otherwise sends wait for a free connection after they are
+timestamped, which shows up as latency rather than as schedule delay.
+
+**`hard_stop`.** By default a constant, poisson or trace_replay stage lasts until
+every scheduled request has finished, and in-flight requests then get
+`stage_teardown_grace_seconds` before they are cancelled. With `hard_stop: true`
+a stage ends at `start + duration`: nothing more is sent and every request still
+in flight is cancelled at once. Cancelled requests are reported the way
+requests cancelled at stage teardown are: in the per-request output with error
+type `StageTeardownCancelled`, in the `cancelled` section of each lifecycle
+report beside `successes` and `failures` (and in `requests.incomplete` of the
+benchmark report), and kept out of the latency statistics.
+
+A `concurrent` stage can be bounded in time with `max_duration`: it ends when
+`num_requests` have finished or `max_duration` seconds have passed, whichever is
+first. Combined with `hard_stop`, requests in flight at the bound are cancelled
+and reported as cancelled.
+
+```yaml
+load:
+  type: poisson
+  stages:
+  - rate: 50
+    duration: 120
+  open_loop: true
+  hard_stop: true
+  worker_max_tcp_connections: 0
+```
+
+Check `load_summary.schedule_delay` (send time minus scheduled time) and
+`load_summary.achieved_rate` in each stage report: under a correct open loop the
+delay stays in the milliseconds and the achieved rate matches the requested one,
+however slow the server is.
+
+In open-loop mode each worker builds request payloads (for `random` data,
+generating a prompt that tokenizes to exactly the requested length) on its own
+thread, so a long prompt being built does not hold back a request that is
+already due. Building still costs client CPU, though: a long random prompt takes
+on the order of 100 ms of one core, so with long prompts the rate one worker can
+sustain is limited, and a rate above `num_workers` times that limit shows up as a
+growing schedule delay. Give the load generator enough workers, and cores for
+them, for the highest rate in the sweep.
+
+With `hard_stop`, workers check for the end of a stage at least every 20 ms, so
+requests in flight at the end are cancelled within about that much of it.
+
 ### Run with specific concurrency instead of QPS (Legacy approach)
 
 **Note: This approach is deprecated. Use the `concurrent` load type instead for better concurrency control.**
