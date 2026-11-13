@@ -69,6 +69,10 @@ Alternatively, you can run using a configuration file:
 inference-perf --config_file config.yml
 ```
 
+Coming from `vllm bench serve` or `aiperf profile`? `inference-perf-convert` turns a peer argument list
+into a config and refuses wherever the mapping would change the workload; see
+[Converting a run automatically](./docs/comparability.md#converting-a-run-automatically).
+
 ### Sample Output
 When you run `inference-perf`, it displays a rich summary table in the CLI:
 
