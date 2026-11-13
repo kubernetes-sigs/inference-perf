@@ -22,7 +22,7 @@ Two properties a load generator used to measure an overloaded server must have:
    take.
 2. Hard stop. When a stage's window ends the generator stops at once: nothing
    more is sent, every request still in flight is cancelled (not drained), and
-   those requests are reported as incomplete rather than as successes,
+   those requests are reported as cancelled rather than as successes,
    failures, or not at all.
 
 What is faked and what is the oracle
@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pytest
 
+from inference_perf.apis.base import STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
 from utils.absorber import AbsorbedRequest, AbsorberServer
 from utils.benchmark import BenchmarkResult, run_benchmark_minimal
 from utils.load_shape import assert_arrivals_spread
@@ -160,13 +161,13 @@ def _server_inflight_at(requests: List[AbsorbedRequest], t: float) -> int:
 
 # How long a response the server has finished may sit unread in the client
 # before the client processes it. A request cancelled in that window is
-# incomplete for the client but finished for the server (no disconnect).
+# cancelled for the client but finished for the server (no disconnect).
 READ_LAG_S = 0.25
 
 
-# Whether the client's incomplete requests agree with what the server saw
+# Whether the client's cancelled requests agree with what the server saw
 # abandoned, as None or the reason they do not. Every server-side disconnect is
-# an incomplete request. The client may count more, but only:
+# a cancelled request. The client may count more, but only:
 # - requests whose reply the server finished within READ_LAG_S before the
 #   client cancelled them (finished, but not yet read: no disconnect), and
 # - one request scheduled exactly at the end `end`, stamped as sent and then
@@ -174,33 +175,33 @@ READ_LAG_S = 0.25
 # (The server's in-flight count at the nominal end can differ from both by
 # requests that finish in the few ms the cancellation takes to land, which is
 # why disconnects are the oracle.)
-def _incomplete_mismatch(incomplete: List[Dict[str, Any]], requests: List[AbsorbedRequest], end: float) -> Optional[str]:
+def _cancelled_mismatch(cancelled: List[Dict[str, Any]], requests: List[AbsorbedRequest], end: float) -> Optional[str]:
     disconnects = sum(1 for r in requests if r.disconnect_s is not None)
-    cancelled_by = max((e["end_time"] for e in incomplete), default=end)
+    cancelled_by = max((e["end_time"] for e in cancelled), default=end)
     unread = sum(
         1 for r in requests if r.disconnect_s is None and r.done_s is not None and end - READ_LAG_S <= r.done_s <= cancelled_by
     )
-    last_send = 1 if incomplete and max(e["start_time"] for e in incomplete) >= end - ARRIVAL_SLACK_S else 0
-    if disconnects <= len(incomplete) <= disconnects + unread + last_send:
+    last_send = 1 if cancelled and max(e["start_time"] for e in cancelled) >= end - ARRIVAL_SLACK_S else 0
+    if disconnects <= len(cancelled) <= disconnects + unread + last_send:
         return None
     return (
-        f"{len(incomplete)} incomplete on the client, {disconnects} disconnects on the server "
+        f"{len(cancelled)} cancelled on the client, {disconnects} disconnects on the server "
         f"(+ up to {unread} finished-but-unread and {last_send} unsent)"
     )
 
 
-# Entries the client recorded as incomplete, and those it recorded as successes.
+# Entries the client recorded as cancelled, and those it recorded as successes.
 def _split(entries: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    incomplete = [e for e in entries if e.get("incomplete")]
+    cancelled = [e for e in entries if (e.get("error") or {}).get("error_type") == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE]
     successes = [e for e in entries if e.get("error") is None]
-    return incomplete, successes
+    return cancelled, successes
 
 
 # Test 1, open loop: 10 s server latency, 50 qps for 30 s. The server sees 1500
 # +/- 1% arrivals inside the window, sends leave within 50 ms of schedule at
 # p99, and about 500 requests (rate x latency) are in flight at the peak: as many
 # as arrived in the busiest 10 s, so no send ever waited for a completion. With
-# the hard stop, exactly the requests the server held at the end are incomplete
+# the hard stop, exactly the requests the server held at the end are cancelled
 # and the rest succeed.
 @pytest.mark.asyncio
 async def test_open_loop_keeps_schedule_far_beyond_server_capacity() -> None:
@@ -222,15 +223,15 @@ async def test_open_loop_keeps_schedule_far_beyond_server_capacity() -> None:
     peak = _server_max_inflight(requests)
     assert abs(peak - _max_arrivals_in_window(requests, latency)) <= 2
     assert 0.85 * rate * latency <= peak <= 1.15 * rate * latency, f"peak in flight {peak}, expected ~{rate * latency:.0f}"
-    incomplete, successes = _split(entries)
-    assert len(incomplete) + len(successes) == len(entries)
-    assert (mismatch := _incomplete_mismatch(incomplete, requests, end)) is None, mismatch
+    cancelled, successes = _split(entries)
+    assert len(cancelled) + len(successes) == len(entries)
+    assert (mismatch := _cancelled_mismatch(cancelled, requests, end)) is None, mismatch
 
 
 # Test 2, stalled server: the server never answers. 50 qps for 10 s still puts
 # 500 +/- 1% arrivals on the server, spread over the window like the timer's own
 # schedule (each 2 s slice within 4.5 sigma of 100), and with the hard stop all
-# 500 are reported incomplete.
+# 500 are reported cancelled.
 @pytest.mark.asyncio
 async def test_arrivals_follow_schedule_when_server_never_answers() -> None:
     rate, duration = 50, 10
@@ -248,9 +249,9 @@ async def test_arrivals_follow_schedule_when_server_never_answers() -> None:
 
     assert _open_loop_violations(requests, entries, rate, duration, _stage_end(entries, 0)) == []
     assert_arrivals_spread([{"start_time": r.arrival_s} for r in requests])
-    incomplete, successes = _split(entries)
-    assert successes == [] and len(incomplete) == len(entries)
-    assert (mismatch := _incomplete_mismatch(incomplete, requests, _stage_end(entries, 0))) is None, mismatch
+    cancelled, successes = _split(entries)
+    assert successes == [] and len(cancelled) == len(entries)
+    assert (mismatch := _cancelled_mismatch(cancelled, requests, _stage_end(entries, 0))) is None, mismatch
 
 
 # Test 3, cap detector: the default bounded dispatch with 2 workers x 50 permits
@@ -281,7 +282,7 @@ async def test_open_loop_check_detects_a_concurrency_cap() -> None:
 
 # Test 4, hard stop: 120 s server latency, 10 qps for 30 s. No request reaches
 # the server after the stage ends at T, every client connection is closed by
-# T + 2 s, the process exits on its own, and the incomplete count equals the
+# T + 2 s, the process exits on its own, and the cancelled count equals the
 # requests in flight at T (all of them), none of which enter latency stats.
 @pytest.mark.asyncio
 async def test_hard_stop_cancels_everything_in_flight_at_stage_end() -> None:
@@ -304,12 +305,12 @@ async def test_hard_stop_cancels_everything_in_flight_at_stage_end() -> None:
     lingering = [_server_end(r) - end for r in requests if _server_end(r) > end + DISCONNECT_LIMIT_S]
     assert lingering == [], f"{len(lingering)} connections still open {DISCONNECT_LIMIT_S} s after the end"
     assert exited_at - end < 60, f"process exited {exited_at - end:.1f} s after the stage ended"
-    incomplete, successes = _split(entries)
+    cancelled, successes = _split(entries)
     assert _server_inflight_at(requests, end) == len(requests)
-    assert len(incomplete) == len(entries)
-    assert (mismatch := _incomplete_mismatch(incomplete, requests, end)) is None, mismatch
+    assert len(cancelled) == len(entries)
+    assert (mismatch := _cancelled_mismatch(cancelled, requests, end)) is None, mismatch
     summary = result.reports["summary_lifecycle_metrics.json"] if result.reports else {}
-    assert summary["incomplete"]["count"] == len(incomplete)
+    assert summary["cancelled"]["count"] == len(cancelled)
     assert summary["successes"]["count"] == 0
     assert summary["successes"]["latency"]["request_latency"] is None
 
@@ -351,10 +352,10 @@ async def test_no_request_crosses_a_stage_boundary() -> None:
 # the server never holds more than 8 (and does hold 8), throughput is about
 # C / latency = 16 req/s, nothing arrives after the bound, the requests in
 # flight at the bound (at most 8; a slot can be between requests at that
-# instant) are incomplete and their connections close within 2 s. The 8 slots
+# instant) are cancelled and their connections close within 2 s. The 8 slots
 # move in lockstep, so a bound that is a multiple of the latency would land on
 # a completion wave: responses the server has finished but the client has not
-# yet read are cancelled, and count as incomplete with no server disconnect.
+# yet read are cancelled, and count as cancelled with no server disconnect.
 # The extra 0.25 s puts the bound mid-wave.
 @pytest.mark.asyncio
 async def test_fixed_concurrency_holds_exactly_c_and_stops_at_its_bound() -> None:
@@ -378,11 +379,11 @@ async def test_fixed_concurrency_holds_exactly_c_and_stops_at_its_bound() -> Non
     assert abs(throughput - concurrency / latency) <= 0.15 * concurrency / latency, f"{throughput:.1f} req/s"
     assert not [r for r in requests if r.arrival_s > end + ARRIVAL_SLACK_S]
     assert all(_server_end(r) <= end + DISCONNECT_LIMIT_S for r in requests)
-    incomplete, _ = _split(entries)
-    assert 0 < len(incomplete) <= concurrency
+    cancelled, _ = _split(entries)
+    assert 0 < len(cancelled) <= concurrency
     # Cancelled at the bound, not a permit-poll interval later.
-    assert all(e["end_time"] <= end + ARRIVAL_SLACK_S for e in incomplete)
-    assert (mismatch := _incomplete_mismatch(incomplete, requests, end)) is None, mismatch
+    assert all(e["end_time"] <= end + ARRIVAL_SLACK_S for e in cancelled)
+    assert (mismatch := _cancelled_mismatch(cancelled, requests, end)) is None, mismatch
 
 
 # Pins the helper the tests above rely on: two requests overlapping in [1, 2)

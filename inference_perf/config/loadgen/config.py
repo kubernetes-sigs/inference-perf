@@ -70,7 +70,7 @@ class ConcurrentLoadStage(LoadStage):
             "Wall-clock bound in seconds. The stage ends when num_requests have finished or max_duration "
             "has elapsed, whichever comes first, and reaching the bound counts as a normal end (COMPLETED). "
             "Requests still in flight then get stage_teardown_grace_seconds, or are cancelled at once and "
-            "recorded as incomplete under load.hard_stop. Size num_requests so it is not used up first."
+            "reported as cancelled under load.hard_stop. Size num_requests so it is not used up first."
         ),
     )
 

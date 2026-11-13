@@ -147,15 +147,16 @@ timestamped, which shows up as latency rather than as schedule delay.
 every scheduled request has finished, and in-flight requests then get
 `stage_teardown_grace_seconds` before they are cancelled. With `hard_stop: true`
 a stage ends at `start + duration`: nothing more is sent and every request still
-in flight is cancelled at once. Cancelled requests are recorded as incomplete:
-they appear in the per-request output with `"incomplete": true`, are counted in
-an `incomplete` section of each lifecycle report (and in `requests.incomplete`
-of the benchmark report), and are kept out of latency and throughput statistics.
+in flight is cancelled at once. Cancelled requests are reported the way
+requests cancelled at stage teardown are: in the per-request output with error
+type `StageTeardownCancelled`, in the `cancelled` section of each lifecycle
+report beside `successes` and `failures` (and in `requests.incomplete` of the
+benchmark report), and kept out of the latency statistics.
 
 A `concurrent` stage can be bounded in time with `max_duration`: it ends when
 `num_requests` have finished or `max_duration` seconds have passed, whichever is
 first. Combined with `hard_stop`, requests in flight at the bound are cancelled
-and recorded as incomplete.
+and reported as cancelled.
 
 ```yaml
 load:
