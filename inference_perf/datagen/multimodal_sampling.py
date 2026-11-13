@@ -35,7 +35,7 @@ from inference_perf.config import (
     VideoDatagenConfig,
     VideoProfile,
 )
-from inference_perf.utils.numeric.distribution import sample_from_distribution
+from inference_perf.utils.numeric.distribution import sample_from_distribution, sample_values
 
 
 _PRESET_TO_WH: dict[ResolutionPreset, Tuple[int, int]] = {
@@ -99,16 +99,19 @@ def sample_audio_duration(cfg: AudioDatagenConfig, rng: np.random.Generator) -> 
 
 
 def sample_insertion_point(
-    config_insertion_point: Optional[Union[float, Distribution]],
+    config_insertion_point: Optional[Union[float, Distribution, str]],
     rng: np.random.Generator,
 ) -> float:
-    """Resolve a config ``insertion_point`` (None | float | Distribution) to a concrete float in [0, 1].
+    """Resolve a config ``insertion_point`` (None | float | Distribution | expression) to a float in [0, 1].
 
     ``None`` means "uniform random over the prompt"; a float is taken as-is;
-    a Distribution is sampled without rounding and clamped to [0, 1].
+    a Distribution or an expression string is sampled without rounding and
+    clamped to [0, 1].
     """
     if config_insertion_point is None:
         return float(rng.uniform(0.0, 1.0))
     if isinstance(config_insertion_point, float):
         return config_insertion_point
+    if isinstance(config_insertion_point, str):
+        return float(np.clip(sample_values(config_insertion_point, 1, rng, integer=False)[0], 0.0, 1.0))
     return float(np.clip(sample_from_distribution(config_insertion_point, 1, rng, integer=False)[0], 0.0, 1.0))

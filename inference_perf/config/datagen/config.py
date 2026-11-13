@@ -14,9 +14,9 @@
 from enum import Enum
 from typing import Optional, Union
 
-from pydantic import AliasChoices, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, ConfigDict, Field, field_validator, model_validator
 
-from inference_perf.config.common import Distribution, StrictBaseModel
+from inference_perf.config.common import Distribution, StrictBaseModel, check_whole_number
 from inference_perf.config.datagen.multimodal import SyntheticMultimodalDatagenConfig
 from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
@@ -62,14 +62,20 @@ class SharedPrefix(StrictBaseModel):
         description="Number of prompts generated per shared system prompt.",
     )
 
-    system_prompt_len: Union[int, Distribution] = Field(
-        default=100, description="Length of the shared system prompt in tokens: a fixed value or a distribution."
+    system_prompt_len: Union[int, Distribution, str] = Field(
+        default=100,
+        description="Length of the shared system prompt in tokens: a fixed value, a distribution,"
+        " or an expression string like 'floor(Uniform(256, 768))'. At least 0.",
     )
-    question_len: Union[int, Distribution] = Field(
-        default=50, description="Length of the question part in tokens: a fixed value or a distribution."
+    question_len: Union[int, Distribution, str] = Field(
+        default=50,
+        description="Length of the question part in tokens: a fixed value, a distribution,"
+        " or an expression string like 'floor(Uniform(256, 768))'. At least 1.",
     )
-    output_len: Union[int, Distribution] = Field(
-        default=50, description="Requested output length in tokens: a fixed value or a distribution."
+    output_len: Union[int, Distribution, str] = Field(
+        default=50,
+        description="Requested output length in tokens: a fixed value, a distribution,"
+        " or an expression string like 'floor(Uniform(256, 768))'. At least 1.",
     )
     max_model_len: Optional[int] = Field(
         default=None,
@@ -98,14 +104,29 @@ class SharedPrefix(StrictBaseModel):
         default=None, description="Attach synthetic multimodal content (images, video, audio) to generated prompts."
     )
 
+    @field_validator("system_prompt_len", mode="after")
+    @classmethod
+    def validate_system_prompt_len(cls, value: Union[int, Distribution, str]) -> Union[int, Distribution, str]:
+        check_whole_number(value, 0)
+        return value
+
+    @field_validator("question_len", "output_len", mode="after")
+    @classmethod
+    def validate_lengths(cls, value: Union[int, Distribution, str]) -> Union[int, Distribution, str]:
+        check_whole_number(value, 1)
+        return value
+
     @model_validator(mode="after")
     def validate_no_ambiguous_distributions(self) -> "SharedPrefix":
-        if isinstance(self.question_len, Distribution) and self.question_distribution is not None:
+        # A plain int is the only question_len/output_len form the legacy
+        # fields may accompany; an inline distribution or expression string
+        # would silently lose to them otherwise.
+        if not isinstance(self.question_len, int) and self.question_distribution is not None:
             raise ValueError(
                 "Cannot specify both inline distribution on 'question_len' and legacy 'question_distribution'."
                 " Use one or the other."
             )
-        if isinstance(self.output_len, Distribution) and self.output_distribution is not None:
+        if not isinstance(self.output_len, int) and self.output_distribution is not None:
             raise ValueError(
                 "Cannot specify both inline distribution on 'output_len' and legacy 'output_distribution'."
                 " Use one or the other."
@@ -131,13 +152,17 @@ class DataConfig(StrictBaseModel):
         description="Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet",
     )
 
-    input_distribution: Optional[Distribution] = Field(
+    input_distribution: Optional[Union[Distribution, str]] = Field(
         default=None,
-        description="Input (prompt) length distribution in tokens. Only used by the 'synthetic' and 'random' types.",
+        description="Input (prompt) length distribution in tokens: a distribution, or (for the 'synthetic' and"
+        " 'random' types) an expression string like 'floor(Uniform(256, 768))'. At least 1. Dataset types use the distribution's"
+        " min/max as filter bounds.",
     )
-    output_distribution: Optional[Distribution] = Field(
+    output_distribution: Optional[Union[Distribution, str]] = Field(
         default=None,
-        description="Output length distribution in tokens. Only used by the 'synthetic' and 'random' types.",
+        description="Output length distribution in tokens: a distribution, or (for the 'synthetic' and"
+        " 'random' types) an expression string like 'floor(Uniform(256, 768))'. At least 1. Dataset types use the distribution's"
+        " min/max as filter bounds.",
     )
     shared_prefix: Optional[SharedPrefix] = Field(
         default=None, description="Shared prefix generator settings. Only used by the 'shared_prefix' type."
@@ -180,6 +205,28 @@ class DataConfig(StrictBaseModel):
             " type; setting it with any other type is a config error."
         ),
     )
+
+    @field_validator("input_distribution", "output_distribution", mode="after")
+    @classmethod
+    def validate_distribution_expressions(
+        cls, value: Optional[Union[Distribution, str]]
+    ) -> Optional[Union[Distribution, str]]:
+        check_whole_number(value, 1)
+        return value
+
+    @model_validator(mode="after")
+    def validate_expression_distribution_scope(self) -> "DataConfig":
+        # Dataset generators use input/output_distribution min/max as filter
+        # bounds, which an expression string does not carry; only the
+        # generators that sample lengths from the field can take one.
+        if isinstance(self.input_distribution, str) or isinstance(self.output_distribution, str):
+            if self.type not in (DataGenType.Synthetic, DataGenType.Random):
+                raise ValueError(
+                    f"An expression string for input_distribution/output_distribution is only supported by the"
+                    f" 'synthetic' and 'random' data generators; type '{self.type.value}' uses the distribution's"
+                    f" min/max bounds, which an expression does not define."
+                )
+        return self
 
     @model_validator(mode="after")
     def validate_use_chat_template_scope(self) -> "DataConfig":

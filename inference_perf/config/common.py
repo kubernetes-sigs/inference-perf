@@ -30,6 +30,62 @@ class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def validate_length_expression(value: str, minimum: int = 0) -> str:
+    """Validate an expression string for a whole-number field that takes values of at least ``minimum``.
+
+    Constructing the Expression rejects unparseable input, unknown functions or
+    symbols, and ``t``, since these never vary with stage time. The expression
+    must also be provably integer-valued and provably at least ``minimum``, so
+    the config says how a draw is rounded and kept in range instead of the
+    sampler deciding silently.
+    """
+    from inference_perf.utils.numeric.expression import Expression
+
+    expression = Expression(value, allow_time=False)
+    whole, within = expression.is_integer_valued, expression.is_within(minimum)
+    if not whole and not within:
+        raise ValueError(
+            f"{value!r} can take values that are not whole numbers or below {minimum}, and this field is a whole number"
+            f" of at least {minimum}. Write 'Max(floor({value}), {minimum})', or 'Max(floor({value} + 1/2), {minimum})'"
+            " to round to the nearest."
+        )
+    if not whole:
+        raise ValueError(
+            f"{value!r} can take values that are not whole numbers, and this field is a whole number."
+            f" Write 'floor({value})' to round down, or 'floor({value} + 1/2)' to round to the nearest."
+        )
+    if not within:
+        raise ValueError(
+            f"{value!r} is not provably at least {minimum}, the smallest value this field takes. Write 'Max({value}, {minimum})'."
+        )
+    return value
+
+
+def validate_seconds_expression(value: str) -> str:
+    """Validate an expression string for a duration in seconds, which may be fractional but never negative."""
+    from inference_perf.utils.numeric.expression import Expression
+
+    if not Expression(value, allow_time=False).is_within(0):
+        raise ValueError(f"{value!r} is not provably at least 0, and a duration cannot be negative. Write 'Max({value}, 0)'.")
+    return value
+
+
+def check_whole_number(value: object, minimum: int) -> None:
+    """Check a whole-number field's value, a number or an expression string, against its minimum."""
+    if isinstance(value, str):
+        validate_length_expression(value, minimum)
+    elif isinstance(value, int) and not isinstance(value, bool) and value < minimum:
+        raise ValueError(f"{value} is below {minimum}, the smallest value this field takes.")
+
+
+def check_seconds(value: object) -> None:
+    """Check a duration field's value, a number or an expression string: never negative."""
+    if isinstance(value, str):
+        validate_seconds_expression(value)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool) and value < 0:
+        raise ValueError(f"{value} is below 0, and a duration cannot be negative.")
+
+
 class DistributionType(str, Enum):
     NORMAL = "normal"
     SKEW_NORMAL = "skew_normal"
@@ -67,8 +123,17 @@ class Distribution(StrictBaseModel):
         return self
 
 
-def _validate_insertion_point(value: Optional[Union[float, Distribution]]) -> Optional[Union[float, Distribution]]:
-    if isinstance(value, Distribution):
+def _validate_insertion_point(
+    value: Optional[Union[float, Distribution, str]],
+) -> Optional[Union[float, Distribution, str]]:
+    if isinstance(value, str):
+        from inference_perf.utils.numeric.expression import Expression
+
+        if not Expression(value, allow_time=False).is_within(0, 1):
+            raise ValueError(
+                f"insertion_point {value!r} must be provably within [0, 1], e.g. 'Beta(2, 5)' or 'Min(Max({value}, 0), 1)'."
+            )
+    elif isinstance(value, Distribution):
         if value.min < 0 or value.max > 1:
             raise ValueError("insertion_point distribution min and max must be within [0, 1].")
         if value.type != DistributionType.UNIFORM and not value.min <= value.mean <= value.max:
@@ -78,4 +143,4 @@ def _validate_insertion_point(value: Optional[Union[float, Distribution]]) -> Op
     return value
 
 
-InsertionPoint = Annotated[Optional[Union[float, Distribution]], AfterValidator(_validate_insertion_point)]
+InsertionPoint = Annotated[Optional[Union[float, Distribution, str]], AfterValidator(_validate_insertion_point)]
