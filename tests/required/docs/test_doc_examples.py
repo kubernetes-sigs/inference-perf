@@ -37,8 +37,10 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from inference_perf.config import DataConfig, LoadConfig
+from inference_perf.observability.metrics.registry import exposition_name
+from inference_perf.observability.metrics.sets import ALL_SPECS
 from inference_perf.utils.numeric.expression import SERIES, SIGNALS, Expression, Predicate
-from inference_perf.utils.numeric.expression.measured import AGGREGATES, WINDOWS
+from inference_perf.utils.numeric.expression.measured import AGGREGATES, SIGNAL_LABELS, WINDOWS
 
 DOCS = sorted((Path(__file__).resolve().parents[3] / "docs").glob("*.md"))
 
@@ -120,15 +122,48 @@ def _check_window_function(row: Row) -> None:
     assert len(Predicate(f"(t >= 600) | ({term} > 0)").terms) == 1, term
 
 
-# A series row must match the code's SERIES entry: name, report field ('none' for no field), unit and samples.
+# The runtime metric a spec declares as the form of series or signal `name`, as a scrape names it.
+# Input: ("series", "ttft") -> "inference_perf_time_to_first_token_seconds".
+def _runtime_metric(attribute: str, name: str) -> str:
+    return next(
+        exposition_name(spec) for spec in ALL_SPECS if name in (spec.signals if attribute == "signals" else (spec.series,))
+    )
+
+
+# A series row must match the code's SERIES entry: name, report field ('none' for no field), unit and samples,
+# say 'none' for labels, since a series takes no selector, and name the runtime metric that declares the series.
 def _check_series(row: Row) -> None:
-    series = SERIES[_code(row[0])]
+    name = _code(row[0])
+    series = SERIES[name]
     assert (series.report_field or "none", series.unit, series.samples) == (_code(row[1]), row[2], row[3]), row
+    assert row[4] == "none", row
+    with pytest.raises(ValueError):
+        Predicate(f'(t >= 600) | ({name}{{status="success"}} > 0)')
+    assert _code(row[5]) == _runtime_metric("series", name), row
 
 
-# A signal row must name a signal the code computes, with the code's description.
+# A signal row must name a signal the code computes, with the code's description, the labels a condition
+# can select it by ('none' when there are none) and its runtime metric.
 def _check_signal(row: Row) -> None:
-    assert SIGNALS[_code(row[0])] == row[1], row
+    name = _code(row[0])
+    assert SIGNALS[name] == row[1], row
+    assert re.findall(r"`([^`]*)`", row[2]) == sorted(SIGNAL_LABELS.get(name, {})), row
+    assert row[2] != "" and (row[2] == "none") == (name not in SIGNAL_LABELS), row
+    assert _code(row[3]) == _runtime_metric("signals", name), row
+
+
+# A signal label row must match the code's SIGNAL_LABELS entry and its runtime metric must carry the label.
+# Input: ['`completed`', '`status`', '`success`, `failure`, `cancelled`'].
+def _check_signal_label(row: Row) -> None:
+    name, label = _code(row[0]), _code(row[1])
+    assert list(SIGNAL_LABELS[name][label]) == re.findall(r"`([^`]*)`", row[2]), row
+    assert label in next(spec.labelnames for spec in ALL_SPECS if name in spec.signals), row
+
+
+# A signal read example must parse as exactly one term, read from a signal. Input: '`completed offset 60s`'.
+def _check_signal_read(row: Row) -> None:
+    terms = list(Predicate(f"(t >= 600) | ({_code(row[0])} > 0)").terms.values())
+    assert [term.window for term in terms] == ["signal"], row
 
 
 # An aggregate row must match the code's AGGREGATES entry. Input: ['`count`', 'Number of samples.'].
@@ -156,8 +191,10 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Condition", "Holds from (s)"): _check_condition,
     ("Condition", "Holds by (s)", "Can hold from (s)"): _check_measured_condition,
     ("Window function", "Reads"): _check_window_function,
-    ("Series", "Report field", "Unit", "Samples"): _check_series,
-    ("Signal", "Reads"): _check_signal,
+    ("Series", "Report field", "Unit", "Samples", "Labels", "Runtime metric"): _check_series,
+    ("Signal", "Reads", "Labels", "Runtime metric"): _check_signal,
+    ("Signal", "Label", "Values"): _check_signal_label,
+    ("Signal read", "Reads"): _check_signal_read,
     ("Aggregate", "Reads"): _check_aggregate,
     ("Window", "Selects"): _check_window,
     ("Rejected expression", "Why"): _rejects(Expression),
@@ -208,17 +245,18 @@ def test_every_checked_table_is_present() -> None:
     assert set(CHECKS) <= present, f"missing tables: {set(CHECKS) - present}"
 
 
-# The series, signal, aggregate and window tables list every name the code has, not just correct ones:
-# a row per key in SERIES, SIGNALS, AGGREGATES and WINDOWS, so adding one to the code without the doc fails here.
+# The series, signal, signal label, aggregate and window tables list every name the code has, not just correct ones:
+# a row per key in SERIES, SIGNALS, SIGNAL_LABELS, AGGREGATES and WINDOWS, so adding one to the code without the doc fails here.
 @pytest.mark.parametrize(
     ("header", "names"),
     [
-        (("Series", "Report field", "Unit", "Samples"), set(SERIES)),
-        (("Signal", "Reads"), set(SIGNALS)),
+        (("Series", "Report field", "Unit", "Samples", "Labels", "Runtime metric"), set(SERIES)),
+        (("Signal", "Reads", "Labels", "Runtime metric"), set(SIGNALS)),
+        (("Signal", "Label", "Values"), set(SIGNAL_LABELS)),
         (("Aggregate", "Reads"), set(AGGREGATES)),
         (("Window", "Selects"), {f"_over_{window}" for window in WINDOWS}),
     ],
-    ids=["series", "signals", "aggregates", "windows"],
+    ids=["series", "signals", "signal labels", "aggregates", "windows"],
 )
 def test_measured_name_tables_are_complete(header: Tuple[str, ...], names: set[str]) -> None:
     documented = {_code(row[0]) for doc in DOCS for h, rows in _tables(doc.read_text()) if h == header for row in rows}

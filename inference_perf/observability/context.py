@@ -24,7 +24,7 @@ generator can build a context without importing the metrics package.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Callable, Mapping, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from inference_perf.config import Config
@@ -32,6 +32,10 @@ if TYPE_CHECKING:
 
 def _no_requests_in_flight() -> int:
     return 0
+
+
+def _no_requests_by_phase() -> Mapping[str, int]:
+    return {}
 
 
 def _zero() -> int:
@@ -53,6 +57,9 @@ class RunContext:
 
     config: "Config"
     in_flight_requests: Callable[[], int] = _no_requests_in_flight
+    # Requests the load generator is holding, by phase: queued, waiting and streaming.
+    # A phase missing from the mapping reads 0.
+    requests_by_phase: Callable[[], Mapping[str, int]] = _no_requests_by_phase
     # The load generator's live stage count. None reads the configured stages,
     # which are final on every run except a sweep: that configures none and
     # generates them once its saturation probe finishes, after the run starts.
