@@ -269,3 +269,53 @@ async def test_mp_run_ends_on_measured_condition() -> None:
         assert 5 <= len(collector.get_metrics()) < 200, len(collector.get_metrics())
     finally:
         await loadgen.stop()
+
+
+# A multiprocess CONSTANT run of one stage against a mock server that answers in `mock_latency` seconds,
+# with `workers` workers of `permits` concurrent requests each. Returns the stage's runtime info and how
+# many results were collected.
+async def _run_multiprocess(
+    stage: StandardLoadStage, *, mock_latency: float, workers: int = 2, permits: int = 4
+) -> tuple[StageRuntimeInfo, int]:
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = MockDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
+    load_config = LoadConfig(
+        type=LoadType.CONSTANT,
+        interval=0.1,
+        stages=[stage],
+        num_workers=workers,
+        worker_max_concurrency=permits,
+        stage_teardown_grace_seconds=10.0,
+    )
+    loadgen = LoadGenerator(datagen, load_config)
+    collector = MultiprocessRequestMetricCollector()
+    collector.add_observer(loadgen.observe_result)
+    client = MockModelServerClient(collector, api_config, timeout=5.0, mock_latency=mock_latency)
+    try:
+        async with collector.start():
+            await loadgen.run(client)
+        return loadgen.stage_runtime_info[0], len(collector.get_metrics())
+    finally:
+        await loadgen.stop()
+
+
+# Overload: 20 requests/s offered to one worker that holds 1 request at a time against a 0.5s server, so 2/s
+# are sent and the rest pile up unsent. '(t >= 10) | (queued >= 10)' ends the stage well before 10s on the
+# backlog alone, and the unsent requests are reported as dropped.
+async def test_mp_run_ends_when_the_load_generator_falls_behind() -> None:
+    stage = StandardLoadStage(rate=20, stop_condition="(t >= 10) | (queued >= 10)")
+    info, results = await _run_multiprocess(stage, mock_latency=0.5, workers=1, permits=1)
+    assert info.status.name == "COMPLETED"
+    assert info.stop_condition_met_at is not None and info.stop_condition_met_at < 5
+    assert info.dropped_requests is not None and info.dropped_requests >= 10
+    assert results < 20, results
+
+
+# A stage bounded by a request count or a time, whichever comes first: 20 requests/s against a 10ms server
+# with '(t >= 10) | (completed >= 10)' ends on the tenth result, around half a second in, not at 10s.
+async def test_mp_run_ends_on_a_request_count_before_its_time_bound() -> None:
+    stage = StandardLoadStage(rate=20, stop_condition="(t >= 10) | (completed >= 10)")
+    info, results = await _run_multiprocess(stage, mock_latency=0.01)
+    assert info.status.name == "COMPLETED"
+    assert info.stop_condition_met_at is not None and info.stop_condition_met_at < 5
+    assert 10 <= results < 200, results
