@@ -25,6 +25,9 @@ from inference_perf.apis import (
     SessionLifecycleMetric,
     StreamedResponseMetrics,
 )
+from inference_perf.apis.base import STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
+from inference_perf.client.modelserver.metrics import CounterResult, GaugeResult
+from inference_perf.client.server_metrics import ModelServerMetrics
 from inference_perf.payloads import Audio, Audios, Image, Images, RequestMetrics, Text, Video, Videos
 from inference_perf.reportgen.br.v0_2 import build_partial_report
 from inference_perf.reportgen.br.v0_2.fillability import (
@@ -50,8 +53,9 @@ def _owned() -> Set[str]:
 
 
 # A successful streamed request at start..start+1s with 4 tokens and one image,
-# one 2-frame video and one audio clip, or a failed one with an HTTP 500.
-def _request(start: float, *, failed: bool = False) -> RequestLifecycleMetric:
+# one 2-frame video and one audio clip, a failed one with an HTTP 500, or one
+# cancelled at stage teardown.
+def _request(start: float, *, failed: bool = False, cancelled: bool = False) -> RequestLifecycleMetric:
     token_times = [start + 0.2, start + 0.4, start + 0.6, start + 0.8]
     return RequestLifecycleMetric(
         stage_id=0,
@@ -68,12 +72,16 @@ def _request(start: float, *, failed: bool = False) -> RequestLifecycleMetric:
                 audio=Audios(count=1, instances=[Audio(bytes=30, seconds=1)]),
             ),
             response_metrics=None
-            if failed
+            if failed or cancelled
             else StreamedResponseMetrics(
                 response_chunks=[], chunk_times=token_times, output_tokens=4, output_token_times=token_times
             ),
         ),
-        error=ErrorResponseInfo(error_type="HTTP Error 500", error_msg="boom") if failed else None,
+        error=ErrorResponseInfo(error_type="HTTP Error 500", error_msg="boom")
+        if failed
+        else ErrorResponseInfo(error_type=STAGE_TEARDOWN_CANCELLED_ERROR_TYPE, error_msg="cancelled")
+        if cancelled
+        else None,
     )
 
 
@@ -119,17 +127,32 @@ def test_no_ratchet_leaf_becomes_fillable() -> None:
     assert released == [], f"these were WRITTEN or RESERVED and must stay so (see {RATCHET_FILE.name}): {released}"
 
 
-# A partial from streamed multimodal requests (one failed) plus sessions with
-# cancellations sets every WRITTEN and DEFAULTED leaf and nothing else.
+# A vLLM stage summary with every gauge and counter the partial reads: KV cache
+# usage, running and waiting requests, preemptions, prefix cache hits and queries.
+def _server_summary() -> ModelServerMetrics:
+    return ModelServerMetrics(
+        kv_cache_usage=GaugeResult(avg=0.42, median=0.4, p90=0.7, p99=0.9),
+        num_requests_running=GaugeResult(avg=6.5, median=6.0, p90=9.0, p99=12.0),
+        queue_length=GaugeResult(avg=1.5, median=1.0, p90=4.0, p99=7.0),
+        num_preemptions_total=CounterResult(total=3.0, avg=0.05, per_second=0.05),
+        prefix_cache_hits=CounterResult(total=250.0),
+        prefix_cache_queries=CounterResult(total=1000.0),
+    )
+
+
+# A partial from streamed multimodal requests (one failed, one cancelled at
+# teardown), sessions with cancellations and a vLLM stage summary sets every
+# WRITTEN and DEFAULTED leaf and nothing else.
 def test_written_and_defaulted_leaves_are_what_a_full_partial_emits() -> None:
     partial = build_partial_report(
-        [_request(100.0), _request(100.5), _request(101.0, failed=True)],
+        [_request(100.0), _request(100.5), _request(101.0, failed=True), _request(101.5, cancelled=True)],
         None,
         run_uid="uid",
         run_eid="eid",
         stage_start=1750000000.0,
         stage_end=1750000002.0,
         session_metrics=[_session("s1", 100.0, success=True), _session("s2", 101.0, success=False)],
+        server_metrics={"vllm": _server_summary()},
     )
     emitted = set(document_leaves(partial))
     declared = {path for path, state in FILLABILITY.items() if state in (Fillability.WRITTEN, Fillability.DEFAULTED)}
