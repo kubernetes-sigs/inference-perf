@@ -32,13 +32,14 @@ from __future__ import annotations
 import bisect
 import operator
 from dataclasses import dataclass
-from typing import Any, Callable, Sequence, Union
+from typing import Callable, Sequence, Union
 
 import sympy
 from sympy.core.relational import Relational
 from sympy.logic.boolalg import ITE, And, BooleanFalse, BooleanTrue, Not, Or
 
-from .expression import _T, _is_condition, _is_random_symbol, _parse_raw, _reject_unknown_functions
+from .expression import _T, _is_condition, _is_expr, _is_node, _is_random_symbol, _parse_raw, _reject_unknown_functions
+from .sympy_types import SympyNode
 
 _INF = float("inf")
 
@@ -123,6 +124,8 @@ class PiecewiseLinear:
     def __init__(self, raw: Union[str, int, float]) -> None:
         self.raw = raw
         expr = _parse_raw("Expression", raw)
+        if not _is_node(expr):
+            raise ValueError(f"Expression {raw!r} is not a number or an expression of t.")
         if _is_condition(expr):
             raise ValueError(f"Expression {raw!r} is a condition, not a numeric value.")
         _reject_unknown_functions("Expression", raw, expr)
@@ -178,17 +181,18 @@ class PiecewiseLinear:
         return f"PiecewiseLinear({self.raw!r})"
 
 
-def _is_constant_subtree(node: Any) -> bool:
-    return isinstance(node, sympy.Expr) and not node.free_symbols and bool(node.is_number)
+def _is_constant_subtree(node: SympyNode) -> bool:
+    return _is_expr(node) and not node.free_symbols and node.is_number
 
 
-def _reject_nonlinear_nodes(raw: Any, expr: Any) -> None:
+def _reject_nonlinear_nodes(raw: object, expr: SympyNode) -> None:
     """Reject any node outside ``_PIECEWISE_LINEAR_NODES`` that depends on ``t``, naming it."""
-    pending: list[Any] = [expr]
+    pending: list[SympyNode] = [expr]
     while pending:
-        node: Any = pending.pop()
-        # Read before the isinstance check below, which narrows node to object.
+        node = pending.pop()
+        # Read before the isinstance checks below, which narrow node to sympy's untyped classes.
         children = node.args
+        name = type(node).__name__
         if _is_constant_subtree(node):
             continue
         if isinstance(node, sympy.Pow):
@@ -196,9 +200,7 @@ def _reject_nonlinear_nodes(raw: Any, expr: Any) -> None:
                 f"Expression {raw!r} uses {node}, which is not piecewise linear; t may not appear in a power or a denominator."
             )
         if not isinstance(node, _PIECEWISE_LINEAR_NODES):
-            raise ValueError(
-                f"Expression {raw!r} uses {node.func.__name__!r}, which is not piecewise linear; permitted: {_PERMITTED}."
-            )
+            raise ValueError(f"Expression {raw!r} uses {name!r}, which is not piecewise linear; permitted: {_PERMITTED}.")
         pending.extend(children)
 
 
@@ -245,11 +247,11 @@ def _constant(value: float) -> list[Segment]:
 class _Solver:
     """Turns an allowlisted sympy tree into segments; booleans are 0/1 constants."""
 
-    def __init__(self, raw: Any) -> None:
+    def __init__(self, raw: object) -> None:
         self.raw = raw
 
-    def solve(self, node: Any) -> list[Segment]:
-        if _is_constant_subtree(node):
+    def solve(self, node: SympyNode) -> list[Segment]:
+        if _is_constant_subtree(node) and _is_expr(node):
             return _constant(float(node))
         if node == _T:
             return [Segment(0.0, _INF, 1.0, 0.0)]
@@ -282,14 +284,16 @@ class _Solver:
             return self._piecewise(node)
         raise ValueError(f"Expression {self.raw!r} uses {node}, which is not piecewise linear; permitted: {_PERMITTED}.")
 
-    def _combine(self, args: Sequence[Any], line: Callable[[list[tuple[float, float]]], tuple[float, float]]) -> list[Segment]:
+    def _combine(
+        self, args: Sequence[SympyNode], line: Callable[[list[tuple[float, float]]], tuple[float, float]]
+    ) -> list[Segment]:
         pieces = []
         for start, end, active in _align([self.solve(a) for a in args]):
             slope, intercept = line([(s.slope, s.intercept) for s in active])
             pieces.append(Segment(start, end, slope, intercept))
         return _merge(pieces)
 
-    def _product(self, node: Any) -> Callable[[list[tuple[float, float]]], tuple[float, float]]:
+    def _product(self, node: SympyNode) -> Callable[[list[tuple[float, float]]], tuple[float, float]]:
         def line(lines: list[tuple[float, float]]) -> tuple[float, float]:
             slope, intercept = 0.0, 1.0
             for s, c in lines:
@@ -303,7 +307,7 @@ class _Solver:
 
         return line
 
-    def _extreme(self, args: Sequence[Any], lowest: bool) -> list[Segment]:
+    def _extreme(self, args: Sequence[SympyNode], lowest: bool) -> list[Segment]:
         functions = [self.solve(a) for a in args]
         pieces = []
         for start, end, active in _align(functions):
@@ -320,7 +324,7 @@ class _Solver:
                 pieces.append(Segment(lo, hi, best.slope, best.intercept))
         return _merge(pieces)
 
-    def _by_sign(self, arg: Any, line: Callable[[Segment, float], tuple[float, float]]) -> list[Segment]:
+    def _by_sign(self, arg: SympyNode, line: Callable[[Segment, float], tuple[float, float]]) -> list[Segment]:
         """Cut where ``arg`` crosses zero, then build each part from the sign of ``arg`` there."""
         inner = self.solve(arg)
         pieces = []
@@ -330,8 +334,11 @@ class _Solver:
             pieces.append(Segment(start, end, slope, intercept))
         return _merge(pieces)
 
-    def _piecewise(self, node: Any) -> list[Segment]:
-        branches = [(self.solve(value), self.solve(condition)) for value, condition in node.args]
+    def _piecewise(self, node: SympyNode) -> list[Segment]:
+        branches = []
+        for pair in node.args:
+            branch_value, branch_condition = pair.args
+            branches.append((self.solve(branch_value), self.solve(branch_condition)))
         functions = [f for pair in branches for f in pair]
         pieces = []
         for start, end, active in _align(functions):
