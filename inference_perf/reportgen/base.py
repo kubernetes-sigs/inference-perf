@@ -1175,6 +1175,19 @@ class ReportGenerator:
 
         return CustomTokenizer(self.config.tokenizer)
 
+    def generate_probe_report(self, runtime_parameters: PerfRuntimeParameters) -> Optional[ReportFile]:
+        """Serialize the sweep capacity probe, or nothing when no probe ran.
+
+        `r_sat` alone is not enough to act on: the run has to say whether the
+        ladder flattened on its own or was capped, or a censored lower bound
+        reads exactly like a measured plateau. `stop_reason` and `censored`
+        carry that distinction, and the rung curve carries the evidence.
+        """
+        probe_result = runtime_parameters.probe_result
+        if probe_result is None:
+            return None
+        return ReportFile(name="sweep_probe", contents=probe_result.to_dict())
+
     def generate_config_report(self) -> ReportFile:
         """
         Generates a report file containing the config.
@@ -1406,6 +1419,10 @@ class ReportGenerator:
                 max_error_messages,
             )
             lifecycle_reports.extend(session_reports)
+
+        probe_report = self.generate_probe_report(runtime_parameters)
+        if probe_report is not None:
+            lifecycle_reports.append(probe_report)
 
         lifecycle_reports.append(self.generate_config_report())
 

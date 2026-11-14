@@ -285,7 +285,24 @@ load:
     num_stages: 5               # Number of stages to generate
     stage_duration: 180         # Duration of each generated stage
     saturation_percentile: 95   # Percentile of sampled rates to select as saturation point
+    probe:                      # Optional: measure saturation with a closed-loop concurrency ladder
+      rung_duration: 30         # Measurement window per concurrency rung, in seconds
+      settle_duration: 5        # Seconds a rung runs before its measurement window opens
+      start_concurrency: 1      # Concurrency of the first rung, also the unloaded baseline
+      growth_factor: 2.0        # Multiplier applied to concurrency between rungs
+      max_concurrency: 1024     # Concurrency ceiling for the ladder
+      gain_threshold: 0.05      # Stop when the relative throughput gain between rungs is confidently below this
+      knee_fraction: 0.9        # Fraction of the saturation rate that defines the knee concurrency
+      max_littles_law_residual: 0.2   # Reject a rung whose |N - X*R| / N exceeds this
+      max_rung_error_rate: 0.1  # Reject a rung whose failed-request fraction exceeds this
 ```
+
+When `probe` is set the burst estimator and `saturation_percentile` are
+unused: the sweep instead measures the capacity curve with a closed-loop
+concurrency ladder, checks Little's law per rung, and derives `r_sat` and
+`n_knee` with bootstrap confidence intervals. `probe` requires
+`num_workers > 0`, because it drives per-worker concurrency. See
+[loadgen.md](loadgen.md#closed-loop-capacity-probe) for the measurement design.
 
 ### Model Server
 

@@ -17,16 +17,30 @@ from inference_perf.datagen.base import BaseGenerator
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
+from .probe import (
+    ConcurrencyLadder,
+    LadderConfig,
+    LatencyProfile,
+    ProbeResult,
+    ProbeStopReason,
+    RungResult,
+    estimate_constants,
+    latency_profile,
+    rung_from_metrics,
+    select_usable_rungs,
+)
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
-from inference_perf.apis import InferenceAPIData
+from inference_perf.apis import InferenceAPIData, RequestLifecycleMetric
 from inference_perf.apis.user_session import LocalUserSession
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.client.modelserver.otel_instrumentation import get_otel_instrumentation
 from inference_perf.circuit_breaker import get_circuit_breaker
 from inference_perf.metrics import SessionMetricsCollector
+from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import (
     LoadConfig,
     LoadType,
+    ProbeConfig,
     StageGenType,
     TraceFormat,
     ConcurrentLoadStage,
@@ -108,6 +122,16 @@ _FORCE_REAP_SECONDS = 20.0
 # ConstantLoadTimer scales its gaps to sum to the stage duration, so its last request is scheduled at the stage end
 # up to float rounding. A request scheduled within this many seconds past the end still belongs to the stage.
 _STAGE_END_TOLERANCE = 1e-6
+
+# How often a probe rung tops up the request queue. The probe also measures its
+# own lateness against this tick, so the value is both a dispatch cadence and
+# the clock the client-bound signal is read on.
+_PROBE_TICK_SEC = 0.1
+
+# A rung whose tail never drains (a wedged backend) would otherwise stall the
+# probe forever. After this floor, or the rung duration if that is longer, the
+# remaining requests are cancelled and the rung is measured on what completed.
+_PROBE_DRAIN_FLOOR_SEC = 60.0
 
 # Log-line verb for each terminal StageStatus; anything not listed reads as "failed".
 _STAGE_STATUS_LOG_VERB: dict[StageStatus, str] = {
@@ -250,6 +274,15 @@ def collect_worker_failures(
             continue
         failures.append(WorkerFailure(worker_id=worker.id, exitcode=worker.exitcode, crash=crashes.get(worker.id)))
     return failures
+
+
+def generate_stage_rates(target_request_rate: float, size: int, gen_type: StageGenType) -> List[float]:
+    """Space `size` stage rates from 1 up to the target rate, geometrically or linearly."""
+    if gen_type == StageGenType.GEOM:
+        return [float(round(1 + target_request_rate - rr, 2)) for rr in np.geomspace(target_request_rate, 1, num=size)]
+    elif gen_type == StageGenType.LINEAR:
+        return [float(round(r, 2)) for r in np.linspace(1, target_request_rate, size)]
+    raise ValueError(f"Unsupported stage generation type: {gen_type}")
 
 
 def _worker_ready(worker: "Worker") -> bool:
@@ -702,6 +735,7 @@ class LoadGenerator:
         session_metrics_collector: Optional[SessionMetricsCollector] = None,
         stage_observer: Optional[StageLifecycleObserver] = None,
         metrics_registry: Optional[CollectorRegistry] = None,
+        request_metric_collector: Optional[RequestMetricCollector] = None,
     ) -> None:
         self.datagen = datagen
         self.stage_observer = stage_observer
@@ -727,6 +761,8 @@ class LoadGenerator:
         self.load_start_time: Optional[float] = None
         self.circuit_breakers = [get_circuit_breaker(breaker_name) for breaker_name in load_config.circuit_breakers]
         self.sweep_config = load_config.sweep
+        self.request_metric_collector = request_metric_collector
+        self.probe_result: Optional[ProbeResult] = None
         self.interrupt_sig = False
         self.session_metrics_collector = session_metrics_collector
         self.teardown_grace_seconds = load_config.stage_teardown_grace_seconds
@@ -862,6 +898,13 @@ class LoadGenerator:
             if worker.shared_max_concurrency:
                 with worker.shared_max_concurrency.get_lock():
                     worker.shared_max_concurrency.value = worker_concurrency
+
+    def _restore_worker_concurrency(self) -> None:
+        """Reset every worker to the configured per-worker concurrency ceiling."""
+        for worker in self.workers:
+            if worker.shared_max_concurrency:
+                with worker.shared_max_concurrency.get_lock():
+                    worker.shared_max_concurrency.value = self.worker_max_concurrency
 
     def _get_lora_adapter(self) -> Optional[str]:
         """Returns a randomly selected LoRA adapter based on configured probability weights, or None if not configured."""
@@ -1774,15 +1817,26 @@ class LoadGenerator:
         Runs a preliminary load test to automatically determine the server's saturation point
         and generate a suitable series of load stages for the main benchmark.
 
-        An aggregator task samples the active requests and then the burn down rate is
-        calculated from the samples. Saturation is derived from a percentile of the
-        sampled burn down rates.
+        With `sweep.probe` configured, saturation is measured by the closed-loop
+        concurrency probe. Otherwise an aggregator task samples the active
+        requests during a single burst and saturation is derived from a
+        percentile of the sampled burn down rates.
         """
         logger.info("Running preprocessing stage")
         results: List[Tuple[float, int]] = []
 
         if self.sweep_config is None:
             raise Exception("sweep_config cannot be none")
+
+        if self.sweep_config.probe is not None:
+            await self._probe_preprocess(
+                request_queue,
+                active_requests_counter,
+                finished_requests_counter,
+                request_phase,
+                cancel_signal,
+            )
+            return
 
         # Aggregator collects timestamped value of active_requests throughout the preprocessing
         async def aggregator() -> None:
@@ -1838,13 +1892,7 @@ class LoadGenerator:
         saturation_point = float(np.percentile(rates, self.sweep_config.saturation_percentile))
         logger.info(f"Saturation point estimated at {saturation_point:0.2f} concurrent requests.")
 
-        def generateRates(target_request_rate: float, size: int, gen_type: StageGenType) -> List[float]:
-            if gen_type == StageGenType.GEOM:
-                return [float(round(1 + target_request_rate - rr, 2)) for rr in np.geomspace(target_request_rate, 1, num=size)]
-            elif gen_type == StageGenType.LINEAR:
-                return [float(round(r, 2)) for r in np.linspace(1, target_request_rate, size)]
-
-        rates = generateRates(saturation_point, self.sweep_config.num_stages, self.sweep_config.type)
+        rates = generate_stage_rates(saturation_point, self.sweep_config.num_stages, self.sweep_config.type)
         self.stages = [StandardLoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
         logger.info(f"Generated load stages: {[s.rate for s in self.stages]}")
 
@@ -1889,6 +1937,291 @@ class LoadGenerator:
                 return
             await sleep(0.05)
 
+    async def _run_probe_rung(
+        self,
+        stage_id: int,
+        concurrency: int,
+        probe_config: ProbeConfig,
+        request_queue: RequestQueue[RequestQueueData],
+        active_requests_counter: "Synchronized[int]",
+        finished_requests_counter: "Synchronized[int]",
+        request_phase: SyncEvent,
+        cancel_signal: SyncEvent,
+    ) -> Tuple[float, float, int, float]:
+        """Dispatch one closed-loop rung and return (window_start, window_end, enqueued, client_lag).
+
+        Holds worker concurrency at `concurrency` while keeping the request
+        queue topped up through the settle and measurement windows, then stops
+        feeding and lets the tail drain naturally so no request is cancelled
+        mid-measurement. Window bounds are in the perf_counter clock that
+        lifecycle metrics use.
+
+        `client_lag` is this loop's own lateness: each iteration intends to
+        wake one tick after the previous one, and the surplus is sampled inside
+        the measurement window. A generator that cannot feed the pool fast
+        enough shows up here, which is what keeps its own saturation from being
+        reported as the server's.
+        """
+        # Workers only re-read the shared concurrency between request phases,
+        # so it must be set before the phase flag goes up.
+        self._set_worker_concurrency(concurrency)
+        with finished_requests_counter.get_lock():
+            finished_requests_counter.value = 0
+        request_phase.set()
+
+        if not isinstance(self.datagen, DataGenerator):
+            raise TypeError("the sweep probe requires DataGenerator")
+        data_generator = self.datagen.get_data()
+        # Same count _set_worker_concurrency split the rung over, so no request waits on a worker with no share.
+        active_workers = self._active_worker_count(concurrency)
+        # Enough backlog that workers never starve between top-ups.
+        high_watermark = max(4 * concurrency, 32)
+        enqueued = 0
+
+        start = time.perf_counter()
+        window_start = start + probe_config.settle_duration
+        window_end = window_start + probe_config.rung_duration
+
+        lag_samples: List[float] = []
+        while time.perf_counter() < window_end and not self.interrupt_sig:
+            backlog = enqueued - finished_requests_counter.value
+            for _ in range(max(0, high_watermark - backlog)):
+                request_data = next(data_generator)
+                request_data.stage_id = stage_id
+                lora_adapter = self._get_lora_adapter()
+                worker_id = request_data.preferred_worker_id
+                if worker_id >= 0:
+                    worker_id = worker_id % active_workers
+                request_queue.put(
+                    RequestQueueData(stage_id, request_data, time.perf_counter(), lora_adapter),
+                    worker_id,
+                )
+                enqueued += 1
+            # Each tick intends to wake one tick after the previous one, so the
+            # surplus at wake-up is this iteration's lateness. The clock
+            # restarts every tick: a single stall is one sample instead of a
+            # bias that every later sample inherits.
+            wake_at = time.perf_counter() + _PROBE_TICK_SEC
+            await sleep(_PROBE_TICK_SEC)
+            now = time.perf_counter()
+            if window_start <= now < window_end:
+                lag_samples.append(max(0.0, now - wake_at))
+
+        # Let the backlog drain; cut the rung short only on interrupt or if the
+        # server stops making progress.
+        drain_deadline = time.perf_counter() + max(_PROBE_DRAIN_FLOOR_SEC, probe_config.rung_duration)
+        cancel: Optional[SyncEvent] = None
+        while finished_requests_counter.value < enqueued:
+            if self.interrupt_sig or time.perf_counter() > drain_deadline:
+                logger.warning(
+                    "Probe rung %d: cancelling %d unfinished requests",
+                    stage_id,
+                    enqueued - finished_requests_counter.value,
+                )
+                cancel = cancel_signal
+                break
+            await sleep(0.2)
+
+        # Rung boundary on the same bounded teardown run_stage uses: stop
+        # dispatch, let workers wind down (cancelling whatever is left when the
+        # rung was cut short), rendezvous with every worker, and drop anything
+        # never dispatched. The rendezvous also makes the next rung's
+        # concurrency land before its phase flag goes up. A forced teardown
+        # means a worker was wedged or died, so the next rung would measure a
+        # respawned, cold worker; fail the probe instead of measuring that.
+        teardown = await self._teardown_stage(stage_id, request_queue, request_phase, cancel)
+        if not teardown.clean:
+            raise Exception(f"Probe rung {stage_id}: stage teardown had to be forced, measurements are not trustworthy")
+        # Typical lateness, not the peak: one long stall should not decide the
+        # classifier, and a loop that is late most of the time moves the median.
+        # A mean would let a single stall dominate a 10-sample window; the
+        # upper quantile would let timer granularity read as back-pressure.
+        client_lag = float(np.median(lag_samples)) if lag_samples else 0.0
+        return window_start, window_end, enqueued, client_lag
+
+    async def _collect_rung_metrics(self, stage_id: int, expected: int) -> List[RequestLifecycleMetric]:
+        """Wait for a probe rung's lifecycle metrics to arrive from the workers.
+
+        Metrics travel through the collector's queue asynchronously, so arrival
+        lags the stage barrier. Waits until `expected` metrics for this stage
+        land, or until their count stops growing (cancelled requests never
+        record one).
+        """
+        if self.request_metric_collector is None:
+            raise Exception("the sweep probe requires a request metric collector")
+        last_count = -1
+        last_change = time.perf_counter()
+        while True:
+            metrics = [m for m in self.request_metric_collector.snapshot() if m.stage_id == stage_id]
+            if len(metrics) >= expected:
+                return metrics
+            now = time.perf_counter()
+            if len(metrics) != last_count:
+                last_count = len(metrics)
+                last_change = now
+            elif now - last_change > 5.0:
+                logger.warning("Probe rung %d: expected %d metrics, proceeding with %d", stage_id, expected, len(metrics))
+                return metrics
+            await sleep(0.1)
+
+    async def _probe_preprocess(
+        self,
+        request_queue: RequestQueue[RequestQueueData],
+        active_requests_counter: "Synchronized[int]",
+        finished_requests_counter: "Synchronized[int]",
+        request_phase: SyncEvent,
+        cancel_signal: SyncEvent,
+    ) -> None:
+        """Find the saturation rate with the closed-loop concurrency probe and generate stages.
+
+        Runs the ladder rung by rung with negative stage ids (the report only
+        keeps stage ids >= 0, so probe traffic never pollutes results),
+        estimates {r_sat, n_knee} with confidence intervals, and spaces the
+        generated stages up to r_sat.
+        """
+        if self.sweep_config is None or self.sweep_config.probe is None:
+            raise Exception("probe preprocessing requires sweep.probe config")
+        if self.request_metric_collector is None:
+            raise Exception("the sweep probe requires a request metric collector")
+        probe_config = self.sweep_config.probe
+
+        max_concurrency = min(probe_config.max_concurrency, self.num_workers * self.worker_max_concurrency)
+        if max_concurrency < probe_config.max_concurrency:
+            logger.info("Probe concurrency capped at %d by num_workers * worker_max_concurrency", max_concurrency)
+        ladder = ConcurrencyLadder(
+            config=LadderConfig(
+                start_concurrency=probe_config.start_concurrency,
+                growth_factor=probe_config.growth_factor,
+                max_concurrency=max_concurrency,
+                gain_threshold=probe_config.gain_threshold,
+            )
+        )
+
+        # Park every worker at a stage boundary before the first rung: workers
+        # only read the shared concurrency between phases, and at startup the
+        # phase flag is already up. Nothing has been dispatched yet, so the
+        # teardown returns as soon as every worker acknowledges the boundary.
+        await self._teardown_stage(-1, request_queue, request_phase, None)
+
+        history: List[RungResult] = []
+        baseline: Optional[LatencyProfile] = None
+        baseline_client_lag: Optional[float] = None
+        failed_concurrency: Optional[int] = None
+        while (concurrency := ladder.next_concurrency(history)) is not None:
+            if self.interrupt_sig:
+                raise Exception("sweep probe interrupted")
+            stage_id = -1 - len(history)
+            window_start, window_end, enqueued, client_lag = await self._run_probe_rung(
+                stage_id,
+                concurrency,
+                probe_config,
+                request_queue,
+                active_requests_counter,
+                finished_requests_counter,
+                request_phase,
+                cancel_signal,
+            )
+            metrics = await self._collect_rung_metrics(stage_id, enqueued)
+            try:
+                rung = rung_from_metrics(
+                    concurrency,
+                    metrics,
+                    window_start,
+                    window_end,
+                    baseline=baseline,
+                    baseline_client_lag=baseline_client_lag,
+                    client_lag=client_lag,
+                )
+            except ValueError as e:
+                failed = sum(1 for m in metrics if m.error is not None)
+                # A rung with no successful completion has no throughput to
+                # report. The rungs below it did measure the server, so stop
+                # here and estimate from those: the constants become a lower
+                # bound rather than the whole run dying on one bad rung.
+                # estimate_constants still fails if too few rungs remain.
+                ladder.stop_reason = ProbeStopReason.MEASUREMENT_FAILED
+                failed_concurrency = concurrency
+                logger.warning(
+                    "Probe rung N=%d produced no usable measurement (%d of %d requests failed: %s); "
+                    "stopping the ladder and estimating from the rungs that completed",
+                    concurrency,
+                    failed,
+                    len(metrics),
+                    e,
+                )
+                break
+            if baseline is None:
+                in_window = [m for m in metrics if m.error is None and window_start <= m.end_time < window_end]
+                baseline = latency_profile(in_window)
+                baseline_client_lag = client_lag
+            history.append(rung)
+            logger.info(
+                "Probe rung N=%d: X=%.2f req/s (se %.2f), R=%.3fs, residual %.2f, errors %.1f%%, "
+                "client lag %.1fms, stationary=%s, signal=%s",
+                rung.concurrency,
+                rung.throughput,
+                rung.throughput_se,
+                rung.latency,
+                rung.littles_law_residual,
+                rung.error_rate * 100.0,
+                rung.client_lag * 1000.0,
+                rung.stationary,
+                rung.signal.value,
+            )
+
+        stop_reason = ladder.stop_reason or ProbeStopReason.PLATEAU
+        logger.info("Probe ladder stopped: %s", stop_reason.value)
+        usable = select_usable_rungs(
+            history,
+            max_littles_law_residual=probe_config.max_littles_law_residual,
+            max_error_rate=probe_config.max_rung_error_rate,
+        )
+        try:
+            constants = estimate_constants(
+                history,
+                knee_fraction=probe_config.knee_fraction,
+                max_littles_law_residual=probe_config.max_littles_law_residual,
+                max_error_rate=probe_config.max_rung_error_rate,
+            )
+        except ValueError as e:
+            raise Exception(
+                f"sweep probe could not estimate capacity: {e}. "
+                "The ladder measured a curve it cannot fit; check the rung log lines above "
+                "for stationarity, Little's law residual and error rate."
+            ) from e
+        self.probe_result = ProbeResult(
+            rungs=tuple(history),
+            constants=constants,
+            stop_reason=stop_reason,
+            usable_concurrencies=tuple(rung.concurrency for rung in usable),
+            failed_concurrency=failed_concurrency,
+        )
+        if self.probe_result.censored:
+            logger.warning(
+                "Probe stopped at %s, so r_sat is a lower bound on capacity, not a measured plateau",
+                stop_reason.value,
+            )
+        if failed_concurrency is not None:
+            logger.warning(
+                "Probe rung N=%d produced no measurement; r_sat comes from the %d rung(s) below it",
+                failed_concurrency,
+                len(history),
+            )
+        r_sat = constants["r_sat"]
+        n_knee = constants["n_knee"]
+        logger.info(
+            "Saturation rate estimated at %.2f req/s (95%% CI [%.2f, %.2f]), knee at N=%d",
+            r_sat.value,
+            r_sat.ci.low,
+            r_sat.ci.high,
+            int(n_knee.value),
+        )
+
+        rates = generate_stage_rates(r_sat.value, self.sweep_config.num_stages, self.sweep_config.type)
+        self.stages = [StandardLoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
+        self._restore_worker_concurrency()
+        logger.info(f"Generated load stages: {[s.rate for s in self.stages]}")
+
     async def mp_run(self, client: ModelServerClient) -> None:
         request_queue: RequestQueue[RequestQueueData] = RequestQueue(
             self.num_workers if self.datagen.is_preferred_worker_requested() else 1
@@ -1916,11 +2249,10 @@ class LoadGenerator:
 
         # Create list of workers to process requests
         for id in range(self.num_workers):
-            # Create shared value for each worker's max concurrency if concurrent load type
-            if self.load_type == LoadType.CONCURRENT:
-                shared_max_concurrency = MP_CONTEXT.Value("i", self.worker_max_concurrency)
-            else:
-                shared_max_concurrency = None
+            # Shared so concurrent stages and the sweep probe can retune worker
+            # concurrency at phase boundaries; starts at the configured ceiling,
+            # which leaves non-concurrent stages unaffected.
+            shared_max_concurrency: "Synchronized[int]" = MP_CONTEXT.Value("i", self.worker_max_concurrency)
 
             # Per-worker stage-done counter for the stage rendezvous: the worker
             # sets it to the published boundary sequence after winding down each
@@ -1953,9 +2285,8 @@ class LoadGenerator:
             self.workers[-1].start()
 
         # Keep worker startup out of the measured window: wait for the workers
-        # to come up, then treat that moment as the start of the run.
+        # to come up before starting.
         await self._await_workers_ready()
-        self.load_start_time = time.time()
 
         if self.sweep_config:
             try:
@@ -1972,6 +2303,12 @@ class LoadGenerator:
                 logger.error(f"Preprocessing exception: {e}")
                 stop_signal.set()
                 return
+
+        # The run starts when the measured stages do. Sweep preprocessing is
+        # calibration, not benchmark work: counting probe minutes in the run
+        # duration would stretch the window the server metrics summary is read
+        # over and deflate every rate derived from it.
+        self.load_start_time = time.time()
 
         if self.load_type == LoadType.TRACE_SESSION_REPLAY:
             if isinstance(self.datagen, SessionGenerator):

@@ -478,6 +478,7 @@ def main_cli() -> None:
         session_metrics_collector,
         stage_observer=metrics_hub,
         metrics_registry=metrics_hub.registry,
+        request_metric_collector=collector,
     )
 
     # Wire session metrics collector into reportgen if it exists
@@ -533,6 +534,7 @@ def main_cli() -> None:
             duration=duration,
             model_server_metrics=model_server_client.get_prometheus_metric_metadata(),
             stages=loadgen.stage_runtime_info,
+            probe_result=loadgen.probe_result,
         ),
     )
 
