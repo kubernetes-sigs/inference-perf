@@ -41,6 +41,7 @@ from .estimator import (
     fit_saturating_curve,
     isotonic_regression,
     make_rung,
+    select_usable_rungs,
 )
 from .ladder import ConcurrencyLadder, LadderConfig
 from .metrics import LatencyProfile, latency_profile, rung_from_metrics
@@ -49,6 +50,7 @@ from .result import (
     BoundConstant,
     ConfidenceInterval,
     ProbeResult,
+    ProbeStopReason,
     RungResult,
     SaturationSignal,
     classify_saturation,
@@ -63,6 +65,7 @@ __all__ = [
     "LadderConfig",
     "LatencyProfile",
     "ProbeResult",
+    "ProbeStopReason",
     "RungResult",
     "SaturationSignal",
     "batch_means_throughput",
@@ -75,4 +78,5 @@ __all__ = [
     "latency_profile",
     "make_rung",
     "rung_from_metrics",
+    "select_usable_rungs",
 ]

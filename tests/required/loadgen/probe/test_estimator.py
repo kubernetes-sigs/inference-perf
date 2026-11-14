@@ -23,6 +23,7 @@ from inference_perf.loadgen.probe import (
     fit_saturating_curve,
     isotonic_regression,
     make_rung,
+    select_usable_rungs,
 )
 
 
@@ -194,6 +195,77 @@ class TestEstimateConstants(unittest.TestCase):
     def test_too_few_rungs_raises(self) -> None:
         with self.assertRaises(ValueError):
             estimate_constants(ideal_rungs([1]), rng=np.random.default_rng(0))
+
+
+class TestSelectUsableRungs(unittest.TestCase):
+    # A rung whose window did not actually hold its concurrency (residual above
+    # the gate) describes a broken measurement, so it must not reach the fit.
+    def test_residual_above_gate_excluded(self) -> None:
+        rungs = ideal_rungs([1, 2]) + [RungResult(concurrency=4, throughput=1000.0, littles_law_residual=0.5)]
+        self.assertEqual([rung.concurrency for rung in select_usable_rungs(rungs)], [1, 2])
+
+    # A mostly-failing rung measures the failure, not the server, so its
+    # throughput must not become a point on the capacity curve.
+    def test_error_rate_above_gate_excluded(self) -> None:
+        rungs = ideal_rungs([1, 2]) + [RungResult(concurrency=4, throughput=1000.0, error_rate=0.5)]
+        self.assertEqual([rung.concurrency for rung in select_usable_rungs(rungs)], [1, 2])
+
+    # Exactly at the gate is still usable: the thresholds are inclusive.
+    def test_rung_at_gate_stays_usable(self) -> None:
+        rungs = [
+            RungResult(concurrency=1, throughput=5.0, littles_law_residual=0.2, error_rate=0.1),
+            RungResult(concurrency=2, throughput=9.0),
+        ]
+        self.assertEqual([rung.concurrency for rung in select_usable_rungs(rungs)], [1, 2])
+
+    # Client-bound and non-stationary rungs are rejected for the same reason as
+    # before the residual gate existed, and the gate must not have replaced them.
+    def test_client_bound_and_non_stationary_excluded(self) -> None:
+        rungs = ideal_rungs([1, 2]) + [
+            RungResult(concurrency=4, throughput=1000.0, signal=SaturationSignal.CLIENT_BOUND),
+            RungResult(concurrency=8, throughput=1000.0, stationary=False),
+        ]
+        self.assertEqual([rung.concurrency for rung in select_usable_rungs(rungs)], [1, 2])
+
+    # A retried concurrency contributes only its latest measurement, in ladder
+    # order, so a stale sample cannot drag the fit down.
+    def test_latest_measurement_per_concurrency(self) -> None:
+        rungs = [
+            RungResult(concurrency=1, throughput=5.0),
+            RungResult(concurrency=2, throughput=1.0),
+            RungResult(concurrency=2, throughput=9.0),
+        ]
+        self.assertEqual([rung.throughput for rung in select_usable_rungs(rungs)], [5.0, 9.0])
+
+    # Both thresholds are fractions; a passed-in 1.5 or -1 is a config bug.
+    def test_out_of_range_thresholds_raise(self) -> None:
+        with self.assertRaises(ValueError):
+            select_usable_rungs([], max_littles_law_residual=1.5)
+        with self.assertRaises(ValueError):
+            select_usable_rungs([], max_error_rate=-0.1)
+
+    # The two new gates are part of estimate_constants itself, not only of the
+    # helper the caller happens to use: a broken or failing rung with a huge
+    # throughput cannot pull r_sat up.
+    def test_estimate_constants_gates_residual_and_error_rate(self) -> None:
+        rungs = ideal_rungs([1, 2, 4, 8, 16, 32, 64])
+        rungs.append(RungResult(concurrency=128, throughput=1000.0, littles_law_residual=0.9))
+        rungs.append(RungResult(concurrency=256, throughput=1000.0, error_rate=0.9))
+        constants = estimate_constants(rungs, rng=np.random.default_rng(0), num_bootstrap=50)
+        self.assertAlmostEqual(constants["r_sat"].value, 20.0, places=5)
+
+    # A config that rejects every rung must fail with a message that names the
+    # gates, so the operator knows which knob to loosen.
+    def test_all_rungs_rejected_message_names_the_gates(self) -> None:
+        rungs = [
+            RungResult(concurrency=1, throughput=5.0, error_rate=0.9),
+            RungResult(concurrency=2, throughput=9.0, littles_law_residual=0.9),
+        ]
+        with self.assertRaises(ValueError) as raised:
+            estimate_constants(rungs, rng=np.random.default_rng(0))
+        message = str(raised.exception)
+        self.assertIn("Little's law residual", message)
+        self.assertIn("error rate", message)
 
 
 if __name__ == "__main__":

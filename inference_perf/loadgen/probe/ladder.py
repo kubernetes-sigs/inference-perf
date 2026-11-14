@@ -29,7 +29,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Sequence
 
-from .result import RungResult, SaturationSignal
+from .result import ProbeStopReason, RungResult, SaturationSignal
 
 
 @dataclass(frozen=True)
@@ -66,7 +66,7 @@ class ConcurrencyLadder:
     """Stateful next-rung policy. Feed it the full measurement history each call."""
 
     config: LadderConfig = field(default_factory=LadderConfig)
-    stop_reason: Optional[str] = None
+    stop_reason: Optional[ProbeStopReason] = None
     _retries: Dict[int, int] = field(default_factory=dict)
     _refined: bool = False
 
@@ -74,7 +74,7 @@ class ConcurrencyLadder:
         """Return the next concurrency to measure, or None when the ladder is done.
 
         Once None is returned the decision is sticky; `stop_reason` records why
-        ("client_bound", "plateau", or "max_concurrency").
+        (CLIENT_BOUND, PLATEAU, or MAX_CONCURRENCY).
         """
         if self.stop_reason is not None:
             return None
@@ -83,7 +83,7 @@ class ConcurrencyLadder:
 
         last = history[-1]
         if last.signal is SaturationSignal.CLIENT_BOUND:
-            self.stop_reason = "client_bound"
+            self.stop_reason = ProbeStopReason.CLIENT_BOUND
             return None
         if not last.stationary:
             attempts = self._retries.get(last.concurrency, 0)
@@ -101,12 +101,12 @@ class ConcurrencyLadder:
                 midpoint = round(math.sqrt(ordered[-2] * ordered[-1]))
                 if midpoint not in latest and midpoint >= 1:
                     return midpoint
-            self.stop_reason = "plateau"
+            self.stop_reason = ProbeStopReason.PLATEAU
             return None
 
         proposed = max(last.concurrency + 1, math.ceil(last.concurrency * self.config.growth_factor))
         if proposed > self.config.max_concurrency:
-            self.stop_reason = "max_concurrency"
+            self.stop_reason = ProbeStopReason.MAX_CONCURRENCY
             return None
         return proposed
 

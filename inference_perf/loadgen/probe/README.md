@@ -37,26 +37,45 @@ first rung's unloaded baseline.
 ## How the ladder stops
 
 Concurrency grows geometrically (`growth_factor`, default 2.0) from
-`start_concurrency` until one of three sticky stop reasons:
+`start_concurrency` until one of four sticky stop reasons:
 
 - **plateau**: the relative throughput gain between the top two rungs is
   confidently below `gain_threshold`, using a one-sided upper confidence
   bound on the gain built from the batch-means standard errors. The SE
   awareness matters: a noisy rung must not fake a plateau.
-- **client_bound**: the rung reports the load generator, not the server, as
-  the bottleneck (signal plumbing exists; no source sets it yet, see limits).
+- **client_bound**: the load generator is the bottleneck rather than the
+  server. Each rung samples its own dispatch-loop lateness against the tick
+  it intends to keep, and a typical (median) lateness above
+  `CLIENT_LAG_FLOOR_SEC` and at least `inflation_threshold` times the unloaded
+  rung's ends the ladder. Without this a generator that cannot feed the pool
+  would report its own ceiling as the server's.
 - **max_concurrency**: the configured or worker-capacity ceiling.
+- **measurement_failed**: a rung produced no successful completion (every
+  request failed, or the tail had to be cancelled). That rung cannot become a
+  point on the curve, but the rungs below it did measure the server, so the
+  ladder stops and the constants are estimated from those. The probe still
+  fails when fewer than two usable rungs remain, because then there is no
+  curve to fit.
 
 After a plateau, one geometric-midpoint rung is optionally measured
 (`refine`) to sharpen the knee estimate. A non-stationary rung is re-measured
 once (`max_retries`) before being used as-is.
 
+The stop reason is part of the result. Every reason except `PLATEAU` ends the
+ladder before the curve flattens, so `ProbeResult.censored` is true for them
+and the reported `r_sat` is labelled a lower bound; `failed_concurrency` names
+the rung that produced no measurement when that is what ended the ladder.
+
 ## How constants are estimated
 
 `estimate_constants` produces the reserved symbols `r_sat` (saturation
 throughput) and `n_knee` (concurrency where isotonic throughput first
-reaches `knee_fraction` of `r_sat`). The estimator is deliberately
-two-layered:
+reaches `knee_fraction` of `r_sat`). Only rungs that `select_usable_rungs`
+admits take part: stationary, not client-bound, Little's law residual within
+`max_littles_law_residual`, and failed-request fraction within
+`max_rung_error_rate`. A rung rejected on either of the last two would
+otherwise enter the fit as a clean point that describes a broken measurement
+or a failing backend. The estimator is deliberately two-layered:
 
 1. Isotonic regression (pool-adjacent-violators) over the rungs gives a
    nonparametric, monotone throughput curve whose top value is the
@@ -128,9 +147,9 @@ The probe runs during sweep preprocessing, before stage generation:
   the dispatch path the real stages use, and to avoid new process machinery;
   retuning the existing workers' shared concurrency at phase boundaries is
   sufficient.
-- **Report-schema integration of rung data.** Deferred: negative stage ids
-  keep the report generator untouched. `ProbeResult` lives on the
-  `LoadGenerator` for now.
+- **Report-schema integration of rung data.** Superseded: the run now emits
+  `sweep_probe.json` from `ProbeResult.to_dict()`, and negative stage ids
+  still keep the lifecycle reports untouched.
 - **Binding constants into expressions in this change.** Deferred by design
   (measure-then-bind): this package emits `BoundConstant`s and reserves the
   symbol names; the grammar dependency stays out.
@@ -142,8 +161,11 @@ The probe runs during sweep preprocessing, before stage generation:
   probe traffic or generation raises past the end.
 - Closed-loop R(N) is a measurement device. It is not open-loop request
   latency and is never reported as such.
-- `CLIENT_BOUND` has a ladder stop reason but no instrumentation source yet;
-  until one exists, a client-bottlenecked probe reads as a plateau.
+- The client-bound signal reads the generator's dispatch-loop lateness, so it
+  catches a generator that cannot feed the pool. It does not catch a generator
+  that is slow per request while still keeping its loop on time; for that,
+  read the rung's Little's law residual and error rate, which also gate the
+  fit.
 - Phase classification requires streaming token timestamps; non-streaming
   runs degrade to `NONE` rather than guessing.
 - `settle_duration` is a heuristic warm-in, not a detected steady-state
