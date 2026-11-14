@@ -427,6 +427,37 @@ def test_read_config_defaults_conversation_replay_concurrency() -> None:
     assert stage.concurrency_level == 7
 
 
+# Writes a conversation replay config to a temporary YAML file and returns the path; the
+# caller removes it.
+def _write_conversation_replay_config(stages: list[dict[str, object]], num_conversations: int | float | str) -> str:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(_conversation_replay_config(stages, num_conversations), tmp)
+        return tmp.name
+
+
+# read_config builds the stage models before Config validates anything, so a fractional count
+# has to be reported against the field the file sets: num_conversations 4.7 names
+# data.conversation_replay.num_conversations rather than only the copied concurrency_level.
+def test_read_config_reports_a_fractional_num_conversations_by_its_data_field() -> None:
+    path = _write_conversation_replay_config([{"num_requests": 10}], 4.7)
+    try:
+        with pytest.raises(ValueError, match=r"data\.conversation_replay\.num_conversations"):
+            read_config(path)
+    finally:
+        os.remove(path)
+
+
+# A zero count is rejected by num_conversations and by the stage size copied from it, so the
+# error has to name the field the file writes instead of the stage field it was copied to.
+def test_read_config_reports_a_zero_num_conversations_by_its_data_field() -> None:
+    path = _write_conversation_replay_config([{"num_requests": 10}], 0)
+    try:
+        with pytest.raises(ValueError, match=r"data\.conversation_replay\.num_conversations"):
+            read_config(path)
+    finally:
+        os.remove(path)
+
+
 # A quoted count reaches the stage as written and the field coerces it, so num_conversations
 # "4" sizes the stage at 4 rather than at the field's own default, which the ceiling check
 # would then reject against the real count.

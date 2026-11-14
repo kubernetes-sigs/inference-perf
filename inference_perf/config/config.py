@@ -101,6 +101,19 @@ def _default_conversation_replay_concurrency(config: dict[str, object]) -> dict[
     return {**config, "load": {**load_config, "stages": defaulted}}
 
 
+class _DataSection(StrictBaseModel):
+    """Validates a raw ``data`` section under the path a config file writes it at.
+
+    ``read_config`` turns the stages into models before ``Config`` validates anything, so
+    the count copied onto ``concurrency_level`` is reported against that stage field
+    alone. Going through ``data`` first puts the error on the field the file actually
+    sets, ``data.conversation_replay.num_conversations``, which is also where
+    ``Config.model_validate`` reports it.
+    """
+
+    data: DataConfig
+
+
 class Config(StrictBaseModel):
     # A validation error would otherwise quote the input, which holds credentials.
     model_config = ConfigDict(hide_input_in_errors=True)
@@ -286,6 +299,13 @@ def read_config(config_file: Optional[str] = None, cli_overrides: Optional[dict[
     # The helper only rewrites "load", and hands back a copy, so updating with it leaves
     # the rest of the merged config in place.
     merged_cfg.update(_default_conversation_replay_concurrency(merged_cfg))
+
+    # The stages below are turned into models before Config validates them, so the count
+    # just copied onto concurrency_level would be reported against that field alone when
+    # data rejects it. Validating data first keeps the error on the field the file sets.
+    data_section = merged_cfg.get("data")
+    if isinstance(data_section, Mapping) and data_section.get("type") == DataGenType.ConversationReplay.value:
+        _DataSection.model_validate({"data": data_section})
 
     # Handle stage type conversion based on load type
     if "load" in merged_cfg and "stages" in merged_cfg["load"] and merged_cfg["load"]["stages"]:
