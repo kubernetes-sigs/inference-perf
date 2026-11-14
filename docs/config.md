@@ -293,6 +293,8 @@ load:
       max_concurrency: 1024     # Concurrency ceiling for the ladder
       gain_threshold: 0.05      # Stop when the relative throughput gain between rungs is confidently below this
       knee_fraction: 0.9        # Fraction of the saturation rate that defines the knee concurrency
+      max_littles_law_residual: 0.2   # Reject a rung whose |N - X*R| / N exceeds this
+      max_rung_error_rate: 0.1  # Reject a rung whose failed-request fraction exceeds this
 ```
 
 When `probe` is set the burst estimator and `saturation_percentile` are

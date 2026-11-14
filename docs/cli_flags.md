@@ -371,6 +371,8 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--load.sweep.probe.max_concurrency` | int | Concurrency ceiling for the ladder. |
 | `--load.sweep.probe.gain_threshold` | float | Stop when the relative throughput gain between the top two rungs is confidently below this fraction. |
 | `--load.sweep.probe.knee_fraction` | float | Fraction of the saturation rate that defines the knee concurrency. |
+| `--load.sweep.probe.max_littles_law_residual` | float | Largest allowed Little's law gap, abs(N - X*R) / N, for a rung to enter the capacity estimate. A rung above it did not actually hold its concurrency. |
+| `--load.sweep.probe.max_rung_error_rate` | float | Largest allowed fraction of failed requests for a rung to enter the capacity estimate. A rung above it measures the failure, not the server. |
 | `--load.num_workers` | int | Number of worker processes sending requests. Defaults to the cgroup-aware CPU count. |
 | `--load.worker_max_concurrency` | int | Maximum concurrent in-flight requests per worker. |
 | `--load.worker_max_tcp_connections` | int | Maximum TCP connections per worker. |

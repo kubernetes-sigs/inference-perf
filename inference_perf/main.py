@@ -515,6 +515,7 @@ def main_cli() -> None:
             duration=duration,
             model_server_metrics=model_server_client.get_prometheus_metric_metadata(),
             stages=loadgen.stage_runtime_info,
+            probe_result=loadgen.probe_result,
         ),
     )
 

@@ -31,7 +31,7 @@ back to the empirical plateau otherwise. Uncertainty comes from a parametric
 bootstrap over the per-rung standard errors.
 """
 
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import numpy.typing as npt
@@ -81,6 +81,8 @@ def make_rung(
     window_end: float,
     num_batches: int = 8,
     signal: SaturationSignal = SaturationSignal.NONE,
+    error_rate: float = 0.0,
+    client_lag: float = 0.0,
 ) -> RungResult:
     """Build a `RungResult` from raw per-request completion times and latencies.
 
@@ -105,7 +107,39 @@ def make_rung(
         littles_law_residual=residual,
         stationary=is_stationary(batch_rates),
         signal=signal,
+        error_rate=error_rate,
+        client_lag=client_lag,
     )
+
+
+def select_usable_rungs(
+    rungs: Sequence[RungResult],
+    max_littles_law_residual: float = 0.2,
+    max_error_rate: float = 0.1,
+) -> List[RungResult]:
+    """Rungs the estimator may fit, in ladder order, latest measurement per concurrency.
+
+    A rung participates only when it is stationary, not client-bound, held its
+    concurrency to within `max_littles_law_residual` of Little's law, and
+    failed no more than `max_error_rate` of its requests. The last two matter
+    for the same reason: a broken measurement and a mostly-failing rung both
+    produce a throughput number that describes the failure, not the server.
+    """
+    if not 0.0 <= max_littles_law_residual <= 1.0:
+        raise ValueError(f"max_littles_law_residual must be in [0, 1], got {max_littles_law_residual}")
+    if not 0.0 <= max_error_rate <= 1.0:
+        raise ValueError(f"max_error_rate must be in [0, 1], got {max_error_rate}")
+
+    usable = [
+        rung
+        for rung in rungs
+        if rung.stationary
+        and rung.signal is not SaturationSignal.CLIENT_BOUND
+        and rung.littles_law_residual <= max_littles_law_residual
+        and rung.error_rate <= max_error_rate
+    ]
+    latest_by_concurrency = {rung.concurrency: rung for rung in usable}
+    return [latest_by_concurrency[c] for c in sorted(latest_by_concurrency)]
 
 
 def isotonic_regression(values: npt.ArrayLike, weights: Optional[npt.ArrayLike] = None) -> _FloatArray:
@@ -191,12 +225,15 @@ def estimate_constants(
     fit_acceptance_ratio: float = 1.3,
     num_bootstrap: int = 500,
     confidence: float = 0.95,
+    max_littles_law_residual: float = 0.2,
+    max_error_rate: float = 0.1,
 ) -> Dict[str, BoundConstant]:
     """Estimate the internal symbols {r_sat, n_knee} from a measured ladder.
 
-    Only stationary, non-client-bound rungs participate; retried concurrencies
-    keep their latest measurement. The saturating-curve asymptote is used for
-    r_sat only when it lies within `fit_acceptance_ratio` of the empirical
+    Only rungs that `select_usable_rungs` admits participate, which is what
+    keeps a rung with a broken concurrency hold or a mostly-failing rung from
+    entering the fit as a clean point. The saturating-curve asymptote is used
+    for r_sat only when it lies within `fit_acceptance_ratio` of the empirical
     plateau, meaning the ladder actually got close to saturation; otherwise
     the plateau itself is reported, which is an honest lower bound.
     Confidence intervals come from a parametric bootstrap resampling each
@@ -207,11 +244,14 @@ def estimate_constants(
     if not 0 < confidence < 1:
         raise ValueError(f"confidence must be in (0, 1), got {confidence}")
 
-    usable = [r for r in rungs if r.stationary and r.signal is not SaturationSignal.CLIENT_BOUND]
-    latest_by_concurrency = {r.concurrency: r for r in usable}
-    if len(latest_by_concurrency) < 2:
-        raise ValueError(f"need at least 2 usable rungs at distinct concurrencies, got {len(latest_by_concurrency)}")
-    ordered = [latest_by_concurrency[c] for c in sorted(latest_by_concurrency)]
+    ordered = select_usable_rungs(rungs, max_littles_law_residual, max_error_rate)
+    if len(ordered) < 2:
+        rejected = len({rung.concurrency for rung in rungs}) - len(ordered)
+        raise ValueError(
+            f"need at least 2 usable rungs at distinct concurrencies, got {len(ordered)} "
+            f"({rejected} rung(s) rejected as non-stationary, client-bound, "
+            f"Little's law residual > {max_littles_law_residual}, or error rate > {max_error_rate})"
+        )
 
     concurrencies = np.asarray([r.concurrency for r in ordered], dtype=np.float64)
     throughputs = np.asarray([r.throughput for r in ordered], dtype=np.float64)

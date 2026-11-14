@@ -13,7 +13,7 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from enum import Enum, auto
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from pydantic import BaseModel, Field
 
 from inference_perf.client.modelserver.metrics import (
@@ -22,6 +22,9 @@ from inference_perf.client.modelserver.metrics import (
     GaugeResult,
     CounterResult,
 )
+
+if TYPE_CHECKING:
+    from inference_perf.loadgen.probe.result import ProbeResult
 
 
 class StageStatus(Enum):
@@ -71,11 +74,15 @@ class PerfRuntimeParameters:
         duration: float,
         model_server_metrics: BaseMetrics,
         stages: dict[int, StageRuntimeInfo],
+        probe_result: Optional["ProbeResult"] = None,
     ) -> None:
         self.start_time = start_time
         self.duration = duration
         self.stages = stages
         self.model_server_metrics = model_server_metrics
+        # Present only when the run measured its sweep range with the closed-loop
+        # capacity probe; it is what the sweep_probe report is built from.
+        self.probe_result = probe_result
 
 
 class ModelServerMetrics(BaseModel):

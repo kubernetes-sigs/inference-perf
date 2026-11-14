@@ -237,6 +237,20 @@ class ProbeConfig(StrictBaseModel):
     knee_fraction: float = Field(
         default=0.9, gt=0, lt=1, description="Fraction of the saturation rate that defines the knee concurrency."
     )
+    max_littles_law_residual: float = Field(
+        default=0.2,
+        ge=0,
+        le=1,
+        description="Largest allowed Little's law gap, abs(N - X*R) / N, for a rung to enter the capacity estimate."
+        " A rung above it did not actually hold its concurrency.",
+    )
+    max_rung_error_rate: float = Field(
+        default=0.1,
+        ge=0,
+        le=1,
+        description="Largest allowed fraction of failed requests for a rung to enter the capacity estimate."
+        " A rung above it measures the failure, not the server.",
+    )
 
     @model_validator(mode="after")
     def validate_probe_config(self) -> "ProbeConfig":

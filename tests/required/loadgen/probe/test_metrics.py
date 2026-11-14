@@ -119,6 +119,45 @@ class TestRungFromMetrics(unittest.TestCase):
         rung = rung_from_metrics(4, metrics, 0.0, 10.0, baseline=baseline)
         self.assertIs(rung.signal, SaturationSignal.NONE)
 
+    # Client lag is the generator's own lateness, read relative to the unloaded
+    # rung: 50ms of lag after 1ms unloaded is the generator starving the pool.
+    def test_client_lag_inflation_classified_client_bound(self) -> None:
+        metrics = [make_metric(end - 2.0, float(end)) for end in np.arange(0.0, 10.0, 0.1)]
+        rung = rung_from_metrics(4, metrics, 0.0, 10.0, baseline_client_lag=0.001, client_lag=0.05)
+        self.assertIs(rung.signal, SaturationSignal.CLIENT_BOUND)
+
+    # Below the absolute floor the lag is timer resolution, not back-pressure,
+    # so even a large ratio against a tiny baseline must not fire the signal.
+    def test_client_lag_below_floor_stays_none(self) -> None:
+        metrics = [make_metric(end - 2.0, float(end)) for end in np.arange(0.0, 10.0, 0.1)]
+        rung = rung_from_metrics(4, metrics, 0.0, 10.0, baseline_client_lag=0.001, client_lag=0.005)
+        self.assertIs(rung.signal, SaturationSignal.NONE)
+
+    # A lag that is real but not inflated relative to the unloaded rung belongs
+    # to the generator's normal operating point, not to overload.
+    def test_client_lag_uninflated_stays_none(self) -> None:
+        metrics = [make_metric(end - 2.0, float(end)) for end in np.arange(0.0, 10.0, 0.1)]
+        rung = rung_from_metrics(4, metrics, 0.0, 10.0, baseline_client_lag=0.02, client_lag=0.025)
+        self.assertIs(rung.signal, SaturationSignal.NONE)
+
+    # Both measurements the estimator gates on have to reach the rung, or the
+    # gates would silently see zeros.
+    def test_rung_records_error_rate_and_client_lag(self) -> None:
+        error = ErrorResponseInfo(error_type="server", error_msg="boom")
+        metrics = [make_metric(end - 0.5, float(end)) for end in np.arange(0.0, 10.0, 0.1)]
+        metrics += [make_metric(end - 0.01, float(end), error=error) for end in np.arange(0.05, 10.0, 0.1)]
+        rung = rung_from_metrics(5, metrics, 0.0, 10.0, client_lag=0.03)
+        self.assertAlmostEqual(rung.error_rate, 0.5)
+        self.assertAlmostEqual(rung.client_lag, 0.03)
+
+    # A rung where every request failed has no throughput to report; it is a
+    # measurement failure, not a zero-rate backend.
+    def test_all_requests_failing_raises(self) -> None:
+        error = ErrorResponseInfo(error_type="server", error_msg="boom")
+        metrics = [make_metric(end - 0.5, float(end), error=error) for end in np.arange(0.0, 10.0, 0.1)]
+        with self.assertRaises(ValueError):
+            rung_from_metrics(5, metrics, 0.0, 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()
