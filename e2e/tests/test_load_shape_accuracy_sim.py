@@ -371,10 +371,11 @@ async def test_conversation_replay_replenishes_ready_conversations():
     }
 
     async with LLMDInferenceSimRunner(model_name, *_pinned_latency_sim_args(), port=get_free_port()) as sim:
-        result = await run_benchmark_minimal(
-            _concurrent_stage_config(sim, model_name, model_path, data, concurrency, num_workers, num_requests),
-            timeout_sec=180,
-        )
+        benchmark_config = _concurrent_stage_config(sim, model_name, model_path, data, concurrency, num_workers, num_requests)
+        # The stage leaves concurrency_level out on purpose: conversation replay sizes it
+        # from num_conversations, which is set to concurrency above.
+        del benchmark_config["load"]["stages"][0]["concurrency_level"]
+        result = await run_benchmark_minimal(benchmark_config, timeout_sec=180)
 
     entries = assert_successful_run(result, num_requests)
     assert_delivered_concurrency(entries, concurrency)
