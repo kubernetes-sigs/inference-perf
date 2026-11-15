@@ -342,6 +342,11 @@ TGI) once a second for up to 600 seconds:
   counts, since such a gateway may hold it until a backend exists.
 - `none`: no wait.
 
+The `reachable` probe is itself a request to the gateway. A gateway that scales up on
+any request starts the cold start at the probe rather than at the first measured
+request, so the run measures only what is left of it. Use `none` when the whole cold
+start has to land inside the run.
+
 With `reachable` or `none`, the client sends nothing else to the server before the
 run. `server.model_name` is required, the tokenizer loads from
 `tokenizer.pretrained_model_name_or_path` or else `server.model_name` with no `root`
