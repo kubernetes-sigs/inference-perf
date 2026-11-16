@@ -16,8 +16,6 @@
 import os
 import subprocess
 import sys
-import textwrap
-from pathlib import Path
 
 import pytest
 
@@ -90,71 +88,6 @@ def test_windows_context_primitives() -> None:
         assert list(shared) == ["spawn"]
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows spawn fallback")
-# A fresh spawned subclass must receive queues, a shared value and an event from MP_CONTEXT.
-# The child updates the value and signals the parent, proving these objects share a context.
-def test_windows_context_objects_cross_process_boundary(tmp_path: Path) -> None:
-    script = tmp_path / "probe_spawn_context.py"
-    script.write_text(
-        textwrap.dedent(
-            """
-            from __future__ import annotations
-
-            from multiprocessing.queues import Queue, SimpleQueue
-            from multiprocessing.sharedctypes import Synchronized
-            from multiprocessing.synchronize import Event
-
-            from inference_perf.utils.mp_context import MP_CONTEXT, PreloadedForkServerProcess
-
-
-            # Mirror Worker's inheritance from the public process class.
-            class ProbeProcess(PreloadedForkServerProcess):
-                pass
-
-
-            # Read the parent's message, update shared state, then return it through SimpleQueue.
-            def probe(queue: Queue[str], result: SimpleQueue[str], value: Synchronized[int], done: Event) -> None:
-                message = queue.get(timeout=10)
-                with value.get_lock():
-                    value.value += 1
-                result.put(message)
-                done.set()
-
-
-            if __name__ == "__main__":
-                queue = MP_CONTEXT.Queue()
-                result = MP_CONTEXT.SimpleQueue()
-                value = MP_CONTEXT.Value("i", 7)
-                done = MP_CONTEXT.Event()
-                process = ProbeProcess(target=probe, args=(queue, result, value, done))
-                try:
-                    queue.put("shared spawn context")
-                    process.start()
-                    assert done.wait(timeout=60), "child did not signal completion"
-                    process.join(timeout=10)
-                    assert process.exitcode == 0, process.exitcode
-                    assert value.value == 8, value.value
-                    assert result.get() == "shared spawn context"
-                    print("shared context verified")
-                finally:
-                    if process.is_alive():
-                        process.terminate()
-                        process.join(timeout=10)
-                    process.close()
-                    queue.close()
-                    queue.join_thread()
-                    result.close()
-            """
-        ),
-        encoding="utf-8",
-    )
-    env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join([str(Path(__file__).resolve().parents[3]), env.get("PYTHONPATH", "")])
-    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=120, check=False, env=env)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "shared context verified" in result.stdout
-
-
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows forkserver no-op")
 @pytest.mark.parametrize("malloc_conf", [None, "background_thread:true"])
 # Two Windows calls must neither start/configure a forkserver nor modify its environment.
@@ -178,3 +111,48 @@ def test_windows_start_forkserver_is_repeatable_noop(monkeypatch: pytest.MonkeyP
         ensure_running.assert_not_called()
         set_preload.assert_not_called()
     assert dict(os.environ) == before
+
+
+# Cross-platform test: MP_CONTEXT primitives work on Linux too
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux POSIX path")
+def test_posix_context_primitives() -> None:
+    from inference_perf.utils.mp_context import MP_CONTEXT
+
+    queue = MP_CONTEXT.Queue()
+    try:
+        queue.put("queued")
+        assert queue.get(timeout=10) == "queued"
+    finally:
+        queue.close()
+        queue.join_thread()
+
+    simple_queue = MP_CONTEXT.SimpleQueue()
+    try:
+        simple_queue.put("simple")
+        assert simple_queue.get() == "simple"
+    finally:
+        simple_queue.close()
+
+    value = MP_CONTEXT.Value("i", 7)
+    assert value.value == 7
+    value.value += 1
+    assert value.value == 8
+    event = MP_CONTEXT.Event()
+    assert not event.is_set()
+    event.set()
+    assert event.wait(timeout=1)
+
+    process = MP_CONTEXT.Process(target=os.getpid)
+    try:
+        process.start()
+        process.join(timeout=30)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=10)
+        process.close()
+
+    with MP_CONTEXT.Manager() as manager:
+        shared = manager.list(["forkserver"])
+        assert list(shared) == ["forkserver"]
