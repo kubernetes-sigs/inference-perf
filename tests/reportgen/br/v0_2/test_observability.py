@@ -11,12 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Unit tests for results.observability.components in the BR0.2 partial (#799, row 1)."""
+"""Unit tests for results.observability in the BR0.2 partial (#799, rows 1 and 3)."""
 
 from typing import Dict, List, Optional
 
+from inference_perf.apis import InferenceInfo, RequestLifecycleMetric
 from inference_perf.client.modelserver.metrics import CounterResult, GaugeResult
 from inference_perf.client.server_metrics import ModelServerMetrics
+from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.reportgen.br.v0_2 import build_partial_report
 from inference_perf.reportgen.br.v0_2.schema import BenchmarkReportV021
 
@@ -167,3 +169,56 @@ def test_partial_with_observability_is_valid_br() -> None:
     partial = build_partial_report([], tokenizer=None, run_uid="uid", server_metrics={"vllm": _stage_summary()})
 
     BenchmarkReportV021.model_validate(partial)
+
+
+# ---------------------------------------------------------------------------
+# results.observability.drop_rate (#799, row 3)
+# ---------------------------------------------------------------------------
+
+
+def _request(stage_id: int = 0) -> RequestLifecycleMetric:
+    return RequestLifecycleMetric(
+        stage_id=stage_id,
+        scheduled_time=1.0,
+        start_time=1.0,
+        end_time=2.0,
+        request_data="{}",
+        response_data="ok",
+        info=InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=10))),
+        error=None,
+    )
+
+
+def _drop_observability(recorded: int, dropped: Optional[int]) -> object:
+    partial = build_partial_report(
+        [_request() for _ in range(recorded)], tokenizer=None, run_uid="uid", dropped_requests=dropped
+    )
+    BenchmarkReportV021.model_validate(partial)
+    observability: object = partial["results"].get("observability")
+    return observability
+
+
+def test_drop_rate_is_the_percent_of_generated_requests_never_dispatched() -> None:
+    assert _drop_observability(recorded=3, dropped=1) == {"drop_rate": {"units": "percent", "mean": 25.0}}
+
+
+def test_drop_rate_is_zero_when_nothing_was_dropped() -> None:
+    assert _drop_observability(recorded=4, dropped=0) == {"drop_rate": {"units": "percent", "mean": 0.0}}
+
+
+def test_drop_rate_is_absent_without_a_count() -> None:
+    assert _drop_observability(recorded=4, dropped=None) is None
+
+
+def test_drop_rate_is_absent_when_the_stage_generated_nothing() -> None:
+    assert _drop_observability(recorded=0, dropped=0) is None
+
+
+def test_drop_rate_sits_beside_the_components() -> None:
+    partial = build_partial_report(
+        [_request()], tokenizer=None, run_uid="uid", server_metrics={"vllm": _stage_summary()}, dropped_requests=1
+    )
+
+    observability = partial["results"]["observability"]
+    assert [c["component_label"] for c in observability["components"]] == ["vllm"]
+    assert observability["drop_rate"] == {"units": "percent", "mean": 50.0}

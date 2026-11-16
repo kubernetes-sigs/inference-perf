@@ -71,6 +71,7 @@ def build_partial_report(
     session_metrics: List[SessionLifecycleMetric] | None = None,
     sessions_not_completed: int = 0,
     server_metrics: Mapping[str, ModelServerMetrics] | None = None,
+    dropped_requests: int | None = None,
 ) -> Dict[str, Any]:
     """Build the inference-perf partial of a BR0.2 report for one stage.
 
@@ -105,6 +106,9 @@ def build_partial_report(
 
     ``server_metrics`` maps a component label to the stage's Prometheus
     summary and fills ``results.observability.components``.
+
+    ``dropped_requests`` is the stage's exact count of requests never
+    dispatched and fills ``results.observability.drop_rate``.
     """
     run = Run(uid=run_uid, eid=run_eid, time=_build_run_time(stage_start, stage_end))
     results = build_results(
@@ -114,6 +118,7 @@ def build_partial_report(
         session_metrics=session_metrics,
         sessions_not_completed=sessions_not_completed,
         server_metrics=server_metrics,
+        dropped_requests=dropped_requests,
     )
 
     return {

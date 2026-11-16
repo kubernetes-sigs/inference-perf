@@ -68,6 +68,7 @@ def build_results(
     session_metrics: Optional[List[SessionLifecycleMetric]] = None,
     sessions_not_completed: int = 0,
     server_metrics: Optional[Mapping[str, ModelServerMetrics]] = None,
+    dropped_requests: Optional[int] = None,
 ) -> Results:
     """Build a BR0.2 ``Results`` from inference-perf request metrics.
 
@@ -96,11 +97,16 @@ def build_results(
     to the stage's Prometheus summary. It fills
     ``observability.components[].aggregate``; omitted, ``observability`` stays
     ``None``.
+
+    ``dropped_requests`` is the stage's exact count of requests generated but
+    never dispatched. It fills ``observability.drop_rate`` as a percent of the
+    requests the stage generated: the recorded ones plus the dropped ones.
+    ``None`` (not counted, or only a lower bound) leaves it out.
     """
     return Results(
         request_performance=_build_request_performance(request_metrics, tokenizer, use_server_output_tokens),
         session_performance=_build_session_performance(session_metrics or [], sessions_not_completed),
-        observability=_build_observability(server_metrics or {}),
+        observability=_build_observability(server_metrics or {}, len(request_metrics), dropped_requests),
     )
 
 
@@ -109,13 +115,19 @@ def build_results(
 # ---------------------------------------------------------------------------
 
 
-def _build_observability(server_metrics: Mapping[str, ModelServerMetrics]) -> Optional[Observability]:
+def _build_observability(
+    server_metrics: Mapping[str, ModelServerMetrics], recorded: int, dropped: Optional[int]
+) -> Optional[Observability]:
     components = [
         ComponentObservability(component_label=label, aggregate=aggregate)
         for label, metrics in server_metrics.items()
         if (aggregate := _build_resource_metrics(metrics)) is not None
     ]
-    return Observability(components=components) if components else None
+    generated = recorded + (dropped or 0)
+    drop_rate = _scalar_statistics(dropped / generated * 100, Units.PERCENT) if dropped is not None and generated else None
+    if not components and drop_rate is None:
+        return None
+    return Observability(components=components or None, drop_rate=drop_rate)
 
 
 def _build_resource_metrics(metrics: ModelServerMetrics) -> Optional[ResourceMetrics]:

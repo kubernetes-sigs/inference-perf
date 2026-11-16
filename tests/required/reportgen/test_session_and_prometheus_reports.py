@@ -814,3 +814,21 @@ class TestPrometheusComponentInPartial:
         assert not any("prometheus" in r.name for r in reports)
         partial = next(r for r in reports if r.name == "inference-perf.partial.stage_0")
         assert "observability" not in partial.contents["results"]
+
+
+class TestDropRateInPartial:
+    async def _drop_rate(self, dropped: int, exact: bool) -> object:
+        stage = _stage_info(0).model_copy(update={"dropped_requests": dropped, "dropped_requests_exact": exact})
+        gen = _partial_generator(ModelServerType.VLLM)
+        report_config = ReportConfig(prometheus=PrometheusMetricsReportConfig(summary=False, per_stage=False))
+        with patch.object(PrometheusMetricsClient, "wait"):
+            reports = await gen.generate_reports(report_config, _runtime({0: stage}))
+        partial = next(r.contents for r in reports if r.name == "inference-perf.partial.stage_0")
+        drop_rate: object = partial["results"].get("observability", {}).get("drop_rate")
+        return drop_rate
+
+    async def test_an_exact_count_fills_drop_rate(self) -> None:
+        assert await self._drop_rate(dropped=3, exact=True) == {"units": "percent", "mean": 75.0}
+
+    async def test_a_lower_bound_leaves_drop_rate_out(self) -> None:
+        assert await self._drop_rate(dropped=3, exact=False) is None
