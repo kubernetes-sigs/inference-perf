@@ -450,3 +450,21 @@ def test_ready_server_logs_no_wait(caplog: pytest.LogCaptureFixture) -> None:
     _build(MagicMock(return_value=_response(200)), FakeClock())
     assert _wait_messages(caplog, logging.INFO) == []
     assert _wait_messages(caplog, logging.DEBUG) == []
+
+
+# wait_for=reachable: connection refused twice, then HTTP 503 -> one info line naming the URL and the refused
+# connection, the second refusal at debug only.
+def test_reachable_first_failed_probe_is_logged_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="inference_perf.client.modelserver.openai_client")
+    mock_get = MagicMock(
+        side_effect=[
+            requests.ConnectionError("connection refused"),
+            requests.ConnectionError("connection refused"),
+            _response(503),
+        ],
+    )
+    _build(mock_get, FakeClock(), wait_for=WaitFor.REACHABLE)
+    assert _wait_messages(caplog, logging.INFO) == [
+        f"Waiting up to 10.0s for {HEALTH_URL} to give any HTTP response (last: ConnectionError: connection refused)"
+    ]
+    assert _wait_messages(caplog, logging.DEBUG) == [f"Waiting for {HEALTH_URL}: ConnectionError: connection refused"]

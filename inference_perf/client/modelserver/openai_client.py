@@ -297,7 +297,8 @@ class openAIModelServerClient(ModelServerClient):
         as a gateway in front of a pool scaled to zero. A refused connection, a DNS failure
         and a connect timeout keep polling, for at most ``readiness_timeout_sec``. A probe
         that connects and then gets no response in time also counts as reachable: that is a
-        gateway holding the request until a backend exists.
+        gateway holding the request until a backend exists. The first failed probe is logged
+        at info, the rest at debug.
         """
         route = self.readiness_route if self.readiness_route is not None else _READINESS_FALLBACK_ROUTE
         url = f"{self.uri}{route}"
@@ -306,6 +307,7 @@ class openAIModelServerClient(ModelServerClient):
         timeout = self.readiness_timeout_sec
         deadline = time.monotonic() + timeout
         last_seen = "no response"
+        announced = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -319,7 +321,11 @@ class openAIModelServerClient(ModelServerClient):
                 return
             except requests.RequestException as e:
                 last_seen = f"{type(e).__name__}: {e}"
-            logger.debug(f"Waiting for {url}: {last_seen}")
+            if announced:
+                logger.debug(f"Waiting for {url}: {last_seen}")
+            else:
+                logger.info(f"Waiting up to {timeout}s for {url} to give any HTTP response (last: {last_seen})")
+                announced = True
             time.sleep(min(_READINESS_POLL_INTERVAL_SEC, max(0.0, deadline - time.monotonic())))
 
     def wait_until_ready(self) -> None:
