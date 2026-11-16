@@ -530,7 +530,8 @@ def assert_first_turns_match_stage_zero(entries: list[dict]) -> None:
     )
 
     allowed = max(FIRST_TURN_TOKEN_SLACK, FIRST_TURN_TOKEN_TOLERANCE * baseline)
-    for stage_id in range(1, STAGES):
+    # Include stage 0: its median can hide a rollover that lost the system prompt.
+    for stage_id in range(STAGES):
         values = first_turns.get(stage_id, [])
         assert values, f"stage {stage_id} started no conversation"
         for value in values:
@@ -832,6 +833,22 @@ def test_first_turn_check_allows_the_tokenizer_drift_between_stages():
 def test_first_turn_check_rejects_a_stage_that_drops_the_system_prompt():
     with pytest.raises(AssertionError, match="did not survive the stage boundary"):
         assert_first_turns_match_stage_zero(_synthetic_multi_stage_run({1: INPUT_TOKENS_PER_TURN}))
+
+
+# One rollover conversation sends 8, 480, or 560 tokens instead of 520, while
+# stage 0's median remains 520. Reject that outlier in every stage, including 0.
+@pytest.mark.parametrize("stage_id", range(STAGES))
+@pytest.mark.parametrize("input_tokens", [INPUT_TOKENS_PER_TURN, 480, 560])
+def test_first_turn_check_rejects_a_rollover_outlier_in_every_stage(stage_id: int, input_tokens: int) -> None:
+    entries = _synthetic_multi_stage_run()
+    session_id = f"stage_{stage_id}_slot_0_convo_{CONVERSATIONS}"
+    first_turn = min(
+        (entry for entry in entries if entry["info"]["extra_info"]["user_session"] == session_id),
+        key=lambda entry: entry["start_time"],
+    )
+    first_turn["info"]["request_metrics"]["text"]["input_tokens"] = input_tokens
+    with pytest.raises(AssertionError, match=f"stage {stage_id} first turn sent {input_tokens} input tokens"):
+        assert_first_turns_match_stage_zero(entries)
 
 
 # Stage 1 drifts 40 tokens off stage 0's 520, outside the 26-token band: the
