@@ -55,6 +55,7 @@ server that recorded arrivals independently would be strictly stronger and
 this test can be retargeted at one later without changing its assertions.
 """
 
+import re
 import statistics
 
 import pytest
@@ -486,30 +487,54 @@ def _first_turn_input_tokens(entries: list[dict]) -> dict[int, list[int]]:
     }
 
 
-# Every conversation must turn exactly TURNS_PER_CONVERSATION times, and every
-# stage must run CONVERSATIONS_PER_STAGE of them. A conversation longer than its
-# blueprint means session state leaked across a rollover; a shorter one means a
-# stage boundary cut it off. Returns {stage: conversations}.
+# Extract the slot from initial or rollover session IDs. A re-primed session
+# may retain the previous stage's prefix; the report's stage_id is authoritative.
+def _conversation_slot(session_id: str) -> int:
+    match = re.fullmatch(r"conv_(\d+)", session_id) or re.fullmatch(r"stage_\d+_slot_(\d+)_convo_\d+", session_id)
+    assert match is not None, f"unexpected conversation session ID: {session_id}"
+    slot = int(match.group(1))
+    assert 0 <= slot < CONVERSATIONS, f"unexpected conversation slot: {slot}"
+    return slot
+
+
+# No conversation may exceed its blueprint. Only the last conversation in each
+# (stage, slot) may be short when the stage exhausts its request budget. Slots
+# advance independently, so the number of conversations need not be exactly 8.
+# Returns {stage: conversations}; every stage must still deliver all 24 requests.
 def assert_conversations_match_blueprint(entries: list[dict]) -> dict[int, int]:
     turns = _turns_per_conversation(entries)
-    misfit = {key: count for key, count in turns.items() if count != TURNS_PER_CONVERSATION}
+    first_starts: dict[tuple[int, str], float] = {}
+    for entry in entries:
+        key = (int(entry["stage_id"]), str(entry["info"]["extra_info"]["user_session"]))
+        start = float(entry["start_time"])
+        first_starts[key] = min(first_starts.get(key, start), start)
+
+    last_by_slot: dict[tuple[int, int], tuple[int, str]] = {}
+    for key in sorted(first_starts, key=lambda key: first_starts[key]):
+        stage_id, session_id = key
+        last_by_slot[(stage_id, _conversation_slot(session_id))] = key
+    terminal = set(last_by_slot.values())
+    misfit = {
+        key: count
+        for key, count in turns.items()
+        if count > TURNS_PER_CONVERSATION or (count < TURNS_PER_CONVERSATION and key not in terminal)
+    }
     assert not misfit, (
-        f"every conversation must turn exactly {TURNS_PER_CONVERSATION} times; these (stage, session) "
+        f"conversations must have {TURNS_PER_CONVERSATION} turns, except short terminal conversations; these (stage, session) "
         f"pairs ran longer or shorter: {misfit}"
     )
 
     per_stage: dict[int, int] = {}
-    for stage_id, _ in turns:
+    requests_per_stage: dict[int, int] = {}
+    for (stage_id, _), count in turns.items():
         per_stage[stage_id] = per_stage.get(stage_id, 0) + 1
+        requests_per_stage[stage_id] = requests_per_stage.get(stage_id, 0) + count
 
     assert sorted(per_stage) == list(range(STAGES)), (
         f"expected a conversation in each of stages {list(range(STAGES))}, got {sorted(per_stage)}"
     )
-    for stage_id, count in per_stage.items():
-        assert count == CONVERSATIONS_PER_STAGE, (
-            f"stage {stage_id} ran {count} conversations, expected {CONVERSATIONS_PER_STAGE} "
-            f"({REQUESTS_PER_STAGE} requests / {TURNS_PER_CONVERSATION} turns each)"
-        )
+    for stage_id, count in requests_per_stage.items():
+        assert count == REQUESTS_PER_STAGE, f"stage {stage_id} ran {count} requests, expected {REQUESTS_PER_STAGE}"
     return per_stage
 
 
@@ -882,3 +907,88 @@ def test_blueprint_check_rejects_a_conversation_cut_short_at_a_boundary():
     del entries[50]
     with pytest.raises(AssertionError, match="ran longer or shorter"):
         assert_conversations_match_blueprint(entries)
+
+
+# Each stage distributes 24 requests as 7/5/6/6 across four slots. The faster
+# slot ends with a 1-turn conversation and the slower one with a 2-turn tail.
+# Carry each slot's last session ID into the next stage, as the generator does.
+def _uneven_multi_stage_run(leading_slot: int) -> list[dict]:
+    entries: list[dict] = []
+    session_ids = {slot: f"conv_{slot}" for slot in range(CONVERSATIONS)}
+    for stage_id in range(STAGES):
+        for slot in range(CONVERSATIONS):
+            requests = 6 + (slot == leading_slot) - (slot == (leading_slot + 1) % CONVERSATIONS)
+            for turn in range(requests):
+                if turn > 0 and turn % TURNS_PER_CONVERSATION == 0:
+                    session_ids[slot] = f"stage_{stage_id}_slot_{slot}_convo_{turn // TURNS_PER_CONVERSATION}"
+                entries.append(
+                    _conversation_entry(
+                        stage_id,
+                        session_ids[slot],
+                        100.0 * stage_id + turn + 0.1 * slot,
+                        SYNTHETIC_FIRST_TURN_TOKENS,
+                    )
+                )
+    return entries
+
+
+# Any slot can get one request ahead. Nine conversations per stage then fit
+# the same 24-request budget; only the two terminal conversations are short.
+@pytest.mark.parametrize("leading_slot", range(CONVERSATIONS))
+def test_blueprint_check_accepts_uneven_terminal_conversations(leading_slot: int) -> None:
+    entries = _uneven_multi_stage_run(leading_slot)
+    assert assert_conversations_match_blueprint(list(reversed(entries))) == {stage: 9 for stage in range(STAGES)}
+
+
+# Move one request from slot 1's initial conversation to slot 0's final one.
+# The budget stays 24, but a nonterminal conversation is short and must fail.
+def test_blueprint_check_rejects_a_short_nonterminal_conversation() -> None:
+    entries = _uneven_multi_stage_run(0)
+    entries = [entry for entry in entries if not (entry["stage_id"] == 0 and entry["start_time"] == 2.1)]
+    entries.append(_conversation_entry(0, "stage_0_slot_0_convo_2", 7.0, SYNTHETIC_FIRST_TURN_TOKENS))
+    with pytest.raises(AssertionError, match="ran longer or shorter"):
+        assert_conversations_match_blueprint(entries)
+
+
+# A fourth turn is invalid even in a slot's final conversation. Remove a turn
+# from another terminal conversation to keep the stage's budget at 24.
+def test_blueprint_check_rejects_an_overlong_terminal_conversation() -> None:
+    entries = _uneven_multi_stage_run(0)
+    entries = [entry for entry in entries if not (entry["stage_id"] == 0 and entry["start_time"] == 4.1)]
+    entries.append(_conversation_entry(0, "stage_0_slot_2_convo_1", 6.2, SYNTHETIC_FIRST_TURN_TOKENS))
+    with pytest.raises(AssertionError, match="ran longer or shorter"):
+        assert_conversations_match_blueprint(entries)
+
+
+# Removing a terminal turn is allowed by the blueprint check alone, but the
+# resulting 23-request stage must still fail the independent budget check.
+def test_blueprint_check_rejects_a_short_stage() -> None:
+    entries = _uneven_multi_stage_run(0)
+    entries = [entry for entry in entries if not (entry["stage_id"] == 0 and entry["start_time"] == 4.1)]
+    with pytest.raises(AssertionError, match="stage 0 ran 23 requests, expected 24"):
+        assert_conversations_match_blueprint(entries)
+
+
+# Extending a 1-turn terminal conversation to 2 turns respects its blueprint
+# but exceeds the independent stage budget: 25 requests instead of 24.
+def test_blueprint_check_rejects_an_overfull_stage() -> None:
+    entries = _uneven_multi_stage_run(0)
+    entries.append(_conversation_entry(0, "stage_0_slot_0_convo_2", 7.0, SYNTHETIC_FIRST_TURN_TOKENS))
+    with pytest.raises(AssertionError, match="stage 0 ran 25 requests, expected 24"):
+        assert_conversations_match_blueprint(entries)
+
+
+# Dropping all entries from stage 1 must fail even though stages 0 and 2 each
+# still have a valid request budget and valid terminal conversations.
+def test_blueprint_check_rejects_a_missing_stage() -> None:
+    entries = [entry for entry in _uneven_multi_stage_run(0) if entry["stage_id"] != 1]
+    with pytest.raises(AssertionError, match="expected a conversation in each of stages"):
+        assert_conversations_match_blueprint(entries)
+
+
+# Unknown session formats and slots outside the configured four must not be
+# silently grouped together and treated as a slot's terminal conversation.
+@pytest.mark.parametrize("session_id", ["unknown", "conv_4", "stage_0_slot_4_convo_1"])
+def test_conversation_slot_rejects_invalid_ids(session_id: str) -> None:
+    with pytest.raises(AssertionError, match="unexpected conversation"):
+        _conversation_slot(session_id)
