@@ -15,6 +15,7 @@
 from typing import Callable, List, Optional, Set, Tuple
 
 import numpy as np
+from transformers import PreTrainedTokenizerBase
 
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -62,6 +63,22 @@ def random_token_ids(rng: np.random.Generator, valid_token_ids: np.ndarray, leng
     return rng.choice(valid_token_ids, size=length).tolist()  # type: ignore[no-any-return]
 
 
+def _count_tokens_batch(tokenizer: CustomTokenizer, texts: List[str]) -> List[int]:
+    """Token count of each text, without special tokens.
+
+    A Hugging Face tokenizer encodes the whole list in one call, which keeps
+    startup cheap on large vocabularies (Qwen2.5 has about 150k ids). Other
+    tokenizers, such as the lightweight fakes in tests, fall back to one
+    ``count_tokens`` call per text.
+    """
+    if not texts:
+        return []
+    hf_tokenizer = tokenizer.get_tokenizer()
+    if isinstance(hf_tokenizer, PreTrainedTokenizerBase):
+        return [len(ids) for ids in hf_tokenizer(texts, add_special_tokens=False).input_ids]
+    return [tokenizer.count_tokens(text, add_special_tokens=False) for text in texts]
+
+
 def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.ndarray) -> np.ndarray:
     """Token IDs whose decoded form starts with whitespace and re-tokenizes to one token.
 
@@ -75,15 +92,15 @@ def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.n
     tokens exist.
     """
     hf_tokenizer = tokenizer.get_tokenizer()
-    word_starts: List[int] = []
+    candidate_ids: List[int] = []
+    candidate_texts: List[str] = []
     for tid in valid_token_ids:
         decoded = hf_tokenizer.decode([int(tid)], skip_special_tokens=True)
-        if (
-            isinstance(decoded, str)
-            and decoded[:1].isspace()
-            and tokenizer.count_tokens(decoded, add_special_tokens=False) == 1
-        ):
-            word_starts.append(int(tid))
+        if isinstance(decoded, str) and decoded[:1].isspace():
+            candidate_ids.append(int(tid))
+            candidate_texts.append(decoded)
+    counts = _count_tokens_batch(tokenizer, candidate_texts)
+    word_starts = [tid for tid, count in zip(candidate_ids, counts, strict=True) if count == 1]
     if not word_starts:
         return valid_token_ids
     return np.array(word_starts, dtype=np.int64)
