@@ -16,11 +16,12 @@
 
 import gzip
 import json
+import pickle
 import random
 import tarfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict, Iterator, List, Union
 from unittest.mock import MagicMock
 
 import pytest
@@ -35,6 +36,7 @@ from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
 from inference_perf.datagen.replay.replay_graph_types import ReplayMessage
 from inference_perf.datagen.replay.tracelab_trace_replay_datagen import (
     FilterExpressionError,
+    TraceLabRow,
     TraceLabTraceReplayDataGenerator,
     _find_tracelab_predecessors,
 )
@@ -42,7 +44,7 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
 # Hand-written fixture rows for unit tests (sanitized shape).
-def _rows() -> List[Dict[str, Any]]:
+def _rows() -> List[TraceLabRow]:
     return [
         {
             "session_id": "sess-A",
@@ -85,7 +87,7 @@ def _rows() -> List[Dict[str, Any]]:
 
 # Real TraceLab v0.0.2 fixture rows (CC BY 4.0) - subset for regression tests.
 # These mimic the actual sanitized JSONL structure from the public dataset.
-def _real_rows() -> List[Dict[str, Any]]:
+def _real_rows() -> List[TraceLabRow]:
     return [
         {
             "round_pk": "claude-abc-1",
@@ -200,7 +202,7 @@ def _real_rows() -> List[Dict[str, Any]]:
     ]
 
 
-def _write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> Path:
+def _write_jsonl(path: Path, rows: List[TraceLabRow]) -> Path:
     path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
     return path
 
@@ -215,9 +217,23 @@ def _mock_tokenizer() -> MagicMock:
     return tok
 
 
+def _bos_tokenizer() -> MagicMock:
+    """Tokenizer double that prepends a <bos> when special tokens are added.
+
+    Models Gemma/Llama-style tokenizers: the recorded prompt totals include the
+    <bos>, while content token ids stay 0..n-1 either way.
+    """
+    tok = MagicMock()
+    tok.get_tokenizer().encode = lambda text, add_special_tokens=False, **kwargs: (
+        [2] * int(bool(add_special_tokens)) + list(range(len(text)))
+    )
+    tok.get_tokenizer().decode = lambda toks, **kwargs: "x" * len(toks)
+    return tok
+
+
 def _make_gen(
     trace_files: List[str],
-    **overrides: Any,
+    **overrides: object,
 ) -> TraceLabTraceReplayDataGenerator:
     api_cfg = APIConfig(type=APIType.Chat, streaming=False)
     data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
@@ -227,17 +243,21 @@ def _make_gen(
 
 # Same as _make_gen but for the Hugging Face source, which takes either a repo
 # id or a {"path": ..., **load_dataset_kwargs} dict.
-def _make_hf_gen(hf_dataset_path: Any, **overrides: Any) -> TraceLabTraceReplayDataGenerator:
+def _make_hf_gen(hf_dataset_path: Union[str, Dict[str, object]], **overrides: object) -> TraceLabTraceReplayDataGenerator:
     api_cfg = APIConfig(type=APIType.Chat, streaming=False)
     data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
     data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(hf_dataset_path=hf_dataset_path, **overrides)
     return TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
 
 
-def _tokenize_messages(tokenizer: MagicMock, messages: List[Any]) -> int:
-    """Count tokens by encoding the concatenated message texts."""
-    text = "".join(m.get("content", "") if isinstance(m, dict) else m.text for m in messages)
-    return len(tokenizer.get_tokenizer().encode(text))
+def _tokenize_messages(tokenizer: MagicMock, messages: List[Dict[str, object]]) -> int:
+    """Count tokens by encoding the concatenated message texts.
+
+    Special tokens are counted the way a server-side prompt would: the
+    recorded totals include them, so the size check must too.
+    """
+    text = "".join(str(m.get("content", "")) for m in messages)
+    return len(tokenizer.get_tokenizer().encode(text, add_special_tokens=True))
 
 
 def test_tracelab_type_registered() -> None:
@@ -299,6 +319,28 @@ def test_tracelab_prompt_size_matches_recorded(tmp_path: Path) -> None:
                 built_tokens = _tokenize_messages(tok, e.call.messages)
                 recorded = e.call.total_input_tokens
                 assert built_tokens == recorded, f"Event {e.event_id}: built {built_tokens} vs recorded {recorded}"
+
+
+# A BOS-prepending tokenizer makes the recorded prompt size include a token the
+# content-only encoder never sees. Before the fix the replay built 49/97/161
+# tokens for rows recording 48/96/160, which is the e2e failure this pins.
+def test_tracelab_prompt_size_counts_framing_tokens(tmp_path: Path) -> None:
+    rows = [
+        _row("s", 0, 48, 6),
+        _row("s", 1, 96, 8, prefix_tokens=48),
+        _row("s", 2, 160, 10, prefix_tokens=96),
+    ]
+    trace_file = _write_jsonl(tmp_path / "trace.jsonl", rows)
+    api_cfg = APIConfig(type=APIType.Chat, streaming=False)
+    data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
+    data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=[str(trace_file)])
+    tokenizer = _bos_tokenizer()
+    gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=tokenizer)
+
+    (session,) = [s for s in gen.sessions if s is not None]
+    events = sorted(session.graph.events.values(), key=lambda e: e.t_start_ms)
+    built = [_tokenize_messages(tokenizer, e.call.messages) for e in events]
+    assert built == [48, 96, 160], f"built {built} tokens, rows recorded [48, 96, 160]"
 
 
 def test_tracelab_idle_gap_cap_and_ignore_delays(tmp_path: Path) -> None:
@@ -575,7 +617,7 @@ def test_tracelab_hf_join_uses_tool_calls_config() -> None:
         {"round_pk": 2, "event_type": "text", "timestamp": "2026-06-01T10:00:12.000Z"},
     ]
 
-    def fake_load_dataset(path: str, **kwargs: Any) -> Any:
+    def fake_load_dataset(path: str, **kwargs: object) -> object:
         name = kwargs.get("name")
         if name == "tool_calls":
             return tool_calls
@@ -619,7 +661,7 @@ def test_tracelab_hf_missing_aux_table_is_loud() -> None:
         },
     ]
 
-    def fake_load_dataset(path: str, **kwargs: Any) -> Any:
+    def fake_load_dataset(path: str, **kwargs: object) -> object:
         if kwargs.get("name") in ("tool_calls", "timing_events"):
             raise ValueError("no such config")
         return rounds
@@ -771,7 +813,7 @@ def test_tracelab_num_dataset_entries_caps_hf_rounds(tmp_path: Path) -> None:
     import sys
     from unittest.mock import patch
 
-    def _round(pk: str, session_id: str, index: int) -> Dict[str, Any]:
+    def _round(pk: str, session_id: str, index: int) -> TraceLabRow:
         return {
             "round_pk": pk,
             "session_id": session_id,
@@ -787,12 +829,12 @@ def test_tracelab_num_dataset_entries_caps_hf_rounds(tmp_path: Path) -> None:
     class _RoundsTable:
         """Rounds iterable that fails if the loader reads past ``fail_at``."""
 
-        def __init__(self, rows: List[Dict[str, Any]], fail_at: int) -> None:
+        def __init__(self, rows: List[TraceLabRow], fail_at: int) -> None:
             self.rows = rows
             self.fail_at = fail_at
             self.read = 0
 
-        def __iter__(self) -> Any:
+        def __iter__(self) -> Iterator[TraceLabRow]:
             for i, row in enumerate(self.rows):
                 assert i < self.fail_at, f"loader read row {i}; it should have stopped at {self.fail_at}"
                 self.read += 1
@@ -810,7 +852,7 @@ def test_tracelab_num_dataset_entries_caps_hf_rounds(tmp_path: Path) -> None:
     )
     tool_calls = [{"round_pk": "1", "tool_name": "bash", "tool_wall_latency_ms": 700, "tool_internal_latency_ms": None}]
 
-    def fake_load_dataset(path: str, **kwargs: Any) -> Any:
+    def fake_load_dataset(path: str, **kwargs: object) -> object:
         name = kwargs.get("name")
         if name == "tool_calls":
             return tool_calls
@@ -845,8 +887,8 @@ def test_tracelab_disable_output_substitution_is_rejected() -> None:
 
 # One TraceLab JSONL row: session/round identity plus the four recorded token
 # counts. Extra keys (prefix_tokens, tools, timing_events) pass straight through.
-def _row(session_id: str, round_index: int, in_tokens: int, out_tokens: int, **extra: Any) -> Dict[str, Any]:
-    row: Dict[str, Any] = {
+def _row(session_id: str, round_index: int, in_tokens: int, out_tokens: int, **extra: object) -> TraceLabRow:
+    row: TraceLabRow = {
         "session_id": session_id,
         "round_index": round_index,
         "provider": "claude",
@@ -883,17 +925,10 @@ def _waits(gen: TraceLabTraceReplayDataGenerator) -> List[int]:
     return [e.wait_ms for e in per_session[0]]
 
 
-# Model the HF loads for a config split-name table: IterableDatasetDict has no
-# IterableDataset-like row access, only keys()/__getitem__.
-class _SplitDict:
-    def __init__(self, splits: Dict[str, List[Dict[str, Any]]]) -> None:
-        self._splits = splits
-
-    def keys(self) -> List[str]:
-        return list(self._splits)
-
-    def __getitem__(self, key: str) -> List[Dict[str, Any]]:
-        return self._splits[key]
+# Model the HF split map: DatasetDict and IterableDatasetDict are both dicts of
+# split name -> table, so _as_split picks the split before iterating rows.
+class _SplitDict(dict[str, List[TraceLabRow]]):
+    pass
 
 
 # trace_idle_gap_cap_seconds drives the runtime clamp: the inherited 15s
@@ -1142,9 +1177,9 @@ def test_tracelab_hf_streams_by_default() -> None:
     import sys
     from unittest.mock import patch
 
-    seen: List[Dict[str, Any]] = []
+    seen: List[Dict[str, object]] = []
 
-    def fake_load_dataset(path: str, **kwargs: Any) -> Any:
+    def fake_load_dataset(path: str, **kwargs: object) -> object:
         seen.append(kwargs)
         name = kwargs.get("name")
         if name in ("tool_calls", "timing_events"):
@@ -1174,9 +1209,9 @@ def test_tracelab_hf_streaming_false_is_honoured() -> None:
     import sys
     from unittest.mock import patch
 
-    seen: List[Dict[str, Any]] = []
+    seen: List[Dict[str, object]] = []
 
-    def fake_load_dataset(path: str, **kwargs: Any) -> Any:
+    def fake_load_dataset(path: str, **kwargs: object) -> object:
         seen.append(kwargs)
         name = kwargs.get("name")
         if name in ("tool_calls", "timing_events"):
@@ -1269,9 +1304,39 @@ def test_tracelab_bos_tokenizer_preserves_prefix_across_rounds(tmp_path: Path) -
     assert len(events) == 3
     prompts = ["".join(m.get("content", "") if isinstance(m, dict) else m.text for m in e.call.messages) for e in events]
     ids = [raw.encode(prompt, add_special_tokens=False) for prompt in prompts]
-    assert len(ids[0]) == 200
-    assert ids[1][:200] == ids[0][:200]
-    assert ids[2][:240] == ids[1][:240]
+    # The recorded totals include the <bos> the tokenizer prepends, so each
+    # prompt carries one content token less than the row records.
+    assert [len(raw.encode(prompt, add_special_tokens=True)) for prompt in prompts] == [200, 260, 300]
+    assert len(ids[0]) == 199
+    # prefix_tokens counts the <bos> as well, so the shared content run is one
+    # token shorter than the recorded prefix and the ids stay aligned.
+    assert ids[1][:199] == ids[0][:199]
+    assert ids[2][:239] == ids[1][:239]
+
+
+# Workers receive the session generator by pickle under the forkserver start
+# method, so the generator must not keep the multiprocessing manager: it does
+# not pickle. Before the fix pickling raised on that attribute and every worker
+# died at startup, which is the e2e failure this pins.
+def test_tracelab_generator_pickles_for_forkserver_workers(tmp_path: Path) -> None:
+    tarball = Path(__file__).resolve().parents[1] / "e2e" / "testdata" / "models" / "google_gemma-3-270m.tar.gz"
+    model_dir = tmp_path / "gemma"
+    with tarfile.open(tarball) as tar:
+        tar.extractall(model_dir, filter="data")
+    tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path=str(model_dir)))
+
+    # MagicMock stands in for SyncManager: neither one pickles. The queue it
+    # hands out is a picklable stand-in for the real queue proxy.
+    manager = MagicMock()
+    manager.Queue.return_value = []
+    trace_file = _write_jsonl(tmp_path / "trace.jsonl", [_row("s", 0, 48, 6)])
+    api_cfg = APIConfig(type=APIType.Chat, streaming=False)
+    data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
+    data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=[str(trace_file)])
+    gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=tokenizer, mp_manager=manager)
+
+    restored = pickle.loads(pickle.dumps(gen))
+    assert restored.get_session_count() == 1
 
 
 # The linear predecessor finder must reproduce the generic O(n^2) text-matching

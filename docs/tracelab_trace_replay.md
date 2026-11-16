@@ -28,9 +28,12 @@ Dataset + paper: https://tracelab.cs.washington.edu / https://arxiv.org/abs/2606
 >
 > Tokenizer: reconstruction uses the run's configured `tokenizer`, so prompt sizes are measured with
 > the same tokenizer the benchmark runs against — point it at the target model's tokenizer for
-> faithful prefill sizes. Prompt text comes from `data.corpus_file_path` (Shakespeare by default); a corpus
-> smaller than the prompt is repeated as many times as needed, so long TraceLab rounds are never
-> under-sized.
+> faithful prefill sizes. The recorded totals count the framing tokens a tokenizer adds around a
+> prompt (a leading `<bos>` on gemma/Llama/Mistral), so the generator measures that framing once and
+> sizes the content to `input_tokens_total` minus it; the built prompt then tokenizes to exactly the
+> recorded total, not one token over. Prompt text comes from `data.corpus_file_path` (Shakespeare by
+> default); a corpus smaller than the prompt is repeated as many times as needed, so long TraceLab
+> rounds are never under-sized.
 
 ---
 

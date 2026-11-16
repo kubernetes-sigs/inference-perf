@@ -28,13 +28,17 @@ Replay model:
 - Rows are grouped by ``session_id`` and ordered by ``round_index``.
 - Each round becomes one LLM call in a linear session chain. The prompt text
   is synthetically reconstructed so the full message list tokenizes to the
-  recorded ``input_tokens_total`` (deterministic corpus slices), and the
-  expected output is sized to the recorded ``output_tokens``.
+  recorded ``input_tokens_total`` (deterministic corpus slices), counting the
+  framing tokens the tokenizer adds around the prompt (a leading ``<bos>`` on
+  Gemma/Llama tokenizers), and the expected output is sized to the recorded
+  ``output_tokens``.
 - Prompt text is built in token space: each round keeps the token ids it sent,
   and the next round reuses the leading ``prefix_tokens`` of them verbatim.
   Encoding/decoding that shared run happens without adding special tokens, so
   a BOS-adding tokenizer cannot shift every later token by one position per
-  round and destroy server-side prefix-cache block alignment.
+  round and destroy server-side prefix-cache block alignment. The recorded
+  ``prefix_tokens`` and prompt totals include the framing tokens, so the
+  generator subtracts them when it sizes the shared run and the tail.
 - Inter-round spacing comes from ``timing_events``: a round is submitted when
   its last input event (``user_message``/``tool_result``) arrives and completes
   at its last model-output event (``reasoning``/``text``/``tool_call``).
@@ -50,10 +54,11 @@ import hashlib
 import json
 import logging
 import random
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from multiprocessing.managers import SyncManager
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -88,6 +93,11 @@ OUTPUT_EVENT_TYPES = frozenset({"reasoning", "text", "tool_call"})
 _MAX_SHARED_PREFIX_TRIM = 8
 
 DEFAULT_HF_DATASET = "UW-SyFI/TraceLab"
+
+# One decoded trace row. JSON has no static shape beyond a string-keyed map and
+# TraceLabRound validates the fields this replay reads, so the JSON boundary is
+# typed with object values rather than an untyped escape.
+TraceLabRow = Dict[str, object]
 
 
 class FilterExpressionError(ValueError):
@@ -171,40 +181,41 @@ def _round_time_bounds(rnd: TraceLabRound) -> Tuple[Optional[float], Optional[fl
     return (start, end)
 
 
-def _iter_jsonl_rows(path: Path) -> Iterator[Tuple[int, Dict[str, Any]]]:
+def _iter_text_lines(path: Path) -> Iterator[str]:
+    """Yield a trace file's lines, decompressing ``.gz`` transparently."""
+    if path.name.endswith(".gz"):
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            yield from handle
+    else:
+        with open(path, "rt", encoding="utf-8") as handle:
+            yield from handle
+
+
+def _iter_jsonl_rows(path: Path) -> Iterator[Tuple[int, TraceLabRow]]:
     """Yield TraceLab rows from .json / .jsonl / .jsonl.gz files lazily.
 
     Yields (line_number, row) tuples so validation errors can name the file
     and line. JSON files report line 0. Lazily so callers can stop reading
     once the requested number of sessions has been collected.
     """
-    name = path.name
-    opener: Callable[..., Any]
-    if name.endswith(".gz"):
-        opener = gzip.open
-    else:
-        opener = open
-
-    with opener(path, "rt", encoding="utf-8") as f:
-        first = f.read(1)
-        if not first:
+    lines = _iter_text_lines(path)
+    # A .json.gz file is still a JSON array; Path.suffix is ".gz" for it, so
+    # the extension test has to look at the whole name.
+    if path.name.endswith((".json", ".json.gz")):
+        text = "".join(lines)
+        if not text.strip():
             return
-        f.seek(0)
-        # A .json.gz file is still a JSON array; Path.suffix is ".gz" for it, so
-        # the extension test has to look at the whole name.
-        if name.endswith((".json", ".json.gz")):
-            blob = json.load(f)
-            if isinstance(blob, list):
-                for r in blob:
-                    if isinstance(r, dict):
-                        yield 0, r
-            elif isinstance(blob, dict):
-                yield 0, blob
-            return
-        for line_no, line in enumerate(f, start=1):
-            line = line.strip()
-            if line:
-                yield line_no, json.loads(line)
+        blob = json.loads(text)
+        if isinstance(blob, list):
+            for row in blob:
+                if isinstance(row, dict):
+                    yield 0, row
+        elif isinstance(blob, dict):
+            yield 0, blob
+        return
+    for line_no, line in enumerate(lines, start=1):
+        if line.strip():
+            yield line_no, json.loads(line)
 
 
 class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
@@ -234,7 +245,6 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             replay_config=self.tracelab_config,
         )
 
-        self.mp_manager = mp_manager
         self.num_workers = max(1, num_workers)
         self.base_seed = base_seed if base_seed is not None else 42
 
@@ -256,12 +266,17 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         if self._corpus_size == 0:
             raise ValueError(f"Prompt corpus is empty: {corpus_path}")
 
+        # Tokens the tokenizer adds around a prompt (a leading <bos> on
+        # Llama/Gemma-style models). They count towards the recorded
+        # input_tokens_total, so prompt sizing has to leave room for them.
+        self._framing_tokens = len(self.tokenizer.get_tokenizer().encode("", add_special_tokens=True))
+
         sessions_by_id = self._load_tracelab_sessions()
         sessions = self._build_sessions(sessions_by_id)
         self.initialize_sessions(sessions)
 
     @staticmethod
-    def _augment_for_filter(session_id: str, rounds: List[TraceLabRound]) -> Dict[str, Any]:
+    def _augment_for_filter(session_id: str, rounds: List[TraceLabRound]) -> Dict[str, object]:
         per_round = [(r.input_tokens_total or 0) + (r.output_tokens or 0) for r in rounds]
         providers = sorted({r.provider for r in rounds if r.provider})
         models = sorted({r.model for r in rounds if r.model})
@@ -276,7 +291,9 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             "num_turns": len(rounds),
         }
 
-    def _keep_session(self, augmented: Dict[str, Any], filter_func: Optional[Any]) -> bool:
+    def _keep_session(
+        self, augmented: Dict[str, object], filter_func: Optional[Callable[[Dict[str, object]], object]]
+    ) -> bool:
         if filter_func is None:
             return True
         try:
@@ -334,7 +351,7 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         logger.info(f"Loaded {len(kept)} TraceLab sessions ({sum(len(v) for v in kept.values())} rounds)")
         return kept
 
-    def _iter_local_rows(self, cfg: TraceLabTraceReplayConfig) -> Iterator[Tuple[str, int, Dict[str, Any]]]:
+    def _iter_local_rows(self, cfg: TraceLabTraceReplayConfig) -> Iterator[Tuple[str, int, TraceLabRow]]:
         """Yield rows from local trace files lazily so callers can stop early."""
         if cfg.trace_directory:
             trace_dir = Path(cfg.trace_directory)
@@ -361,7 +378,7 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                     raise
 
     def _iter_session_blocks(
-        self, rows: Iterator[Tuple[str, int, Dict[str, Any]]]
+        self, rows: Iterator[Tuple[str, int, TraceLabRow]]
     ) -> Iterator[Tuple[str, List[TraceLabRound], int]]:
         """Group contiguous rows into validated, ordered sessions.
 
@@ -436,20 +453,33 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         return ordered
 
     @staticmethod
-    def _hf_source(hf_path: Any) -> Tuple[str, Dict[str, Any]]:
-        if isinstance(hf_path, dict):
-            return hf_path.get("path", DEFAULT_HF_DATASET), {k: v for k, v in hf_path.items() if k != "path"}
-        return hf_path or DEFAULT_HF_DATASET, {}
+    def _hf_source(hf_path: Union[str, Dict[str, object]]) -> Tuple[str, Dict[str, object]]:
+        """Split ``hf_dataset_path`` into the repo id and load_dataset kwargs."""
+        if isinstance(hf_path, str):
+            return hf_path or DEFAULT_HF_DATASET, {}
+        path = hf_path.get("path", DEFAULT_HF_DATASET)
+        repo = path if isinstance(path, str) and path else DEFAULT_HF_DATASET
+        return repo, {k: v for k, v in hf_path.items() if k != "path"}
 
     @staticmethod
-    def _as_split(ds: Any, kwargs: Dict[str, Any]) -> Any:
-        if hasattr(ds, "keys"):
-            split = kwargs.get("split", "train")
-            keys = list(ds.keys())
-            return ds[split] if split in keys else ds[keys[0]]
-        return ds
+    def _as_split(dataset: object, split: str) -> Iterable[Mapping[str, object]]:
+        """Return one split's rows from a DatasetDict/IterableDatasetDict.
 
-    def _load_hf_table(self, path: str, kwargs: Dict[str, Any], name: Optional[str] = None) -> Any:
+        A single-split load already returns the table itself, so the dict case
+        only comes up when the caller did not name a split. The streaming split
+        type exposes ``keys()`` like the eager one does.
+        """
+        if isinstance(dataset, Mapping) and dataset:
+            splits = dict(dataset)
+            chosen = split if split in splits else str(next(iter(splits)))
+            dataset = splits[chosen]
+        if isinstance(dataset, Iterable) and not isinstance(dataset, (str, bytes)):
+            return dataset
+        raise ValueError(f"Expected a dataset or a mapping of splits, got {type(dataset).__name__}")
+
+    def _load_hf_table(
+        self, path: str, kwargs: Dict[str, object], name: Optional[str] = None
+    ) -> Iterable[Mapping[str, object]]:
         """Load one TraceLab table, streaming by default.
 
         Without ``streaming=True`` datasets downloads and Arrow-builds the whole
@@ -464,9 +494,10 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         streaming = call_kwargs.pop("streaming", True)
         if name is not None:
             call_kwargs["name"] = name
-        return self._as_split(load_dataset(path, streaming=streaming, **call_kwargs), call_kwargs)
+        table = load_dataset(path, streaming=streaming, **call_kwargs)
+        return self._as_split(table, str(call_kwargs.get("split", "train")))
 
-    def _iter_hf_rounds(self, hf_path: Any) -> Iterator[Tuple[str, int, Dict[str, Any]]]:
+    def _iter_hf_rounds(self, hf_path: Union[str, Dict[str, object]]) -> Iterator[Tuple[str, int, TraceLabRow]]:
         """Yield the HF ``rounds`` table row by row, without loading aux tables.
 
         The UW-SyFI/TraceLab dataset has multiple configs: the default
@@ -483,13 +514,13 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
         source = f"hf:{path}"
         for idx, rnd in enumerate(ds_rounds, start=1):
-            if not isinstance(rnd, dict):
+            if not isinstance(rnd, Mapping):
                 if not self.tracelab_config.skip_invalid_files:
                     raise ValueError(f"Unexpected row type {type(rnd)} in Hugging Face dataset {path}")
                 continue
-            yield source, idx, rnd
+            yield source, idx, dict(rnd)
 
-    def _attach_hf_aux_tables(self, kept: Dict[str, List[TraceLabRound]], hf_path: Any) -> None:
+    def _attach_hf_aux_tables(self, kept: Dict[str, List[TraceLabRound]], hf_path: Union[str, Dict[str, object]]) -> None:
         """Join tool_calls/timing_events onto the kept rounds only.
 
         Indexing just the kept ``round_pk`` values avoids building dictionaries
@@ -501,7 +532,7 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
         path, kwargs = self._hf_source(hf_path)
 
-        def _aux_rows(name: str) -> Iterator[Dict[str, Any]]:
+        def _aux_rows(name: str) -> Iterator[Mapping[str, object]]:
             try:
                 table = self._load_hf_table(path, kwargs, name=name)
             except Exception as e:
@@ -515,7 +546,7 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 logger.warning(msg)
                 return
             for row in table:
-                if isinstance(row, dict):
+                if isinstance(row, Mapping):
                     yield row
 
         tools_by_round: Dict[str, List[TraceLabToolCall]] = {}
@@ -637,13 +668,19 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
     ) -> Tuple[str, List[int]]:
         """Append a fresh corpus tail so the whole prompt has ``target_total`` tokens.
 
+        ``target_total`` is the recorded ``input_tokens_total``, which counts the
+        special tokens the tokenizer adds around the prompt, while ``shared_count``
+        and the returned ids are content tokens only. The framing tokens are
+        therefore subtracted from the tail and added back to every measurement.
+
         Decode/re-encode is not idempotent at BPE boundaries either, so the tail
         length is corrected from the measured error. The loop is bounded to
         three measurements; the previous version tried up to 33 candidates and
         re-tokenized the entire prompt each time, which cost O(rounds ×
         context_len) on long sessions.
         """
-        need = max(target_total - shared_count, 0)
+        framing = self._framing_tokens
+        need = max(target_total - shared_count - framing, 0)
         base = self._stable_offset(session_id, round_index, 7919)
         best_text = ""
         best_ids: List[int] = []
@@ -651,7 +688,7 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         for attempt in range(3):
             prompt_text = shared_text + self._text_for_tokens(need, offset=base + attempt * 131071)
             prompt_ids = self._encode_text(prompt_text)
-            diff = target_total - len(prompt_ids)
+            diff = target_total - (len(prompt_ids) + framing)
             if best_diff is None or abs(diff) < best_diff:
                 best_text, best_ids, best_diff = prompt_text, prompt_ids, abs(diff)
             if diff == 0:
@@ -670,11 +707,13 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         """Build one round's prompt, sharing the recorded prefix with the last one.
 
         Returns ``(text, ids, shared_count)``. ``ids`` is what the tokenizer
-        produces for ``text``, so ``shared_count`` is the number of leading
-        tokens round i shares with round i-1, i.e. the server-side
-        prefix-cache hit width.
+        produces for ``text`` without special tokens, so ``shared_count`` is the
+        number of leading content tokens round i shares with round i-1, i.e. the
+        server-side prefix-cache hit width. The recorded ``prefix_tokens`` counts
+        the whole prompt, framing tokens included, so they are taken off here.
         """
-        requested = min(max(prefix_tokens, 0), len(prev_ids), max(target_total, 0))
+        content_target = max(target_total - self._framing_tokens, 0)
+        requested = min(max(prefix_tokens - self._framing_tokens, 0), len(prev_ids), content_target)
         attempt = 0
         while requested > 0 and attempt < 3:
             shared_text, shared_ids = self._prefix_text(prev_ids, requested)
@@ -777,10 +816,12 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 prompt_ids = self._encode_text(prompt_text)
             messages = [ReplayMessage(role="user", text=prompt_text)]
 
-            # Verify the built prompt tokenizes to the recorded size.
-            if len(prompt_ids) != in_tokens:
+            # Verify the built prompt tokenizes to the recorded size. The
+            # recorded total includes the tokenizer's framing tokens.
+            built_tokens = len(prompt_ids) + self._framing_tokens
+            if built_tokens != in_tokens:
                 logger.warning(
-                    f"Session {session_id} round {i}: built prompt {len(prompt_ids)} tokens "
+                    f"Session {session_id} round {i}: built prompt {built_tokens} tokens "
                     f"vs recorded {in_tokens} (shared={shared})"
                 )
 

@@ -383,7 +383,7 @@ class TraceLabTraceReplayConfig(SessionReplayConfig):
 
     trace_directory: Optional[str] = Field(None, description="Directory containing TraceLab JSONL trace files")
     trace_files: Optional[List[str]] = Field(None, description="List of paths to specific TraceLab JSONL trace files")
-    hf_dataset_path: Optional[Union[str, Dict[str, Any]]] = Field(
+    hf_dataset_path: Optional[Union[str, Dict[str, object]]] = Field(
         None,
         description=(
             "HuggingFace dataset path. Can be:\n"

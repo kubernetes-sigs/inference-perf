@@ -27,7 +27,6 @@ If `llm-d-inference-sim` is not on PATH these tests skip automatically.
 """
 
 import json
-import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -58,20 +57,6 @@ ROUND_SEC = 0.4  # recorded duration of a round, first event to last
 # couple of hundred milliseconds of skew is normal; starting early is not.
 LATE_TOLERANCE_SEC = 0.3
 EARLY_TOLERANCE_SEC = 0.05
-
-
-def fork_start_method_executable() -> List[str]:
-    """inference-perf under a start method that can hand the session generator
-    to its workers. Python 3.14 defaults to forkserver on Linux, which pickles
-    the worker arguments, and the session generators hold the multiprocessing
-    manager, which cannot be pickled; the tool itself only forces fork on
-    macOS. CI's Python defaults to fork, so this matters for local runs."""
-    return [
-        sys.executable,
-        "-c",
-        "import multiprocessing as mp, sys; mp.set_start_method('fork', force=True); "
-        "from inference_perf.main import main_cli; sys.exit(main_cli())",
-    ]
 
 
 def write_tracelab_trace(path: Path) -> Path:
@@ -214,7 +199,6 @@ async def test_tracelab_session_replay(tmp_path: Path) -> None:
                     "session_lifecycle": {"summary": True, "per_stage": True, "per_session": True},
                 },
             },
-            executable=fork_start_method_executable(),
         )
 
     entries = assert_successful_run(result, expected_requests=total_rounds)
