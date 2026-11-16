@@ -36,6 +36,7 @@ from inference_perf.config.client.filestorage import (
 from inference_perf.config.client.modelserver import (
     ModelServerClientConfig,
     ModelServerType,
+    WaitFor,
 )
 from inference_perf.config.client.server_metrics import PrometheusClientConfig
 from inference_perf.config.common import Distribution, DistributionType
@@ -155,6 +156,7 @@ __all__ = [
     "VideoDatagenConfig",
     "VideoProfile",
     "VisionArenaConfig",
+    "WaitFor",
     "WeightedDuration",
     "WeightedResolution",
     "WeightedVideoProfile",
