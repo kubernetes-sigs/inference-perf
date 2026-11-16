@@ -75,9 +75,9 @@ def test_overrun_holds_the_mean_rate() -> None:
     assert float(down.inverse(down.total + 5.0)) == pytest.approx(11.0)
 
 
-# A random rate is refused: the schedule has to be the same on every run.
+# A random rate, Uniform(1, 2) over 10s, is refused with "A rate is never random".
 def test_random_rate_rejected() -> None:
-    with pytest.raises(ValueError, match="random"):
+    with pytest.raises(ValueError, match="A rate is never random"):
         RateSchedule(Expression("Uniform(1, 2)"), 10)
 
 

@@ -76,7 +76,7 @@ def test_rate_forms_accepted() -> None:
     ("rate", "message"),
     [
         ("10 - t", "outside the permitted range"),
-        ("Uniform(1, 5)", "random variable"),
+        ("Uniform(1, 5)", "never random"),
         ("requests/10", "disallowed symbol"),
         ("0*t", "zero over the whole stage"),
         (0, "greater than 0"),
@@ -86,6 +86,21 @@ def test_rate_forms_accepted() -> None:
 def test_bad_rates_rejected(rate: object, message: str) -> None:
     with pytest.raises(ValidationError, match=message):
         StandardLoadStage(rate=rate, duration=60)
+
+
+# A rate need not mention t: "2+3" over 60s is a constant 5 req/s and sends 300 requests.
+def test_rate_without_t_is_valid() -> None:
+    stage = StandardLoadStage(rate="2+3", duration=60)
+    assert stage.rate_schedule.is_constant
+    assert (stage.expected_requests, stage.mean_rate) == (300, 5.0)
+
+
+# A random rate is rejected with the rate's own message even when it could also go negative:
+# "Normal(10, 1)" says "never random", and the text no longer says "function of t".
+def test_random_rate_error_does_not_mention_t() -> None:
+    with pytest.raises(ValidationError, match="Rate 'Normal\\(10, 1\\)' is random. A rate is never random") as raised:
+        StandardLoadStage(rate="Normal(10, 1)", duration=60)
+    assert "function of t" not in str(raised.value)
 
 
 # The schedule is rebuilt when the stage is mutated after construction (pydantic does not
