@@ -63,19 +63,26 @@ def random_token_ids(rng: np.random.Generator, valid_token_ids: np.ndarray, leng
 
 
 def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.ndarray) -> np.ndarray:
-    """Token IDs whose decoded form starts with whitespace.
+    """Token IDs whose decoded form starts with whitespace and re-tokenizes to one token.
 
     Used to pin the first token of a suffix when appending it to a prefix:
     a whitespace-prefixed token prevents BPE merges across the boundary,
     so ``len(decode(prefix_ids + suffix_ids))`` retokenizes exactly and the
-    prefix's server-side tokens stay stable. Falls back to the full vocab
-    when no such tokens exist.
+    prefix's server-side tokens stay stable. Ids whose decoded text comes
+    back as more than one token (e.g. gpt2 ids that decode to an incomplete
+    UTF-8 sequence) are left out: a one-token suffix starting with one of
+    them can never converge. Falls back to the full vocab when no such
+    tokens exist.
     """
     hf_tokenizer = tokenizer.get_tokenizer()
     word_starts: List[int] = []
     for tid in valid_token_ids:
         decoded = hf_tokenizer.decode([int(tid)], skip_special_tokens=True)
-        if decoded and decoded[0].isspace():
+        if (
+            isinstance(decoded, str)
+            and decoded[:1].isspace()
+            and tokenizer.count_tokens(decoded, add_special_tokens=False) == 1
+        ):
             word_starts.append(int(tid))
     if not word_starts:
         return valid_token_ids
