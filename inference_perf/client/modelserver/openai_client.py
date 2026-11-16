@@ -297,7 +297,8 @@ class openAIModelServerClient(ModelServerClient):
         as a gateway in front of a pool scaled to zero. A refused connection, a DNS failure
         and a connect timeout keep polling, for at most ``readiness_timeout_sec``. A probe
         that connects and then gets no response in time also counts as reachable: that is a
-        gateway holding the request until a backend exists.
+        gateway holding the request until a backend exists. The first failed probe is logged
+        at info, the rest at debug.
         """
         route = self.readiness_route if self.readiness_route is not None else _READINESS_FALLBACK_ROUTE
         url = f"{self.uri}{route}"
@@ -306,6 +307,7 @@ class openAIModelServerClient(ModelServerClient):
         timeout = self.readiness_timeout_sec
         deadline = time.monotonic() + timeout
         last_seen = "no response"
+        announced = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -319,7 +321,11 @@ class openAIModelServerClient(ModelServerClient):
                 return
             except requests.RequestException as e:
                 last_seen = f"{type(e).__name__}: {e}"
-            logger.debug(f"Waiting for {url}: {last_seen}")
+            if announced:
+                logger.debug(f"Waiting for {url}: {last_seen}")
+            else:
+                logger.info(f"Waiting up to {timeout}s for {url} to give any HTTP response (last: {last_seen})")
+                announced = True
             time.sleep(min(_READINESS_POLL_INTERVAL_SEC, max(0.0, deadline - time.monotonic())))
 
     def wait_until_ready(self) -> None:
@@ -329,7 +335,8 @@ class openAIModelServerClient(ModelServerClient):
         route is not served here, so the run carries on without waiting. A 401 or 403 means the
         credentials are wrong and will not fix themselves, so it raises at once. Any other status
         and any transport error count as not ready yet, for at most
-        ``readiness_timeout_sec``; the error raised at the deadline names the last one seen.
+        ``readiness_timeout_sec``; the first of them is logged at info, the rest at debug, and
+        the error raised at the deadline names the last one seen.
         """
         route = self.readiness_route if self.readiness_route is not None else _READINESS_FALLBACK_ROUTE
         url = f"{self.uri}{route}"
@@ -338,6 +345,7 @@ class openAIModelServerClient(ModelServerClient):
         timeout = self.readiness_timeout_sec
         deadline = time.monotonic() + timeout
         last_seen = "no response"
+        announced = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -358,7 +366,12 @@ class openAIModelServerClient(ModelServerClient):
                 last_seen = f"HTTP {response.status_code}"
             except requests.RequestException as e:
                 last_seen = f"{type(e).__name__}: {e}"
-            logger.debug(f"Waiting for {url}: {last_seen}")
+            if announced:
+                logger.debug(f"Waiting for {url}: {last_seen}")
+            else:
+                # The first failed probe is logged at info so a wrong base_url shows before the deadline.
+                logger.info(f"Waiting up to {timeout}s for {url} to answer 200 (last: {last_seen})")
+                announced = True
             time.sleep(min(_READINESS_POLL_INTERVAL_SEC, max(0.0, deadline - time.monotonic())))
 
     def get_supported_models(self) -> List[dict[str, Any]]:
