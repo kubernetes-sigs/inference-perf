@@ -90,6 +90,11 @@ data:
     mean: 50
     std_dev: 10
     total_count: 100
+  # Alternatively (synthetic/random only), either field takes an expression
+  # string (see expressions.md). The expression owns its value range: nothing is clamped or rounded,
+  # so a continuous distribution goes under floor(...).
+  # output_distribution: "1 + floor(LogNormal(5.0, 0.5))"
+  # output_distribution: "100 + floor(Uniform(0, 400))"
   shared_prefix:              # For shared_prefix type
     num_groups: 10            # Number of shared prefix groups
     num_prompts_per_group: 10 # Unique questions per group
@@ -97,6 +102,8 @@ data:
     question_len: 50          # Default question length (tokens), used when question_distribution is absent
     output_len: 50            # Default output length (tokens), used when output_distribution is absent
     max_model_len: 225000     # Optional multi-turn context ceiling; defaults to 225000, matching conversation_replay
+    # system_prompt_len, question_len, and output_len also accept an inline
+    # distribution or an expression string (see expressions.md), e.g. question_len: "floor(Max(Normal(50, 10), 1))"
     question_distribution:    # Optional: distribution for question lengths (overrides question_len)
       min: 10
       max: 1024
@@ -134,6 +141,20 @@ and cannot be cancelled. As with tokenizer loading, the deadline applies to wait
 that release the GIL, such as network and file I/O.
 
 **Note:** For `otel_trace_replay` type, see the [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) section for complete configuration details.
+
+With `enable_multi_turn_chat`, a shared-prefix `output_len` must leave room for a prompt within `max_model_len`. An expression needs a finite upper bound for that check (see [Value ranges](./expressions.md#value-ranges)): `floor(Min(Max(Normal(50, 10), 1), 99))` fits a 300-token context, `floor(Max(Normal(50, 10), 1))`, unbounded above, is rejected.
+
+<!-- checked-example -->
+```yaml
+data:
+  type: shared_prefix
+  shared_prefix:
+    num_groups: 2
+    num_prompts_per_group: 4
+    enable_multi_turn_chat: true
+    max_model_len: 300
+    output_len: "floor(Min(Max(Normal(50, 10), 1), 99))"
+```
 
 #### Multimodal Data Generation
 
@@ -174,6 +195,27 @@ Its `min` and `max` must be within `[0, 1]`; for distributions other than
 `insertion_point: 0.5`. A `uniform` distribution with `min: 0, max: 1` samples
 throughout the prompt. Token and media count distributions continue to produce
 integers.
+
+`count` and `insertion_point` also take [expression](./expressions.md) strings. An `insertion_point`
+expression must be provably within `[0, 1]` (see [Value ranges](./expressions.md#value-ranges)); bound
+one that isn't with `Min(Max(..., 0), 1)`.
+
+<!-- checked-example -->
+```yaml
+data:
+  type: synthetic
+  input_distribution: "floor(Min(Max(LogNormal(6, 0.5), 1), 4096))"
+  output_distribution: "floor(Uniform(64, 256))"
+  multimodal:
+    image:
+      count: "Poisson(2)"
+      insertion_point: "Beta(2, 5)"
+```
+
+| Rejected insertion_point | Why |
+| --- | --- |
+| `Normal(0.5, 0.1)` | Unbounded, so not provably within [0, 1]. |
+| `Uniform(0, 2)` | Can reach 2. |
 
 The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio,seconds}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`. A field the client never measured, such as the size of media sent as a URL, is left out of its distribution rather than counted as 0. Media a response returns is reported the same way under `output_image`, `output_video`, `output_audio` and `throughput.output_{images,videos,audios}_per_sec`, present only when some response returned media. The same counts and sizes are exported on `/metrics`, see [runtime_metrics.md](runtime_metrics.md).
 
