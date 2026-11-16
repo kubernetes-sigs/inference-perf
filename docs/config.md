@@ -215,7 +215,7 @@ load:
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
-      concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
+      concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS, defaults to num_conversations for conversation_replay)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
   num_workers: 4                    # Concurrent worker threads (default: cgroup-aware CPU count: min(CPU affinity, cgroup CPU quota when present, host CPUs))
   worker_max_concurrency: 10        # Max concurrent requests per worker

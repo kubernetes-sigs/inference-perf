@@ -36,7 +36,7 @@ from inference_perf.config import (
     deep_merge,
     read_config,
 )
-from inference_perf.config.loadgen import TraceSessionReplayLoadStage
+from inference_perf.config.loadgen import ConcurrentLoadStage, TraceSessionReplayLoadStage
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
@@ -335,3 +335,188 @@ def test_conversation_replay_accepts_concurrency_at_or_below_conversation_count(
 
     assert config.data.type == DataGenType.ConversationReplay
     assert config.load.type == LoadType.CONCURRENT
+
+
+# --- conversation replay concurrency default ------------------------------
+#
+# `concurrency_level` is required on every concurrent stage, but conversation replay has
+# a pool size in `data.conversation_replay.num_conversations` that a stage can be sized
+# from, so leaving it out means "run the whole pool". These tests pin that default to
+# conversation replay alone.
+
+
+# Builds the smallest conversation replay config: `num_conversations` blueprints and the
+# given concurrent stages, with no other settings.
+def _conversation_replay_config(
+    stages: list[dict[str, object]], num_conversations: int | float | str = 4
+) -> dict[str, object]:
+    return {
+        "data": {"type": "conversation_replay", "conversation_replay": {"num_conversations": num_conversations}},
+        "load": {"type": "concurrent", "stages": stages},
+    }
+
+
+# An omitted concurrency_level on a conversation replay stage resolves to the pool size:
+# num_conversations 4 with one bare stage {num_requests: 10} yields concurrency_level 4.
+def test_conversation_replay_omitted_concurrency_defaults_to_num_conversations() -> None:
+    config = Config.model_validate(_conversation_replay_config([{"num_requests": 10}]))
+
+    stage = config.load.stages[0]
+    assert isinstance(stage, ConcurrentLoadStage)
+    assert stage.concurrency_level == 4
+
+
+# An explicit value is never replaced by the default: a stage of 2 out of 4 conversations
+# keeps concurrency_level 2, and a sibling that omits it still gets 4.
+def test_conversation_replay_explicit_concurrency_is_kept() -> None:
+    config = Config.model_validate(_conversation_replay_config([{"num_requests": 10, "concurrency_level": 2}]))
+    defaulted = Config.model_validate(
+        _conversation_replay_config([{"num_requests": 10, "concurrency_level": 2}, {"num_requests": 10}])
+    )
+
+    explicit_stage = config.load.stages[0]
+    assert isinstance(explicit_stage, ConcurrentLoadStage)
+    assert explicit_stage.concurrency_level == 2
+    sibling_stage = defaulted.load.stages[1]
+    assert isinstance(sibling_stage, ConcurrentLoadStage)
+    assert sibling_stage.concurrency_level == 4
+
+
+# The default is conversation replay only: with any other data generator an omitted
+# concurrency_level is still a validation error naming the missing field.
+def test_non_conversation_replay_still_requires_concurrency() -> None:
+    with pytest.raises(ValueError, match="concurrency_level"):
+        Config.model_validate({"data": {"type": "mock"}, "load": {"type": "concurrent", "stages": [{"num_requests": 10}]}})
+
+
+# Guard: the unchanged path still accepts an explicit concurrency_level, so the test above
+# fails because the field is required rather than because plain concurrent load broke.
+def test_non_conversation_replay_explicit_concurrency_still_loads() -> None:
+    config = Config.model_validate(
+        {"data": {"type": "mock"}, "load": {"type": "concurrent", "stages": [{"num_requests": 10, "concurrency_level": 3}]}}
+    )
+
+    stage = config.load.stages[0]
+    assert isinstance(stage, ConcurrentLoadStage)
+    assert stage.concurrency_level == 3
+
+
+# Defaulting fills gaps, it does not relax the ceiling: with one stage defaulted and a
+# sibling asking for 5 of 4 conversations, the num_conversations check still fires.
+def test_conversation_replay_still_rejects_concurrency_above_num_conversations() -> None:
+    with pytest.raises(ValueError, match=r"concurrency_level \(5\) cannot exceed.*num_conversations \(4\)"):
+        Config.model_validate(
+            _conversation_replay_config([{"num_requests": 10}, {"num_requests": 10, "concurrency_level": 5}])
+        )
+
+
+# read_config turns stages into models before Config validates them, so the default has to
+# be filled in there too: a YAML file with a bare stage loads and ends up at 7.
+def test_read_config_defaults_conversation_replay_concurrency() -> None:
+    config_content = _conversation_replay_config([{"num_requests": 10}], num_conversations=7)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+    try:
+        config = read_config(tmp_path)
+    finally:
+        os.remove(tmp_path)
+
+    stage = config.load.stages[0]
+    assert isinstance(stage, ConcurrentLoadStage)
+    assert stage.concurrency_level == 7
+
+
+# Writes a conversation replay config to a temporary YAML file and returns the path; the
+# caller removes it.
+def _write_conversation_replay_config(stages: list[dict[str, object]], num_conversations: int | float | str) -> str:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(_conversation_replay_config(stages, num_conversations), tmp)
+        return tmp.name
+
+
+# read_config builds the stage models before Config validates anything, so a fractional count
+# has to be reported against the field the file sets: num_conversations 4.7 names
+# data.conversation_replay.num_conversations rather than only the copied concurrency_level.
+def test_read_config_reports_a_fractional_num_conversations_by_its_data_field() -> None:
+    path = _write_conversation_replay_config([{"num_requests": 10}], 4.7)
+    try:
+        with pytest.raises(ValueError, match=r"data\.conversation_replay\.num_conversations"):
+            read_config(path)
+    finally:
+        os.remove(path)
+
+
+# A zero count is rejected by num_conversations and by the stage size copied from it, so the
+# error has to name the field the file writes instead of the stage field it was copied to.
+def test_read_config_reports_a_zero_num_conversations_by_its_data_field() -> None:
+    path = _write_conversation_replay_config([{"num_requests": 10}], 0)
+    try:
+        with pytest.raises(ValueError, match=r"data\.conversation_replay\.num_conversations"):
+            read_config(path)
+    finally:
+        os.remove(path)
+
+
+# A quoted count reaches the stage as written and the field coerces it, so num_conversations
+# "4" sizes the stage at 4 rather than at the field's own default, which the ceiling check
+# would then reject against the real count.
+def test_conversation_replay_default_follows_a_quoted_num_conversations() -> None:
+    config = Config.model_validate(_conversation_replay_config([{"num_requests": 10}], num_conversations="4"))
+
+    stage = config.load.stages[0]
+    assert isinstance(stage, ConcurrentLoadStage)
+    assert stage.concurrency_level == 4
+
+
+# A fractional count is rejected with an error that names the field the user wrote, not a
+# rounded stage size: the message points at data.conversation_replay.num_conversations.
+def test_conversation_replay_fractional_num_conversations_is_rejected_by_data() -> None:
+    with pytest.raises(ValueError, match=r"data\.conversation_replay\.num_conversations"):
+        Config.model_validate(_conversation_replay_config([{"num_requests": 10}], num_conversations=4.7))
+
+
+# The same for a count that is not a number at all: the error names
+# data.conversation_replay.num_conversations, so the stage default never hides it.
+def test_conversation_replay_non_integer_num_conversations_is_reported_by_data() -> None:
+    with pytest.raises(ValueError, match=r"data\.conversation_replay\.num_conversations"):
+        Config.model_validate(_conversation_replay_config([{"num_requests": 10}], num_conversations="four"))
+
+
+# A missing conversation_replay block keeps the specific message instead of a stage error:
+# the stage is filled in with the field's own default, so the data validator runs and
+# reports that data.conversation_replay is what is missing.
+def test_conversation_replay_without_the_block_keeps_the_specific_error() -> None:
+    with pytest.raises(ValueError, match=r"data\.conversation_replay is required when data\.type is 'conversation_replay'"):
+        Config.model_validate(
+            {"data": {"type": "conversation_replay"}, "load": {"type": "concurrent", "stages": [{"num_requests": 10}]}}
+        )
+
+
+# An empty conversation_replay block is valid, so the stage follows the field's own default
+# and the two agree: an empty block still yields concurrency_level == num_conversations.
+def test_conversation_replay_default_follows_the_num_conversations_field_default() -> None:
+    config = Config.model_validate(
+        {
+            "data": {"type": "conversation_replay", "conversation_replay": {}},
+            "load": {"type": "concurrent", "stages": [{"num_requests": 10}]},
+        }
+    )
+
+    stage = config.load.stages[0]
+    conversation_config = config.data.conversation_replay
+    assert isinstance(stage, ConcurrentLoadStage)
+    assert conversation_config is not None
+    assert stage.concurrency_level == conversation_config.num_conversations
+
+
+# A validated config is dumped with concurrency_level already on every stage, in JSON mode
+# ("concurrent") and in python mode (LoadType.CONCURRENT), so reloading either dump leaves
+# the resolved size alone instead of needing the null-safe rewrite to run again.
+def test_conversation_replay_default_survives_a_round_trip() -> None:
+    config = Config.model_validate(_conversation_replay_config([{"num_requests": 10}]))
+
+    for reloaded in (Config.model_validate(config.model_dump(mode="json")), Config.model_validate(config.model_dump())):
+        stage = reloaded.load.stages[0]
+        assert isinstance(stage, ConcurrentLoadStage)
+        assert stage.concurrency_level == 4
