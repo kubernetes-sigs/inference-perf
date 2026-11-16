@@ -259,6 +259,93 @@ class TestConversationReplayDataGenerator:
 
         assert completed_blueprints == {0, 1, 2, 3}, f"Completed blueprint coverage: {sorted(completed_blueprints)}"
 
+    # Complete tokens 0..3, then overlap 4 and 5 in a four-blueprint pool.
+    # Repeat with blueprint 0 taking two turns so first-pass prioritization alone
+    # cannot hide the ownership bug; fresh slots must also get the chosen context.
+    @pytest.mark.parametrize("first_blueprint_turns", [1, 2])
+    @pytest.mark.parametrize("stage_id", [0, 1])
+    async def test_fresh_slot_does_not_claim_a_blueprint_held_by_another_slot(
+        self, first_blueprint_turns: int, stage_id: int
+    ) -> None:
+        api_config, data_config = _make_config(num_conversations=4, turns_min=2, turns_max=2, turns_mean=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        prompt_identity: dict[str, int] = {}
+        for blueprint in gen.blueprints:
+            blueprint.num_turns = first_blueprint_turns if blueprint.conversation_id == 0 else 1
+            blueprint.turn_prompts = [
+                f"blueprint_{blueprint.conversation_id}_turn_{turn}" for turn in range(blueprint.num_turns)
+            ]
+            for prompt in blueprint.turn_prompts:
+                prompt_identity[prompt] = blueprint.conversation_id
+        if stage_id:
+            LocalUserSession.clear_instances()
+
+        for index in range(4):
+            request = gen.load_lazy_data(
+                LazyLoadInferenceAPIData(data_index=index, preferred_worker_id=index % 4, stage_id=stage_id)
+            )
+            assert isinstance(request, _ConversationReplayAPIData)
+            context = await asyncio.wait_for(request.user_session.get_context(request.target_round), timeout=1)
+            request.user_session.update_context(f"{context} {request.prompt} response")
+            request.on_request_finished()
+
+        fourth = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=4, preferred_worker_id=0, stage_id=stage_id))
+        fifth = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=5, preferred_worker_id=1, stage_id=stage_id))
+        assert isinstance(fourth, _ConversationReplayAPIData)
+        assert isinstance(fifth, _ConversationReplayAPIData)
+        assert prompt_identity[fourth.prompt] != prompt_identity[fifth.prompt]
+        assert fourth.user_session_id != fifth.user_session_id
+        for request in (fourth, fifth):
+            blueprint = gen.blueprints[prompt_identity[request.prompt]]
+            expected_context = gen._build_system_prompt(
+                gen._get_or_generate_shared_prompt(stage_id), blueprint.dynamic_system_prompt
+            )
+            assert request.user_session.system_prompt == expected_context
+            assert (
+                await asyncio.wait_for(request.user_session.get_context(request.target_round), timeout=1) == expected_context
+            )
+
+        fourth.on_request_finished()
+        sixth = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=6, preferred_worker_id=2, stage_id=stage_id))
+        assert isinstance(sixth, _ConversationReplayAPIData)
+        assert prompt_identity[sixth.prompt] != prompt_identity[fifth.prompt]
+        active = [slot.blueprint_index for slot in gen._slot_states if slot.busy]
+        assert len(active) == len(set(active)) == 2
+        assert set(active).isdisjoint(gen._available_blueprints)
+        assert len(gen._available_blueprints) == len(set(gen._available_blueprints))
+        fifth.on_request_finished()
+        sixth.on_request_finished()
+
+    # A 30-blueprint, one-turn pool must open all 30 in its first 30 requests
+    # at concurrency 1/6/24/30, including after the stage resets its pool.
+    @pytest.mark.parametrize("concurrency", [1, 6, 24, 30])
+    async def test_one_turn_pool_opens_every_blueprint_on_the_first_pass(self, concurrency: int) -> None:
+        api_config, data_config = _make_config(num_conversations=30, turns_min=1, turns_max=1, turns_mean=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        for blueprint in gen.blueprints:
+            blueprint.turn_prompts = [f"blueprint_{blueprint.conversation_id}"]
+
+        for stage_id in (0, 1):
+            LocalUserSession.clear_instances()
+            in_flight: list[_ConversationReplayAPIData] = []
+            opened: set[str] = set()
+            for index in range(30):
+                if len(in_flight) == concurrency:
+                    completed = in_flight.pop(0)
+                    completed.user_session.update_context(f"{completed.prompt} response")
+                    completed.on_request_finished()
+                request = gen.load_lazy_data(
+                    LazyLoadInferenceAPIData(data_index=index, preferred_worker_id=index % 30, stage_id=stage_id)
+                )
+                assert isinstance(request, _ConversationReplayAPIData)
+                await asyncio.wait_for(request.user_session.get_context(request.target_round), timeout=1)
+                in_flight.append(request)
+                opened.add(request.prompt)
+            for completed in in_flight:
+                completed.user_session.update_context(f"{completed.prompt} response")
+                completed.on_request_finished()
+            assert opened == {f"blueprint_{index}" for index in range(30)}
+
     # A worker is only routed the blueprint indices its own tokens name, so a slot
     # that rolls over must stay inside that set: tokens for 1 and 3 must only ever
     # produce conversations for 1 and 3, never for the blueprints it never saw.

@@ -28,10 +28,13 @@ production mean across all active slots.
 
 Usage
 -----
-Set ``num_conversations = C`` (the concurrency level) so each slot owns
-exactly one conversation. Set ``num_requests = C × turns × num_rounds`` to
-run ``num_rounds`` complete conversations per slot. The first round is
-warmup; report throughput from round 2 onward.
+Set ``num_conversations >= C`` (the concurrency level). With a larger pool,
+slots rotate through their worker's blueprints at conversation boundaries,
+prioritizing newly named blueprints over recycled ones. With equality,
+each slot replays its own blueprint. For fixed-length conversations, set
+``num_requests = C × turns × num_rounds`` for ``num_rounds`` conversations
+per slot on average. Allow sufficient requests to warm up the whole pool
+before measuring steady-state throughput.
 
 Run each concurrency level as a separate benchmark (fresh state, not stages
 of one run) to avoid context accumulating across concurrency levels.
@@ -258,7 +261,8 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         self._slot_states = [_ConversationSlotState() for _ in self.blueprints]
         self._ready_slots: deque[int] = deque()
         # The blueprints this worker's own token stream has named: the ones no
-        # slot is running, oldest first, and the full set already named.
+        # slot is running (new arrivals first, recycled ones FIFO), and the full
+        # set already named.
         self._available_blueprints: deque[int] = deque()
         self._pooled_blueprints: set[int] = set()
         self._scheduler_stage_id: Optional[int] = None
@@ -305,7 +309,9 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         candidate_idx = data.data_index % len(self.blueprints)
         if candidate_idx not in self._pooled_blueprints:
             self._pooled_blueprints.add(candidate_idx)
-            self._available_blueprints.append(candidate_idx)
+            # A first pass should open the pool rather than replay returned
+            # blueprints while newly discovered ones wait behind them.
+            self._available_blueprints.appendleft(candidate_idx)
 
         if self._ready_slots:
             conv_idx = self._ready_slots.popleft()
@@ -322,9 +328,9 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         previous_blueprint = slot.blueprint_index
         rollover = previous_blueprint is not None and slot.next_turn == self.blueprints[previous_blueprint].num_turns
         if previous_blueprint is None:
-            # A slot that has never run keeps its own token's blueprint, so #924's
-            # queue order, session ids and turn counts are unchanged.
-            blueprint_index = conv_idx
+            # Keep the slot's own blueprint only if rotation has not already
+            # handed it to another slot. Otherwise take a genuinely free one.
+            blueprint_index = conv_idx if conv_idx in self._available_blueprints else self._available_blueprints[0]
             turn_idx = 0
         elif rollover:
             # A finished conversation hands its slot to the next blueprint its
@@ -362,9 +368,9 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
             # keeps its previous id: without it, a stage-1 slot re-primed as
             # slot_0_convo_1 would roll over onto slot_0_convo_1 again instead of
             # starting a new conversation.
-            if rollover:
-                # A blueprint first reached here was generated with stage 0's prefix,
-                # so it has to pick up this stage's shared prompt before it runs.
+            if rollover or (previous_blueprint is None and blueprint_index != conv_idx):
+                # Rollover and a fresh slot assigned another blueprint both need
+                # that blueprint's context with the current stage's shared prefix.
                 shared_prompt = self._get_or_generate_shared_prompt(data.stage_id)
                 bp.system_prompt = self._build_system_prompt(shared_prompt, bp.dynamic_system_prompt)
                 self.user_sessions[conv_idx] = self._new_session(

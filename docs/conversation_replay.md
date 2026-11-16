@@ -103,12 +103,16 @@ active conversation per blueprint. Naming the field explicitly runs fewer conver
 the slot rotation described below still reaches the whole pool.
 
 When concurrency is smaller than the blueprint pool, each execution slot keeps its current
-blueprint until all of that conversation's turns finish. It then takes the next blueprint its
-worker's own token stream named and returns its previous blueprint to the back of that queue.
-The new conversation starts with fresh context and a new session ID. With enough completed
-requests, this exercises the whole pool rather than repeatedly replaying an initial subset.
-Short runs may stop before every blueprint completes; completion order and variable turn counts
-also mean blueprint request counts need not be equal.
+blueprint until all of that conversation's turns finish. It then takes the next available blueprint
+its worker's own token stream named and returns its previous blueprint to the back of that queue.
+Newly named blueprints enter at the front, ahead of recycled ones, so a one-turn pool can open
+every blueprint on its first pass through the token stream. A slot taking its first conversation
+keeps its own blueprint only if it is free; otherwise it takes an available one and follows that
+blueprint's system prompt. Either way the new conversation opens a fresh session with a new ID and
+no history from the slot's previous conversation. With enough completed requests, this exercises
+the whole pool rather than repeatedly replaying an initial subset. Short runs may stop before every
+blueprint completes; completion order and variable turn counts also mean blueprint request counts
+need not be equal.
 
 A worker only ever runs blueprints named by the requests routed to it, so this pool follows the
 existing `preferred_worker_id` routing rather than tracking a second, separately computed
