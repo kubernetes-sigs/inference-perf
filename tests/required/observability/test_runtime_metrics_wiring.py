@@ -332,8 +332,9 @@ class TestLoadGeneratorStageObserver(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observer.contexts[-1].requests_finished(), num_requests)
         self.assertEqual(observer.contexts[-1].requests_skipped(), 0)
         counter = "inference_perf_requests_total"
-        self.assertEqual(hub.registry.get_sample_value(counter, {"stage": "0", "status": "success"}), float(num_requests))
-        self.assertEqual(hub.registry.get_sample_value(counter, {"stage": "1", "status": "success"}), float(num_requests))
+        ok = {"status": "success", "error_type": ""}
+        self.assertEqual(hub.registry.get_sample_value(counter, {"stage": "0", **ok}), float(num_requests))
+        self.assertEqual(hub.registry.get_sample_value(counter, {"stage": "1", **ok}), float(num_requests))
         self.assertEqual(loadgen.in_flight_requests(), 0)
 
     # 4 requests through 2 worker processes against a mock server whose every response

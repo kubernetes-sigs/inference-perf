@@ -17,12 +17,13 @@
 from .prometheus import PrometheusMetricsServer
 from inference_perf.observability.context import RunContext, StageContext
 
-from .registry import MetricSpec, MetricStability, MetricsHub, PrometheusMetric, build_metrics
+from .registry import MetricSpec, MetricStability, MetricsHub, ObservedRequest, PrometheusMetric, build_metrics
 
 __all__ = [
     "MetricSpec",
     "MetricStability",
     "MetricsHub",
+    "ObservedRequest",
     "PrometheusMetric",
     "PrometheusMetricsServer",
     "RunContext",
