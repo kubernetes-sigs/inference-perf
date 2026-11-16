@@ -55,6 +55,9 @@ server that recorded arrivals independently would be strictly stronger and
 this test can be retargeted at one later without changing its assertions.
 """
 
+import re
+import statistics
+
 import pytest
 
 from utils.accuracy import assert_successful_run
@@ -132,6 +135,7 @@ def _pinned_latency_sim_args() -> list[str]:
 
 # One concurrent stage of `num_requests` requests at `concurrency` across
 # `num_workers` workers, with the given `data:` block and per-request output.
+# A list of counts gives a multi-stage run, every stage at the same concurrency.
 def _concurrent_stage_config(
     sim: LLMDInferenceSimRunner,
     model_name: str,
@@ -139,13 +143,14 @@ def _concurrent_stage_config(
     data: dict,
     concurrency: int,
     num_workers: int,
-    num_requests: int,
+    num_requests: int | list[int],
 ) -> dict:
+    requests_per_stage = [num_requests] if isinstance(num_requests, int) else num_requests
     return {
         "data": data,
         "load": {
             "type": "concurrent",
-            "stages": [{"num_requests": num_requests, "concurrency_level": concurrency}],
+            "stages": [{"num_requests": count, "concurrency_level": concurrency} for count in requests_per_stage],
             "num_workers": num_workers,
         },
         "api": {"type": "completion", "streaming": True},
@@ -405,6 +410,246 @@ async def test_conversation_replay_replenishes_ready_conversations():
     assert sum(gaps) / len(gaps) < 0.2, f"conversation handoffs averaged {sum(gaps) / len(gaps):.3f}s"
 
 
+# --- Multi-stage conversation replay (#929). --------------------------------
+# #701 fixed a hang that only shows up at a stage boundary, and changed what
+# stage 1+ requests carry (system prompt and history, where main sent the bare
+# turn). Both were proven by a manual 3-stage run and by nothing in CI, which is
+# what this test pins.
+STAGES = 3
+CONVERSATIONS = 4
+NUM_WORKERS = 2
+TURNS_PER_CONVERSATION = 3
+ROUNDS_PER_STAGE = 2
+SHARED_SYSTEM_PROMPT_LEN = 512
+INPUT_TOKENS_PER_TURN = 8
+CONVERSATION_OUTPUT_TOKENS = 8
+REQUESTS_PER_STAGE = CONVERSATIONS * TURNS_PER_CONVERSATION * ROUNDS_PER_STAGE
+EXPECTED_CONVERSATION_REQUESTS = REQUESTS_PER_STAGE * STAGES
+CONVERSATIONS_PER_STAGE = REQUESTS_PER_STAGE // TURNS_PER_CONVERSATION
+# A stage-boundary hang returns nothing: no traceback, no report, no exit. It
+# has to fail on a clock instead of riding out the harness's own timeout, so the
+# run gets one of its own. The shape below takes about 20s on the sim.
+CONVERSATION_TIMEOUT_SEC = 180
+# Stages 1+ regenerate the shared system prompt from a stage-derived seed, so
+# its text -- and with it the exact token count -- differs from stage 0's even
+# though its length does not. The band is for that drift, not for slop: #701's
+# bug moved the count by two orders of magnitude.
+FIRST_TURN_TOKEN_TOLERANCE = 0.05
+FIRST_TURN_TOKEN_SLACK = 8
+
+
+# A per-request report entry, cut down to the fields the conversation
+# assertions below read.
+def _conversation_entry(stage_id: int, session_id: str, start_time: float, input_tokens: int) -> dict:
+    return {
+        "stage_id": stage_id,
+        "start_time": start_time,
+        "end_time": start_time + 0.1,
+        "info": {
+            "extra_info": {"user_session": session_id},
+            "request_metrics": {"text": {"input_tokens": input_tokens}},
+        },
+    }
+
+
+# (stage, session id) -> how many requests that conversation turned. Keyed by
+# stage as well as session because a stage re-primes its slots under the id the
+# previous stage rolled them over to, so one id names a conversation in each.
+def _turns_per_conversation(entries: list[dict]) -> dict[tuple[int, str], int]:
+    counts: dict[tuple[int, str], int] = {}
+    for entry in entries:
+        key = (int(entry["stage_id"]), str(entry["info"]["extra_info"]["user_session"]))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+# stage id -> the input tokens of every conversation's first turn in it, in
+# start order. Turns are serialized by the session lock, so a conversation's
+# earliest-starting request is its turn 0.
+def _first_turn_input_tokens(entries: list[dict]) -> dict[int, list[int]]:
+    earliest: dict[tuple[int, str], dict] = {}
+    for entry in entries:
+        key = (int(entry["stage_id"]), str(entry["info"]["extra_info"]["user_session"]))
+        held = earliest.get(key)
+        if held is None or entry["start_time"] < held["start_time"]:
+            earliest[key] = entry
+
+    by_stage: dict[int, list[dict]] = {}
+    for (stage_id, _), entry in earliest.items():
+        by_stage.setdefault(stage_id, []).append(entry)
+
+    return {
+        stage_id: [
+            int(entry["info"]["request_metrics"]["text"]["input_tokens"])
+            for entry in sorted(stage, key=lambda e: e["start_time"])
+        ]
+        for stage_id, stage in sorted(by_stage.items())
+    }
+
+
+# Extract the slot from initial or rollover session IDs. A re-primed session
+# may retain the previous stage's prefix; the report's stage_id is authoritative.
+def _conversation_slot(session_id: str) -> int:
+    match = re.fullmatch(r"conv_(\d+)", session_id) or re.fullmatch(r"stage_\d+_slot_(\d+)_convo_\d+", session_id)
+    assert match is not None, f"unexpected conversation session ID: {session_id}"
+    slot = int(match.group(1))
+    assert 0 <= slot < CONVERSATIONS, f"unexpected conversation slot: {slot}"
+    return slot
+
+
+# No conversation may exceed its blueprint. Only the last conversation in each
+# (stage, slot) may be short when the stage exhausts its request budget. Slots
+# advance independently, so the number of conversations need not be exactly 8.
+# Returns {stage: conversations}; every stage must still deliver all 24 requests.
+def assert_conversations_match_blueprint(entries: list[dict]) -> dict[int, int]:
+    turns = _turns_per_conversation(entries)
+    first_starts: dict[tuple[int, str], float] = {}
+    for entry in entries:
+        key = (int(entry["stage_id"]), str(entry["info"]["extra_info"]["user_session"]))
+        start = float(entry["start_time"])
+        first_starts[key] = min(first_starts.get(key, start), start)
+
+    last_by_slot: dict[tuple[int, int], tuple[int, str]] = {}
+    for key in sorted(first_starts, key=lambda key: first_starts[key]):
+        stage_id, session_id = key
+        last_by_slot[(stage_id, _conversation_slot(session_id))] = key
+    terminal = set(last_by_slot.values())
+    misfit = {
+        key: count
+        for key, count in turns.items()
+        if count > TURNS_PER_CONVERSATION or (count < TURNS_PER_CONVERSATION and key not in terminal)
+    }
+    assert not misfit, (
+        f"conversations must have {TURNS_PER_CONVERSATION} turns, except short terminal conversations; these (stage, session) "
+        f"pairs ran longer or shorter: {misfit}"
+    )
+
+    per_stage: dict[int, int] = {}
+    requests_per_stage: dict[int, int] = {}
+    for (stage_id, _), count in turns.items():
+        per_stage[stage_id] = per_stage.get(stage_id, 0) + 1
+        requests_per_stage[stage_id] = requests_per_stage.get(stage_id, 0) + count
+
+    assert sorted(per_stage) == list(range(STAGES)), (
+        f"expected a conversation in each of stages {list(range(STAGES))}, got {sorted(per_stage)}"
+    )
+    for stage_id, count in requests_per_stage.items():
+        assert count == REQUESTS_PER_STAGE, f"stage {stage_id} ran {count} requests, expected {REQUESTS_PER_STAGE}"
+    return per_stage
+
+
+# A conversation's first turn carries the stage's system prompt plus one turn's
+# input. Stage 1+ must carry it exactly as stage 0 does: before #701 a slot
+# re-primed at the stage boundary sent the bare turn, roughly
+# INPUT_TOKENS_PER_TURN tokens against stage 0's few hundred.
+def assert_first_turns_match_stage_zero(entries: list[dict]) -> None:
+    first_turns = _first_turn_input_tokens(entries)
+    assert 0 in first_turns, "stage 0 sent no requests, so there is no baseline to compare against"
+    baseline = int(statistics.median(first_turns[0]))
+
+    # Guards the comparison below from passing vacuously: were the system prompt
+    # missing everywhere, every stage would agree on the bare turn.
+    assert baseline > 4 * INPUT_TOKENS_PER_TURN, (
+        f"stage 0's first turn sent {baseline} input tokens, barely more than the {INPUT_TOKENS_PER_TURN}-token "
+        f"turn prompt, so the {SHARED_SYSTEM_PROMPT_LEN}-token system prompt never made it into the request"
+    )
+
+    allowed = max(FIRST_TURN_TOKEN_SLACK, FIRST_TURN_TOKEN_TOLERANCE * baseline)
+    # Include stage 0: its median can hide a rollover that lost the system prompt.
+    for stage_id in range(STAGES):
+        values = first_turns.get(stage_id, [])
+        assert values, f"stage {stage_id} started no conversation"
+        for value in values:
+            assert abs(value - baseline) <= allowed, (
+                f"stage {stage_id} first turn sent {value} input tokens against stage 0's {baseline} "
+                f"(drift allowed {allowed:.0f}): the system prompt did not survive the stage boundary"
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
+async def test_conversation_replay_survives_three_stage_boundaries():
+    """A conversation_replay run must carry its sessions across two stage boundaries.
+
+    Three stages, every request delivered, no conversation longer than its
+    blueprint, and stages 1 and 2 starting their conversations with the same
+    first-turn prompt stage 0 does.
+    """
+    model_name = TEST_MODEL_NAME
+    model_path = extract_tarball(TEST_MODEL_TARBALL)
+    data = {
+        "type": "conversation_replay",
+        "conversation_replay": {
+            "seed": 42,
+            "num_conversations": CONVERSATIONS,
+            # Fixed per-turn sizes keep every conversation's token shape the same
+            # in every stage, which is what the first-turn comparison needs: only
+            # the regenerated system prompt text differs.
+            "shared_system_prompt_len": SHARED_SYSTEM_PROMPT_LEN,
+            "turns_per_conversation": {
+                "type": "fixed",
+                "min": TURNS_PER_CONVERSATION,
+                "max": TURNS_PER_CONVERSATION,
+                "mean": TURNS_PER_CONVERSATION,
+            },
+            "input_tokens_per_turn": {
+                "type": "fixed",
+                "min": INPUT_TOKENS_PER_TURN,
+                "max": INPUT_TOKENS_PER_TURN,
+                "mean": INPUT_TOKENS_PER_TURN,
+            },
+            "output_tokens_per_turn": {
+                "type": "fixed",
+                "min": CONVERSATION_OUTPUT_TOKENS,
+                "max": CONVERSATION_OUTPUT_TOKENS,
+                "mean": CONVERSATION_OUTPUT_TOKENS,
+            },
+            "max_model_len": 4096,
+        },
+    }
+
+    async with LLMDInferenceSimRunner(model_name, *_pinned_latency_sim_args(), port=get_free_port()) as sim:
+        result = await run_benchmark_minimal(
+            _concurrent_stage_config(
+                sim,
+                model_name,
+                model_path,
+                data,
+                CONVERSATIONS,
+                NUM_WORKERS,
+                [REQUESTS_PER_STAGE] * STAGES,
+            ),
+            timeout_sec=CONVERSATION_TIMEOUT_SEC,
+        )
+
+    # The #701 failure mode is a stage that never finishes: before the fix the
+    # run never returns from stage 2, with no traceback and no report. Fail on the
+    # clock first, so that shows up here as a timeout with the log attached.
+    assert not result.timed_out, (
+        f"the run did not finish within {CONVERSATION_TIMEOUT_SEC}s: a hang at a stage boundary (#701) "
+        f"looks exactly like this. Last CLI output:\n{result.stdout[-2000:]}"
+    )
+
+    entries = assert_successful_run(result, EXPECTED_CONVERSATION_REQUESTS)
+    assert result.reports is not None
+
+    # The boundary was crossed three times: every stage reported its own load and
+    # logged completion. A stage that was skipped, or that had to terminate a
+    # worker wedged on the barrier, shows up here first.
+    for stage_id in range(STAGES):
+        assert f"Stage {stage_id} - run completed" in result.stdout, (
+            f"stage {stage_id} did not complete cleanly:\n{result.stdout}"
+        )
+        stage_report_name = f"stage_{stage_id}_lifecycle_metrics.json"
+        assert stage_report_name in result.reports, f"missing {stage_report_name} in {sorted(result.reports)}"
+        stage_report = result.reports[stage_report_name]
+        assert stage_report["successes"]["count"] == REQUESTS_PER_STAGE
+        assert stage_report["failures"]["count"] == 0
+
+    assert_conversations_match_blueprint(entries)
+    assert_first_turns_match_stage_zero(entries)
+
+
 # --- Helper self-tests: prove the assertions can actually fail. -------------
 # Same guard as the golden accuracy suite: a load-shape assertion that cannot
 # go red is worse than no assertion, because it reads as coverage. These run
@@ -536,3 +781,213 @@ def test_delivered_concurrency_rejects_under_delivery():
 def test_delivered_concurrency_rejects_over_delivery():
     with pytest.raises(AssertionError, match="peaked at"):
         assert_delivered_concurrency(_closed_loop_entries(delivered=9, rounds=6), 8)
+
+
+# --- Helper self-tests for the multi-stage conversation assertions. ----------
+# Same rule as above: a blueprint or stage-boundary assertion that cannot go red
+# reads as coverage without being any.
+
+# What a first turn costs with the configured system prompt in front of it, used
+# as the synthetic stand-in for the sim's reported token count.
+SYNTHETIC_FIRST_TURN_TOKENS = 520
+
+
+# `turns` requests of one conversation in one stage, starting at `start`.
+def _conversation_turns(stage_id: int, session_id: str, start: float, turns: int, first_turn_tokens: int) -> list[dict]:
+    return [
+        _conversation_entry(stage_id, session_id, start + turn, first_turn_tokens if turn == 0 else 2 * INPUT_TOKENS_PER_TURN)
+        for turn in range(turns)
+    ]
+
+
+# A full-shape synthetic run: STAGES stages of CONVERSATIONS_PER_STAGE
+# conversations with TURNS_PER_CONVERSATION turns each, every conversation's
+# first turn carrying a full system prompt. `stage_first_turns` overrides a
+# stage's first-turn count so a stage can be made to look like it dropped it.
+def _synthetic_multi_stage_run(stage_first_turns: dict[int, int] | None = None) -> list[dict]:
+    overrides = stage_first_turns or {}
+    entries: list[dict] = []
+    for stage_id in range(STAGES):
+        first_turn = overrides.get(stage_id, SYNTHETIC_FIRST_TURN_TOKENS)
+        for conversation in range(CONVERSATIONS_PER_STAGE):
+            session_id = f"stage_{stage_id}_slot_{conversation % CONVERSATIONS}_convo_{conversation}"
+            start = 10.0 * stage_id + 3.0 * conversation
+            entries.extend(_conversation_turns(stage_id, session_id, start, TURNS_PER_CONVERSATION, first_turn))
+    return entries
+
+
+# One 3-turn conversation: turn 0 at 0s carrying 520 input tokens, turns 1 and 2
+# at 1s and 2s carrying 16. Pins that the helpers read turn 0, not the last turn.
+def test_conversation_helpers_read_turn_zero_only():
+    entries = _conversation_turns(0, "conv_0", 0.0, TURNS_PER_CONVERSATION, SYNTHETIC_FIRST_TURN_TOKENS)
+    assert _turns_per_conversation(entries) == {(0, "conv_0"): TURNS_PER_CONVERSATION}
+    assert _first_turn_input_tokens(entries) == {0: [SYNTHETIC_FIRST_TURN_TOKENS]}
+
+
+# A stage re-primes its slots under the previous stage's rollover id, so one id
+# names a conversation in two stages. Pins that they are counted apart: 3 turns
+# each, never 6 in one.
+def test_turns_per_conversation_keeps_stages_apart():
+    session_id = "stage_0_slot_0_convo_1"
+    entries = _conversation_turns(0, session_id, 0.0, TURNS_PER_CONVERSATION, SYNTHETIC_FIRST_TURN_TOKENS)
+    entries += _conversation_turns(1, session_id, 10.0, TURNS_PER_CONVERSATION, SYNTHETIC_FIRST_TURN_TOKENS)
+    assert _turns_per_conversation(entries) == {
+        (0, session_id): TURNS_PER_CONVERSATION,
+        (1, session_id): TURNS_PER_CONVERSATION,
+    }
+    assert _first_turn_input_tokens(entries) == {0: [SYNTHETIC_FIRST_TURN_TOKENS], 1: [SYNTHETIC_FIRST_TURN_TOKENS]}
+
+
+# The full-shape run passes both assertions, and reports one conversation count
+# per stage.
+def test_conversation_assertions_accept_a_faithful_multi_stage_run():
+    entries = _synthetic_multi_stage_run()
+    assert assert_conversations_match_blueprint(entries) == {stage_id: CONVERSATIONS_PER_STAGE for stage_id in range(STAGES)}
+    assert_first_turns_match_stage_zero(entries)
+
+
+# Stage 0's and stage 2's first turns stay at 520, stage 1's tokenize to 512 and
+# 528: inside the 26-token band (5% of 520), so the run still passes.
+def test_first_turn_check_allows_the_tokenizer_drift_between_stages():
+    assert_first_turns_match_stage_zero(_synthetic_multi_stage_run({1: 512, 2: 528}))
+
+
+# Stage 1's first turn carries only the bare turn, 8 tokens against stage 0's
+# 520: the #701 regression, caught on the boundary.
+def test_first_turn_check_rejects_a_stage_that_drops_the_system_prompt():
+    with pytest.raises(AssertionError, match="did not survive the stage boundary"):
+        assert_first_turns_match_stage_zero(_synthetic_multi_stage_run({1: INPUT_TOKENS_PER_TURN}))
+
+
+# One rollover conversation sends 8, 480, or 560 tokens instead of 520, while
+# stage 0's median remains 520. Reject that outlier in every stage, including 0.
+@pytest.mark.parametrize("stage_id", range(STAGES))
+@pytest.mark.parametrize("input_tokens", [INPUT_TOKENS_PER_TURN, 480, 560])
+def test_first_turn_check_rejects_a_rollover_outlier_in_every_stage(stage_id: int, input_tokens: int) -> None:
+    entries = _synthetic_multi_stage_run()
+    session_id = f"stage_{stage_id}_slot_0_convo_{CONVERSATIONS}"
+    first_turn = min(
+        (entry for entry in entries if entry["info"]["extra_info"]["user_session"] == session_id),
+        key=lambda entry: entry["start_time"],
+    )
+    first_turn["info"]["request_metrics"]["text"]["input_tokens"] = input_tokens
+    with pytest.raises(AssertionError, match=f"stage {stage_id} first turn sent {input_tokens} input tokens"):
+        assert_first_turns_match_stage_zero(entries)
+
+
+# Stage 1 drifts 40 tokens off stage 0's 520, outside the 26-token band: the
+# band is a band, not an absence check.
+def test_first_turn_check_rejects_drift_beyond_the_band():
+    with pytest.raises(AssertionError, match="did not survive the stage boundary"):
+        assert_first_turns_match_stage_zero(_synthetic_multi_stage_run({1: 480}))
+
+
+# No stage carries the system prompt: the baseline guard fires instead of the
+# stages agreeing on the bare turn and the comparison passing vacuously.
+def test_first_turn_check_refuses_a_run_with_no_system_prompt_anywhere():
+    with pytest.raises(AssertionError, match="never made it into the request"):
+        assert_first_turns_match_stage_zero(_synthetic_multi_stage_run({0: INPUT_TOKENS_PER_TURN}))
+
+
+# Stage 1's first conversation gains a fourth turn, against a blueprint of 3:
+# the check names the offending (stage, session) pair.
+def test_blueprint_check_rejects_a_conversation_that_runs_past_its_turns():
+    entries = _synthetic_multi_stage_run()
+    entries.append(_conversation_entry(1, "stage_1_slot_0_convo_0", 99.0, SYNTHETIC_FIRST_TURN_TOKENS))
+    with pytest.raises(AssertionError, match="ran longer or shorter"):
+        assert_conversations_match_blueprint(entries)
+
+
+# The last turn of stage 2's first conversation is missing (entries 48-50 of the
+# synthetic run are its three turns): 2 turns against a blueprint of 3, the shape
+# a boundary that cuts a conversation short leaves behind.
+def test_blueprint_check_rejects_a_conversation_cut_short_at_a_boundary():
+    entries = _synthetic_multi_stage_run()
+    del entries[50]
+    with pytest.raises(AssertionError, match="ran longer or shorter"):
+        assert_conversations_match_blueprint(entries)
+
+
+# Each stage distributes 24 requests as 7/5/6/6 across four slots. The faster
+# slot ends with a 1-turn conversation and the slower one with a 2-turn tail.
+# Carry each slot's last session ID into the next stage, as the generator does.
+def _uneven_multi_stage_run(leading_slot: int) -> list[dict]:
+    entries: list[dict] = []
+    session_ids = {slot: f"conv_{slot}" for slot in range(CONVERSATIONS)}
+    for stage_id in range(STAGES):
+        for slot in range(CONVERSATIONS):
+            requests = 6 + (slot == leading_slot) - (slot == (leading_slot + 1) % CONVERSATIONS)
+            for turn in range(requests):
+                if turn > 0 and turn % TURNS_PER_CONVERSATION == 0:
+                    session_ids[slot] = f"stage_{stage_id}_slot_{slot}_convo_{turn // TURNS_PER_CONVERSATION}"
+                entries.append(
+                    _conversation_entry(
+                        stage_id,
+                        session_ids[slot],
+                        100.0 * stage_id + turn + 0.1 * slot,
+                        SYNTHETIC_FIRST_TURN_TOKENS,
+                    )
+                )
+    return entries
+
+
+# Any slot can get one request ahead. Nine conversations per stage then fit
+# the same 24-request budget; only the two terminal conversations are short.
+@pytest.mark.parametrize("leading_slot", range(CONVERSATIONS))
+def test_blueprint_check_accepts_uneven_terminal_conversations(leading_slot: int) -> None:
+    entries = _uneven_multi_stage_run(leading_slot)
+    assert assert_conversations_match_blueprint(list(reversed(entries))) == {stage: 9 for stage in range(STAGES)}
+
+
+# Move one request from slot 1's initial conversation to slot 0's final one.
+# The budget stays 24, but a nonterminal conversation is short and must fail.
+def test_blueprint_check_rejects_a_short_nonterminal_conversation() -> None:
+    entries = _uneven_multi_stage_run(0)
+    entries = [entry for entry in entries if not (entry["stage_id"] == 0 and entry["start_time"] == 2.1)]
+    entries.append(_conversation_entry(0, "stage_0_slot_0_convo_2", 7.0, SYNTHETIC_FIRST_TURN_TOKENS))
+    with pytest.raises(AssertionError, match="ran longer or shorter"):
+        assert_conversations_match_blueprint(entries)
+
+
+# A fourth turn is invalid even in a slot's final conversation. Remove a turn
+# from another terminal conversation to keep the stage's budget at 24.
+def test_blueprint_check_rejects_an_overlong_terminal_conversation() -> None:
+    entries = _uneven_multi_stage_run(0)
+    entries = [entry for entry in entries if not (entry["stage_id"] == 0 and entry["start_time"] == 4.1)]
+    entries.append(_conversation_entry(0, "stage_0_slot_2_convo_1", 6.2, SYNTHETIC_FIRST_TURN_TOKENS))
+    with pytest.raises(AssertionError, match="ran longer or shorter"):
+        assert_conversations_match_blueprint(entries)
+
+
+# Removing a terminal turn is allowed by the blueprint check alone, but the
+# resulting 23-request stage must still fail the independent budget check.
+def test_blueprint_check_rejects_a_short_stage() -> None:
+    entries = _uneven_multi_stage_run(0)
+    entries = [entry for entry in entries if not (entry["stage_id"] == 0 and entry["start_time"] == 4.1)]
+    with pytest.raises(AssertionError, match="stage 0 ran 23 requests, expected 24"):
+        assert_conversations_match_blueprint(entries)
+
+
+# Extending a 1-turn terminal conversation to 2 turns respects its blueprint
+# but exceeds the independent stage budget: 25 requests instead of 24.
+def test_blueprint_check_rejects_an_overfull_stage() -> None:
+    entries = _uneven_multi_stage_run(0)
+    entries.append(_conversation_entry(0, "stage_0_slot_0_convo_2", 7.0, SYNTHETIC_FIRST_TURN_TOKENS))
+    with pytest.raises(AssertionError, match="stage 0 ran 25 requests, expected 24"):
+        assert_conversations_match_blueprint(entries)
+
+
+# Dropping all entries from stage 1 must fail even though stages 0 and 2 each
+# still have a valid request budget and valid terminal conversations.
+def test_blueprint_check_rejects_a_missing_stage() -> None:
+    entries = [entry for entry in _uneven_multi_stage_run(0) if entry["stage_id"] != 1]
+    with pytest.raises(AssertionError, match="expected a conversation in each of stages"):
+        assert_conversations_match_blueprint(entries)
+
+
+# Unknown session formats and slots outside the configured four must not be
+# silently grouped together and treated as a slot's terminal conversation.
+@pytest.mark.parametrize("session_id", ["unknown", "conv_4", "stage_0_slot_4_convo_1"])
+def test_conversation_slot_rejects_invalid_ids(session_id: str) -> None:
+    with pytest.raises(AssertionError, match="unexpected conversation"):
+        _conversation_slot(session_id)
