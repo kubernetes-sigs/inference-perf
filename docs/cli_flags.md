@@ -414,13 +414,18 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--storage.simple_storage_service.endpoint_url` | str | Custom endpoint URL, for S3-compatible object stores. |
 | `--storage.simple_storage_service.region_name` | str | AWS region of the bucket. |
 | `--storage.simple_storage_service.addressing_style` | string | S3 addressing style: 'auto', 'virtual' (bucket in hostname) or 'path'. |
-| `--server.type` | Enum (vllm, sglang, tgi, mock) | Type of model server being benchmarked. |
+| `--server.type` | Enum (vllm, sglang, tgi, mock, llmd_async_redis) | Type of model server being benchmarked. |
 | `--server.model_name` | str | Model name sent in each request. Auto-detected from the server if unset. |
-| `--server.base_url` | str | Base URL of the model server, e.g. 'http://localhost:8000'. |
+| `--server.base_url` | str | Base URL of the model server, e.g. 'http://localhost:8000'. For llmd_async_redis, the Redis URL. |
 | `--server.ignore_eos` | boolean | Ask the server to keep generating past the end-of-sequence token so outputs hit the requested length. |
 | `--server.api_key` | str | API key sent as a bearer token with each request. Redacted in the logged and saved config. |
 | `--server.cert_path` | str | Path to a client TLS certificate file. |
 | `--server.key_path` | str | Path to the private key for the client TLS certificate. |
+| `--server.llmd_async_redis.request_queue_name` | str | llm-d-async request sorted set the requests are enqueued on (its queue entry's 'queue_name'). |
+| `--server.llmd_async_redis.result_queue_name` | str | Prefix of the result lists. Each worker process reads its own list, '<prefix>:<random id>', named on every request it enqueues, so the llm-d-async queue entry must not set its own 'result_queue_name'. |
+| `--server.llmd_async_redis.default_deadline_seconds` | float | Deadline of each request, in seconds after it is enqueued. llm-d-async dispatches earliest deadline first. |
+| `--server.llmd_async_redis.result_grace_seconds` | float | How long past the deadline to wait for a result before recording the request as timed out. llm-d-async reports an expired request itself, as DEADLINE_EXCEEDED, so this only covers a dispatcher that never answers. |
+| `--server.llmd_async_redis.password` | str | Redis AUTH password. Kept out of base_url so it is redacted in the logged and saved config. |
 | `--tokenizer.pretrained_model_name_or_path` | str | HuggingFace model name or local path of the tokenizer to load. |
 | `--tokenizer.trust_remote_code` | boolean | Allow the tokenizer to execute code from its repository when loading. |
 | `--tokenizer.token` | str | HuggingFace access token used to download the tokenizer. Redacted in the logged and saved config. |

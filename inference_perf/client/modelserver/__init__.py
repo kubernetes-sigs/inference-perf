@@ -13,6 +13,7 @@
 # limitations under the License.
 from .base import ModelServerClient, ModelServerClientSession
 from .mock_client import MockModelServerClient
+from .llmd_async_redis_client import LlmdAsyncRedisModelServerClient
 from .vllm_client import vLLMModelServerClient
 from .sglang_client import SGlangModelServerClient
 
@@ -21,6 +22,7 @@ __all__ = [
     "ModelServerClient",
     "ModelServerClientSession",
     "MockModelServerClient",
+    "LlmdAsyncRedisModelServerClient",
     "vLLMModelServerClient",
     "SGlangModelServerClient",
 ]

@@ -57,6 +57,7 @@ from inference_perf.client.modelserver import (
     vLLMModelServerClient,
     SGlangModelServerClient,
     MockModelServerClient,
+    LlmdAsyncRedisModelServerClient,
 )
 from inference_perf.client.server_metrics.base import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.prometheus_client import (
@@ -329,6 +330,16 @@ def main_cli() -> None:
             # Don't overwrite tokenizer if mock client doesn't provide one
             if model_server_client.tokenizer is not None:
                 tokenizer = model_server_client.tokenizer
+        if config.server.type == ModelServerType.LLMD_ASYNC_REDIS:
+            model_server_client = LlmdAsyncRedisModelServerClient(
+                reportgen.get_metrics_collector(),
+                api_config=config.api,
+                redis_url=config.server.base_url,
+                queue_config=config.server.llmd_async_redis,
+                model_name=config.server.model_name,
+                tokenizer=tokenizer,
+                ignore_eos=config.server.ignore_eos,
+            )
         # The client resolved the run's tokenizer; report generation rebuilds its own
         # from the config, so hand it over here.
         sync_tokenizer_config(config, model_server_client)

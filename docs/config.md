@@ -293,7 +293,7 @@ Configures connection to the model serving backend:
 
 ```yaml
 server:
-  type: vllm                                          # Server type (vllm|sglang|tgi|mock); vLLM, SGLang and TGI verified
+  type: vllm                                          # Server type (vllm|sglang|tgi|mock|llmd_async_redis); vLLM, SGLang and TGI verified
   model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"   # Optional; auto-detected from /v1/models if unset
   base_url: "http://0.0.0.0:8000"                     # Required server endpoint
   ignore_eos: true                                    # Whether to ignore End-of-Sequence tokens
@@ -336,6 +336,38 @@ server:
   type: vllm
   base_url: "http://0.0.0.0:8000"
 ```
+
+#### llm-d-async queue (`llmd_async_redis`)
+
+`server.type: llmd_async_redis` sends requests through an [llm-d-async](https://github.com/llm-d/llm-d-async)
+`redis-sortedset` queue instead of to a model server. Each request is enqueued the way llm-d-async's
+`RedisSortedSetProducer` enqueues it on a standalone Redis, with a deadline `default_deadline_seconds` after it was
+sent, and llm-d-async dispatches earliest deadline first to the gateway its queue entry names. A request's latency
+is the time from enqueue to its result.
+
+```yaml
+server:
+  type: llmd_async_redis
+  base_url: "redis://redis:6379/0"     # Redis URL (redis:// or rediss://); no password here
+  model_name: "Qwen/Qwen3-0.6B"        # Required: there is no /v1/models to ask
+  llmd_async_redis:
+    request_queue_name: request-sortedset
+    result_queue_name: result-list     # Prefix: each worker process reads '<prefix>:<random id>'
+    default_deadline_seconds: 300
+    result_grace_seconds: 30
+    password: ""                       # Optional Redis AUTH password; redacted like other credentials
+```
+
+- Install the Redis client first: `pip install 'redis>=5'`. inference-perf does not depend on it otherwise.
+- Only `completion` and `chat` with `api.streaming: false` are supported: llm-d-async returns whole response bodies.
+- `load.request_timeout` and `load.request_retries` do not apply: the deadline bounds the wait, and llm-d-async retries
+  dispatches itself.
+- Each worker process names its own result list on every request it sends, so the llm-d-async queue entry must not
+  set its own `result_queue_name` (a queue-level setting takes precedence and the results would go elsewhere).
+- A result with an llm-d-async `error_code` (for example `DEADLINE_EXCEEDED`) is recorded as a failure of that type.
+  A request with no result by the deadline plus `result_grace_seconds` is recorded as `TimeoutError`, and it and any
+  request cancelled at stage teardown get llm-d-async's cancellation marker so they are not dispatched afterwards.
+- Standalone Redis only for now: llm-d-async's Cluster and Sentinel modes are not supported yet.
 
 ### Metrics Collection
 
@@ -491,7 +523,7 @@ that server's environment rather than a portable one.
 
 ### Credentials
 
-A config can carry a credential in five places: `server.api_key`, `tokenizer.token`, an authentication header under `api.headers`, `metrics.prometheus.bearer_token`, and an authentication header under `metrics.prometheus.headers`.
+A config can carry a credential in six places: `server.api_key`, `server.llmd_async_redis.password`, `tokenizer.token`, an authentication header under `api.headers`, `metrics.prometheus.bearer_token`, and an authentication header under `metrics.prometheus.headers`.
 
 A run renders its config twice, to the log at startup and to `config.yaml` in the report bundle. Both copies replace these values with `[REDACTED]`, so pod logs and reports uploaded to GCS or S3 do not carry keys. The requests themselves still use the real values.
 

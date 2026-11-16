@@ -18,6 +18,7 @@ from inference_perf.config.client.filestorage import (
     StorageConfigBase,
 )
 from inference_perf.config.client.modelserver import (
+    LlmdAsyncRedisConfig,
     ModelServerClientConfig,
     ModelServerType,
 )
@@ -25,6 +26,7 @@ from inference_perf.config.client.server_metrics import PrometheusClientConfig
 
 __all__ = [
     "GoogleCloudStorageConfig",
+    "LlmdAsyncRedisConfig",
     "ModelServerClientConfig",
     "ModelServerType",
     "PrometheusClientConfig",

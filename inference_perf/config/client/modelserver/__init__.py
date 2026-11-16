@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.config.client.modelserver.config import (
+    LlmdAsyncRedisConfig,
     ModelServerClientConfig,
     ModelServerType,
 )
 
 __all__ = [
+    "LlmdAsyncRedisConfig",
     "ModelServerClientConfig",
     "ModelServerType",
 ]
