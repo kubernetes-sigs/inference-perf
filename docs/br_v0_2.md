@@ -102,6 +102,12 @@ one entry for the model server, labelled with the server type (`vllm`,
 A metric the server does not expose, or whose query returned nothing, is left
 out, as is `cache_hit_rate` for a stage with no cache queries.
 
+`results.observability.drop_rate` is the percent of the stage's requests that
+were generated but never dispatched because the stage ended first: dropped over
+recorded plus dropped. It is left out when the stage could only count a lower
+bound (`dropped_requests_exact: false`). Requests cancelled at teardown were
+dispatched, so they count under `requests.incomplete`, not here.
+
 `run.uid` is generated per stage. A composer is free to overwrite it during
 merge.
 

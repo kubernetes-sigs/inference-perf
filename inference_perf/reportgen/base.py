@@ -1387,6 +1387,8 @@ class ReportGenerator:
                         if stage_metrics is not None and self.config.server is not None
                         else None
                     ),
+                    # A lower bound would read as the stage's drop rate, so only an exact count is used.
+                    dropped_requests=stage_info.dropped_requests if stage_info and stage_info.dropped_requests_exact else None,
                 )
                 lifecycle_reports.append(
                     ReportFile(
