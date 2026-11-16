@@ -31,6 +31,12 @@ from numpy.typing import NDArray
 
 from inference_perf.utils.numeric.expression import Expression
 
+
+def random_rate_error(raw: Union[str, int, float]) -> str:
+    """The message for a rate that draws from a distribution."""
+    return f"Rate {raw!r} is random. A rate is never random."
+
+
 # Grid spacing for integrating a time-varying rate, in seconds, and a cap on the
 # number of grid points so a very long stage can't allocate without bound.
 _GRID_STEP = 0.01
@@ -41,8 +47,8 @@ class RateSchedule:
     """Cumulative request intensity of a rate expression over ``[0, duration]``.
 
     Args:
-        rate: Requests per second as a function of stage time ``t``. Must be
-            deterministic and nonnegative over the window.
+        rate: Requests per second, which may vary with stage time ``t``. Never
+            random, and nonnegative over the window.
         duration: Length of the dispatch window in seconds.
 
     Past ``duration`` (the Poisson timer runs over its window whenever its
@@ -53,7 +59,7 @@ class RateSchedule:
 
     def __init__(self, rate: Expression, duration: float) -> None:
         if rate.is_random:
-            raise ValueError(f"Rate {rate.raw!r} is random; a rate must be a deterministic function of t.")
+            raise ValueError(random_rate_error(rate.raw))
         if duration <= 0:
             raise ValueError(f"duration must be positive, got {duration}.")
         self.rate = rate

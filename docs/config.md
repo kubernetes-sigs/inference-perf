@@ -236,7 +236,7 @@ load:
 
 #### Rate Expressions
 
-A constant or Poisson stage's `rate` is a number or an [expression](./expressions.md) over stage time `t`. The stage sends the rate integrated over its window, and reports carry the mean rate. A number schedules exactly as it always has.
+A constant or Poisson stage's `rate` is a number or an [expression](./expressions.md). An expression may vary with stage time `t` and need not mention it: `"2 + 3"` is a rate of 5. The stage sends the rate integrated over its window, and reports carry the mean rate. A number schedules exactly as it always has.
 
 <!-- checked-example -->
 ```yaml
@@ -252,6 +252,7 @@ load:
 | Rate | Window (s) | Requests | Mean req/s |
 | --- | --- | --- | --- |
 | `10` | 60 | 600 | 10.00 |
+| `2 + 3` | 60 | 300 | 5.00 |
 | `5 + t/2` | 60 | 1200 | 20.00 |
 | `Min(5 + t/2, 40)` | 120 | 3575 | 29.79 |
 | `10 + 5*sin(2*pi*t/60)` | 60 | 600 | 10.00 |
@@ -266,7 +267,7 @@ The constant load type spreads requests by how much the rate has built up, so th
 | Rejected rate | Why |
 | --- | --- |
 | `10 - t` | Goes negative during a 60s stage. |
-| `Normal(10, 1)` | Random. A rate must be the same on every run. |
+| `Normal(10, 1)` | Random. A rate is never random. |
 | `requests/10` | `requests` is not a known symbol. |
 | `0*t` | Zero over the whole stage, so the stage would send nothing. |
 

@@ -22,7 +22,7 @@ from pydantic import ConfigDict, Field, PrivateAttr, model_validator
 from inference_perf.config.datagen.replay import TraceConfig
 from inference_perf.utils.cpu_count import default_cpu_count
 from inference_perf.utils.numeric.expression import Expression, Predicate
-from inference_perf.utils.numeric.rate_schedule import RateSchedule
+from inference_perf.utils.numeric.rate_schedule import RateSchedule, random_rate_error
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +71,8 @@ class StandardLoadStage(LoadStage):
         ...,
         description=(
             "Request rate (QPS): a positive number, or an expression over stage time t (seconds) such as "
-            "'10 + 5*sin(2*pi*t/60)' or 'Min(5 + t/2, 40)'. An expression must be deterministic and "
-            "nonnegative over the stage."
+            "'10 + 5*sin(2*pi*t/60)' or 'Min(5 + t/2, 40)'. An expression is never random, need not mention t, "
+            "and must be nonnegative over the stage."
         ),
     )
     duration: Optional[int] = Field(
@@ -162,6 +162,9 @@ class StandardLoadStage(LoadStage):
         duration = self.effective_duration
         cached = self._rate_schedule
         if cached is None or cached.rate.raw != self.rate or cached.duration != duration:
+            # checked ahead of the bounds, so a random rate gets the rate's own message
+            if isinstance(self.rate, str) and Expression(self.rate).is_random:
+                raise ValueError(random_rate_error(self.rate))
             expression = Expression(self.rate, allow_random=False, minimum=0, duration=duration)
             self._rate_schedule = RateSchedule(expression, duration)
         assert self._rate_schedule is not None
