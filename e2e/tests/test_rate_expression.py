@@ -46,14 +46,14 @@ LATE_REQUESTS = 100
 MIN_PACE_RATIO = 2.5
 
 
-# One constant-type stage whose rate is the step above, for 8 seconds, on one
-# worker with mock prompts. Only base_url is filled in, since the port belongs
-# to the test.
+# One stage whose rate is the step above, for 8 seconds, on one worker with
+# mock prompts and no load.type, which is not set next to a rate expression.
+# Only base_url is filled in, since the port belongs to the test.
 def _config(base_url: str) -> Dict[str, Any]:
     return {
         "api": {"type": "completion"},
         "data": {"type": "mock"},
-        "load": {"type": "constant", "stages": [{"rate": RATE_EXPRESSION, "duration": DURATION}], "num_workers": 1},
+        "load": {"stages": [{"rate": RATE_EXPRESSION, "duration": DURATION}], "num_workers": 1},
         "server": {"type": "vllm", "model_name": MODEL_PATH, "base_url": base_url},
         "tokenizer": {"pretrained_model_name_or_path": MODEL_PATH},
         "report": {"request_lifecycle": {"summary": True, "per_stage": False, "per_request": False}},

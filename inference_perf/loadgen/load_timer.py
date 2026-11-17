@@ -100,22 +100,15 @@ class PoissonLoadTimer(LoadTimer):
     """
 
     def __init__(self, rate: Union[float, RateSchedule], duration: float) -> None:
-        self._schedule: Optional[RateSchedule] = None
         if isinstance(rate, RateSchedule):
-            if rate.is_constant:
-                rate = rate.constant_rate
-            else:
-                self._schedule = rate
-                rate = rate.mean_rate
+            # load.type is rejected next to a rate expression, so only a
+            # constant schedule gets here
+            rate = rate.constant_rate
         self._rate = rate
         self._duration = duration
         self._rand = np.random.default_rng()
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
-        if self._schedule is not None:
-            yield from self._start_varying_timer(self._schedule, initial)
-            return
-
         # a zero rate never draws a request, so the loop below would never yield
         if self._rate == 0:
             return
@@ -139,24 +132,6 @@ class PoissonLoadTimer(LoadTimer):
             for _ in range(req_count):
                 next_time = next(time_generator)
                 yield next_time
-
-    def _start_varying_timer(self, schedule: RateSchedule, initial: Optional[float]) -> Generator[float, None, None]:
-        # The same second-by-second process as the constant case, except each
-        # second's expected count is the rate integrated over that second, and
-        # requests are spread within it by cumulative intensity rather than
-        # uniformly in time. Unbounded, like the constant case: run_stage stops
-        # pulling once the stage's request count is dispatched.
-        start = time.perf_counter() if initial is None else initial
-        second = 0
-        while True:
-            low, high = (float(v) for v in schedule.cumulative(np.array([second, second + 1], dtype=np.float64)))
-            req_count = self._rand.poisson(high - low)
-            if req_count >= 1:
-                intervals = self._rand.exponential(1.0, req_count)
-                counts = low + np.cumsum(intervals * ((high - low) / np.sum(intervals)))
-                for offset in schedule.inverse(counts):
-                    yield start + float(offset)
-            second += 1
 
 
 class TraceReplayLoadTimer(LoadTimer):

@@ -51,10 +51,9 @@ class RateSchedule:
             random, and nonnegative over the window.
         duration: Length of the dispatch window in seconds.
 
-    Past ``duration`` (the Poisson timer runs over its window whenever its
-    random per-second counts come in under the expected total), the rate is
-    held at the window's mean rate. Holding the final value instead would hang
-    a rate that ramps down to zero: the overrun would never reach the count.
+    A time-varying schedule covers the window and nothing past it: a time
+    after ``duration`` reads as ``duration``, and a count above the total
+    reads as the total.
     """
 
     def __init__(self, rate: Expression, duration: float) -> None:
@@ -120,9 +119,7 @@ class RateSchedule:
         times = np.asarray(t, dtype=np.float64)
         if self._constant is not None:
             return times * self._constant
-        inside = np.interp(np.minimum(times, self.duration), self._grid, self._cumulative)
-        overrun = np.maximum(times - self.duration, 0.0) * self.mean_rate
-        return np.asarray(inside + overrun, dtype=np.float64)
+        return np.asarray(np.interp(times, self._grid, self._cumulative), dtype=np.float64)
 
     def inverse(self, u: Union[float, NDArray[np.float64]]) -> NDArray[np.float64]:
         """Stage time by which ``u`` requests are expected: the inverse of :meth:`cumulative`."""
@@ -131,9 +128,4 @@ class RateSchedule:
             if self._constant == 0:
                 raise ValueError("A zero rate never reaches any request count.")
             return counts / self._constant
-        inside = np.interp(np.minimum(counts, self._total), self._cumulative, self._grid)
-        beyond = np.maximum(counts - self._total, 0.0)
-        if bool(np.any(beyond > 0)) and self._total <= 0:
-            raise ValueError(f"Rate {self.rate.raw!r} is zero over the whole window, so it never reaches a request.")
-        extra = beyond / self.mean_rate if self._total > 0 else np.zeros_like(beyond)
-        return np.asarray(inside + extra, dtype=np.float64)
+        return np.asarray(np.interp(counts, self._cumulative, self._grid), dtype=np.float64)

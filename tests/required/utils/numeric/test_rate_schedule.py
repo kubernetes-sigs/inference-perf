@@ -64,15 +64,12 @@ def test_inverse_round_trips_cumulative() -> None:
     np.testing.assert_allclose(schedule.inverse(schedule.cumulative(times)), times, atol=1e-6)
 
 
-# Past the window the rate is held at the window's mean: a ramp 0 -> 10 over 10s has
-# total 50 and mean 5, so 5 seconds past the end adds 25 (cumulative(15) = 75), and the
-# inverse of 75 is 15. A ramp DOWN to zero still overruns at the mean instead of stalling.
-def test_overrun_holds_the_mean_rate() -> None:
-    up = _schedule("t", 10)
-    assert float(up.cumulative(15.0)) == pytest.approx(75.0)
-    assert float(up.inverse(75.0)) == pytest.approx(15.0)
-    down = _schedule("10 - t", 10)
-    assert float(down.inverse(down.total + 5.0)) == pytest.approx(11.0)
+# A time-varying schedule stops at its window: for the ramp rate = t over 10s (total 50), a time
+# 5s past the end still reads 50 requests, and a count of 75 reads as the window end, 10s.
+def test_schedule_stops_at_the_window() -> None:
+    ramp = _schedule("t", 10)
+    assert float(ramp.cumulative(15.0)) == pytest.approx(50.0)
+    assert float(ramp.inverse(75.0)) == pytest.approx(10.0)
 
 
 # A random rate, Uniform(1, 2) over 10s, is refused with "A rate is never random".
