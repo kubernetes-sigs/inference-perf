@@ -129,6 +129,7 @@ def converge_to_exact_length_text(
     initial_tokens: List[int],
     adjust_tokens_fn: Callable[[List[int], int, int], List[int]],
     wrap_fn: Optional[Callable[[str], str]] = None,
+    add_special_tokens: bool = True,
 ) -> Tuple[str, List[int]]:
     """Generate text tokenizing to exactly target_len; return (text, ids).
 
@@ -143,6 +144,11 @@ def converge_to_exact_length_text(
     counted with add_special_tokens=False because the wrapper embeds its own
     special tokens; the returned ids remain the unwrapped content ids.
     Callers must ensure target_len exceeds the wrapper's fixed overhead.
+
+    Set ``add_special_tokens=False`` when the text is a fragment appended to
+    another sequence (e.g. a shared-prefix suffix): the tokenizer's special
+    tokens (BERT's [CLS]/[SEP], T5's </s>) belong to the whole prompt, not to
+    the fragment, so counting them would make short targets unreachable.
     """
     if target_len <= 0:
         return "", []
@@ -159,7 +165,7 @@ def converge_to_exact_length_text(
             text = " ".join(text)
 
         if wrap_fn is None:
-            current_len = tokenizer.count_tokens(text)
+            current_len = tokenizer.count_tokens(text, add_special_tokens=add_special_tokens)
         else:
             text = wrap_fn(text)
             current_len = tokenizer.count_tokens(text, add_special_tokens=False)

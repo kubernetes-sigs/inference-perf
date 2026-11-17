@@ -264,7 +264,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         The first token is word-start so the suffix decodes with a leading whitespace
         character, preventing BPE merges across the prefix/suffix boundary. The
         convergence loop then settles the rest of the suffix to the exact count
-        regardless of random-token roundtrip drift.
+        regardless of random-token roundtrip drift. The suffix is counted without
+        special tokens because it is appended to the prefix, which already
+        carries them.
         """
         if length <= 0:
             return []
@@ -300,6 +302,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             target_len=length,
             initial_tokens=initial,
             adjust_tokens_fn=adjust,
+            add_special_tokens=False,
         )
         return ids
 
