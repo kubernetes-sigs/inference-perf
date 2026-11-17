@@ -13,5 +13,17 @@
 # limitations under the License.
 from .expression import Expression, Predicate
 from .measured import SERIES, SIGNALS, MeasuredState, Observation, Series, Term
+from .piecewise_linear import PiecewiseLinear, Segment
 
-__all__ = ["Expression", "Predicate", "MeasuredState", "Observation", "Series", "SERIES", "SIGNALS", "Term"]
+__all__ = [
+    "Expression",
+    "PiecewiseLinear",
+    "Predicate",
+    "Segment",
+    "MeasuredState",
+    "Observation",
+    "Series",
+    "SERIES",
+    "SIGNALS",
+    "Term",
+]

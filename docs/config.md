@@ -233,6 +233,53 @@ load:
 
 **Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
 
+#### Concurrency Expressions
+
+`concurrency_level` on a concurrent stage takes an integer, or an [expression](expressions.md) of stage time `t` that sets the level over the stage. A level is a whole number, so the expression says how it is rounded: `floor(...)` never runs more requests at once than the line gives, `ceiling(...)` never fewer, and `floor(... + 1/2)` rounds to the nearest. A step function whose steps are whole numbers, such as `Piecewise((8, t < 60), (32, True))`, needs no rounding.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: concurrent
+  stages:
+    - num_requests: 2000
+      concurrency_level: "floor(Min(1 + t/6, 64))"  # 1, one more every 6s, 64 from t=378 on
+```
+
+Checked when the config loads:
+
+- The line under `floor` or `ceiling` is [piecewise linear](expressions.md#piecewise-linear-expressions) in `t`, so every time the level changes is exact. The rounding wraps the whole expression.
+- Without a rounding, every step is a whole number.
+- The level is at least 1 at every `t`.
+- It is bounded above. A concurrent stage runs until `num_requests` finish, so there is no end time to bound `t`. Cap a ramp with `Min(...)`.
+
+| Concurrency level | Start | Peak |
+| --- | --- | --- |
+| `12` | 12 | 12 |
+| `floor(Min(1 + t/6, 64))` | 1 | 64 |
+| `ceiling(Min(0.5 + t/6, 64))` | 1 | 64 |
+| `Piecewise((8, t < 60), (32, True))` | 8 | 32 |
+| `floor(Max(1, Min(t/2, 120 - t/2)))` | 1 | 60 |
+| `4 * (1 + Heaviside(t - 30) + Heaviside(t - 60))` | 4 | 12 |
+| `floor(Min(1 + t, 2.5))` | 1 | 2 |
+| `floor(Min(1 + t, 2.5) + 1/2)` | 1 | 3 |
+
+| Rejected concurrency level | Why |
+| --- | --- |
+| `floor(1 + t)` | Grows without limit. Cap it: `floor(Min(1 + t, 64))`. |
+| `floor(Max(0.5, 10 - t))` | Falls below 1 at `t = 9`. |
+| `Min(1 + t/6, 64)` | Not whole numbers. Say how to round: `floor(Min(1 + t/6, 64))`. |
+| `floor(Min(1 + t**2, 64))` | Not piecewise linear. |
+| `1 + floor(Min(t, 10))` | A rounding inside the expression, not around it. |
+| `Normal(32, 4)` | Random. |
+
+How the level is applied:
+
+- `t = 0` is when the stage's first request is scheduled. A stage can finish before the expression reaches its peak.
+- Raising the level takes effect at once. Lowering it never cancels a request: new requests wait until enough in-flight ones finish, so how fast delivered concurrency follows a fall depends on request latency.
+- The level is split across workers as an integer level is. While the level is below `num_workers`, some workers sit idle.
+- In the stage report, `load_summary.concurrency` is the peak level and `load_summary.concurrency_expression` is the expression.
+
 #### Retrying Transport Faults
 
 `request_retries` re-sends a request that fails **before response headers were obtained** —
