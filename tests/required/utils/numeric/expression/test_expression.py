@@ -123,15 +123,10 @@ class TestRandom:
         assert isinstance(expr.sample(t=5, rng=np.random.default_rng(0)), float)
 
     def test_distribution_beyond_legacy_fast_path(self) -> None:
-        # Rayleigh was never in the hand-written sampler table; it is served by
-        # sympy's own numpy dispatcher on the fast path (not the slow fallback)
-        # and its draws stay within the [0, oo) support.
-        expr = Expression("Rayleigh(2)")
-        assert expr.is_random
-        assert not expr._fallback
-        result = expr.sample(size=200, rng=np.random.default_rng(7))
-        assert isinstance(result, np.ndarray)
-        assert result.min() >= 0
+        # Rayleigh has no row in the distribution table, so it is rejected by
+        # name when parsed. It used to be served by sympy's numpy dispatcher.
+        with pytest.raises(ValueError, match="Distribution 'Rayleigh' is not supported"):
+            Expression("Rayleigh(2)")
 
 
 class TestRangeValidation:
@@ -230,19 +225,16 @@ class TestClipPolicy:
 class TestSympyInternalsFence:
     """Fail loudly if a sympy upgrade breaks the internals the fast path leans on.
 
-    Both fences guard silent degradation: if sympy moves ``do_sample_numpy``
-    or reshapes its distribution constructors, Expression would still work but
-    every random draw would take the slow symbolic path.
+    The first fence guards the compiled skeleton every random draw goes
+    through. The second guards constructor discovery: if sympy reshapes its
+    distribution constructors, a supported distribution would stop parsing.
     """
 
     def test_numpy_fast_path_compiled(self) -> None:
-        from inference_perf.utils.numeric.expression import expression as mod
-
-        # getattr rather than attribute access: do_sample_numpy is an import,
-        # not a definition, so mypy --strict flags cross-module access to it.
-        assert getattr(mod, "do_sample_numpy", None) is not None
+        # sampling no longer imports sympy's do_sample_numpy and has no symbolic
+        # fallback, so the fence is the compiled skeleton and one leaf per draw.
         expr = Expression("Normal(0, 1) + Uniform(0, 1) + t")
-        assert not expr._fallback
+        assert len(expr._random_leaves) == 2
         assert expr._lambdified is not None
 
     def test_distribution_constructors_discovered(self) -> None:

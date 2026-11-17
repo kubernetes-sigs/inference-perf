@@ -14,15 +14,16 @@
 """First-class numeric expressions for config values.
 
 An :class:`Expression` turns a numeric config knob (a constant, a function of
-stage time ``t``, and/or a draw from a ``sympy.stats`` random variable) into a
+stage time ``t``, and/or a draw from a random variable) into a
 single object that is parsed and validated once at construction and sampled
 many times. It is the string-grammar counterpart to
 :mod:`inference_perf.utils.numeric.distribution`, which remains the fast,
 vectorised path for structured ``Distribution`` configs.
 
-Grammar: constants, the single time variable ``t``, standard math, and
-``sympy.stats`` distribution constructors (``Normal(512, 200)``,
-``Uniform(10, 50)``, ``Poisson(10)``, ...). Each call site decides whether ``t``
+Grammar: constants, the single time variable ``t``, standard math, and the
+distribution constructors that have a row in :data:`.distributions.DISTRIBUTIONS`
+(``Normal(512, 200)``, ``Uniform(10, 50)``, ``Poisson(10)``, ...). Any other
+``sympy.stats`` distribution is rejected by name. Each call site decides whether ``t``
 and random variables are permitted, and may constrain the value range. Bounds
 are assertions by default: a value that can provably escape them is rejected at
 construction, and an escape only detectable at sample time raises there. A call
@@ -46,7 +47,8 @@ import inspect
 import logging
 import math
 import re
-from typing import Callable, Mapping, Optional, TypeGuard, Union
+from tokenize import TokenError
+from typing import Callable, Iterator, Mapping, NoReturn, Optional, TypeGuard, Union
 
 import numpy as np
 import sympy
@@ -59,25 +61,11 @@ from sympy.core.relational import GreaterThan, LessThan, Relational, StrictGreat
 from sympy.logic.boolalg import And, Boolean, Or
 from sympy.parsing.sympy_parser import parse_expr
 
+from .distributions import DISTRIBUTIONS, Distribution, DistributionUse, lookup, render_condition, unsupported_message
 from .measured import SERIES, SIGNALS, Term, extract_terms
-from .sympy_types import SympyDistribution, SympyExpr, SympyNode, SympyRandomSymbol, SympySet
+from .sympy_types import SympyExpr, SympyNode, SympyRandomSymbol, SympySet
 
 logger = logging.getLogger(__name__)
-
-# sympy maintains its own per-distribution numpy samplers in a singledispatch
-# registry; the implementation registered to ``object`` is a stub that raises.
-# Resolving this dispatch ourselves (rather than calling the ``sympy.stats.sample``
-# wrapper, which re-does all of its symbolic bookkeeping on every call) lets us
-# sample any distribution sympy supports at near-numpy speed, with no hardcoded
-# table to keep in sync. The import is guarded: if a future sympy moves this
-# internal module we degrade to the slow but always-correct sampling path.
-try:
-    from sympy.stats.sampling.sample_numpy import do_sample_numpy
-
-    _NO_NUMPY_SAMPLER = do_sample_numpy.dispatch(object)
-except Exception:  # pragma: no cover - defensive: sympy internal layout changed
-    do_sample_numpy = None
-    _NO_NUMPY_SAMPLER = None
 
 # The single time variable the grammar ever permits.
 _T = Symbol("t")
@@ -99,8 +87,17 @@ def _distribution_constructors() -> dict[str, Callable[..., SympyRandomSymbol]]:
     return ctors
 
 
-# Built once at import; the set of sympy.stats distributions is static.
+# Built once at import; the set of sympy.stats distributions is static. Only
+# the ones with a row in DISTRIBUTIONS are callable from the grammar: the rest
+# are kept so that using one is rejected by name.
 _DISTRIBUTION_CTORS = _distribution_constructors()
+
+
+def _unsupported(name: str) -> Callable[..., NoReturn]:
+    def reject(*args: object) -> NoReturn:
+        raise ValueError(unsupported_message(name))
+
+    return reject
 
 
 def _parse_namespace(counter: list[int]) -> dict[str, Callable[..., SympyRandomSymbol]]:
@@ -112,18 +109,42 @@ def _parse_namespace(counter: list[int]) -> dict[str, Callable[..., SympyRandomS
     expression with two draws of the same distribution (e.g. a skew-normal built
     from two independent normals) yields two independent random variables rather
     than one aliased symbol.
+
+    A constructor is callable only when its distribution has a row in
+    ``DISTRIBUTIONS``, and then only with constant arguments that meet the
+    row's conditions. Every other ``sympy.stats`` name raises.
     """
-    namespace: dict[str, Callable[..., SympyRandomSymbol]] = {}
-    for name, ctor in _DISTRIBUTION_CTORS.items():
+    namespace: dict[str, Callable[..., SympyRandomSymbol]] = {name: _unsupported(name) for name in _DISTRIBUTION_CTORS}
+    for name, row in DISTRIBUTIONS.items():
 
         def bound(
-            *args: object, _ctor: Callable[..., SympyRandomSymbol] = ctor, _counter: list[int] = counter
+            *args: object,
+            _row: Distribution = row,
+            _ctor: Callable[..., SympyRandomSymbol] = _DISTRIBUTION_CTORS[name],
+            _counter: list[int] = counter,
         ) -> SympyRandomSymbol:
+            use = _row.use(args)
+            use.require_constant()
             _counter[0] += 1
-            return _ctor(f"rv_{_counter[0]}", *args)
+            return _ctor(f"rv_{_counter[0]}", *use.args)
 
         namespace[name] = bound
     return namespace
+
+
+def _use_of(rv: SympyRandomSymbol) -> DistributionUse:
+    """The table row and arguments behind a random variable in a parsed tree.
+
+    Raises ``ValueError`` for a distribution with no row. The parse namespace
+    already refuses those, so this is the check that still holds if a tree is
+    ever built some other way.
+    """
+    distribution = rv.pspace.distribution
+    row = lookup(distribution)
+    if row is None:
+        raise ValueError(unsupported_message(type(distribution).__name__.removesuffix("Distribution")))
+    # sympy appends arguments of its own to some distributions, e.g. Binomial's succ and fail
+    return row.use(distribution.args[: len(row.parameters)])
 
 
 def _is_random_symbol(sym: object) -> TypeGuard[SympyRandomSymbol]:
@@ -136,24 +157,6 @@ def _is_node(value: object) -> TypeGuard[SympyNode]:
 
 def _is_expr(value: object) -> TypeGuard[SympyExpr]:
     return isinstance(value, sympy.Expr)
-
-
-def _finite_values(support: object) -> Optional[list[SympyExpr]]:
-    # a finite distribution (Binomial, Die) gives a Python set of its values, not a sympy Set
-    if not isinstance(support, (set, frozenset)):
-        return None
-    values = [sympy.sympify(value) for value in support]
-    return values if all(_is_expr(value) for value in values) else None
-
-
-def _support_is_integer(support: object) -> bool:
-    finite = _finite_values(support)
-    if finite is not None:
-        return all(value.is_integer is True for value in finite)
-    try:
-        return bool(sympy.S.Integers.is_superset(support))
-    except (AttributeError, TypeError, NotImplementedError):
-        return False
 
 
 def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = None) -> object:
@@ -184,14 +187,8 @@ def _interval(expr: SympyNode, duration: Optional[float]) -> Optional[tuple[Symp
     if _is_expr(expr) and (expr.is_Number or expr.is_NumberSymbol):
         return expr, expr
     if _is_random_symbol(expr):
-        support = expr.pspace.distribution.set
-        finite = _finite_values(support)
-        if finite is not None:
-            return sympy.Min(*finite), sympy.Max(*finite)
-        try:
-            return support.inf, support.sup
-        except (AttributeError, NotImplementedError):
-            return None
+        use = _use_of(expr)
+        return use.lower, use.upper
     if expr == _T:
         return sympy.S.Zero, (sympy.Float(duration) if duration is not None else oo)
     found = [_interval(arg, duration) for arg in expr.args]
@@ -225,6 +222,16 @@ def _interval(expr: SympyNode, duration: Optional[float]) -> Optional[tuple[Symp
     return None
 
 
+def _support(use: DistributionUse) -> SympySet:
+    """The values a draw can take: the whole numbers or the reals from the row's lowest to its highest."""
+    lower, upper = use.lower, use.upper
+    if use.row.integer:
+        whole: SympySet = sympy.Range(sympy.ceiling(lower), upper if upper == oo else sympy.Add(sympy.floor(upper), 1))
+        return whole
+    reals: SympySet = Interval(lower, upper)
+    return reals
+
+
 def _is_condition(expr: object) -> bool:
     """True for a truth value or a relational/logical combination, false for a number.
 
@@ -256,7 +263,7 @@ class Expression:
         allow_time: Whether the time variable ``t`` may appear. ``t`` is the
             only variable the grammar permits; when ``False`` the expression
             must be constant (and/or random).
-        allow_random: Whether ``sympy.stats`` random variables may appear.
+        allow_random: Whether random variables may appear.
         minimum: Lower bound for the value, or ``None`` for unbounded. Bounds
             are assertions: a value that can provably escape them is rejected
             at construction, and an escape only detectable at sample time
@@ -300,6 +307,8 @@ class Expression:
 
         free = self._expr.free_symbols
         self._random_symbols = sorted((s for s in free if _is_random_symbol(s)), key=str)
+        # every random variable must have a row: this raises for one that does not
+        self._uses = {rv: _use_of(rv) for rv in self._random_symbols}
         self._is_random = bool(self._random_symbols)
         self._free_symbols = {str(s) for s in free if not _is_random_symbol(s)}
 
@@ -324,37 +333,26 @@ class Expression:
 
         Splits the parsed tree into random *leaves* (the ``RandomSymbol`` atoms)
         and a deterministic *skeleton* (the arithmetic/time combination of them).
-        Each leaf is drawn through sympy's own per-distribution numpy sampler
-        (``do_sample_numpy``), resolved once here because the expression is fixed
-        at construction; the skeleton is compiled once with ``sympy.lambdify``. At
-        sample time we draw the leaves with numpy and feed them through the
-        lambdified closure, never touching the slow ``sympy.stats.sample`` wrapper.
-        If any leaf distribution has no numpy sampler (or the sympy internal is
-        unavailable) we set ``_fallback`` and keep the sympy path.
+        Each leaf is drawn through its row's numpy sampler, and the skeleton is
+        compiled once with ``sympy.lambdify``. At sample time we draw the
+        leaves with numpy and feed them through the lambdified closure, so
+        sympy's own sampling is never involved. Every row has a sampler, so
+        this covers every expression the grammar accepts, including
+        ``Piecewise`` mixtures, which lambdify to a numpy select.
         """
-        self._random_leaves: list[tuple[SympyNode, SympyDistribution]] = []
+        self._random_leaves: list[tuple[SympyNode, DistributionUse]] = []
         self._lambdified: Optional[Callable[..., ArrayLike]] = None
-        self._fallback = False
         if not self._is_random:
-            return
-
-        if do_sample_numpy is None:
-            self._fallback = True
             return
 
         placeholders: dict[SympyNode, SympyNode] = {}
         for i, rv in enumerate(self._random_symbols):
-            dist = rv.pspace.distribution
-            if do_sample_numpy.dispatch(type(dist)) is _NO_NUMPY_SAMPLER:
-                self._fallback = True
-                self._random_leaves = []
-                return
             placeholder = Symbol(f"_leaf_{i}")
             placeholders[rv] = placeholder
-            self._random_leaves.append((placeholder, dist))
+            self._random_leaves.append((placeholder, self._uses[rv]))
 
         skeleton = self._expr.xreplace(placeholders)
-        order = [ph for ph, _dist in self._random_leaves] + [_T]
+        order = [ph for ph, _use in self._random_leaves] + [_T]
         self._lambdified = sympy.lambdify(order, skeleton, "numpy")
 
     def _parse(self, raw: Union[str, int, float]) -> SympyExpr:
@@ -418,10 +416,7 @@ class Expression:
             # Transformed/mixed random expressions are left for the sample-time
             # clamp.
             if _is_random_symbol(self._expr):
-                try:
-                    return self._expr.pspace.distribution.set
-                except Exception:
-                    return None
+                return _support(self._uses[self._expr])
             return None
 
         if not self._free_symbols:
@@ -476,19 +471,49 @@ class Expression:
         """True when every value the expression can take is provably an integer.
 
         sympy does not know a discrete random variable is integer-valued, so each
-        one is stood in for by an integer symbol when its support is a subset of
-        the integers, and by a real symbol otherwise. ``Poisson(2) + 1`` and
+        one is stood in for by an integer symbol when its row says its draws are
+        whole numbers, and by a real symbol otherwise. ``Poisson(2) + 1`` and
         ``floor(Normal(512, 128))`` prove, ``Normal(512, 128)`` and
         ``Poisson(2) / 2`` do not.
         """
         if _is_expr(self._expr) and self._expr.is_number:
             return float(self._expr).is_integer()
         stand_ins: dict[SympyNode, SympyNode] = {
-            rv: sympy.Dummy(integer=True) if _support_is_integer(rv.pspace.distribution.set) else sympy.Dummy(real=True)
-            for rv in self._expr.atoms(sympy.stats.rv.RandomSymbol)
-            if _is_random_symbol(rv)
+            rv: sympy.Dummy(integer=True) if use.row.integer else sympy.Dummy(real=True) for rv, use in self._uses.items()
         }
         return self._expr.xreplace(stand_ins).is_integer is True
+
+    def mean(self, t: Optional[float] = None) -> Optional[float]:
+        """The exact mean of the value, or ``None`` when it cannot be derived.
+
+        Each random variable's mean comes from its row. The mean of the whole
+        expression follows only where the expression is linear in its random
+        variables, e.g. ``128 + 2*Poisson(64)``. Through anything else
+        (``Min``, ``floor``, a product of two draws, a ``Piecewise`` mixture)
+        the mean is not a function of the means, so the answer is ``None``.
+        ``inf`` or ``-inf`` means a draw with an infinite mean decides it,
+        e.g. ``Pareto(1, 1)``.
+
+        Args:
+            t: Stage time in seconds, substituted for ``t`` when present.
+        """
+        expr = self._expr
+        if t is not None:
+            expr = expr.subs(_T, sympy.Float(t))
+        remaining = {str(s) for s in expr.free_symbols if not _is_random_symbol(s)}
+        if remaining:
+            raise ValueError(f"Expression {self.raw!r} requires {sorted(remaining)} but none was provided to mean().")
+        present = [rv for rv in self._random_symbols if expr.has(rv)]
+        if present:
+            try:
+                degree = sympy.Poly(expr, *present).total_degree()
+            except sympy.PolynomialError:
+                return None
+            if degree > 1:
+                return None
+        means: dict[SympyNode, SympyNode] = {rv: self._uses[rv].mean for rv in present}
+        value = float(expr.xreplace(means))
+        return None if math.isnan(value) else value
 
     @property
     def is_constant(self) -> bool:
@@ -548,29 +573,15 @@ class Expression:
         if rng is None:
             rng = np.random.default_rng()
 
-        if self._fallback:
-            # Some leaf distribution has no direct numpy sampler; fall back to
-            # the (slower) symbolic sampler for correctness.
-            draw = sympy.stats.sample(
-                expr,
-                size=(size,) if size > 1 else (),
-                library="numpy",
-                seed=rng,
-            )
-            samples = np.asarray(draw, dtype=np.float64)
-        else:
-            # Fast path: draw each leaf via sympy's per-distribution numpy
-            # sampler (independent draws, since the shared rng advances between
-            # leaves), then evaluate the lambdified deterministic skeleton over
-            # the drawn arrays.
-            leaf_draws = [
-                np.asarray(do_sample_numpy(dist, (size,), rng), dtype=np.float64) for _ph, dist in self._random_leaves
-            ]
-            tval = 0.0 if t is None else float(t)
-            out = self._lambdified(*leaf_draws, tval)  # type: ignore[misc]
-            samples = np.asarray(out, dtype=np.float64)
-            if samples.shape == ():
-                samples = np.full(size, float(samples), dtype=np.float64)
+        # Draw each leaf through its row's numpy sampler (independent draws,
+        # since the shared rng advances between leaves), then evaluate the
+        # lambdified deterministic skeleton over the drawn arrays.
+        assert self._lambdified is not None
+        leaf_draws = [use.sample(rng, size) for _ph, use in self._random_leaves]
+        tval = 0.0 if t is None else float(t)
+        samples = np.asarray(self._lambdified(*leaf_draws, tval), dtype=np.float64)
+        if samples.shape == ():
+            samples = np.full(size, float(samples), dtype=np.float64)
 
         if self._clip_random:
             samples = np.clip(
@@ -589,8 +600,6 @@ class Expression:
                     f"[{self.minimum}, {self.maximum}]. Keep it in range with Min(...) or Max(...), "
                     "or pick a distribution bounded to the range."
                 )
-        # The fallback yields a 0-d scalar for size==1 while the numpy fast path
-        # yields a shape-(1,) array; flatten before scalarising so both work.
         return float(samples.reshape(-1)[0]) if size == 1 else samples
 
     def evaluate(self, t: Union[float, NDArray[np.float64]]) -> NDArray[np.float64]:
@@ -965,4 +974,136 @@ def _holding_set(expr: SympyNode) -> Optional[SympySet]:
         except Exception:
             return None
         return None if solved.has(sympy.ConditionSet) else solved
+    return None
+
+
+class ParameterConditionError(ValueError):
+    """A distribution parameter that varies with ``t`` breaks, or cannot be shown to meet, one of its conditions.
+
+    Attributes:
+        distribution: The use as written, e.g. ``Exponential(t)``.
+        parameters: The parameters the condition reads, e.g. ``("rate",)``.
+        condition: The condition, e.g. ``rate > 0``. ``rate is a finite real``
+            is the one condition every parameter has that no row lists.
+        t: A stage time in the window at which the condition is false, or
+            ``None`` when no such time was found and the condition still could
+            not be proved.
+    """
+
+    def __init__(
+        self, use: DistributionUse, parameters: tuple[str, ...], condition: str, duration: float, t: Optional[float]
+    ) -> None:
+        self.distribution = str(use)
+        self.parameters = parameters
+        self.condition = condition
+        self.t = t
+        outcome = f"fails at t = {t:g}" if t is not None else "could not be proved"
+        super().__init__(
+            f"{self.distribution}: {use.row.signature} requires '{condition}', which {outcome} over [0, {duration:g}]."
+        )
+
+
+def parse_distribution_use(raw: str) -> DistributionUse:
+    """Parse one distribution call whose arguments may be expressions of ``t``, e.g. ``"Exponential(5 + t/10)"``.
+
+    This is the input to :func:`prove_parameter_conditions`. :class:`Expression`
+    itself takes constant arguments only.
+    """
+    namespace: dict[str, Callable[..., object]] = {name: _unsupported(name) for name in _DISTRIBUTION_CTORS}
+    for name, row in DISTRIBUTIONS.items():
+        namespace[name] = lambda *args, _row=row: _row.use(args)
+    try:
+        use = parse_expr(raw, local_dict=namespace)
+    except (SyntaxError, TypeError, AttributeError, TokenError, sympy.SympifyError) as e:
+        raise ValueError(f"Could not parse distribution {raw!r}: {e}") from e
+    if not isinstance(use, DistributionUse):
+        raise ValueError(f"{raw!r} is not a single distribution call such as 'Exponential(5 + t/10)'.")
+    for arg in use.args:
+        _reject_unknown_functions("Distribution", raw, arg)
+        disallowed = sorted(str(symbol) for symbol in arg.free_symbols if symbol != _T)
+        if disallowed:
+            raise ValueError(f"Distribution {raw!r} uses disallowed symbol(s) {disallowed}; permitted: ['t'].")
+    return use
+
+
+# where 'lhs - rhs' must lie for each kind of condition to hold
+_HOLDING_GAPS: Mapping[str, SympySet] = {
+    ">": Interval.open(0, oo),
+    ">=": Interval(0, oo),
+    "<": Interval.open(-oo, 0),
+    "<=": Interval(-oo, 0),
+    "==": sympy.FiniteSet(0),
+}
+_WITNESS_GRID = 64
+
+
+def prove_parameter_conditions(use: DistributionUse, duration: float) -> None:
+    """Prove every parameter condition of ``use`` for all ``t`` in ``[0, duration]``.
+
+    A condition such as ``rate > 0`` becomes a statement about the range of an
+    expression of ``t`` once the arguments are substituted. It is proved from
+    the interval bounds of that expression, or failing that from its exact
+    range over the window. Every parameter must also stay a finite real, which
+    rules out ``Exponential(1/t)``. Anything short of a proof is a rejection: the
+    error names a ``t`` at which the condition is false when one is found
+    among the window's ends, the points where the condition's two sides meet
+    and an even grid, and carries ``t = None`` otherwise.
+
+    Raises:
+        ParameterConditionError: for the first condition that is not proved.
+    """
+    if not (math.isfinite(duration) and duration >= 0):
+        raise ValueError(f"duration must be a finite non-negative number, got {duration}.")
+    for parameter, arg in zip(use.row.parameters, use.args, strict=True):
+        # evaluated as well as proved: the range machinery assumes a real value, which sqrt(t - 5) is not at t = 0
+        failing = _time_outside(arg, duration, sympy.S.Reals)
+        if failing is not None or not any(_is_bounded(values) for values in _ranges(arg, duration)):
+            raise ParameterConditionError(use, (parameter,), f"{parameter} is a finite real", duration, failing)
+    for condition in use.row.conditions:
+        gap = use.bind(sympy.Add(condition.lhs, -condition.rhs))
+        holding = _HOLDING_GAPS[condition.rel_op]
+        if not any(values.is_subset(holding) is True for values in _ranges(gap, duration)):
+            parameters = tuple(
+                name for name, symbol in zip(use.row.parameters, use.row.symbols, strict=True) if condition.has(symbol)
+            )
+            failing = _time_outside(gap, duration, holding)
+            raise ParameterConditionError(use, parameters, render_condition(condition), duration, failing)
+
+
+def _ranges(expr: SympyExpr, duration: float) -> Iterator[SympySet]:
+    """Sets proved to contain every value of ``expr`` over ``[0, duration]``, the cheap loose one first."""
+    found = _interval(expr, duration)
+    if found is not None:
+        hull: SympySet = Interval(found[0], found[1])
+        yield hull
+    # interval bounds are sound but loose, e.g. for (t - 1)**2 + 1, so ask for the exact range
+    try:
+        values: SympySet = function_range(expr, _T, Interval(0, sympy.Float(duration)))
+    except Exception:
+        return
+    yield values
+
+
+def _is_bounded(values: SympySet) -> bool:
+    try:
+        return math.isfinite(float(values.inf)) and math.isfinite(float(values.sup))
+    except (TypeError, ValueError, NotImplementedError):
+        return False
+
+
+def _time_outside(expr: SympyExpr, duration: float, holding: SympySet) -> Optional[float]:
+    """The earliest candidate ``t`` in ``[0, duration]`` at which ``expr`` evaluates outside ``holding``."""
+    candidates: list[SympyExpr] = [sympy.Float(duration * i / _WITNESS_GRID) for i in range(_WITNESS_GRID + 1)]
+    try:
+        # where the two sides of a condition meet, which a strict condition fails exactly
+        meeting = sympy.solveset(expr, _T, Interval(0, sympy.Float(duration)))
+    except Exception:
+        meeting = sympy.S.EmptySet
+    if isinstance(meeting, sympy.FiniteSet):
+        candidates.extend(meeting)
+    for at in sorted(candidates, key=float):
+        value = expr.subs(_T, at)
+        # a value that is not real, e.g. 1/t at 0, is in no holding set
+        if holding.contains(value) != sympy.true:
+            return float(at)
     return None
