@@ -60,6 +60,9 @@ class Distribution:
     # further relationals the mean needs to be finite, empty when it always is
     mean_finite_when: tuple[SympyRelational, ...]
     sampler: Sampler
+    # the one parameter is a list of values to pick from, e.g. DiscreteUniform([128, 256, 512]).
+    # lower, upper and mean are then display forms only, DistributionUse works them out from the values
+    takes_list: bool = False
 
     @property
     def symbols(self) -> tuple[SympyExpr, ...]:
@@ -68,10 +71,14 @@ class Distribution:
     @property
     def signature(self) -> str:
         """The call as a config writes it, e.g. ``Normal(mean, std)``."""
+        if self.takes_list:
+            return f"{self.name}([{self.parameters[0]}])"
         return f"{self.name}({', '.join(self.parameters)})"
 
     def use(self, args: Sequence[object]) -> DistributionUse:
         """Bind arguments to the parameters. Raises ``ValueError`` on a wrong count or a non-numeric argument."""
+        if self.takes_list:
+            return self._use_list(args)
         if len(args) != len(self.parameters):
             raise ValueError(f"{self.signature} takes {len(self.parameters)} argument(s), got {len(args)}.")
         bound: list[SympyExpr] = []
@@ -82,6 +89,30 @@ class Distribution:
             bound.append(value)
         return DistributionUse(self, tuple(bound))
 
+    def _use_list(self, args: Sequence[object]) -> DistributionUse:
+        if len(args) != 1 or not isinstance(args[0], (list, tuple)):
+            raise ValueError(f"{self.signature} takes one list of numbers, e.g. {self.name}([128, 256, 512]).")
+        items: list[SympyExpr] = []
+        for item in args[0]:
+            if isinstance(item, bool) or not isinstance(item, (int, float, sympy.Expr)):
+                raise ValueError(f"{self.signature}: every value must be a number, got {item!r}.")
+            value: SympyExpr = sympy.sympify(item)
+            items.append(value)
+        if not items:
+            raise ValueError(f"{self.signature} needs at least one value.")
+        # a repeat would have to mean a weight, which this distribution does not have
+        repeated = sorted({str(item) for item in items if items.count(item) > 1})
+        if repeated:
+            raise ValueError(f"{self.signature}: each value may appear once, got {', '.join(repeated)} more than once.")
+        return DistributionUse(self, tuple(items))
+
+    def use_of_sympy(self, sympy_args: Sequence[object]) -> DistributionUse:
+        """The use behind a sympy distribution object's ``args``, e.g. ``NormalDistribution(512, 128).args``."""
+        if self.takes_list:
+            return self.use([list(sympy_args)])
+        # sympy appends arguments of its own to some distributions, e.g. Binomial's succ and fail
+        return self.use(sympy_args[: len(self.parameters)])
+
 
 @dataclass(frozen=True)
 class DistributionUse:
@@ -89,13 +120,27 @@ class DistributionUse:
 
     The arguments are numbers wherever the grammar builds one. They may be
     expressions of ``t`` when a caller is proving the conditions over a window.
+    For a row that takes a list, the arguments are the values of the list.
     """
 
     row: Distribution
     args: tuple[SympyExpr, ...]
 
     def __str__(self) -> str:
-        return f"{self.row.name}({', '.join(str(arg) for arg in self.args)})"
+        written = ", ".join(str(arg) for arg in self.args)
+        return f"{self.row.name}([{written}])" if self.row.takes_list else f"{self.row.name}({written})"
+
+    @property
+    def constructor_args(self) -> tuple[object, ...]:
+        """The arguments as sympy's constructor takes them after the name."""
+        return (list(self.args),) if self.row.takes_list else self.args
+
+    @property
+    def integer(self) -> bool:
+        """Whether every draw is a whole number."""
+        if self.row.takes_list:
+            return all(sympy.floor(arg) == arg for arg in self.args)
+        return self.row.integer
 
     @property
     def _binding(self) -> Mapping[SympyNode, SympyNode]:
@@ -111,7 +156,10 @@ class DistributionUse:
 
     def require_constant(self) -> None:
         """Raise ``ValueError`` unless every argument is a finite number and every condition holds."""
-        for parameter, arg in zip(self.row.parameters, self.args, strict=True):
+        names = self.row.parameters
+        if self.row.takes_list:
+            names = tuple(f"{self.row.parameters[0]}[{index}]" for index in range(len(self.args)))
+        for parameter, arg in zip(names, self.args, strict=True):
             constant = arg.is_number and arg.is_extended_real is True
             if not constant or not math.isfinite(float(arg)):
                 raise ValueError(f"{self}: {parameter} must be a finite constant, got {arg}.")
@@ -123,15 +171,24 @@ class DistributionUse:
 
     @property
     def lower(self) -> SympyExpr:
+        if self.row.takes_list:
+            lowest: SympyExpr = sympy.Min(*self.args)
+            return lowest
         return self.bind(self.row.lower)
 
     @property
     def upper(self) -> SympyExpr:
+        if self.row.takes_list:
+            highest: SympyExpr = sympy.Max(*self.args)
+            return highest
         return self.bind(self.row.upper)
 
     @property
     def mean(self) -> SympyExpr:
         """The mean for these arguments, ``oo`` where the row says it is not finite."""
+        if self.row.takes_list:
+            average: SympyExpr = sympy.Add(*self.args) / len(self.args)
+            return average
         if not all(self.holds(condition) for condition in self.row.mean_finite_when):
             infinite: SympyExpr = oo
             return infinite
@@ -201,6 +258,10 @@ def _sample_binomial(rng: np.random.Generator, p: Sequence[float], size: int) ->
 def _sample_geometric(rng: np.random.Generator, p: Sequence[float], size: int) -> NDArray[np.float64]:
     # numpy counts trials up to and including the first success, so draws start at 1 as sympy's do
     return _floats(rng.geometric(p=p[0], size=size))
+
+
+def _sample_discrete_uniform(rng: np.random.Generator, p: Sequence[float], size: int) -> NDArray[np.float64]:
+    return _floats(rng.choice(np.asarray(p, dtype=np.float64), size=size))
 
 
 def _normal() -> Distribution:
@@ -314,6 +375,15 @@ def _geometric() -> Distribution:
     return Distribution("Geometric", ("p",), (Gt(p, 0), Le(p, 1)), sympy.S.One, oo, True, 1 / p, (), _sample_geometric)
 
 
+def _discrete_uniform() -> Distribution:
+    values = sympy.Symbol("values", real=True)
+    # shown in the docs table, a use reads the list itself
+    lowest, highest, average = (sympy.Function(name)(values) for name in ("min", "max", "mean"))
+    return Distribution(
+        "DiscreteUniform", ("values",), (), lowest, highest, False, average, (), _sample_discrete_uniform, takes_list=True
+    )
+
+
 DISTRIBUTIONS: Mapping[str, Distribution] = {
     row.name: row
     for row in (
@@ -328,6 +398,7 @@ DISTRIBUTIONS: Mapping[str, Distribution] = {
         _poisson(),
         _binomial(),
         _geometric(),
+        _discrete_uniform(),
     )
 }
 
@@ -361,10 +432,12 @@ def docs_rows() -> list[tuple[str, ...]]:
         rows.append(
             (
                 f"`{row.signature}`",
-                ", ".join(f"`{render_condition(c)}`" for c in row.conditions),
+                "at least one value, none repeated"
+                if row.takes_list
+                else ", ".join(f"`{render_condition(c)}`" for c in row.conditions),
                 f"`{_render_bound(row.lower)}`",
                 f"`{_render_bound(row.upper)}`",
-                "yes" if row.integer else "no",
+                "when every value is" if row.takes_list else "yes" if row.integer else "no",
                 mean,
             )
         )

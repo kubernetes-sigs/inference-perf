@@ -42,6 +42,7 @@ GOOD: dict[str, tuple[object, ...]] = {
     "Poisson": (4,),
     "Binomial": (10, _QUARTER),
     "Geometric": (_QUARTER,),
+    "DiscreteUniform": ([128, 256, 1024],),
 }
 
 # Argument lists that break exactly one condition each, in the order the row lists its conditions.
@@ -57,6 +58,8 @@ BAD: dict[str, list[tuple[object, ...]]] = {
     "Poisson": [(0,)],
     "Binomial": [(-1, _QUARTER), (_HALF * 5, _QUARTER), (10, -_QUARTER), (10, _HALF * 3)],
     "Geometric": [(0,), (_HALF * 3,)],
+    # a list has no condition over a parameter symbol, its checks are in test_discrete_uniform_rejects_a_bad_list
+    "DiscreteUniform": [],
 }
 
 # What sympy itself cannot compute in this version, so the row is not compared against it there.
@@ -64,7 +67,11 @@ SYMPY_CANNOT_COMPUTE_MEAN = {"LogNormal": "sympy.stats.E raises NotImplementedEr
 
 # Rows whose sympy numpy sampler takes the caller's seed. Weibull has no sympy sampler, and sympy's Pareto
 # sampler draws from numpy's global state.
-SYMPY_SEEDED_SAMPLER = sorted(set(GOOD) - {"Weibull", "Pareto"})
+# DiscreteUniform has no sympy numpy sampler either.
+SYMPY_SEEDED_SAMPLER = sorted(set(GOOD) - {"Weibull", "Pareto", "DiscreteUniform"})
+
+# Rows that take one list of values in place of named parameters.
+LIST_ROWS = {"DiscreteUniform"}
 
 _DRAWS = 200_000
 _ROWS = sorted(DISTRIBUTIONS)
@@ -96,7 +103,7 @@ def _sympy_cdf(name: str, x: float) -> float:
     return float(cdf(sympy.Float(x)))
 
 
-# The table holds exactly these eleven rows, keyed by name. Adding or dropping one must change this list.
+# The table holds exactly these twelve rows, keyed by name. Adding or dropping one must change this list.
 def test_table_lists_exactly_the_supported_distributions() -> None:
     assert list(DISTRIBUTIONS) == [
         "Normal",
@@ -110,6 +117,7 @@ def test_table_lists_exactly_the_supported_distributions() -> None:
         "Poisson",
         "Binomial",
         "Geometric",
+        "DiscreteUniform",
     ]
     assert all(name == row.name for name, row in DISTRIBUTIONS.items())
     assert set(GOOD) == set(BAD) == set(DISTRIBUTIONS)
@@ -117,7 +125,7 @@ def test_table_lists_exactly_the_supported_distributions() -> None:
 
 # Every row has all five parts: a name with parameters, at least one condition and one on every parameter, a
 # support, a mean and a sampler. Each sympy part reads only the row's own parameter symbols.
-@pytest.mark.parametrize("name", _ROWS)
+@pytest.mark.parametrize("name", sorted(set(_ROWS) - LIST_ROWS))
 def test_row_has_every_part(name: str) -> None:
     row = DISTRIBUTIONS[name]
     symbols = set(row.symbols)
@@ -142,7 +150,7 @@ def test_sampler_matches_the_row(name: str) -> None:
     draws = _draws(name)
     assert draws.shape == (_DRAWS,) and draws.dtype == np.float64
     assert float(use.lower) <= draws.min() and draws.max() <= float(use.upper)
-    assert bool(np.all(draws == np.floor(draws))) is use.row.integer
+    assert bool(np.all(draws == np.floor(draws))) is use.integer
     standard_error = float(draws.std(ddof=1)) / math.sqrt(_DRAWS)
     assert abs(float(draws.mean()) - float(use.mean)) <= 5 * standard_error
 
@@ -184,7 +192,9 @@ def test_row_maps_to_sympy_distribution(name: str) -> None:
     row = DISTRIBUTIONS[name]
     distribution = _sympy_rv(name).pspace.distribution
     assert lookup(distribution) is row
-    assert distribution.args[: len(row.parameters)] == _use(name).args
+    assert row.use_of_sympy(distribution.args).args == _use(name).args
+    if name not in LIST_ROWS:
+        assert distribution.args[: len(row.parameters)] == _use(name).args
 
 
 # The row's support equals sympy's at the GOOD arguments: Uniform(2, 6) -> [2, 6], Geometric(1/4) -> 1 upward,
@@ -201,7 +211,7 @@ def test_support_agrees_with_sympy(name: str) -> None:
         lowest, highest = support.inf, support.sup
         integer = bool(support.is_subset(sympy.S.Integers))
     assert (use.lower, use.upper) == (lowest, highest)
-    assert use.row.integer is integer
+    assert use.integer is integer
 
 
 # The row's mean equals sympy's E at the GOOD arguments, e.g. Weibull(3, 2) -> 3*sqrt(pi)/2. The only skip is
@@ -252,6 +262,38 @@ def test_bad_arguments_fail_like_sympy(name: str) -> None:
         with pytest.raises(ValueError):
             _sympy_rv(name, args)
     assert broken == set(row.conditions)
+
+
+# DiscreteUniform([128, 256, 1024]) reads its support and mean from the list: lowest 128, highest 1024, mean
+# 1408/3, whole numbers. DiscreteUniform([0.5, 2]) is not whole-number. It prints the way a config writes it.
+def test_discrete_uniform_reads_the_list() -> None:
+    use = _use("DiscreteUniform")
+    assert (use.lower, use.upper, use.mean) == (sympy.Integer(128), sympy.Integer(1024), sympy.Rational(1408, 3))
+    assert use.integer
+    assert str(use) == "DiscreteUniform([128, 256, 1024])"
+    assert DISTRIBUTIONS["DiscreteUniform"].signature == "DiscreteUniform([values])"
+    assert _use("DiscreteUniform", ([0.5, 2],)).integer is False
+    assert set(_draws("DiscreteUniform").tolist()) == {128.0, 256.0, 1024.0}
+
+
+# A list that cannot be picked from is refused with the reason: no list, an empty list, a repeated value, a
+# value that is not a number, and a value that is not a finite constant.
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        ((1, 5), "takes one list of numbers"),
+        (([1, 2], [3]), "takes one list of numbers"),
+        (([],), "needs at least one value"),
+        (([1, 2, 1],), "each value may appear once, got 1 more than once"),
+        ((["a", 2],), "every value must be a number"),
+        (([True, 2],), "every value must be a number"),
+        (([sympy.Symbol("t"), 2],), r"values\[0\] must be a finite constant"),
+        (([1, sympy.oo],), r"values\[1\] must be a finite constant"),
+    ],
+)
+def test_discrete_uniform_rejects_a_bad_list(args: tuple[object, ...], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        DISTRIBUTIONS["DiscreteUniform"].use(args).require_constant()
 
 
 # Edge values sympy accepts are accepted: Binomial(0, 1/4), Binomial(10, 0), Binomial(10, 1), Geometric(1)
