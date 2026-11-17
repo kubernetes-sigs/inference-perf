@@ -41,9 +41,12 @@ api:
   slo_tpot_header: "x-slo-tpot-ms"        # Optional header name for TPOT SLO Header, default is x-slo-tpot-ms
   slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
   clean_tool_schemas: false    # Optional: rewrite tool schemas for strict servers (see below), default is false
+  return_token_ids: false      # Optional: build the token timeline from token ids the server returns (see below), default is false
 ```  
 
 Tool parameter schemas (from trace replay or agentic datagen) are sent to the server unchanged by default. Some servers reject valid JSON Schema that they do not support. For example, vLLM with the xgrammar backend and llm-d-inference-sim reject `default`, `title`, numeric/array constraints, `anyOf`/`oneOf`, object-valued `additionalProperties` and `type: object` without `properties`. Set `clean_tool_schemas: true` to rewrite each schema into a subset these servers accept. This applies to `chat` (`tools[].function.parameters`) and `anthropic_messages` (`tools[].input_schema`). The rewrite changes the prompt the server tokenizes, so enable it only when the server rejects the recorded schemas. This also means the token count emitted from the server is different from the client-side tokenization.
+
+Set `return_token_ids: true` to send `return_token_ids` with every request. A server that supports it (vLLM) then returns the ids of the tokens each streamed chunk generated, and the token timeline is built from those ids instead of from re-tokenized text. See [token ids from the server](metrics.md#token-ids-from-the-server). It needs `streaming: true` and `type: chat` or `completion`. The first chunk of each response also carries the prompt's ids, so responses to long prompts get larger. A server that does not know the field may reject the request.
 
 With `type: embeddings`, requests go to `/v1/embeddings`. Embeddings responses have no generated tokens, so `streaming` and `response_format` are not supported and TTFT, TPOT, ITL and NTPOT are not reported. Request options go under `embeddings`:
 
