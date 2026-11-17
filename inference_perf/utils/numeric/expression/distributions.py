@@ -42,6 +42,29 @@ from .sympy_types import SympyExpr, SympyNode, SympyRelational
 Sampler = Callable[[np.random.Generator, Sequence[float], int], NDArray[np.float64]]
 
 
+# the base draw in a row's standard form
+BASE: SympyExpr = sympy.Symbol("z", real=True)
+
+
+@dataclass(frozen=True)
+class Standard:
+    """A row's draw written as a function of a base draw that its time-varying parameters do not touch.
+
+    ``Exponential(rate)`` is ``z / rate`` for ``z`` drawn from ``Exponential(1)``,
+    and ``Normal(mean, std)`` is ``mean + std * z`` for a standard normal ``z``.
+    Holding ``z`` fixed while the parameters move is what lets one draw be
+    followed along a curve: the same draw gives a shorter gap as the rate
+    climbs. A parameter the base draw itself reads, such as a gamma's shape,
+    is listed in ``fixed`` and cannot vary with ``t``.
+    """
+
+    # draws the base values. reads only the ``fixed`` parameters, the rest may be nan
+    base: Sampler
+    # the draw, over BASE and the row's parameter symbols
+    value: SympyExpr
+    fixed: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True)
 class Distribution:
     """One supported distribution. Every sympy field is written over :attr:`symbols`."""
@@ -63,6 +86,8 @@ class Distribution:
     # the one parameter is a list of values to pick from, e.g. DiscreteUniform([128, 256, 512]).
     # lower, upper and mean are then display forms only, DistributionUse works them out from the values
     takes_list: bool = False
+    # None for a row whose parameters cannot vary with t
+    standard: Optional[Standard] = None
 
     @property
     def symbols(self) -> tuple[SympyExpr, ...]:
@@ -153,6 +178,47 @@ class DistributionUse:
     def substitute(self, rule: Mapping[SympyNode, SympyNode]) -> DistributionUse:
         """The same use with ``rule`` applied to every argument, e.g. ``{t: 3.0}`` for the use as it stands at 3s."""
         return DistributionUse(self.row, tuple(arg.xreplace(rule) for arg in self.args))
+
+    @property
+    def over_time(self) -> tuple[str, ...]:
+        """The parameters whose argument is not a constant, e.g. ``("rate",)`` for ``Exponential(5 + t/10)``."""
+        if self.row.takes_list:
+            return ()
+        return tuple(name for name, arg in zip(self.row.parameters, self.args, strict=True) if arg.free_symbols)
+
+    def require_standard(self) -> None:
+        """Raise ``ValueError`` when an argument varies but the row cannot follow it along a curve."""
+        varying = self.over_time
+        if not varying:
+            return
+        standard = self.row.standard
+        if standard is None:
+            raise ValueError(f"{self}: the parameters of {self.row.signature} cannot vary with t.")
+        stuck = [name for name in varying if name in standard.fixed]
+        if stuck:
+            free = [name for name in self.row.parameters if name not in standard.fixed]
+            raise ValueError(
+                f"{self}: {', '.join(stuck)} of {self.row.signature} cannot vary with t. Only {', '.join(free)} can."
+            )
+
+    def coupled(self) -> tuple[Callable[[np.random.Generator, int], NDArray[np.float64]], SympyExpr]:
+        """A base sampler and the draw as an expression of :data:`BASE`, for following one draw as ``t`` moves.
+
+        With constant arguments the base draw is the draw itself. Otherwise it
+        is the row's standard form with the arguments substituted, e.g.
+        ``z / (5 + t/10)`` over ``z`` from ``Exponential(1)``.
+        """
+        if not self.over_time:
+            return self.sample, BASE
+        self.require_standard()
+        standard = self.row.standard
+        assert standard is not None
+        parameters = [float(arg) if not arg.free_symbols else math.nan for arg in self.args]
+
+        def base(rng: np.random.Generator, size: int) -> NDArray[np.float64]:
+            return standard.base(rng, parameters, size)
+
+        return base, self.bind(standard.value)
 
     def holds(self, condition: SympyRelational) -> bool:
         """True when the condition is decided and true for these arguments."""
@@ -268,9 +334,26 @@ def _sample_discrete_uniform(rng: np.random.Generator, p: Sequence[float], size:
     return _floats(rng.choice(np.asarray(p, dtype=np.float64), size=size))
 
 
+def _base_normal(rng: np.random.Generator, p: Sequence[float], size: int) -> NDArray[np.float64]:
+    return _floats(rng.standard_normal(size))
+
+
+def _base_exponential(rng: np.random.Generator, p: Sequence[float], size: int) -> NDArray[np.float64]:
+    return _floats(rng.standard_exponential(size))
+
+
+def _base_uniform(rng: np.random.Generator, p: Sequence[float], size: int) -> NDArray[np.float64]:
+    return _floats(rng.random(size))
+
+
+def _base_gamma(rng: np.random.Generator, p: Sequence[float], size: int) -> NDArray[np.float64]:
+    return _floats(rng.standard_gamma(p[0], size))
+
+
 def _normal() -> Distribution:
     mean, std = sympy.symbols("mean std", real=True)
-    return Distribution("Normal", ("mean", "std"), (Gt(std, 0),), -oo, oo, False, mean, (), _sample_normal)
+    standard = Standard(_base_normal, mean + std * BASE)
+    return Distribution("Normal", ("mean", "std"), (Gt(std, 0),), -oo, oo, False, mean, (), _sample_normal, standard=standard)
 
 
 def _lognormal() -> Distribution:
@@ -286,25 +369,50 @@ def _lognormal() -> Distribution:
         sympy.exp(mean + std**2 / 2),
         (),
         _sample_lognormal,
+        standard=Standard(_base_normal, sympy.exp(mean + std * BASE)),
     )
 
 
 def _exponential() -> Distribution:
     rate = sympy.Symbol("rate", real=True)
-    return Distribution("Exponential", ("rate",), (Gt(rate, 0),), sympy.S.Zero, oo, False, 1 / rate, (), _sample_exponential)
+    standard = Standard(_base_exponential, BASE / rate)
+    return Distribution(
+        "Exponential", ("rate",), (Gt(rate, 0),), sympy.S.Zero, oo, False, 1 / rate, (), _sample_exponential, standard=standard
+    )
 
 
 def _gamma() -> Distribution:
     shape, scale = sympy.symbols("shape scale", real=True)
+    # the base draw is Gamma(shape, 1), so the shape is part of the draw and only the scale can move
+    standard = Standard(_base_gamma, scale * BASE, fixed=("shape",))
     return Distribution(
-        "Gamma", ("shape", "scale"), (Gt(shape, 0), Gt(scale, 0)), sympy.S.Zero, oo, False, shape * scale, (), _sample_gamma
+        "Gamma",
+        ("shape", "scale"),
+        (Gt(shape, 0), Gt(scale, 0)),
+        sympy.S.Zero,
+        oo,
+        False,
+        shape * scale,
+        (),
+        _sample_gamma,
+        standard=standard,
     )
 
 
 def _uniform() -> Distribution:
     left, right = sympy.symbols("left right", real=True)
+    standard = Standard(_base_uniform, left + (right - left) * BASE)
     return Distribution(
-        "Uniform", ("left", "right"), (Lt(left, right),), left, right, False, (left + right) / 2, (), _sample_uniform
+        "Uniform",
+        ("left", "right"),
+        (Lt(left, right),),
+        left,
+        right,
+        False,
+        (left + right) / 2,
+        (),
+        _sample_uniform,
+        standard=standard,
     )
 
 
@@ -335,6 +443,8 @@ def _weibull() -> Distribution:
         scale * sympy.gamma(1 + 1 / shape),
         (),
         _sample_weibull,
+        # a Weibull is a power of an exponential
+        standard=Standard(_base_exponential, scale * BASE ** (1 / shape)),
     )
 
 
@@ -350,6 +460,8 @@ def _pareto() -> Distribution:
         alpha * minimum / (alpha - 1),
         (Gt(alpha, 1),),
         _sample_pareto,
+        # the log of a Pareto over its minimum is an exponential
+        standard=Standard(_base_exponential, minimum * sympy.exp(BASE / alpha)),
     )
 
 

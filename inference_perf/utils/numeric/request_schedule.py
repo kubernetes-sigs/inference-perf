@@ -20,13 +20,16 @@ times all come from the same schedule.
 
 A gap that is not random is the rate ``1 / request_interval``, and its requests
 go out where that rate's area reaches 1, 2, 3 and so on. A random gap is drawn:
-the count is however many gaps fit in the dispatch window.
+the count is however many gaps fit in the dispatch window. A random gap that
+varies with ``t`` is one rule covering both: the randomness of each gap is drawn
+once, and the request goes out where the area under ``1 / gap`` reaches 1, with
+the gap read from the distribution as it stands at each moment.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -42,6 +45,149 @@ _MAX_ARRIVALS = 10_000_000
 # How many zero gaps in a row a time-varying draw may produce before it is
 # taken to be stuck.
 _MAX_ZERO_GAPS = 1000
+# The longest stretch of stage time integrated in one step, in seconds. The
+# rate grid's spacing, so a step in the curve is placed as finely here as there.
+_MAX_STEP = 0.01
+# Below this much stage time left, the window is over.
+_WINDOW_END = 1e-12
+
+
+def _progress_rate(gap: float, raw: object, t: float) -> float:
+    """How fast a gap is used up, ``1 / gap``: 0 for an infinite gap, ``inf`` for a zero one."""
+    if gap != gap or gap < 0:
+        raise ValueError(f"request_interval {raw!r} is {gap} at t={t:g}. A gap must be nonnegative.")
+    if gap == 0:
+        return math.inf
+    return 1.0 / gap
+
+
+def _cross_within(step: float, r0: float, r1: float, r2: float, need: float) -> float:
+    """How far into a step the area under the rate reaches ``need``.
+
+    The rate is ``r0`` at the start of the step, ``r1`` halfway and ``r2`` at
+    its end, and is taken to be the parabola through the three, the same one
+    Simpson's rule integrates. The area over the whole step is at least
+    ``need``. Newton's method, kept inside a bracket that halves when it
+    would leave it.
+    """
+    b = (-3.0 * r0 + 4.0 * r1 - r2) / step
+    c = 2.0 * (r0 - 2.0 * r1 + r2) / (step * step)
+    whole = step * (r0 + 4.0 * r1 + r2) / 6.0
+    low, high = 0.0, step
+    x = step * need / whole if whole > 0 else step
+    for _ in range(100):
+        area = x * (r0 + x * (b / 2.0 + x * c / 3.0))
+        if area > need:
+            high = x
+        else:
+            low = x
+        rate = r0 + x * (b + x * c)
+        following = x - (area - need) / rate if rate > 0 else low
+        if not low < following < high:
+            following = (low + high) / 2.0
+        if abs(following - x) <= 1e-15 * step:
+            return following
+        x = following
+    return x
+
+
+def _next_arrival(gap_at: Callable[[float], float], raw: object, start: float, end: float) -> Optional[float]:
+    """The stage time at which the area under ``1 / gap_at`` from ``start`` reaches 1, or None if not by ``end``.
+
+    Integrated with Simpson's rule in steps no longer than ``_MAX_STEP`` and no
+    longer than the gap would last at the rate the step starts with. The gap
+    is never read past ``end``, where its parameters are not known to be valid.
+    """
+    t = start
+    area = 0.0
+    r0 = _progress_rate(gap_at(t), raw, t)
+    while True:
+        if r0 == math.inf:
+            # a zero gap: the request is due now
+            return t
+        left = end - t
+        if left <= _WINDOW_END:
+            return None
+        need = 1.0 - area
+        step = min(_MAX_STEP, left)
+        if r0 > 0:
+            step = min(step, need / r0)
+        r1 = _progress_rate(gap_at(t + step / 2.0), raw, t + step / 2.0)
+        r2 = _progress_rate(gap_at(t + step), raw, t + step)
+        if r1 == math.inf or r2 == math.inf:
+            # the gap reaches zero inside this step, so the area reaches 1 inside it too. close in on where
+            if step <= _WINDOW_END:
+                return t + step
+            half = step / 2.0
+            if r1 == math.inf:
+                # between the start and halfway: look at the first half only
+                r2, step = r1, half
+                r1 = _progress_rate(gap_at(t + step / 2.0), raw, t + step / 2.0)
+            while (r1 == math.inf or r2 == math.inf) and step > _WINDOW_END:
+                step /= 2.0
+                r1 = _progress_rate(gap_at(t + step / 2.0), raw, t + step / 2.0)
+                r2 = _progress_rate(gap_at(t + step), raw, t + step)
+            if r1 == math.inf or r2 == math.inf:
+                return t + step
+        gained = step * (r0 + 4.0 * r1 + r2) / 6.0
+        if area + gained >= 1.0:
+            return t + _cross_within(step, r0, r1, r2, need)
+        area += gained
+        t += step
+        r0 = r2
+
+
+def arrivals_along_the_curve(request_interval: Expression, duration: float, rng: np.random.Generator) -> NDArray[np.float64]:
+    """Arrival offsets for a gap that is random and varies with stage time ``t``.
+
+    The randomness of each gap is drawn once, with :meth:`Expression.sample_base`.
+    The gap that draw stands for is then read at every moment from the
+    distribution as it is at that moment, and the request goes out when the
+    area under ``1 / gap`` since the request before it reaches 1. So a gap is
+    used up faster while the rate is high and slower while it is low.
+
+    What this is, case by case:
+
+    * ``Exponential(r(t))``: a Poisson process of rate ``r(t)``. The area
+      under ``r`` between two arrivals is an ``Exponential(1)`` draw, which
+      is the definition.
+    * a distribution whose mean alone moves, such as ``Gamma(4, s(t))``: a
+      renewal process run on a clock that advances at ``1 / s(t)``.
+    * constant parameters: the gaps are the draws themselves.
+    * no randomness: request k where the area under ``1 / gap`` reaches k,
+      which is how a rate expression is placed.
+
+    The first gap starts when the window opens. A gap still open when the
+    window closes ends the stage.
+    """
+    raw = request_interval.raw
+    offsets: list[float] = []
+    elapsed = 0.0
+    stalled = 0
+    while True:
+        for base in request_interval.sample_base(rng, _BATCH).tolist():
+
+            def gap_at(t: float, base: list[float] = base) -> float:
+                return request_interval.value_given(base, t)
+
+            arrival = _next_arrival(gap_at, raw, elapsed, duration)
+            if arrival is None:
+                return np.asarray(offsets, dtype=np.float64)
+            # t only moves when a gap is above zero, so a gap that is always
+            # zero at this t would never end
+            stalled = stalled + 1 if arrival <= elapsed else 0
+            if stalled > _MAX_ZERO_GAPS:
+                raise ValueError(
+                    f"request_interval {raw!r} keeps drawing a zero gap at t={elapsed:g}, "
+                    "so the stage would never move on. A gap must be positive."
+                )
+            elapsed = arrival
+            offsets.append(elapsed)
+            if len(offsets) > _MAX_ARRIVALS:
+                raise ValueError(
+                    f"request_interval {raw!r} schedules more than {_MAX_ARRIVALS} requests "
+                    f"in {duration:g}s; the gaps are too small."
+                )
 
 
 class RequestSchedule:
@@ -59,8 +205,8 @@ class RequestSchedule:
     0.1`` over 60s is exactly 600 evenly spaced requests. A gap that varies with
     ``t`` and is not random is scheduled as the rate ``1 / gap``: request k goes
     out when the area under that rate reaches k, so ``"1/t"`` sends as the rate
-    ``t`` does. A random gap that varies with ``t`` is drawn one gap at a time,
-    each from the distribution as it stands when the gap starts.
+    ``t`` does. A random gap that varies with ``t`` is placed by
+    :func:`arrivals_along_the_curve`.
     """
 
     def __init__(self, request_interval: Expression, duration: float, rng: Optional[np.random.Generator] = None) -> None:
@@ -72,7 +218,9 @@ class RequestSchedule:
         self._never_sends = False
         if request_interval.is_random:
             generator = rng if rng is not None else np.random.default_rng()
-            self._offsets = self._draw_in_turn(generator) if request_interval.varies_with_time else self._draw(generator)
+            self._offsets = (
+                self._draw_along_the_curve(generator) if request_interval.varies_with_time else self._draw(generator)
+            )
         elif request_interval.is_constant:
             gap = float(request_interval.sample())
             if gap <= 0:
@@ -129,32 +277,10 @@ class RequestSchedule:
         offsets = np.concatenate(batches)
         return np.asarray(offsets[offsets <= self.duration], dtype=np.float64)
 
-    def _draw_in_turn(self, rng: np.random.Generator) -> NDArray[np.float64]:
-        """Offsets for a random gap that varies with ``t``: sample, wait, send.
-
-        Each gap is drawn from the distribution as it stands at the stage time
-        the gap starts, which is the previous arrival, or 0 for the first. The
-        load therefore follows the curve one gap behind.
-        """
-        offsets: list[float] = []
-        elapsed = 0.0
-        stalled = 0
-        while True:
-            gap = float(self.request_interval.sample(elapsed, rng=rng))
-            # t only moves when a gap is above zero, so a gap that is always
-            # zero at this t would never end
-            stalled = stalled + 1 if gap <= 0 else 0
-            if stalled > _MAX_ZERO_GAPS:
-                raise ValueError(
-                    f"request_interval {self.request_interval.raw!r} keeps drawing a zero gap at t={elapsed:g}, "
-                    "so the stage would never move on. A gap must be positive."
-                )
-            elapsed += gap
-            if elapsed > self.duration:
-                break
-            offsets.append(elapsed)
-            self._check_count(len(offsets))
-        return np.asarray(offsets, dtype=np.float64)
+    def _draw_along_the_curve(self, rng: np.random.Generator) -> NDArray[np.float64]:
+        offsets = arrivals_along_the_curve(self.request_interval, self.duration, rng)
+        self._check_count(len(offsets))
+        return offsets
 
     @property
     def zero_requests_reason(self) -> Optional[str]:

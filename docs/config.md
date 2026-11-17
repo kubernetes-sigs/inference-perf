@@ -351,12 +351,25 @@ A rate expression is placed the same way, so `request_interval: "1/t"` and `rate
 
 ##### A random gap that varies with t
 
-When a distribution's parameters mention `t`, each gap is drawn from the distribution as it stands at the stage time the gap starts: sample, wait, send. The first gap is drawn at `t = 0` and each later one at the time the request before it was scheduled. The load therefore follows the curve one gap behind. `Exponential(0.1 + t)` over 30 s is the plainest case: its first gap is drawn at a rate of 0.1 per second and averages 10 s, during which the curve has moved on, so the stage sends about 365 requests on average where the area under `0.1 + t` is 453. A curve that starts well above zero loses almost nothing: `Exponential(5 + t/10)` over 60 s sends about 478 against an area of 480.
+When a distribution's parameters mention `t`, the randomness of each gap is drawn once and the gap is then used up along the curve. The request goes out when the area under `1 / gap` since the request before it reaches 1, with the gap read from the distribution as it is at each moment. So a gap runs down faster while the rate is high and slower while it is low, and a gap that starts while the rate is near zero does not hold the stage back once the rate has climbed. `Exponential(r)` with `r` an expression of `t` is a Poisson process of rate `r`: over 30 s, `Exponential(0.1 + t)` sends 453 requests on average, the area under `0.1 + t`, where `rate: "0.1 + t"` sends exactly 453. A distribution whose size alone follows the curve, such as `Gamma(4, 0.025/(1 + t/60))`, keeps its shape and so its burstiness while its mean gap follows the curve. With no `t` in it a random gap is unchanged: the gaps are the draws.
 
 | Random request interval over t | Curve (req/s) | Window (s) | Mean requests | Area under the curve |
 | --- | --- | --- | --- | --- |
-| `Exponential(0.1 + t)` | `0.1 + t` | 30 | 365 | 453 |
-| `Exponential(5 + t/10)` | `5 + t/10` | 60 | 478 | 480 |
+| `Exponential(0.1 + t)` | `0.1 + t` | 30 | 453 | 453 |
+| `Exponential(5 + t/10)` | `5 + t/10` | 60 | 480 | 480 |
+| `Exponential(30.1 - t)` | `30.1 - t` | 30 | 453 | 453 |
+
+| Distribution | May vary with `t` |
+| --- | --- |
+| `Exponential(rate)` | `rate` |
+| `Gamma(shape, scale)` | `scale` only |
+| `Normal(mean, std)`, `LogNormal(mean, std)` | both |
+| `Uniform(left, right)` | both |
+| `Weibull(scale, shape)` | both |
+| `Pareto(minimum, alpha)` | both |
+| `Beta`, `Poisson`, `Binomial`, `Geometric`, `DiscreteUniform` | nothing |
+
+A parameter can follow the curve only where one draw can be read again under new parameters: an `Exponential(r)` draw is an `Exponential(1)` draw divided by `r`, so the same draw is a shorter gap at a higher rate. A gamma's shape has no such form, so it must be a constant. A distribution that cannot take `t` can still sit next to it: `Poisson(3)/(10 + t)` is allowed.
 
 When the config loads, each distribution is checked over the whole stage window (`duration`, or the deadline of `stop_condition`): its parameters must be finite and valid, its mean must be finite and the gap must not go negative. A failure names the parameter and a `t` at which it fails. A load that pauses or starts from zero cannot be written this way, since a rate of 0 is not a valid exponential: write it with `rate`, which may be zero. A gap that is finite but longer than the stage is not an error. The stage sends fewer requests, or none, with the warning above.
 

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
 import numpy as np
 import pytest
 
@@ -472,3 +473,40 @@ def test_invalid_draws_over_time_are_rejected(raw: str, message: str) -> None:
 def test_valid_draws_need_a_duration() -> None:
     with pytest.raises(ValueError, match="needs a duration"):
         _over_time("Exponential(5 + t)", minimum=0).require_valid_draws()
+
+
+# With t allowed in parameters, a parameter that cannot follow a curve is still refused when parsed, by name:
+# a gamma's shape, and any parameter of Beta, Poisson, Binomial or Geometric.
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ("Gamma(2 + t, 0.1)", "shape of Gamma\\(shape, scale\\) cannot vary with t. Only scale can."),
+        ("Beta(2 + t, 5)", "the parameters of Beta\\(alpha, beta\\) cannot vary with t"),
+        ("Poisson(3 + t)", "the parameters of Poisson\\(mean\\) cannot vary with t"),
+        ("Binomial(10, 1/(2 + t))", "the parameters of Binomial\\(n, p\\) cannot vary with t"),
+        ("Geometric(1/(2 + t))", "the parameters of Geometric\\(p\\) cannot vary with t"),
+    ],
+)
+def test_parameters_that_cannot_follow_a_curve_are_rejected(raw: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        _over_time(raw)
+
+
+# sample_base and value_given split a draw from the time it is read at. For "0.05 + Exponential(20 + t)" the
+# base is one Exponential(1) draw per value, and a row z reads as 0.05 + z/20 at t=0 and 0.05 + z/80 at t=60.
+# For "Poisson(3)/(10 + t)" the base is the Poisson draw itself. A value with no draw has no columns.
+def test_a_draw_is_read_at_any_time() -> None:
+    moving = _over_time("0.05 + Exponential(20 + t)")
+    base = moving.sample_base(np.random.default_rng(0), 4)
+    np.testing.assert_array_equal(base[:, 0], np.random.default_rng(0).standard_exponential(4))
+    z = float(base[0, 0])
+    assert moving.value_given([z], 0.0) == pytest.approx(0.05 + z / 20)
+    assert moving.value_given([z], 60.0) == pytest.approx(0.05 + z / 80)
+    still = _over_time("Poisson(3)/(10 + t)")
+    draws = still.sample_base(np.random.default_rng(1), 4)
+    np.testing.assert_array_equal(draws[:, 0], np.random.default_rng(1).poisson(3, 4))
+    assert still.value_given([6.0], 2.0) == pytest.approx(0.5)
+    assert Expression("1/(1 + t)").sample_base(np.random.default_rng(0), 3).shape == (3, 0)
+    assert Expression("1/(1 + t)").value_given([], 1.0) == pytest.approx(0.5)
+    # division by zero reads as an infinite value
+    assert Expression("1/t").value_given([], 0.0) == math.inf

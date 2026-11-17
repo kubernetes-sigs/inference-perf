@@ -110,7 +110,7 @@ async def test_a_request_interval_over_time_sends_along_its_rate() -> None:
 async def test_a_random_request_interval_over_time_speeds_up() -> None:
     gaps = await _arrival_gaps("Exponential(10 + 10*t)", 6)
 
-    assert 150 <= len(gaps) + 1 <= 330, f"{len(gaps) + 1} requests arrived, expected about 238"
+    assert 150 <= len(gaps) + 1 <= 330, f"{len(gaps) + 1} requests arrived, expected about 240"
     since_first = list(itertools.accumulate(gaps))
     late = sum(1 for at in since_first if at > since_first[-1] / 2)
     early = len(since_first) - late

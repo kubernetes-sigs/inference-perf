@@ -22,7 +22,7 @@ import sympy
 import sympy.stats
 from numpy.typing import NDArray
 
-from inference_perf.utils.numeric.expression.distributions import DISTRIBUTIONS, Distribution, DistributionUse, lookup
+from inference_perf.utils.numeric.expression.distributions import BASE, DISTRIBUTIONS, Distribution, DistributionUse, lookup
 from inference_perf.utils.numeric.expression.sympy_types import SympyExpr, SympyRandomSymbol
 
 _HALF = sympy.Rational(1, 2)
@@ -356,3 +356,91 @@ def test_sampler_parameterisation(name: str, expected: Callable[[np.random.Gener
 def test_lookup_of_unlisted_distribution() -> None:
     assert lookup(sympy.stats.Rayleigh("x", 2).pspace.distribution) is None
     assert isinstance(DISTRIBUTIONS["Normal"], Distribution)
+
+
+# The rows whose parameters can vary with t, and which of them can: a gamma's shape is part of its base draw.
+STANDARD = {
+    "Normal": ("mean", "std"),
+    "LogNormal": ("mean", "std"),
+    "Exponential": ("rate",),
+    "Gamma": ("scale",),
+    "Uniform": ("left", "right"),
+    "Weibull": ("scale", "shape"),
+    "Pareto": ("minimum", "alpha"),
+}
+
+
+# Exactly these seven rows have a standard form, and each frees exactly these parameters. The form reads only
+# the base draw and the row's own parameters.
+def test_standard_forms_are_exactly_these() -> None:
+    found = {}
+    for name, row in DISTRIBUTIONS.items():
+        if row.standard is None:
+            continue
+        assert set(row.standard.fixed) <= set(row.parameters)
+        assert row.standard.value.free_symbols <= {BASE, *row.symbols}
+        found[name] = tuple(p for p in row.parameters if p not in row.standard.fixed)
+    assert found == STANDARD
+
+
+# A row's standard form draws the row's own distribution. 200000 base draws put through the form at the GOOD
+# arguments, e.g. z/5 for Exponential(5) with z from Exponential(1): same distribution as 200000 draws of the
+# row's sampler (two-sample Kolmogorov-Smirnov at the 0.1% level) and a mean within 5 standard errors of the row's.
+@pytest.mark.parametrize("name", sorted(STANDARD))
+def test_standard_form_draws_the_row(name: str) -> None:
+    use = _use(name)
+    standard = DISTRIBUTIONS[name].standard
+    assert standard is not None
+    base = standard.base(np.random.default_rng(1), [float(arg) for arg in use.args], _DRAWS)
+    through_form = np.asarray(sympy.lambdify(BASE, use.bind(standard.value), "numpy")(base), dtype=np.float64)
+    direct = np.sort(_draws(name))
+    points = np.sort(np.concatenate([through_form, direct]))
+    gap = np.abs(np.searchsorted(np.sort(through_form), points, side="right") - np.searchsorted(direct, points, side="right"))
+    assert float(gap.max()) / _DRAWS < 1.95 * math.sqrt(2 / _DRAWS)
+    standard_error = float(through_form.std(ddof=1)) / math.sqrt(_DRAWS)
+    assert abs(float(through_form.mean()) - float(use.mean)) <= 5 * standard_error
+
+
+# The base draw reads only the fixed parameters: with every other parameter replaced by nan, the same seed
+# gives the same base draws. For Gamma(2, 3) the base reads the shape 2 and ignores the scale.
+@pytest.mark.parametrize("name", sorted(STANDARD))
+def test_base_draw_ignores_the_parameters_that_may_vary(name: str) -> None:
+    row = DISTRIBUTIONS[name]
+    standard = row.standard
+    assert standard is not None
+    full = [float(arg) for arg in _use(name).args]
+    masked = [value if p in standard.fixed else math.nan for p, value in zip(row.parameters, full, strict=True)]
+    np.testing.assert_array_equal(
+        standard.base(np.random.default_rng(3), full, 1000), standard.base(np.random.default_rng(3), masked, 1000)
+    )
+
+
+# coupled() of a use with constant arguments is the draw itself: Normal(10, 2) gives its own sampler and the
+# bare base symbol. With t in an argument it is the standard form with the arguments in: Exponential(5 + t)
+# gives Exponential(1) draws and z/(t + 5).
+def test_coupled_use() -> None:
+    t = sympy.Symbol("t")
+    sample, value = _use("Normal").coupled()
+    assert value == BASE
+    np.testing.assert_array_equal(sample(np.random.default_rng(0), 5), _use("Normal").sample(np.random.default_rng(0), 5))
+    moving = DISTRIBUTIONS["Exponential"].use((5 + t,))
+    assert moving.over_time == ("rate",)
+    base, value = moving.coupled()
+    assert value == BASE / (t + 5)
+    np.testing.assert_array_equal(base(np.random.default_rng(0), 5), np.random.default_rng(0).standard_exponential(5))
+
+
+# A parameter that cannot follow a curve is refused by name: Gamma(2 + t, 3) -> 'shape ... cannot vary with t.
+# Only scale can.', Beta(2 + t, 5) and Poisson(4 + t) -> 'the parameters ... cannot vary with t'. Gamma(2, 3 + t)
+# and constant uses pass.
+def test_require_standard() -> None:
+    t = sympy.Symbol("t")
+    with pytest.raises(ValueError, match=r"shape of Gamma\(shape, scale\) cannot vary with t. Only scale can."):
+        DISTRIBUTIONS["Gamma"].use((2 + t, 3)).require_standard()
+    with pytest.raises(ValueError, match=r"the parameters of Beta\(alpha, beta\) cannot vary with t"):
+        DISTRIBUTIONS["Beta"].use((2 + t, 5)).require_standard()
+    with pytest.raises(ValueError, match=r"the parameters of Poisson\(mean\) cannot vary with t"):
+        DISTRIBUTIONS["Poisson"].use((4 + t,)).require_standard()
+    DISTRIBUTIONS["Gamma"].use((2, 3 + t)).require_standard()
+    for name in DISTRIBUTIONS:
+        _use(name).require_standard()

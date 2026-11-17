@@ -35,6 +35,7 @@ from typing import Callable, Dict, List, Tuple, Type
 
 import numpy as np
 import pytest
+import sympy
 import yaml
 from pydantic import BaseModel, ValidationError
 
@@ -219,14 +220,41 @@ def _check_request_interval_over_time(row: Row) -> None:
         assert abs(float(offsets[0]) - float(first)) <= 0.01, f"{request_interval} over {window}s: first at {offsets[0]}"
 
 
-# A random request_interval over t must send the claimed mean requests (within 10%, over 200 seeded
+# A random request_interval over t must send the claimed mean requests (within 2%, over 200 seeded
 # schedules), and the area under the named curve over the window must be the claimed area (nearest whole).
 def _check_random_request_interval_over_time(row: Row) -> None:
     request_interval, curve, window, mean, area = _code(row[0]), _code(row[1]), int(row[2]), float(row[3]), int(row[4])
     expression = Expression(request_interval, minimum=0, duration=window, time_in_parameters=True)
     counts = [len(RequestSchedule(expression, window, np.random.default_rng(seed)).offsets) for seed in range(200)]
-    assert math.isclose(sum(counts) / len(counts), mean, rel_tol=0.1), f"{request_interval}: mean {sum(counts) / len(counts)}"
+    assert math.isclose(sum(counts) / len(counts), mean, rel_tol=0.02), f"{request_interval}: mean {sum(counts) / len(counts)}"
     assert round(StandardLoadStage(rate=curve, duration=window).rate_schedule.total) == area, f"{curve} over {window}s"
+
+
+# Which parameters of a distribution may vary with t: 'nothing', 'both', or the one named, as the table of
+# distributions has it. A row may name several distributions that share an answer.
+def _check_may_vary_with_time(row: Row) -> None:
+    names = re.findall(r"`([A-Za-z]+)", row[0])
+    assert names, row
+    for name in names:
+        distribution = DISTRIBUTIONS[name]
+        standard = distribution.standard
+        free = [p for p in distribution.parameters if standard is not None and p not in standard.fixed]
+        if row[1] == "nothing":
+            assert free == [], name
+        elif row[1] == "both":
+            assert free == list(distribution.parameters) and len(free) == 2, name
+        else:
+            assert free == [_code(row[1])], name
+        # and the grammar agrees: every parameter it lists loads with t in it, and no other does
+        for parameter in distribution.parameters:
+            if distribution.takes_list:
+                continue
+            use = distribution.use([sympy.Symbol("t") + 1 if p == parameter else 1 for p in distribution.parameters])
+            if parameter in free:
+                use.require_standard()
+            else:
+                with pytest.raises(ValueError, match="cannot vary with t"):
+                    use.require_standard()
 
 
 # Each example in a rejected table must raise when built the way its table says.
@@ -264,6 +292,7 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
         "Mean requests",
         "Area under the curve",
     ): _check_random_request_interval_over_time,
+    ("Distribution", "May vary with `t`"): _check_may_vary_with_time,
     ("Rejected request_interval", "Why"): _rejects(lambda raw: StandardLoadStage(request_interval=raw, duration=60)),
 }
 
@@ -340,6 +369,14 @@ def test_distribution_table_matches_the_code() -> None:
     tables = _distribution_tables()
     assert len(tables) == 1, f"expected one table with header {DOCS_HEADER}, found {len(tables)}"
     assert tables[0] == [list(row) for row in docs_rows()]
+
+
+# The table of which parameters may vary with t names every distribution in the code's table once.
+def test_may_vary_with_time_table_lists_every_distribution() -> None:
+    header = ("Distribution", "May vary with `t`")
+    cells = [row[0] for doc in DOCS for h, rows in _tables(doc.read_text()) if h == header for row in rows]
+    named = [name for cell in cells for name in re.findall(r"`([A-Za-z]+)", cell)]
+    assert sorted(named) == sorted(DISTRIBUTIONS)
 
 
 # Every row of the code's table is named in the docs table and nothing else is: the first cell of each docs row,

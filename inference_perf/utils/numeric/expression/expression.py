@@ -61,7 +61,7 @@ from sympy.core.relational import GreaterThan, LessThan, Relational, StrictGreat
 from sympy.logic.boolalg import And, Boolean, Or
 from sympy.parsing.sympy_parser import parse_expr
 
-from .distributions import DISTRIBUTIONS, Distribution, DistributionUse, lookup, render_condition, unsupported_message
+from .distributions import BASE, DISTRIBUTIONS, Distribution, DistributionUse, lookup, render_condition, unsupported_message
 from .measured import SERIES, SIGNALS, Term, extract_terms
 from .sympy_types import SympyExpr, SympyNode, SympyRandomSymbol, SympyRelational, SympySet
 
@@ -112,6 +112,7 @@ def _require_constant_or_time(use: DistributionUse) -> None:
     for parameter, arg in zip(use.row.parameters, use.args, strict=True):
         if any(symbol != _T for symbol in arg.free_symbols):
             raise ValueError(f"{use}: {parameter} must be a constant or an expression of t, got {arg}.")
+    use.require_standard()
 
 
 def _parse_namespace(counter: list[int], time_in_parameters: bool = False) -> dict[str, Callable[..., SympyRandomSymbol]]:
@@ -359,6 +360,8 @@ class Expression:
         self._runtime_check = False
         self._validate_range(duration)
         self._compile_random_sampler()
+        # compiled on first use by sample_base and value_given
+        self._bases: Optional[list[Callable[[np.random.Generator, int], NDArray[np.float64]]]] = None
         self._evaluator: Optional[Callable[[NDArray[np.float64]], ArrayLike]] = None
 
     def _compile_random_sampler(self) -> None:
@@ -615,6 +618,51 @@ class Expression:
                 f"Expression {self.raw!r} cannot be shown to stay inside the permitted range "
                 f"[{self.minimum}, {self.maximum}] {window}. Keep it in range with Min(...) or Max(...)."
             )
+
+    def _compile_coupled(self) -> None:
+        """Compile the value as a function of one base draw per random variable and of ``t``."""
+        bases: list[Callable[[np.random.Generator, int], NDArray[np.float64]]] = []
+        symbols: list[SympyNode] = []
+        values: dict[SympyNode, SympyNode] = {}
+        for i, rv in enumerate(self._random_symbols):
+            base, value = self._uses[rv].coupled()
+            symbol = Symbol(f"_base_{i}", real=True)
+            bases.append(base)
+            symbols.append(symbol)
+            values[rv] = value.xreplace({BASE: symbol})
+        self._bases = bases
+        # plain floats in and out: this is called a few times per request, one request at a time
+        self._value_given: Callable[..., float] = sympy.lambdify([*symbols, _T], self._expr.xreplace(values), "math")
+
+    def sample_base(self, rng: np.random.Generator, size: int) -> NDArray[np.float64]:
+        """Draw the randomness of ``size`` values without fixing ``t``: one row per value, one column per random variable.
+
+        A row is what :meth:`value_given` turns into a value at a stage time.
+        A random variable with constant parameters contributes its draw as it
+        is. One whose parameters vary with ``t`` contributes the base draw of
+        its row's standard form, e.g. an ``Exponential(1)`` draw for
+        ``Exponential(5 + t/10)``.
+        """
+        if self._bases is None:
+            self._compile_coupled()
+        assert self._bases is not None
+        if not self._bases:
+            return np.empty((size, 0), dtype=np.float64)
+        return np.column_stack([base(rng, size) for base in self._bases])
+
+    def value_given(self, base: Sequence[float], t: float) -> float:
+        """The value at stage time ``t`` for one row of :meth:`sample_base`.
+
+        The same row read at a later ``t`` is the same draw under the
+        parameters as they stand then. Division by zero reads as ``inf``, the
+        only reading a value that is proved nonnegative allows.
+        """
+        if self._bases is None:
+            self._compile_coupled()
+        try:
+            return float(self._value_given(*base, t))
+        except ZeroDivisionError:
+            return math.inf
 
     def sample(
         self,

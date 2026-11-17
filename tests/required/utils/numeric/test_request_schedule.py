@@ -147,12 +147,14 @@ def test_zero_or_negative_gap_over_time_is_rejected(request_interval: str, messa
         _schedule(request_interval, 10)
 
 
-# A random gap over t is drawn one gap at a time, each at the time the gap starts. A gap pinned to
-# 0.1 + t (a uniform one nanosecond wide) puts requests at 0.1, 0.3, 0.7, 1.5 and 3.1s: each gap
-# is 0.1 plus the time of the arrival before it, not the time of its own arrival.
-def test_random_gap_over_time_is_drawn_when_the_gap_starts() -> None:
+# A random gap over t is used up along the curve, not fixed when it starts. A gap pinned to 0.1 + t (a uniform
+# one nanosecond wide) sends where the area under 1/(0.1 + t) reaches 1, 2, 3: at 0.172, 0.639 and 1.909s, the
+# times the gap "0.1 + t" with no randomness sends at. Fixing each gap at its start gave 0.1, 0.3, 0.7, 1.5, 3.1.
+def test_random_gap_over_time_is_used_up_along_the_curve() -> None:
     schedule = _schedule("Uniform(0.1 + t, 0.1 + t + 1e-9)", 4)
-    assert schedule.offsets == pytest.approx([0.1, 0.3, 0.7, 1.5, 3.1], abs=1e-6)
+    assert schedule.offsets == pytest.approx([0.171828, 0.638906, 1.908554], abs=1e-5)
+    # the gap with no randomness is placed on the rate's 10ms grid, which is good to a few ms where the curve bends hard
+    assert schedule.offsets == pytest.approx(_schedule("0.1 + t", 4).offsets, abs=5e-3)
 
 
 # "Exponential(5 + t/10)" over 60s loads and follows its curve: the rate climbs from 5 to 11, so of
