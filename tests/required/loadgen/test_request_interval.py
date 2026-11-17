@@ -178,3 +178,28 @@ async def test_mp_run_completes_an_request_interval_stage() -> None:
         assert (loadgen.stage_runtime_info[1].rate, loadgen.stage_runtime_info[1].request_interval) == (4.0, None)
     finally:
         await loadgen.stop()
+
+
+# A random rate points at request_interval: rate "Exponential(10)" over 60s is rejected with
+# "A rate is never random" and told to set request_interval instead.
+def test_random_rate_error_points_at_request_interval() -> None:
+    with pytest.raises(ValidationError, match="A rate is never random. For random arrivals set request_interval instead"):
+        StandardLoadStage(rate="Exponential(10)", duration=60)
+
+
+# load.type poisson next to the rate expression "t/10" is rejected, told to remove load.type and
+# that Poisson arrivals are written as request_interval: "Exponential(<rate>)".
+def test_load_type_with_rate_expression_points_at_request_interval() -> None:
+    message = 'Remove load.type. Poisson arrivals are written as request_interval: "Exponential\\(<rate>\\)".'
+    with pytest.raises(ValidationError, match=message):
+        LoadConfig(type=LoadType.POISSON, stages=[StandardLoadStage(rate="t/10", duration=60)])
+
+
+# A zero-rate stage and a request_interval stage load side by side with no load.type: rate 0
+# for 60s sends nothing, request_interval 0.1 for 60s sends 600, and only the rate stage is a zero rate.
+def test_zero_rate_stage_next_to_a_request_interval_stage() -> None:
+    idle = StandardLoadStage(rate=0, duration=60)
+    paced = StandardLoadStage(request_interval=0.1, duration=60)
+    LoadConfig(stages=[idle, paced])
+    assert (idle.expected_requests, paced.expected_requests) == (0, 600)
+    assert (idle.rate_is_zero, paced.rate_is_zero) == (True, False)

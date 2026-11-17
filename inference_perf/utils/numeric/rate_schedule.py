@@ -34,7 +34,10 @@ from inference_perf.utils.numeric.expression import Expression
 
 def random_rate_error(raw: Union[str, int, float]) -> str:
     """The message for a rate that draws from a distribution."""
-    return f"Rate {raw!r} is random. A rate is never random."
+    return (
+        f"Rate {raw!r} is random. A rate is never random. For random arrivals set request_interval instead, "
+        'such as request_interval: "Exponential(10)".'
+    )
 
 
 # Grid spacing for integrating a time-varying rate, in seconds, and a cap on the
