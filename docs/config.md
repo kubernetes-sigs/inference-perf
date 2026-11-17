@@ -215,7 +215,7 @@ load:
   type: constant|poisson|concurrent|trace_session_replay # Load pattern type
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
-    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS); a number, or an expression over stage seconds t such as "10 + 5*sin(2*pi*t/60)" (the stage sends the rate integrated over its window, and reports carry the mean)
+    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS); a number, or an expression over stage seconds t such as "10 + 5*sin(2*pi*t/60)" (the stage sends the rate integrated over its window, and reports carry the mean; leave load.type out with an expression)
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
       stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds; may read measured terms, see Stop Conditions (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS, defaults to num_conversations for conversation_replay)
@@ -238,12 +238,11 @@ load:
 
 #### Rate Expressions
 
-A constant or Poisson stage's `rate` is a number or an [expression](./expressions.md). An expression may vary with stage time `t` and need not mention it: `"2 + 3"` is a rate of 5. The stage sends the rate integrated over its window, and reports carry the mean rate. A number schedules exactly as it always has.
+A stage's `rate` is a number, spaced as `load.type` says (constant or poisson), or an [expression](./expressions.md), set with no `load.type`. An expression may vary with stage time `t` and need not mention it: `"2 + 3"` is a rate of 5. The stage sends the rate integrated over its window, and reports carry the mean rate. A number schedules exactly as it always has.
 
 <!-- checked-example -->
 ```yaml
 load:
-  type: poisson
   stages:
   - rate: "Min(5 + t/2, 40)"         # ramp to 40 req/s, then hold
     stop_condition: "t >= 120"
@@ -266,7 +265,7 @@ load:
 | `Max(0, -t)` | 60 | 0 | 0.00 |
 | `2**(t/10)` | 60 | 908 | 15.15 |
 
-The constant load type spreads requests by how much the rate has built up, so they bunch where the rate is high. The Poisson load type draws each second's count from the rate over that second. A Poisson stage can run past its window, since its counts are random; past the window it holds the window's mean rate.
+Requests are spread by how much the rate has built up, so they bunch where the rate is high. `load.type` is not set alongside a rate expression: leave it out. A config that sets `load.type` and gives any stage a rate expression is rejected when it loads.
 
 A rate of zero is legal, as a number or as an expression. A stage whose rate is zero for the whole stage sends zero requests, lasts its `duration` or `stop_condition` and reports a count of 0, so it works as a pause between two stages. A warning says the stage sends nothing, and why, when the config loads and when the stage runs. A rate that is zero for part of the stage, such as `Max(0, 20 - t/3)`, sends nothing during that part. A rate that is negative anywhere in the stage is rejected.
 
@@ -277,7 +276,7 @@ A rate of zero is legal, as a number or as an expression. A stage whose rate is 
 | `requests/10` | `requests` is not a known symbol. |
 | `-1` | Negative. |
 
-Under `load.type: trace_replay` the trace sets when each request is sent, so a rate expression is rejected there.
+Under `load.type: trace_replay` the trace sets when each request is sent, so a rate expression is rejected there too.
 
 #### Stop Conditions
 

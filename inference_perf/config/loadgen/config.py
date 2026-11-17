@@ -464,6 +464,13 @@ class LoadConfig(StrictBaseModel):
                         f"Stage {i}: a rate expression has no effect under TRACE_REPLAY, "
                         "where the trace sets when each request is sent. Use a number."
                     )
+                # load.type picks how a numeric rate is spaced. An expression is
+                # spaced by its own shape, so the two are not set together.
+                if isinstance(stage.rate, str) and "type" in self.model_fields_set:
+                    raise ValueError(
+                        f"Stage {i}: load.type ({self.type.value}) cannot be set alongside a rate expression. "
+                        "Remove load.type."
+                    )
                 # legal, since a stage may idle between two others, but worth saying out loud
                 if self.type != LoadType.TRACE_REPLAY and stage.rate_is_zero:
                     logger.warning("Stage %d will send zero requests: its rate %r is zero for the whole stage.", i, stage.rate)
