@@ -1,6 +1,7 @@
 load:
   type: concurrent
   num_workers: 8
+  base_seed: 42
   worker_max_concurrency: 1000
   stages:
   - num_requests: 100
