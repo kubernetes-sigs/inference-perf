@@ -26,7 +26,7 @@ sympy upgrade that drops an attribute fails there.
 
 from __future__ import annotations
 
-from typing import Callable, Mapping, Optional, Protocol, runtime_checkable
+from typing import AbstractSet, Callable, Mapping, Optional, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -104,6 +104,19 @@ class SympySet(SympyNode, Protocol):
 class SympyDistribution(Protocol):
     @property
     def set(self) -> SympySet: ...
+
+    # the parameters as written, e.g. (t/10 + 5,) for Exponential(5 + t/10)
+    @property
+    def args(self) -> tuple[SympyExpr, ...]: ...
+
+    # AbstractSet, since the `set` property above shadows the builtin in this class
+    @property
+    def free_symbols(self) -> AbstractSet[SympyNode]: ...
+
+    def xreplace(self, rule: Mapping[SympyNode, SympyNode]) -> SympyDistribution: ...
+
+    # raises ValueError when the parameters are not ones the distribution allows
+    def check(self, *args: SympyNode) -> None: ...
 
 
 class SympyProbabilitySpace(Protocol):

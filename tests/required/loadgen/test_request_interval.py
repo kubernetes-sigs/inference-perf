@@ -58,17 +58,15 @@ def test_request_interval_forms_accepted() -> None:
 
 
 # Stage rejections, each at config load: both rate and request_interval; neither; a gap that
-# can go negative (Normal); a gap that depends on t; a zero gap; a fixed gap longer than
-# the stage (100s gap, 60s stage).
+# can go negative (Normal(0.1, 0.05)); a gap that is zero at t=0 ("0.1 * t"); and a gap of 0.
 @pytest.mark.parametrize(
     "fields, message",
     [
         ({"request_interval": 0.1, "rate": 10}, "Exactly one of rate or request_interval"),
         ({}, "Exactly one of rate or request_interval"),
         ({"request_interval": "Normal(0.1, 0.05)"}, "outside the permitted range"),
-        ({"request_interval": "0.1 * t"}, "disallowed symbol"),
+        ({"request_interval": "0.1 * t"}, "is zero at t=0"),
         ({"request_interval": 0}, "greater than 0"),
-        ({"request_interval": 100}, "longer than the stage"),
     ],
 )
 def test_bad_request_interval_rejected(fields: dict[str, object], message: str) -> None:
@@ -203,3 +201,89 @@ def test_zero_rate_stage_next_to_a_request_interval_stage() -> None:
     LoadConfig(stages=[idle, paced])
     assert (idle.expected_requests, paced.expected_requests) == (0, 600)
     assert (idle.rate_is_zero, paced.rate_is_zero) == (True, False)
+
+
+# A request_interval may vary with t. "1/t" over 10s is the rate t and sends 50 requests, bounded by a
+# duration or by stop_condition "t >= 10", and the random "Exponential(5 + t/10)" over 60s loads.
+def test_request_interval_over_time_loads() -> None:
+    for window in ({"duration": 10}, {"stop_condition": "t >= 10"}):
+        stage = StandardLoadStage(request_interval="1/t", **window)
+        assert stage.expected_requests == 50
+        assert stage.request_schedule.offsets[0] == pytest.approx(1.4142, abs=1e-3)
+    assert StandardLoadStage(request_interval="Exponential(5 + t/10)", duration=60).expected_requests > 0
+
+
+# A random request_interval over t that cannot be drawn from at every t is rejected at load. The error
+# names the t and the parameter and says a load that pauses or starts from zero is written with rate.
+@pytest.mark.parametrize(
+    ("request_interval", "message"),
+    [
+        ("Exponential(t)", "not valid at t=0, where rate = 0: Rate must be positive. A load that pauses or starts from zero"),
+        ("Abs(Cauchy(1 + t, 1))", "the mean of Cauchy cannot be computed at t=0. A load that pauses or starts from zero"),
+    ],
+)
+def test_random_request_interval_over_time_rejected(request_interval: str, message: str) -> None:
+    with pytest.raises(ValidationError, match=message) as raised:
+        StandardLoadStage(request_interval=request_interval, duration=60)
+    assert "is written with rate" in str(raised.value)
+
+
+# A request_interval stage that sends nothing loads with a warning that says why: stage 0 has an
+# infinite gap, stage 1 a 100s gap in a 60s stage. Stage 2, at 0.1s, gets none.
+def test_request_interval_that_sends_nothing_warns_at_config_load(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="inference_perf.config.loadgen.config"):
+        LoadConfig(
+            stages=[
+                StandardLoadStage(request_interval="oo", duration=60),
+                StandardLoadStage(request_interval=100, duration=60),
+                StandardLoadStage(request_interval=0.1, duration=60),
+            ]
+        )
+    assert [record.getMessage() for record in caplog.records] == [
+        "Stage 0 will send zero requests: its request_interval 'oo' is infinite for the whole stage.",
+        "Stage 1 will send zero requests: no gap of its request_interval 100.0 fits in the stage.",
+    ]
+
+
+# In-process run of a stage whose gap is infinite for its whole 1s: it completes, sends nothing,
+# lasts its 1s instead of ending at once, reports its request_interval, and logs why it sent nothing.
+@pytest.mark.timeout(60)
+async def test_in_process_infinite_request_interval_stage_lasts_its_duration(caplog: pytest.LogCaptureFixture) -> None:
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = MockDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
+    stage = StandardLoadStage(request_interval="oo", duration=1)
+    loadgen = LoadGenerator(datagen, LoadConfig(stages=[stage], num_workers=0, worker_max_concurrency=4))
+    collector = LocalRequestMetricCollector()
+    with caplog.at_level(logging.WARNING, logger="inference_perf.loadgen.load_generator"):
+        await loadgen.run(MockModelServerClient(collector, api_config, mock_latency=0.01))
+    info = loadgen.stage_runtime_info[0]
+    assert info.status.name == "COMPLETED"
+    assert (info.rate, info.request_interval) == (None, "oo")
+    assert collector.get_metrics() == []
+    assert 1.0 <= info.end_time - info.start_time < 5.0
+    assert "Stage 0 sends zero requests: its request_interval 'oo' is infinite for the whole stage." in caplog.text
+
+
+# Worker-process run of rate 4 for 1s, then an infinite gap for 1s, then rate 4 for 1s: all three
+# complete with nothing dropped, and the middle stage holds its window (1s lead-in plus 1s).
+@pytest.mark.timeout(120)
+async def test_worker_run_infinite_request_interval_stage_between_two_normal_stages() -> None:
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = MockDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
+    stages = [
+        StandardLoadStage(rate=4, duration=1),
+        StandardLoadStage(request_interval="oo", duration=1),
+        StandardLoadStage(rate=4, duration=1),
+    ]
+    load_config = LoadConfig(
+        interval=0, stages=stages, num_workers=1, worker_max_concurrency=4, stage_teardown_grace_seconds=10.0
+    )
+    loadgen = LoadGenerator(datagen, load_config)
+    try:
+        await loadgen.run(MockModelServerClient(LocalRequestMetricCollector(), api_config, mock_latency=0.01))
+    finally:
+        await loadgen.stop()
+    infos = [loadgen.stage_runtime_info[stage_id] for stage_id in range(3)]
+    assert [info.status.name for info in infos] == ["COMPLETED"] * 3
+    assert [info.dropped_requests for info in infos] == [0, 0, 0]
+    assert 2.0 <= infos[1].end_time - infos[1].start_time < 6.0

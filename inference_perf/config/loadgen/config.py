@@ -87,7 +87,8 @@ class StandardLoadStage(LoadStage):
         description=(
             "Seconds between consecutive requests: a positive number for even spacing, or an expression that "
             "may draw from a distribution, such as 'Exponential(10)' (a Poisson process at 10 QPS), "
-            "'Uniform(0.05, 0.15)' or 'Gamma(0.5, 0.2)'. Must be nonnegative. The stage sends however many "
+            "'Uniform(0.05, 0.15)' or 'Gamma(0.5, 0.2)', and may vary with stage time t. A gap that is not random "
+            "is the rate 1/request_interval. Must be positive. The stage sends however many "
             "requests fit in its window. Exactly one of rate or request_interval is required, and load.type is "
             "not set with request_interval."
         ),
@@ -128,16 +129,8 @@ class StandardLoadStage(LoadStage):
         predicate = self.predicate
         if (self.rate is None) == (self.request_interval is None):
             raise ValueError("Exactly one of rate or request_interval must be set for CONSTANT/POISSON load types")
-        if self.request_interval is not None:
-            # A fixed gap longer than the window never fits. A random gap is not
-            # held to this: an empty draw is a possible outcome, not a config error.
-            schedule = self.request_schedule
-            if not schedule.request_interval.is_random and schedule.expected_requests == 0:
-                raise ValueError(
-                    f"request_interval {self.request_interval!r} is longer than the stage, so the stage would send nothing"
-                )
-        # Same for the rate, which is integrated over the window the predicate
-        # just fixed.
+        # Same for the rate or the request_interval, which is worked out over the
+        # window the predicate just fixed.
         sends = self.expected_requests
         for term in predicate.terms.values():
             if term.sent_stop is not None and term.sent_stop > sends:
@@ -211,7 +204,13 @@ class StandardLoadStage(LoadStage):
         duration = self.effective_duration
         cached = self._request_schedule
         if cached is None or cached.request_interval.raw != self.request_interval or cached.duration != duration:
-            expression = Expression(self.request_interval, allow_time=False, minimum=0)
+            expression = Expression(self.request_interval, minimum=0, duration=duration)
+            try:
+                expression.require_valid_draws()
+            except ValueError as e:
+                raise ValueError(
+                    f"request_interval: {e} A load that pauses or starts from zero is written with rate, which may be zero."
+                ) from e
             self._request_schedule = RequestSchedule(expression, duration)
         assert self._request_schedule is not None
         return self._request_schedule
@@ -241,10 +240,12 @@ class StandardLoadStage(LoadStage):
     def zero_requests_reason(self) -> Optional[str]:
         """Why the stage sends zero requests, for a warning, or None when it sends some.
 
-        Set for a rate that is zero for the whole stage and for a rate whose
-        area over the stage is less than one request.
+        Set for a rate that is zero for the whole stage, a rate whose area over
+        the stage is less than one request, a request_interval that is infinite
+        for the whole stage, and a request_interval none of whose gaps fit in
+        the stage.
         """
-        return None if self.rate is None else self.rate_schedule.zero_requests_reason
+        return self.schedule.zero_requests_reason
 
 
 class ConcurrentLoadStage(LoadStage):

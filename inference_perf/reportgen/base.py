@@ -1212,9 +1212,10 @@ class ReportGenerator:
         """Stages that report even when they sent nothing, in stage order.
 
         A stage that sent zero requests is still a stage: its rate was zero,
-        or too low to reach one request, or it ended before its first send.
-        Only a rate stage records no concurrency level. The sweep's probe is
-        stage -1 and never reports.
+        or too low to reach one request, its request_interval was infinite or
+        longer than the stage, or it ended before its first send. Only a rate
+        or request_interval stage records no concurrency level. The sweep's
+        probe is stage -1 and never reports.
         """
         return [
             stage_id

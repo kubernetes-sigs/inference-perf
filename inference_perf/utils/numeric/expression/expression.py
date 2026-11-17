@@ -168,9 +168,15 @@ def _interval(expr: SympyNode, duration: Optional[float]) -> Optional[tuple[Symp
     if _is_random_symbol(expr):
         support = expr.pspace.distribution.set
         try:
-            return support.inf, support.sup
+            low, high = support.inf, support.sup
         except (AttributeError, NotImplementedError):
             return None
+        # a support that moves with t, e.g. Uniform(t, t + 1), is bounded by
+        # the least its lower end and the most its upper end can be
+        lowest, highest = _interval(low, duration), _interval(high, duration)
+        if lowest is None or highest is None:
+            return None
+        return lowest[0], highest[1]
     if expr == _T:
         return sympy.S.Zero, (sympy.Float(duration) if duration is not None else oo)
     found = [_interval(arg, duration) for arg in expr.args]
@@ -197,6 +203,27 @@ def _interval(expr: SympyNode, duration: Optional[float]) -> Optional[tuple[Symp
     if _is_expr(result) and result.is_number and result.is_extended_real:
         return result, result
     return None
+
+
+# How many evenly spaced times a distribution's parameters are checked at, and
+# how many its mean is computed at when sympy has no closed form in t.
+_DRAW_GRID_POINTS = 1001
+_MEAN_GRID_POINTS = 5
+
+
+def _is_finite(value: SympyExpr) -> bool:
+    """True for a finite real number, false for an infinity, nan or a complex value."""
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _parameter_names(dist: SympyDistribution) -> list[str]:
+    """What sympy calls the distribution's parameters, e.g. ``["rate"]`` for an exponential."""
+    declared = getattr(type(dist), "_argnames", ())
+    names = [str(name) for name in declared]
+    return names if len(names) == len(dist.args) else [f"parameter {i + 1}" for i in range(len(dist.args))]
 
 
 def _is_condition(expr: object) -> bool:
@@ -275,7 +302,11 @@ class Expression:
         free = self._expr.free_symbols
         self._random_symbols = sorted((s for s in free if _is_random_symbol(s)), key=str)
         self._is_random = bool(self._random_symbols)
-        self._free_symbols = {str(s) for s in free if not _is_random_symbol(s)}
+        # a distribution's parameters are not among the tree's free symbols,
+        # so t inside Exponential(5 + t/10) has to be looked for there
+        in_parameters = {s for rv in self._random_symbols for s in rv.pspace.distribution.free_symbols}
+        self._time_in_parameters = _T in in_parameters
+        self._free_symbols = {str(s) for s in free | in_parameters if not _is_random_symbol(s)}
 
         if self._is_random and not allow_random:
             raise ValueError(f"Expression {raw!r} contains a random variable, which is not permitted here.")
@@ -444,8 +475,93 @@ class Expression:
 
     @property
     def free_symbols(self) -> set[str]:
-        """Names of non-random free symbols (a subset of ``{"t"}``)."""
+        """Names of non-random free symbols (a subset of ``{"t"}``), a distribution's parameters included."""
         return set(self._free_symbols)
+
+    @property
+    def varies_with_time(self) -> bool:
+        """True when ``t`` appears, in the arithmetic or in a distribution's parameters."""
+        return "t" in self._free_symbols
+
+    def require_valid_draws(self) -> None:
+        """Raise unless a random expression over ``t`` can be drawn from at every ``t`` in ``[0, duration]``.
+
+        Four things are required of each distribution, and how far each is
+        established differs:
+
+        * its parameters are finite: proved, by interval arithmetic over the window.
+        * its parameters are ones the distribution allows (a positive rate, say):
+          checked by sympy's own parameter check at ``_DRAW_GRID_POINTS`` evenly
+          spaced times, both ends included. A grid check, not a proof.
+        * its mean is finite: proved from sympy's closed-form mean when it has
+          one in ``t``, otherwise computed at ``_MEAN_GRID_POINTS`` times, which
+          is a grid check.
+        * the whole expression stays inside ``[minimum, maximum]``: proved, by
+          interval arithmetic.
+
+        The mean is each distribution's own, not the mean of the arithmetic
+        built on it. An error names the parameter and a ``t`` at which it fails.
+        """
+        if not self._is_random or not self.varies_with_time:
+            return
+        if self._duration is None:
+            raise ValueError(f"Expression {self.raw!r} draws from a distribution over t, which needs a duration to check.")
+        duration = self._duration
+        window = f"for every t from 0 to {duration:g}"
+        times = [duration * i / (_DRAW_GRID_POINTS - 1) for i in range(_DRAW_GRID_POINTS)]
+
+        for rv in self._random_symbols:
+            dist = rv.pspace.distribution
+            shown = type(dist).__name__.removesuffix("Distribution")
+            names = _parameter_names(dist)
+            for name, arg in zip(names, dist.args, strict=True):
+                found = _interval(arg, duration)
+                if found is None or not all(_is_finite(end) for end in found):
+                    at = next((t for t in times if not _is_finite(arg.subs(_T, sympy.Float(t)))), None)
+                    where = f"is not finite at t={at:g}" if at is not None else f"cannot be shown to be finite {window}"
+                    raise ValueError(f"Expression {self.raw!r}: the {name} of {shown}, {arg}, {where}.")
+
+            for t in times:
+                values = [arg.subs(_T, sympy.Float(t)) for arg in dist.args]
+                try:
+                    dist.check(*values)
+                except ValueError as e:
+                    given = ", ".join(f"{name} = {float(value):g}" for name, value in zip(names, values, strict=True))
+                    raise ValueError(f"Expression {self.raw!r}: {shown} is not valid at t={t:g}, where {given}: {e}") from e
+
+            where_no_mean = self._where_the_mean_is_not_finite(rv, duration)
+            if where_no_mean is not None:
+                raise ValueError(f"Expression {self.raw!r}: the mean of {shown} {where_no_mean}.")
+
+        found_bounds = self.bounds
+        if found_bounds is None or not (self._within_bounds(found_bounds[0]) and self._within_bounds(found_bounds[1])):
+            raise ValueError(
+                f"Expression {self.raw!r} cannot be shown to stay inside the permitted range "
+                f"[{self.minimum}, {self.maximum}] {window}. Keep it in range with Min(...) or Max(...)."
+            )
+
+    @staticmethod
+    def _where_the_mean_is_not_finite(rv: SympyRandomSymbol, duration: float) -> Optional[str]:
+        """Where the mean of ``rv`` fails to be finite, as words for an error, or None when it is finite."""
+        try:
+            mean: object = sympy.stats.E(rv)
+        except Exception:
+            mean = None
+        if _is_expr(mean):
+            found = _interval(mean, duration)
+            if found is not None and all(_is_finite(end) for end in found):
+                return None
+        # no closed form in t that interval arithmetic can bound, so compute
+        # the mean at a few times instead. each one is a symbolic integral.
+        for i in range(_MEAN_GRID_POINTS):
+            t = duration * i / (_MEAN_GRID_POINTS - 1)
+            try:
+                at_t: object = sympy.stats.E(rv.subs(_T, sympy.Float(t)))
+            except Exception:
+                return f"cannot be computed at t={t:g}"
+            if not (_is_expr(at_t) and _is_finite(at_t)):
+                return f"is not finite at t={t:g}"
+        return None
 
     def sample(
         self,
@@ -469,15 +585,12 @@ class Expression:
         if size < 1:
             raise ValueError(f"size must be a positive integer, got {size}.")
 
-        expr = self._expr
-        if t is not None:
-            expr = expr.subs(_T, sympy.Float(t))
-
-        remaining = {str(s) for s in expr.free_symbols if not _is_random_symbol(s)}
+        remaining = self._free_symbols - ({"t"} if t is not None else set())
         if remaining:
             raise ValueError(f"Expression {self.raw!r} requires {sorted(remaining)} but none was provided to sample().")
 
         if not self._is_random:
+            expr = self._expr if t is None else self._expr.subs(_T, sympy.Float(t))
             value = float(expr.evalf())
             if self._runtime_check and not self._within_bounds(value):
                 raise ValueError(
@@ -494,7 +607,7 @@ class Expression:
             # Some leaf distribution has no direct numpy sampler; fall back to
             # the (slower) symbolic sampler for correctness.
             draw = sympy.stats.sample(
-                expr,
+                self._expr if t is None else self._expr.subs(_T, sympy.Float(t)),
                 size=(size,) if size > 1 else (),
                 library="numpy",
                 seed=rng,
@@ -505,10 +618,16 @@ class Expression:
             # sampler (independent draws, since the shared rng advances between
             # leaves), then evaluate the lambdified deterministic skeleton over
             # the drawn arrays.
-            leaf_draws = [
-                np.asarray(do_sample_numpy(dist, (size,), rng), dtype=np.float64) for _ph, dist in self._random_leaves
-            ]
             tval = 0.0 if t is None else float(t)
+            # parameters that mention t take the value they have at this t
+            at_t = {_T: sympy.Float(tval)} if self._time_in_parameters else None
+            leaf_draws = [
+                np.asarray(
+                    do_sample_numpy(dist if at_t is None else dist.xreplace(at_t), (size,), rng),
+                    dtype=np.float64,
+                )
+                for _ph, dist in self._random_leaves
+            ]
             out = self._lambdified(*leaf_draws, tval)  # type: ignore[misc]
             samples = np.asarray(out, dtype=np.float64)
             if samples.shape == ():

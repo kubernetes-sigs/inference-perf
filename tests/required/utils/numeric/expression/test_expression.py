@@ -331,3 +331,83 @@ def test_bounds_contain_samples(raw: str) -> None:
     lo, hi = expr.bounds
     samples = np.asarray(expr.sample(rng=np.random.default_rng(0), size=20000))
     assert lo <= samples.min() and samples.max() <= hi
+
+
+# t inside a distribution's parameters counts as t: "Exponential(5 + t/10)" varies with time and lists t
+# among its symbols, "Exponential(5)" does not, and a field that does not allow t rejects it there too.
+def test_time_in_a_distribution_parameter_is_seen() -> None:
+    assert Expression("Exponential(5 + t/10)").varies_with_time
+    assert Expression("Exponential(5 + t/10)").free_symbols == {"t"}
+    assert not Expression("Exponential(5)").varies_with_time
+    assert Expression("t + Exponential(5)").varies_with_time
+    with pytest.raises(ValueError, match="disallowed symbol"):
+        Expression("Normal(t, 1)", allow_time=False)
+
+
+# A draw uses the parameters as they stand at the given t: 2000 seeded draws of "Exponential(10 + t)"
+# average 0.1 at t=0 and 0.01 at t=90 (within 10%). Drawing without a t is an error.
+def test_draw_uses_the_parameters_at_t() -> None:
+    expression = Expression("Exponential(10 + t)")
+    for t, mean in ((0.0, 0.1), (90.0, 0.01)):
+        draws = np.asarray(expression.sample(t, rng=np.random.default_rng(0), size=2000))
+        assert float(draws.mean()) == pytest.approx(mean, rel=0.1)
+    with pytest.raises(ValueError, match="requires \\['t'\\]"):
+        expression.sample(rng=np.random.default_rng(0))
+
+
+# A support that moves with t is bounded over the window: "Uniform(t, t + 1)" over 60s lies in [0, 61],
+# and "0.05 + Exponential(20 + t)" is at least 0.05.
+def test_bounds_of_a_support_that_moves_with_time() -> None:
+    assert Expression("Uniform(t, t + 1)", duration=60).bounds == (0.0, 61.0)
+    assert Expression("0.05 + Exponential(20 + t)", duration=60).bounds == (0.05, float("inf"))
+
+
+# Random expressions over t that can be drawn from at every t in a 60s window pass the check, and so
+# do expressions the check does not apply to. A LogNormal with no t passes although sympy cannot
+# compute its mean, and a gap with t and no distribution passes although its bounds are undecidable.
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Exponential(5 + t/10)",
+        "Exponential(0.1 + t)",
+        "Gamma(2, 0.1 + t)",
+        "Uniform(t, t + 1)",
+        "0.05 + Exponential(20 + t)",
+        "Max(0, Normal(1 + t, 0.1))",
+        "Exponential(10)",
+        "LogNormal(-2.55, 0.7)",
+        "1/t",
+        "Piecewise((oo, t < 5), (0.1, True))",
+    ],
+)
+def test_valid_draws_over_time_are_accepted(raw: str) -> None:
+    Expression(raw, minimum=0, duration=60).require_valid_draws()
+
+
+# Over a 60s window each of these is rejected, naming the parameter and a t: a rate of 0 at t=0, a rate
+# that goes negative just after t=10, a rate with a pole at t=5 that cannot be shown finite, a
+# distribution with no mean, and a gap that cannot be shown to stay at or above 0.
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ("Exponential(t)", "Exponential is not valid at t=0, where rate = 0: Rate must be positive"),
+        ("Exponential(10 - t)", "Exponential is not valid at t=10.02, where rate = -0.02: Rate must be positive"),
+        (
+            "Exponential(1/(t - 5))",
+            "the rate of Exponential, 1/\\(t - 5\\), cannot be shown to be finite for every t from 0 to 60",
+        ),
+        ("Exponential(1/t)", "the rate of Exponential, 1/t, is not finite at t=0"),
+        ("Abs(Cauchy(1 + t, 1))", "the mean of Cauchy cannot be computed at t=0"),
+        ("Pareto(1 + t, 1)", "the mean of Pareto"),
+        ("Exponential(5 + t) - 0.01", "cannot be shown to stay inside the permitted range"),
+    ],
+)
+def test_invalid_draws_over_time_are_rejected(raw: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        Expression(raw, minimum=0, duration=60).require_valid_draws()
+
+
+# The check needs a window: a random expression over t built with no duration is refused.
+def test_valid_draws_need_a_duration() -> None:
+    with pytest.raises(ValueError, match="needs a duration"):
+        Expression("Exponential(5 + t)", minimum=0).require_valid_draws()

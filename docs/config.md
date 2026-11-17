@@ -214,7 +214,7 @@ load:
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS); a number, or an expression over stage seconds t such as "10 + 5*sin(2*pi*t/60)" (the stage sends the rate integrated over its window, and reports carry the mean), with load.type left out for an expression
-      request_interval: "Exponential(1)" # Alternative to rate: seconds between consecutive requests, a number or a distribution; it is the arrival process, so leave load.type out
+      request_interval: "Exponential(1)" # Alternative to rate: seconds between consecutive requests, a number or a distribution, which may vary with stage seconds t; it is the arrival process, so leave load.type out
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
       stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds; may read measured terms, see Stop Conditions (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS, defaults to num_conversations for conversation_replay)
@@ -279,7 +279,7 @@ Under `load.type: trace_replay` the trace sets when each request is sent, so a r
 
 #### Request interval
 
-A stage may set `request_interval` instead of `rate`: the gap, in seconds, between one request and the next, as a number or an [expression](./expressions.md) that draws from a distribution. The gap distribution is the arrival process, so `load.type` is left out (it is rejected alongside `request_interval`). `load.type: poisson` is deprecated: `request_interval: "Exponential(r)"` is a Poisson process at `r` requests per second, and a number is the evenly spaced stimulus the constant type only approximates.
+A stage may set `request_interval` instead of `rate`: the gap, in seconds, between one request and the next, as a number or an [expression](./expressions.md) that may draw from a distribution and may vary with stage time `t`. The gap distribution is the arrival process, so `load.type` is left out (it is rejected alongside `request_interval`). `load.type: poisson` is deprecated: `request_interval: "Exponential(r)"` is a Poisson process at `r` requests per second, and a number is the evenly spaced stimulus the constant type only approximates.
 
 <!-- checked-example -->
 ```yaml
@@ -291,6 +291,10 @@ load:
     duration: 60
   - request_interval: "Gamma(0.25, 0.4)"     # the same average, arriving in bursts
     stop_condition: "t >= 60"
+  - request_interval: "1/(10 + 5*sin(2*pi*t/60))"   # evenly spaced along one cycle around 10 per second
+    duration: 60
+  - request_interval: "Exponential(5 + t/10)"       # Poisson-like arrivals that speed up from 5 to 11 per second
+    duration: 60
 ```
 
 | Request interval | Mean gap (s) | Spread / mean | Arrivals |
@@ -303,15 +307,47 @@ load:
 | `0.05 + Exponential(20)` | 0.10 | 0.50 | Poisson with a 50 ms floor: never two requests closer than that. |
 | `LogNormal(-2.55, 0.7)` | 0.10 | 0.79 | 10 per second with a long tail: most gaps short, a few long. |
 
-The stage sends however many requests fit in its window, so the count is not known from the config when the gap is random; the arrivals are drawn once when the config loads and reports carry the configured `request_interval` in place of `requested_rate`, next to the measured `achieved_rate`. A number is exact: `0.1` over 60 s is 600 requests.
+The stage sends however many requests fit in its window, so the count is not known from the config when the gap is random. The arrivals are drawn once when the config loads and reports carry the configured `request_interval` in place of `requested_rate`, next to the measured `achieved_rate`. A number is exact: `0.1` over 60 s is 600 requests.
 
 | Rejected request_interval | Why |
 | --- | --- |
 | `Normal(0.1, 0.05)` | Can go negative. Add `Max(0, ...)` or pick a nonnegative distribution. |
-| `0.1*t` | Gaps cannot depend on `t` yet; use `rate` for a time-varying load. |
+| `0.1*t` | Zero at `t = 0`. A zero gap is an infinite rate. |
+| `t - 5` | Negative before `t = 5`. |
 | `0` | Not positive. |
-| `100` | Longer than a 60 s stage, so the stage would send nothing. |
 | `Exponential(1e9)` | Over ten million requests in 60 s. |
+| `Exponential(t)` | The rate of the exponential is 0 at `t = 0`, which is not a valid rate. |
+| `Exponential(10 - t)` | The rate of the exponential goes negative after `t = 10`. |
+| `Abs(Cauchy(1 + t, 1))` | A Cauchy has no mean, so the mean gap is not finite. |
+
+##### A gap that is not random is a rate
+
+A `request_interval` with no distribution in it is the rate `1 / request_interval`, and its requests are placed the way a rate's request count is worked out: request 1 goes out when the area under that rate reaches 1, request 2 when it reaches 2, and so on. For a number this is the even spacing above. With `t` it is even spacing along the curve: `"1/t"` is the rate `t`, so its first request goes out at 1.41 s and a 10 s stage sends 50.
+
+| Request interval over t | Window (s) | Requests | First request (s) |
+| --- | --- | --- | --- |
+| `0.1` | 60 | 600 | 0.10 |
+| `1/t` | 10 | 50 | 1.41 |
+| `0.1 + t/100` | 10 | 69 | 0.10 |
+| `1/(10 + 5*sin(2*pi*t/60))` | 60 | 600 | 0.10 |
+| `Piecewise((oo, t < 5), (0.1, True))` | 10 | 50 | 5.10 |
+| `oo` | 60 | 0 | none |
+| `100` | 60 | 0 | none |
+
+An infinite gap (`oo`) is a rate of zero and is legal anywhere in the stage, so `Piecewise((oo, t < 5), (0.1, True))` pauses for 5 s and then sends every 100 ms. A stage that sends nothing, because its gap is infinite for the whole stage or longer than the stage, loads, lasts its `duration` or `stop_condition`, reports a count of 0 and logs a warning that says why, as a [rate of zero](#rate-expressions) does. A gap that is zero or negative anywhere in the stage is rejected. Zero is looked for at the times the rate is added up at, every 10 ms, so a gap that touches zero only between two of them is not caught.
+
+`request_interval: 0.1` and `rate: 10` under `load.type: constant` send the same count but not at the same times: the first is evenly spaced, the second adds random jitter to its spacing.
+
+##### A random gap that varies with t
+
+When a distribution's parameters mention `t`, each gap is drawn from the distribution as it stands at the stage time the gap starts: sample, wait, send. The first gap is drawn at `t = 0` and each later one at the time the request before it was scheduled. The load therefore follows the curve one gap behind. `Exponential(0.1 + t)` over 30 s is the plainest case: its first gap is drawn at a rate of 0.1 per second and averages 10 s, during which the curve has moved on, so the stage sends about 365 requests on average where the area under `0.1 + t` is 453. A curve that starts well above zero loses almost nothing: `Exponential(5 + t/10)` over 60 s sends about 478 against an area of 480.
+
+| Random request interval over t | Curve (req/s) | Window (s) | Mean requests | Area under the curve |
+| --- | --- | --- | --- | --- |
+| `Exponential(0.1 + t)` | `0.1 + t` | 30 | 365 | 453 |
+| `Exponential(5 + t/10)` | `5 + t/10` | 60 | 478 | 480 |
+
+When the config loads, each distribution is checked over the whole stage window (`duration`, or the deadline of `stop_condition`): its parameters must be finite and valid, its mean must be finite and the gap must not go negative. A failure names the parameter and a `t` at which it fails. A load that pauses or starts from zero cannot be written this way, since a rate of 0 is not a valid exponential: write it with `rate`, which may be zero. A gap that is finite but longer than the stage is not an error. The stage sends fewer requests, or none, with the warning above.
 
 #### Stop Conditions
 

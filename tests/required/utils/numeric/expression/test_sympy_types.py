@@ -68,3 +68,16 @@ def test_random_symbol() -> None:
 @pytest.mark.parametrize("value", [(1, 2), [1], True], ids=["tuple", "list", "bool"])
 def test_python_values_are_not_nodes(value: object) -> None:
     assert not isinstance(value, SympyNode)
+
+
+# The distribution behind Exponential(t + 1) carries what SympyDistribution reads: its parameter (t + 1,),
+# t among its free symbols, the parameter 3 after t is replaced by 2, and a check that accepts a rate
+# of 3 and refuses a rate of 0.
+def test_distribution() -> None:
+    dist = sympy.stats.Exponential("x", _T + 1).pspace.distribution
+    assert dist.args == (_T + 1,)
+    assert _T in dist.free_symbols
+    assert dist.xreplace({_T: sympy.Integer(2)}).args == (3,)
+    dist.check(sympy.Integer(3))
+    with pytest.raises(ValueError, match="Rate must be positive"):
+        dist.check(sympy.Integer(0))

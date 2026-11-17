@@ -12,7 +12,7 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 | --- | --- | --- | --- |
 | [`load.stages[].rate`](./config.md#rate-expressions) | yes | no | Nonnegative over the stage. Zero for the whole stage sends nothing. Set with no `load.type`. |
 | [`load.stages[].stop_condition`](./config.md#stop-conditions) (constant, poisson) | yes | no | A [condition](#conditions). |
-| [`load.stages[].request_interval`](./config.md#request-interval) | no | yes | Nonnegative; set instead of `rate`, with no `load.type`. |
+| [`load.stages[].request_interval`](./config.md#request-interval) | yes | yes | Positive. Set instead of `rate`, with no `load.type`. Not random, it is the rate `1 / request_interval`. |
 
 ## Grammar
 
