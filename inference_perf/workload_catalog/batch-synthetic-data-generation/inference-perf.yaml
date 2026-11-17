@@ -1,17 +1,18 @@
 load:
   type: concurrent
   stages:
-  - num_requests: 20
-    concurrency_level: 2
-  - num_requests: 20
-    concurrency_level: 4
-  - num_requests: 20
-    concurrency_level: 6
-  - num_requests: 20
+  - num_requests: 160
     concurrency_level: 8
-  - num_requests: 20
-    concurrency_level: 10
+  - num_requests: 160
+    concurrency_level: 16
+  - num_requests: 160
+    concurrency_level: 24
+  - num_requests: 160
+    concurrency_level: 32
+  - num_requests: 160
+    concurrency_level: 40
   num_workers: 1
+  base_seed: 42
 api:
   type: completion
   streaming: true
@@ -23,20 +24,20 @@ data:
   type: conversation_replay
   conversation_replay:
     seed: 42
-    num_conversations: 10
-    shared_system_prompt_len: 250
+    num_conversations: 40
+    shared_system_prompt_len: 2000
     turns_per_conversation:
       type: fixed
       mean: 1
     input_tokens_per_turn:
       type: lognormal
-      min: 100
-      max: 5000
-      mean: 1000
-      std_dev: 800
+      min: 50
+      max: 15000
+      mean: 500
+      std_dev: 1200
     output_tokens_per_turn:
-      type: lognormal
+      type: uniform
       min: 500
-      max: 32000
-      mean: 8000
-      std_dev: 6500
+      max: 8000
+      mean: 4000
+      std_dev: 2500

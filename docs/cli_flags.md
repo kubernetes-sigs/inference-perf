@@ -8,6 +8,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `-a`, `--analyze` | list of str | Path to a report directories to analyze |
 | `-u`, `--unified_analysis_dir` | str | Unified analysis directory path |
 | `--log-level` | Enum (DEBUG, INFO, WARNING, ERROR, CRITICAL) | Logging level (default: INFO) |
+| `--workload` | str | Workload catalog entry to run. Its config is the base and yours layers on top. The run refuses to start if it changes a field the entry locks. |
 | `--api.type` | Enum (completion, chat, anthropic_messages, embeddings, rerank) | API endpoint to benchmark: text completion, chat completion, Anthropic messages, embeddings or rerank. |
 | `--api.streaming` | boolean | Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics. |
 | `--api.headers` | JSON | Additional HTTP headers to send with every request. |

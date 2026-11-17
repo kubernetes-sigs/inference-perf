@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 import logging
 from datetime import datetime
 from typing import Any, List, Mapping, Optional
@@ -36,6 +37,7 @@ from inference_perf.config.observability import ObservabilityConfig
 from inference_perf.config.redaction import REDACTED, redact, redacted_credentials
 from inference_perf.config.reportgen import ReportConfig
 from inference_perf.config.utils import CustomTokenizerConfig
+from inference_perf.config.workload_catalog import WORKLOAD_FIELD, WorkloadCatalogError, changed_locked_fields, load_entry
 
 # Generators that replay their corpus for a duration-bounded stage instead of ending when
 # it runs out. Mirrors SessionGenerator.supports_corpus_cycling(): weka_trace_replay builds
@@ -118,6 +120,13 @@ class Config(StrictBaseModel):
     # A validation error would otherwise quote the input, which holds credentials.
     model_config = ConfigDict(hide_input_in_errors=True)
 
+    workload: Optional[str] = Field(
+        default=None,
+        description=(
+            "Workload catalog entry to run. Its config is the base and yours layers on top. "
+            "The run refuses to start if it changes a field the entry locks."
+        ),
+    )
     api: APIConfig = Field(
         default=APIConfig(), description="API endpoint type and request options used for benchmark requests."
     )
@@ -146,7 +155,7 @@ class Config(StrictBaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def reject_placeholder_credentials(cls, data: Any) -> Any:
+    def reject_placeholder_credentials(cls, data: object) -> object:
         # A saved or dumped config holds a placeholder in place of each credential.
         # read_config validates the merged input, so a credential supplied on the command line counts.
         placeholders = redacted_credentials(data, cls) if isinstance(data, Mapping) else []
@@ -281,11 +290,44 @@ def read_config(config_file: Optional[str] = None, cli_overrides: Optional[dict[
             cfg = yaml.safe_load(stream) or {}
 
     default_cfg = Config().model_dump(mode="json")
-    merged_cfg = deep_merge(default_cfg, cfg)
+    workload = (cli_overrides or {}).get(WORKLOAD_FIELD, cfg.get(WORKLOAD_FIELD))
+    entry = load_entry(str(workload), Config) if workload else None
+    base_cfg = deep_merge(default_cfg, entry.config) if entry else default_cfg
+    # Copied before merging. deep_merge shares the sections no layer touches. _prepare
+    # rewrites those in place.
+    entry_cfg = copy.deepcopy(base_cfg)
+    merged_cfg = deep_merge(base_cfg, cfg)
 
     if cli_overrides:
         merged_cfg = deep_merge(merged_cfg, cli_overrides)
 
+    _prepare(merged_cfg)
+
+    # The echoed config is the copy people paste into bug reports, so it goes out
+    # with its credentials masked. merged_cfg itself keeps them, since the run
+    # needs them.
+    logger.info(
+        "Benchmarking with the following config:\n\n%s\n",
+        yaml.dump(redact(merged_cfg, Config), sort_keys=False, default_flow_style=False),
+    )
+    config = Config(**merged_cfg)
+
+    if entry:
+        _prepare(entry_cfg)
+        changed = changed_locked_fields(entry, Config(**entry_cfg).model_dump(mode="json"), config.model_dump(mode="json"))
+        if changed:
+            raise WorkloadCatalogError(
+                f"This run changes fields that workload catalog entry {entry.name!r} locks:\n"
+                + "\n".join(f"  {line}" for line in changed)
+                + f"\nTo run a variant, copy the entry's config into your own file and drop {WORKLOAD_FIELD!r}. "
+                "That run is yours, not the entry's."
+            )
+        logger.info("Running workload catalog entry %s with every locked field as the entry sets it.", entry.name)
+    return config
+
+
+# Turns a merged config dict into the shape Config takes. Rewrites it in place.
+def _prepare(merged_cfg: dict[str, Any]) -> None:
     # Handle timestamp substitution in storage paths
     if "storage" in merged_cfg and merged_cfg["storage"]:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -335,12 +377,3 @@ def read_config(config_file: Optional[str] = None, cli_overrides: Optional[dict[
             for stage in stages:
                 standard_stages.append(StandardLoadStage(**stage))
             merged_cfg["load"]["stages"] = standard_stages
-
-    # The echoed config is the copy people paste into bug reports, so it goes out
-    # with its credentials masked. merged_cfg itself keeps them, since the run
-    # needs them.
-    logger.info(
-        "Benchmarking with the following config:\n\n%s\n",
-        yaml.dump(redact(merged_cfg, Config), sort_keys=False, default_flow_style=False),
-    )
-    return Config(**merged_cfg)
