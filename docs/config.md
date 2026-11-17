@@ -265,7 +265,7 @@ load:
 
 Requests are spread by how much the rate has built up, so they bunch where the rate is high. `load.type` is not set alongside a rate expression: leave it out. A config that sets `load.type` and gives any stage a rate expression is rejected when it loads.
 
-A rate of zero is legal, as a number or as an expression. A stage whose rate is zero for the whole stage sends zero requests, lasts its `duration` or `stop_condition` and reports a count of 0, so it works as a pause between two stages. A warning says the stage sends nothing, and why, when the config loads and when the stage runs. A rate that is zero for part of the stage, such as `Max(0, 20 - t/3)`, sends nothing during that part. A rate that is negative anywhere in the stage is rejected.
+A rate of zero is legal, as a number or as an expression. A stage whose rate is zero for the whole stage sends zero requests, lasts its `duration` or `stop_condition` and reports a count of 0, so it works as a pause between two stages. A warning says the stage sends nothing, and why, when the config loads and when the stage runs. A rate that is zero for part of the stage, such as `Max(0, 20 - t/3)`, sends nothing during that part. A rate above zero that adds up to less than one request, such as `0.1` for 5 s, is treated the same way: the stage sends nothing, lasts its window, reports a count of 0 and logs a warning. A rate that is negative anywhere in the stage is rejected.
 
 | Rejected rate | Why |
 | --- | --- |

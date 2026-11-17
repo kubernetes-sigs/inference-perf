@@ -1767,12 +1767,13 @@ class LoadGenerator:
             num_requests = rate.expected_requests if isinstance(rate, RateSchedule) else int(rate * duration)
         # Reports carry one rate per stage; a time-varying rate reports its mean.
         report_rate = rate.mean_rate if isinstance(rate, RateSchedule) else rate
-        # A zero-rate stage has no request to wait on, so it holds its window
-        # open instead and still ends at its duration or stop condition.
+        # A stage that sends nothing has no request to wait on, so it holds its
+        # window open instead and still ends at its duration or stop condition.
         idle_until: Optional[float] = None
-        if num_requests == 0 and isinstance(rate, RateSchedule) and rate.total <= 0:
+        zero_requests_reason = rate.zero_requests_reason if isinstance(rate, RateSchedule) else None
+        if num_requests == 0 and zero_requests_reason is not None:
             idle_until = start_time + duration
-            logger.warning("Stage %d sends zero requests: its rate %r is zero for the whole stage.", stage_id, rate.rate.raw)
+            logger.warning("Stage %d sends zero requests: %s.", stage_id, zero_requests_reason)
 
         stage_status = StageStatus.RUNNING
         # Reported from here, not from the driver loop, because the planned
@@ -2244,8 +2245,8 @@ class LoadGenerator:
             self._stop_monitor = stop_monitor
         stage_status = StageStatus.RUNNING
         logger.info("Stage %d - run started", stage_id)
-        if stage.rate_is_zero:
-            logger.warning("Stage %d sends zero requests: its rate %r is zero for the whole stage.", stage_id, stage.rate)
+        if stage.zero_requests_reason is not None:
+            logger.warning("Stage %d sends zero requests: %s.", stage_id, stage.zero_requests_reason)
 
         # This path has no worker processes to sample, so it counts its
         # own completions; reset per stage like the shared counters are.
@@ -2296,9 +2297,9 @@ class LoadGenerator:
                 else:
                     break
 
-        # A zero-rate stage has no request to wait on, so it holds its window
-        # open instead and still ends at its duration or stop condition.
-        while stage.rate_is_zero and time.perf_counter() < end_time:
+        # A stage that sends nothing has no request to wait on, so it holds its
+        # window open instead and still ends at its duration or stop condition.
+        while stage.zero_requests_reason is not None and time.perf_counter() < end_time:
             if self.interrupt_sig:
                 logger.info("Loadgen interrupted by a signal")
                 stage_status = StageStatus.INTERRUPTED

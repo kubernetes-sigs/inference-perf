@@ -104,10 +104,10 @@ async def test_zero_rate_stage_reports_a_count_of_zero() -> None:
     assert not any(warning["check"] == "cross_report.stage_indices" for warning in validation["global"]["warnings"])
 
 
-# Only a zero rate earns the empty report. With requests in stage 0 alone, none is written for
-# stage 1 at rate 4 with no requests, stage 2 at rate 0 with a concurrency level of 2 (a session
-# or concurrent stage records its rate that way), or stage -1 at rate 0 (the sweep's probe).
-async def test_other_stages_without_requests_get_no_report() -> None:
+# Any rate stage that sent nothing reports, whatever its rate. With requests in stage 0 alone, stage 1
+# at rate 4 (it ended before its first send) reports count 0. None is written for stage 2 with a
+# concurrency level of 2 (a session or concurrent stage) or for stage -1 (the sweep's probe).
+async def test_which_stages_without_requests_get_a_report() -> None:
     stages = {
         -1: _stage_info(-1, 0.0),
         0: _stage_info(0, 4.0),
@@ -116,12 +116,58 @@ async def test_other_stages_without_requests_get_no_report() -> None:
     }
     reports = await _reports(stages, [0])
     stage_reports = sorted(name for name in reports if name.startswith("stage_"))
-    assert stage_reports == ["stage_0_lifecycle_metrics"]
+    assert stage_reports == ["stage_0_lifecycle_metrics", "stage_1_lifecycle_metrics"]
+    assert reports["stage_1_lifecycle_metrics"].get_contents()["load_summary"]["count"] == 0
+    partials = sorted(name for name in reports if name.startswith("inference-perf.partial"))
+    assert partials == ["inference-perf.partial.stage_0", "inference-perf.partial.stage_1"]
+
+
+# A rate too low to reach one request reports like a zero rate. Stages at rate 4, 0.1, 4 with two
+# requests in each of stages 0 and 2: stage 1 reports count 0 with requested_rate 0.1 and
+# achieved_rate 0, and validation has no errors.
+async def test_stage_that_rounds_down_to_zero_requests_reports_a_count_of_zero() -> None:
+    reports = await _reports({0: _stage_info(0, 4.0), 1: _stage_info(1, 0.1), 2: _stage_info(2, 4.0)}, [0, 2])
+    idle = reports["stage_1_lifecycle_metrics"].get_contents()["load_summary"]
+    assert (idle["count"], idle["requested_rate"], idle["achieved_rate"]) == (0, 0.1, 0.0)
+    validation = reports["validation"].get_contents()
+    assert validation["global"]["errors"] == []
+    assert [group["errors"] for group in validation["reports"].values() if group["errors"]] == []
+
+
+# A stage that sent nothing gets a BR0.2 partial too. For stages at rate 4, 0, 4 the partial of
+# stage 1 carries its 3s window (3s to 6s) and empty results, it is validated as a BR0.2 document
+# with no errors, and the other two partials still carry request results.
+async def test_stage_that_sent_nothing_gets_a_partial() -> None:
+    reports = await _reports({0: _stage_info(0, 4.0), 1: _stage_info(1, 0.0), 2: _stage_info(2, 4.0)}, [0, 2])
+    partial = reports["inference-perf.partial.stage_1"].get_contents()
+    assert partial["results"] == {}
+    assert partial["run"]["time"]["duration"] == "PT3.000S"
+    assert "request_performance" in reports["inference-perf.partial.stage_0"].get_contents()["results"]
+    validation = reports["validation"].get_contents()
+    assert validation["reports"]["inference-perf.partial.stage_1.yaml"] == {"warnings": [], "errors": []}
+
+
+# The warning about a rate lower than the stage before it says when the lower stage is a pause.
+# For rates 4, 0, 4 it reads "stage 1 requested_rate 0 < stage 0 requested_rate 4. Stage 1 sent no
+# requests, so it is a pause in the load". For rates 4, 2 with requests in both it does not.
+async def test_rate_order_warning_names_a_pause() -> None:
+    paused = await _reports({0: _stage_info(0, 4.0), 1: _stage_info(1, 0.0), 2: _stage_info(2, 4.0)}, [0, 2])
+    messages = [w["message"] for w in paused["validation"].get_contents()["global"]["warnings"]]
+    assert messages == [
+        "stage requested rates are not monotonically increasing: stage 1 requested_rate 0 < stage 0 "
+        "requested_rate 4. Stage 1 sent no requests, so it is a pause in the load"
+    ]
+    slower = await _reports({0: _stage_info(0, 4.0), 1: _stage_info(1, 2.0)}, [0, 1])
+    messages = [w["message"] for w in slower["validation"].get_contents()["global"]["warnings"]]
+    assert messages == [
+        "stage requested rates are not monotonically increasing: stage 1 requested_rate 2 < stage 0 requested_rate 4"
+    ]
 
 
 # A run whose only stage has a zero rate sent nothing at all: the stage report is written with
-# count 0, and no run summary is, as for any run with no requests.
+# count 0 and so is its partial, and no run summary is, as for any run with no requests.
 async def test_run_of_only_a_zero_rate_stage() -> None:
     reports = await _reports({0: _stage_info(0, 0.0)}, [])
     assert reports["stage_0_lifecycle_metrics"].get_contents()["load_summary"]["count"] == 0
     assert "summary_lifecycle_metrics" not in reports
+    assert reports["inference-perf.partial.stage_0"].get_contents()["results"] == {}
