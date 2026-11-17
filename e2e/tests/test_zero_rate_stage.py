@@ -42,7 +42,8 @@ EXPECTED_REQUESTS = RATE * DURATION
 
 
 # Three stages on one worker with mock prompts: 5 req/s for 4s, the given rate
-# that sends nothing for 3s, then 5 req/s for 4s again. No load.type, so the default applies.
+# that sends nothing for 3s (or the given stage fields, for a request_interval),
+# then 5 req/s for 4s again. No load.type, so the default applies.
 def _config(sim: LLMDInferenceSimRunner, model_path: str, zero_rate: object) -> Dict[str, Any]:
     return {
         "api": {"type": "completion", "streaming": True},
@@ -50,7 +51,7 @@ def _config(sim: LLMDInferenceSimRunner, model_path: str, zero_rate: object) -> 
         "load": {
             "stages": [
                 {"rate": RATE, "duration": DURATION},
-                {"rate": zero_rate, "duration": IDLE_DURATION},
+                {**(zero_rate if isinstance(zero_rate, dict) else {"rate": zero_rate}), "duration": IDLE_DURATION},
                 {"rate": RATE, "duration": DURATION},
             ],
             "interval": 0,
@@ -62,8 +63,9 @@ def _config(sim: LLMDInferenceSimRunner, model_path: str, zero_rate: object) -> 
     }
 
 
-# Stages of rate 5, a rate that sends nothing, 5 over 4s, 3s, 4s. The middle rate is the number 0,
-# the expression "Max(0, -t)", and 0.1, which over 3s is 0.3 of a request. The run exits 0, the
+# Stages of rate 5, a stage that sends nothing, 5 over 4s, 3s, 4s. The middle stage is the rate 0,
+# the rate "Max(0, -t)", the rate 0.1, which over 3s is 0.3 of a request, and a request_interval
+# of 100s, longer than the stage. The run exits 0, the
 # stage reports count 20, 0 and 20, the middle stage reports its requested rate and an achieved
 # rate of 0 and has a BR0.2 partial, the log says why the stage sent nothing, and validation.json
 # has no errors.
@@ -75,9 +77,12 @@ def _config(sim: LLMDInferenceSimRunner, model_path: str, zero_rate: object) -> 
         (0, 0, "is zero for the whole stage"),
         ("Max(0, -t)", 0, "is zero for the whole stage"),
         (0.1, 0.1, "adds up to 0.3 requests over 3s, which is less than one request"),
+        ({"request_interval": 100}, None, "no gap of its request_interval 100.0 fits in the stage"),
     ],
 )
-async def test_zero_request_stage_between_two_normal_stages(zero_rate: object, requested_rate: float, reason: str) -> None:
+async def test_zero_request_stage_between_two_normal_stages(
+    zero_rate: object, requested_rate: float | None, reason: str
+) -> None:
     model_path = str(extract_tarball(TEST_MODEL_TARBALL))
     async with LLMDInferenceSimRunner(TEST_MODEL_NAME, "--max-num-seqs", "64", port=get_free_port()) as sim:
         result = await run_benchmark_minimal(_config(sim, model_path, zero_rate), timeout_sec=180)
@@ -89,7 +94,10 @@ async def test_zero_request_stage_between_two_normal_stages(zero_rate: object, r
     assert counts == [EXPECTED_REQUESTS, 0, EXPECTED_REQUESTS]
 
     idle = result.reports["stage_1_lifecycle_metrics.json"]
-    assert idle["load_summary"]["requested_rate"] == pytest.approx(requested_rate)
+    if requested_rate is None:
+        assert idle["load_summary"]["request_interval"] == "100.0"
+    else:
+        assert idle["load_summary"]["requested_rate"] == pytest.approx(requested_rate)
     assert idle["load_summary"]["achieved_rate"] == 0
     assert idle["successes"]["count"] == 0
     assert idle["failures"]["count"] == 0

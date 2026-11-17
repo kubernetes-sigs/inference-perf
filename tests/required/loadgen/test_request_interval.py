@@ -20,9 +20,11 @@ many requests fit in its window.
 """
 
 import logging
+import pathlib
 import unittest.mock
 import numpy as np
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from inference_perf.client.modelserver import MockModelServerClient
@@ -34,6 +36,7 @@ from inference_perf.config import (
     LoadConfig,
     LoadType,
     StandardLoadStage,
+    read_config,
 )
 from inference_perf.config.loadgen.config import StageGenType, SweepConfig
 from inference_perf.datagen import DataGenerator
@@ -41,6 +44,7 @@ from inference_perf.datagen.synthetic.mock_datagen import MockDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.loadgen.load_timer import ConstantLoadTimer, RequestIntervalLoadTimer
 from inference_perf.metrics.request_collector.local import LocalRequestMetricCollector
+from inference_perf.reportgen.base import ReportGenerator
 
 
 # Config: request_interval 0.1, "0.1" and "1/10" over 60s are all 600 evenly spaced requests.
@@ -287,3 +291,36 @@ async def test_worker_run_infinite_request_interval_stage_between_two_normal_sta
     assert [info.status.name for info in infos] == ["COMPLETED"] * 3
     assert [info.dropped_requests for info in infos] == [0, 0, 0]
     assert 2.0 <= infos[1].end_time - infos[1].start_time < 6.0
+
+
+# The config a report saves loads again with request_interval stages. A file with request_interval 0.1
+# for 3s and "Exponential(10)" for 3s and no load.type is loaded, its report config is written out
+# the way a run writes it, and that file is loaded: load.type is not in it, and the stages come
+# back the same.
+def test_report_config_with_a_request_interval_loads_again(tmp_path: pathlib.Path) -> None:
+    stages = [{"request_interval": 0.1, "duration": 3}, {"request_interval": "Exponential(10)", "duration": 3}]
+    source = tmp_path / "config.yaml"
+    source.write_text(yaml.dump({"data": {"type": "mock"}, "load": {"stages": stages}}))
+    config = read_config(str(source))
+    saved = ReportGenerator(None, unittest.mock.Mock(), config).generate_config_report()
+    assert "type" not in saved.get_contents()["load"]
+
+    written = tmp_path / saved.get_filename()
+    with open(written, "w") as f:
+        yaml.dump(saved.get_contents(), f, sort_keys=False, default_flow_style=False)
+    again = read_config(str(written))
+    assert [stage.model_dump() for stage in again.load.stages] == [stage.model_dump() for stage in config.load.stages]
+
+
+# A gap longer than the stage sends nothing whether it is fixed or random, and both warn at config
+# load: a fixed 100s gap and a gap drawn between 100s and 200s, each in a 60s stage.
+def test_gap_longer_than_the_stage_warns_fixed_or_random(caplog: pytest.LogCaptureFixture) -> None:
+    fixed = StandardLoadStage(request_interval=100, duration=60)
+    drawn = StandardLoadStage(request_interval="Uniform(100, 200)", duration=60)
+    assert (fixed.expected_requests, drawn.expected_requests) == (0, 0)
+    with caplog.at_level(logging.WARNING, logger="inference_perf.config.loadgen.config"):
+        LoadConfig(stages=[fixed, drawn])
+    assert [record.getMessage() for record in caplog.records] == [
+        "Stage 0 will send zero requests: no gap of its request_interval 100.0 fits in the stage.",
+        "Stage 1 will send zero requests: no gap of its request_interval 'Uniform(100, 200)' fits in the stage.",
+    ]
