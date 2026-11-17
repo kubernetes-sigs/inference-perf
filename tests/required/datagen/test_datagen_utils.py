@@ -180,16 +180,28 @@ def test_sample_suffix_ids_escapes_merge_oscillation(seed: int) -> None:
 
 
 # Fake tokenizer: every id decodes to " <id>" (a word start) and counts one token per
-# whitespace-separated word, except id 13, which decodes to " 13 x" and so re-tokenizes to
-# two tokens, like a gpt2 id that decodes to an incomplete UTF-8 sequence.
+# whitespace-separated word, except ids in `split_ids` (default {13}), which decode to
+# " 13 x" and so re-tokenize to two tokens, like a gpt2 id that decodes to an incomplete
+# UTF-8 sequence. With word_start=False there is no leading space (" 12" -> "12",
+# " 13 x" -> "13 x"), like T5, ALBERT or BERT, where no single id decodes with leading
+# whitespace.
 class SplittingTokenizer:
+    name_or_path = "fake/splitting"
+
+    def __init__(self, split_ids: frozenset[int], word_start: bool) -> None:
+        self.split_ids = split_ids
+        self.prefix = " " if word_start else ""
+
     def decode(self, tokens: list[int], **kwargs: object) -> str:
-        return "".join(" 13 x" if t == 13 else f" {t}" for t in tokens)
+        return self.prefix + " ".join(f"{t} x" if t in self.split_ids else str(t) for t in tokens)
 
 
 class SplittingCustomTokenizer(DummyCustomTokenizer):
+    def __init__(self, split_ids: frozenset[int] = frozenset({13}), word_start: bool = True) -> None:
+        self.hf_tokenizer = SplittingTokenizer(split_ids, word_start)
+
     def get_tokenizer(self) -> Any:
-        return SplittingTokenizer()
+        return self.hf_tokenizer
 
 
 # valid ids [12, 13, 14]: all three decode with a leading space, but " 13 x" counts 2 tokens.
@@ -228,3 +240,52 @@ def test_build_word_start_token_ids_gpt2_excludes_split_ids() -> None:
     pool = build_word_start_token_ids(tokenizer, valid_token_ids)
 
     assert pool.tolist() == [262]
+
+
+# valid ids [12, 13, 14] with no word starts ("12", "13 x", "14"): the pool falls back to the
+# ids that re-tokenize to one token, [12, 14]. Before the fix it fell back to all three.
+def test_build_word_start_token_ids_fallback_drops_ids_that_split_on_retokenize() -> None:
+    tokenizer = SplittingCustomTokenizer(word_start=False)
+
+    pool = build_word_start_token_ids(tokenizer, np.array([12, 13, 14]))
+
+    assert pool.tolist() == [12, 14]
+
+
+# valid ids [12, 13] that both decode to "<id> x" (two tokens) and none with leading
+# whitespace: no id can start a one-token suffix, so building the pool raises ValueError
+# naming the tokenizer instead of returning [12, 13].
+def test_build_word_start_token_ids_raises_when_no_id_is_one_token() -> None:
+    tokenizer = SplittingCustomTokenizer(split_ids=frozenset({12, 13}), word_start=False)
+
+    with pytest.raises(ValueError, match="'fake/splitting' has no token id"):
+        build_word_start_token_ids(tokenizer, np.array([12, 13]))
+
+
+# valid ids [13, 14] with no word starts and a length-1 suffix: with the old full-vocab
+# fallback the sampler draws 13 for seed 1, "13 x" counts 2 tokens and the loop raises
+# ValueError after 20 attempts. The fallback pool is [14], so the suffix is [14].
+def test_sample_suffix_ids_length_one_converges_with_fallback_pool() -> None:
+    tokenizer = SplittingCustomTokenizer(word_start=False)
+    generator = object.__new__(SharedPrefixDataGenerator)
+    generator.rng = np.random.default_rng(1)
+    generator.tokenizer = tokenizer
+    generator.valid_token_ids = np.array([13, 14])
+    generator.word_start_token_ids = build_word_start_token_ids(tokenizer, generator.valid_token_ids)
+
+    ids = generator._sample_suffix_ids(1)
+
+    assert ids == [14]
+    assert tokenizer.count_tokens(tokenizer.get_tokenizer().decode(ids)) == 1
+
+
+# Real bert-base-uncased tokenizer (#1096): no id decodes with leading whitespace, so the
+# fallback applies. Id 2075 decodes to "##ing", which re-tokenizes to ["#", "#", "ing"]
+# (three tokens) and must be left out, while 1996 ("the") stays.
+def test_build_word_start_token_ids_bert_fallback_excludes_split_ids() -> None:
+    tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="bert-base-uncased"))
+    valid_token_ids = np.array([1996, 2075], dtype=np.int64)
+
+    pool = build_word_start_token_ids(tokenizer, valid_token_ids)
+
+    assert pool.tolist() == [1996]

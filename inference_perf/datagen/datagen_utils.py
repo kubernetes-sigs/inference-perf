@@ -71,22 +71,36 @@ def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.n
     prefix's server-side tokens stay stable. Ids whose decoded text comes
     back as more than one token (e.g. gpt2 ids that decode to an incomplete
     UTF-8 sequence) are left out: a one-token suffix starting with one of
-    them can never converge. Falls back to the full vocab when no such
-    tokens exist.
+    them can never converge.
+
+    Some tokenizers (e.g. T5, ALBERT, BERT) never decode a single id with
+    leading whitespace. For those the pool falls back to every valid id that
+    still re-tokenizes to one token.
+
+    Raises:
+        ValueError: If no valid id decodes to text that re-tokenizes to one token.
     """
     hf_tokenizer = tokenizer.get_tokenizer()
-    word_starts: List[int] = []
+    decoded_ids: List[Tuple[int, str]] = []
     for tid in valid_token_ids:
         decoded = hf_tokenizer.decode([int(tid)], skip_special_tokens=True)
-        if (
-            isinstance(decoded, str)
-            and decoded[:1].isspace()
-            and tokenizer.count_tokens(decoded, add_special_tokens=False) == 1
-        ):
-            word_starts.append(int(tid))
-    if not word_starts:
-        return valid_token_ids
-    return np.array(word_starts, dtype=np.int64)
+        if isinstance(decoded, str):
+            decoded_ids.append((int(tid), decoded))
+
+    def is_one_token(text: str) -> bool:
+        return tokenizer.count_tokens(text, add_special_tokens=False) == 1
+
+    word_starts = [tid for tid, text in decoded_ids if text[:1].isspace() and is_one_token(text)]
+    if word_starts:
+        return np.array(word_starts, dtype=np.int64)
+    single_tokens = [tid for tid, text in decoded_ids if is_one_token(text)]
+    if single_tokens:
+        return np.array(single_tokens, dtype=np.int64)
+    name = getattr(hf_tokenizer, "name_or_path", "") or type(hf_tokenizer).__name__
+    raise ValueError(
+        f"Tokenizer {name!r} has no token id whose decoded text re-tokenizes to exactly one token, "
+        "so shared-prefix suffixes cannot be sized exactly."
+    )
 
 
 def converge_to_exact_length_text(
