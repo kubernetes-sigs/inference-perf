@@ -18,7 +18,7 @@ replays it: one request per recorded call, each request's own text (the
 system and user messages, which substitution never touches) tokenizing to
 the recorded input length less the recorded assistant blocks, each request
 asking for and getting the recorded output length, a later round's prompt
-starting with the earlier round's, every recorded assistant turn replaced
+starting with the earlier round's, every recorded assistant message replaced
 by the live reply it stands for, subagent calls spawned from and joined back
 into their parent, and the recorded gap between a call and its predecessor
 honoured.
@@ -49,7 +49,6 @@ API_TIME_SEC = 0.3
 # worker process and a completion queue, so a couple of hundred milliseconds
 # is normal; a whole second is not.
 GAP_TOLERANCE_SEC = 0.3
-
 
 # The old generator sends decoded corpus text without measuring it again, so
 # about one seed in eleven lands a token or two off the recorded length. The
@@ -105,7 +104,7 @@ TRACE_B = {
 # What each call must look like on the wire, keyed by its recorded output
 # length: the recorded input length, the roles of its messages, and how
 # many of those tokens are the request's own (system and user) text. The
-# recorded assistant turns are one block each and get replaced by the live
+# recorded assistant messages are one block each and get replaced by the live
 # reply, so they are excluded from the exact count.
 EXPECTED: Dict[int, Tuple[int, List[str]]] = {
     4: (24, ["user"]),
@@ -170,6 +169,23 @@ def weka_trace_config(trace_files: List[str]) -> Dict[str, Any]:
     }
 
 
+def weka_workload_config(trace_files: List[str]) -> Dict[str, Any]:
+    """The record-layer spelling: the Weka format named once over the
+    directory of traces, run on the same session runner."""
+    return {
+        "data": {
+            "type": "workload_replay",
+            "workload": {"format": "Weka", "trace_directory": str(Path(trace_files[0]).parent)},
+        },
+        "load": {
+            "type": "trace_session_replay",
+            "stages": [{"concurrent_sessions": 2}],
+            "num_workers": 2,
+            "base_seed": BASE_SEED,
+        },
+    }
+
+
 def own_messages(entry: Dict[str, Any]) -> List[Dict[str, str]]:
     """The request's system and user messages: the text the trace fixed."""
     return [m for m in request_body(entry)["messages"] if m["role"] != "assistant"]
@@ -223,7 +239,7 @@ def assert_replays_the_trace(entries: List[Dict[str, Any]], tokenizer: CustomTok
         head = own_messages(calls[later])[: len(own_messages(calls[earlier]))]
         assert head == own_messages(calls[earlier]), f"call {later} does not start with call {earlier}'s messages"
 
-    # Every recorded assistant turn is the live reply of the call it followed.
+    # Every recorded assistant message is the live reply of the call it followed.
     for later, earlier in PREFIXES:
         assistant = [m["content"] for m in request_body(calls[later])["messages"] if m["role"] == "assistant"]
         if assistant:
@@ -241,7 +257,13 @@ def assert_replays_the_trace(entries: List[Dict[str, Any]], tokenizer: CustomTok
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
-@pytest.mark.parametrize("make_config", [pytest.param(weka_trace_config, id="weka_trace_replay")])
+@pytest.mark.parametrize(
+    "make_config",
+    [
+        pytest.param(weka_trace_config, id="weka_trace_replay"),
+        pytest.param(weka_workload_config, id="weka_workload_format"),
+    ],
+)
 async def test_weka_trace_replay(tmp_path: Path, make_config: Any) -> None:
     model_path = extract_tarball(TEST_MODEL_TARBALL)
     trace_files = write_traces(tmp_path)

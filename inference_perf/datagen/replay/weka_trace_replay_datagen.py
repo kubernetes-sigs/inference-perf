@@ -67,11 +67,10 @@ from pathlib import Path
 import random
 import sys
 import time
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union, Annotated
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from multiprocessing.managers import SyncManager
 
 from huggingface_hub import hf_hub_download
-from pydantic import BaseModel, Field
 
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
@@ -88,63 +87,22 @@ from inference_perf.datagen.replay.replay_graph_builder import (
 )
 from inference_perf.datagen.replay.replay_graph_types import ComplexReplayMessage, ReplayMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.workload.formats.weka import (
+    WekaNormalRequest as WekaNormalRequest,
+    WekaRequest as WekaRequest,
+    WekaStreamingRequest as WekaStreamingRequest,
+    WekaSubagentEntry as WekaSubagentEntry,
+    WekaTrace as WekaTrace,
+    longest_common_prefix as longest_common_prefix,
+    pack_into_streams as _pack_into_streams,
+    subagent_request_absolute_t as _subagent_request_absolute_t,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class FilterExpressionError(ValueError):
     """A filter expression that fails to evaluate; never skippable as bad input data."""
-
-
-# =============================================================================
-# Weka Trace Pydantic Models
-# =============================================================================
-
-
-class WekaNormalRequest(BaseModel):
-    t: float
-    type: Literal["n"]
-    model: str
-    input_length: int = Field(alias="in")
-    output_length: int = Field(alias="out")
-    hash_ids: List[int] = Field(default_factory=list)
-    api_time: Optional[float] = None
-    think_time: Optional[float] = None
-
-
-class WekaStreamingRequest(BaseModel):
-    t: float
-    type: Literal["s"]
-    model: str
-    input_length: int = Field(alias="in")
-    output_length: int = Field(alias="out")
-    hash_ids: List[int] = Field(default_factory=list)
-    api_time: Optional[float] = None
-    think_time: Optional[float] = None
-    ttft: Optional[float] = None
-
-
-class WekaSubagentEntry(BaseModel):
-    t: float
-    type: Literal["subagent"]
-    agent_id: str
-    subagent_type: str
-    duration_ms: Optional[int] = None
-    requests: List[WekaNormalRequest] = Field(default_factory=list)
-    tool_tokens: int = 0
-    system_tokens: int = 0
-
-
-WekaRequest = Annotated[Union[WekaNormalRequest, WekaStreamingRequest, WekaSubagentEntry], Field(discriminator="type")]
-
-
-class WekaTrace(BaseModel):
-    id: str
-    models: List[str]
-    block_size: int
-    tool_tokens: int = 0
-    system_tokens: int = 0
-    requests: List[WekaRequest]
 
 
 # =============================================================================
@@ -273,14 +231,6 @@ class RoleSegment:
     block_count: int
     tokens: List[int]
     content: str
-
-
-def longest_common_prefix(prev_hash_ids: List[int], curr_hash_ids: List[int]) -> int:
-    n = min(len(prev_hash_ids), len(curr_hash_ids))
-    for i in range(n):
-        if prev_hash_ids[i] != curr_hash_ids[i]:
-            return i
-    return n
 
 
 def truncate_synth_buf_at_block(
@@ -500,31 +450,6 @@ class _TraceIdleTiming:
 def _sa_end_seconds(entry: WekaSubagentEntry) -> float:
     duration = entry.duration_ms or 0
     return entry.t + duration / 1000.0
-
-
-def _subagent_request_absolute_t(entry: WekaSubagentEntry, req: WekaNormalRequest) -> float:
-    if req.t + 1e-6 < entry.t:
-        return entry.t + req.t
-    return req.t
-
-
-def _pack_into_streams(requests: List[WekaNormalRequest]) -> List[List[WekaNormalRequest]]:
-    sorted_reqs = sorted(requests, key=lambda r: r.t)
-    streams: List[List[WekaNormalRequest]] = []
-    stream_ends: List[float] = []
-    for r in sorted_reqs:
-        r_end = r.t + (r.api_time or 0.0)
-        placed = False
-        for i, end in enumerate(stream_ends):
-            if end <= r.t:
-                streams[i].append(r)
-                stream_ends[i] = r_end
-                placed = True
-                break
-        if not placed:
-            streams.append([r])
-            stream_ends.append(r_end)
-    return streams
 
 
 def _build_trace_idle_timing(
@@ -1116,6 +1041,11 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             if isinstance(req, WekaNormalRequest | WekaStreamingRequest):
                 normals.append((idx, req))
             elif isinstance(req, WekaSubagentEntry):
+                if req.subagents:
+                    # this generator plans one level of subagents; `format: Weka` reads any depth
+                    raise ValueError(
+                        f"trace {trace.id}: subagent {req.agent_id} spawns subagents, which weka_trace_replay cannot replay"
+                    )
                 subagents.append((idx, req))
 
         trace_bs = self.weka_config.default_block_size
