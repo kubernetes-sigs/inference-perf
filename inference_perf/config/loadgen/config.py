@@ -540,7 +540,7 @@ class LoadConfig(StrictBaseModel):
                 if isinstance(stage.rate, str) and "type" in self.model_fields_set:
                     raise ValueError(
                         f"Stage {i}: load.type ({self.type.value}) cannot be set alongside a rate expression. "
-                        "Remove load.type."
+                        'Remove load.type. Poisson arrivals are written as request_interval: "Exponential(<rate>)".'
                     )
                 # legal, since a stage may idle between two others, but worth saying out loud
                 if self.type != LoadType.TRACE_REPLAY and stage.zero_requests_reason is not None:

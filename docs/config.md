@@ -275,14 +275,14 @@ A rate expression is sent at exact times, with no randomness: request 1 goes out
 | `t` | 10 | 1.414, 2.000, 2.449 | 10.000 |
 | `5 + t/2` | 60 | 0.198, 0.392, 0.583 | 60.000 |
 
-`load.type` is not set alongside a rate expression: leave it out. A config that sets `load.type` and gives any stage a rate expression is rejected when it loads.
+`load.type` is not set alongside a rate expression: leave it out. A config that sets `load.type` and gives any stage a rate expression is rejected when it loads. Poisson arrivals are written as [`request_interval: "Exponential(<rate>)"`](#request-interval).
 
 A rate of zero is legal, as a number or as an expression. A stage whose rate is zero for the whole stage sends zero requests, lasts its `duration` or `stop_condition` and reports a count of 0, so it works as a pause between two stages. A warning says the stage sends nothing, and why, when the config loads and when the stage runs. A rate that is zero for part of the stage, such as `Max(0, 20 - t/3)`, sends nothing during that part. A rate above zero that adds up to less than one request, such as `0.1` for 5 s, is treated the same way: the stage sends nothing, lasts its window, reports a count of 0 and logs a warning. A rate that is negative anywhere in the stage is rejected.
 
 | Rejected rate | Why |
 | --- | --- |
 | `10 - t` | Goes negative during a 60s stage. |
-| `Normal(10, 1)` | Random. A rate is never random. |
+| `Normal(10, 1)` | Random. A rate is never random. Random arrivals go in `request_interval`. |
 | `requests/10` | `requests` is not a known symbol. |
 | `-1` | Negative. |
 
