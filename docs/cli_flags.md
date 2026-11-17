@@ -208,15 +208,15 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.tracelab_trace_replay.include_errors` | boolean | Include spans with error status |
 | `--data.tracelab_trace_replay.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
 | `--data.tracelab_trace_replay.bad_tool_call_handling` | Enum (none, use_recorded) | How to handle tool_calls whose function.arguments is not valid JSON. none (default): no mitigation, bytes propagate and vLLM may return HTTP 400 on the next turn. use_recorded: discard the live response and substitute the recorded assistant message at the affected slot; the recorded tool_call_id flows into the recorded role:tool successor unchanged. |
-| `--data.tracelab_trace_replay.trace_directory` | str | Directory containing TraceLab JSONL trace files |
-| `--data.tracelab_trace_replay.trace_files` | JSON | List of paths to specific TraceLab JSONL trace files |
+| `--data.tracelab_trace_replay.trace_directory` | str | Directory containing the trace files |
+| `--data.tracelab_trace_replay.trace_files` | JSON | List of paths to specific trace files |
 | `--data.tracelab_trace_replay.hf_dataset_path` | JSON | HuggingFace dataset path. Can be:
   - String: 'username/dataset-name'
   - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}
 Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.tracelab_trace_replay.filter` | str | Lambda expression to filter sessions. Applied uniformly to all data sources.
-Receives the session dict plus derived aggregates: max_tokens (largest
-single-round input+output), total_tokens, and num_rounds.
+Receives the session's summary as a dict: its session_id plus the aggregates
+the format derives (for TraceLab: max_tokens, total_tokens and num_rounds).
 Example: "lambda x: x['max_tokens'] < 262144"
 Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.tracelab_trace_replay.num_dataset_entries` | int | Max number of sessions to load, applied to every source (local files and HuggingFace). Reading stops once this many sessions pass the filter, so a small benchmark does not materialize the full corpus. |
