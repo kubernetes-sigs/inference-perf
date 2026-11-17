@@ -23,6 +23,7 @@ gaps over a real socket are never exact, so the gap checks are on the middle
 gap and on how much the gaps vary, not on each gap.
 """
 
+import itertools
 import statistics
 from typing import Any, Dict, List
 
@@ -89,3 +90,28 @@ async def test_an_exponential_request_interval_sends_randomly_spaced_requests() 
     assert 30 <= len(gaps) + 1 <= 90, f"{len(gaps) + 1} requests arrived, expected about 60"
     assert 0.06 <= statistics.fmean(gaps) <= 0.16, f"mean gap {statistics.fmean(gaps):.3f}s is not near 0.1s"
     assert _relative_spread(gaps) > MIN_RANDOM_SPREAD, f"gaps are too even for random arrivals: {sorted(gaps)}"
+
+
+# request_interval: "1/t" for 6 seconds, which is the rate t: requests where the area t^2/2
+# reaches 1, 2, ... 18. Exactly 18 arrive, and the gaps shrink as the rate climbs: the first
+# three average about 0.47s and the last three about 0.17s, so more than twice as long.
+async def test_a_request_interval_over_time_sends_along_its_rate() -> None:
+    gaps = await _arrival_gaps("1/t", 6)
+
+    assert len(gaps) + 1 == 18
+    early, late = statistics.fmean(gaps[:3]), statistics.fmean(gaps[-3:])
+    assert early > 2 * late, f"gaps do not shrink the way the rate t climbs: early {early:.3f}s, late {late:.3f}s"
+
+
+# request_interval: "Exponential(10 + 10*t)" for 6 seconds, random arrivals whose rate climbs from
+# 10 to 70 per second (area 240). The draw is not seeded from the config, so the bounds are wide:
+# 150 to 330 requests arrive, and more than 1.2 times as many land in the second half of the
+# time between the first and last arrival as in the first half (2.2 times on average).
+async def test_a_random_request_interval_over_time_speeds_up() -> None:
+    gaps = await _arrival_gaps("Exponential(10 + 10*t)", 6)
+
+    assert 150 <= len(gaps) + 1 <= 330, f"{len(gaps) + 1} requests arrived, expected about 238"
+    since_first = list(itertools.accumulate(gaps))
+    late = sum(1 for at in since_first if at > since_first[-1] / 2)
+    early = len(since_first) - late
+    assert late > 1.2 * early, f"arrivals do not speed up: {early} in the first half, {late} in the second"
