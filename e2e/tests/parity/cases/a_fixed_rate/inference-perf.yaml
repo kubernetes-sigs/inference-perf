@@ -2,9 +2,9 @@
 # random gaps scaled to fill exactly 15 seconds. Every prompt is 128 tokens and
 # every request asks for 64 output tokens. The parity test replaces
 # server.base_url and the tokenizer path.
-# 600 is the smallest count at which the Poisson vllm side can be held
-# to a useful rate tolerance (see expected.yaml), same as the load-shape
-# accuracy test in e2e/tests/test_load_shape_accuracy_sim.py.
+# 600 keeps the declared-arrival rate tolerance tight (see expected.yaml),
+# the same count as the load-shape accuracy test in
+# e2e/tests/test_load_shape_accuracy_sim.py.
 api:
   type: completion
   streaming: true
