@@ -20,6 +20,9 @@ from pathlib import Path
 
 import pytest
 
+if sys.platform == "win32":
+    pytest.skip("forkserver is POSIX-only; Windows uses spawn", allow_module_level=True)
+
 from inference_perf.loadgen.load_generator import Worker
 from inference_perf.utils.mp_context import MP_CONTEXT
 

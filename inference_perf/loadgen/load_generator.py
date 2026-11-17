@@ -69,7 +69,13 @@ from multiprocessing.sharedctypes import Synchronized
 from concurrent.futures import TimeoutError
 from functools import partial
 import logging
-import uvloop
+import sys
+
+if sys.platform != "win32":
+    import uvloop
+else:
+    uvloop = None
+
 import numpy as np
 from prometheus_client import CollectorRegistry
 import signal
@@ -651,7 +657,8 @@ class Worker(PreloadedForkServerProcess):
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         # A fork child inherits the load generator's SIGTERM handler; terminate() needs the default action.
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
-        set_event_loop_policy(uvloop.EventLoopPolicy())
+        if sys.platform != "win32" and uvloop is not None:
+            set_event_loop_policy(uvloop.EventLoopPolicy())
 
         # Announce that startup is done: the payload has been unpickled and the
         # queue is about to be consumed. The parent waits on this so worker

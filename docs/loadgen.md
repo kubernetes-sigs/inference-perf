@@ -1,6 +1,6 @@
 # Load Generation Guide
 
-Inference Perf generates load at the specified request rate based on a multi-process architecture where it uses the CPUs available to the process to spin off as many processes as denoted by [`num_workers`](CONFIG.md#load-configuration) and within each process, it spins off as many threads as denoted by [`worker_max_concurrency`](CONFIG.md#load-configuration) to achieve the specified request rate. By default `num_workers` is `min(CPU affinity, cgroup CPU quota when present, host CPUs)`, so container CPU limits and cpuset/taskset pinning are honored. This multi-process archictecture allows inference-perf to scale to 10k+ QPS which is not possible otherwise.
+Inference Perf generates load at the specified request rate based on a multi-process architecture where it uses the CPUs available to the process to spin off as many processes as denoted by [`num_workers`](CONFIG.md#load-configuration) and within each process, it spins off as many threads as denoted by [`worker_max_concurrency`](CONFIG.md#load-configuration) to achieve the specified request rate. By default `num_workers` is `min(CPU affinity, cgroup CPU quota when present, host CPUs)`, so container CPU limits and cpuset/taskset pinning are honored. This multi-process architecture allows inference-perf to scale to 10k+ QPS which is not possible otherwise. Windows uses a `spawn` context because forkserver is unavailable; POSIX uses `forkserver`.
 
 ## Architecture
 
