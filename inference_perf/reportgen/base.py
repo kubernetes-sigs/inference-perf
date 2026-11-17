@@ -1206,17 +1206,18 @@ class ReportGenerator:
         return CustomTokenizer(self.config.tokenizer)
 
     @staticmethod
-    def _zero_rate_stage_ids(runtime_parameters: PerfRuntimeParameters) -> List[int]:
-        """Stages that ran with a rate of zero for the whole stage, in stage order.
+    def _rate_stage_ids(runtime_parameters: PerfRuntimeParameters) -> List[int]:
+        """Stages that report even when they sent nothing, in stage order.
 
-        Only a rate stage records a rate with no concurrency level, and its
-        recorded rate is the mean over the stage, which is 0 only when the rate
-        never left 0.
+        A stage that sent zero requests is still a stage: its rate was zero,
+        or too low to reach one request, or it ended before its first send.
+        Only a rate stage records no concurrency level. The sweep's probe is
+        stage -1 and never reports.
         """
         return [
             stage_id
             for stage_id, info in sorted(runtime_parameters.stages.items())
-            if stage_id >= 0 and info.rate == 0 and info.concurrency_level is None
+            if stage_id >= 0 and info.concurrency_level is None
         ]
 
     def generate_config_report(self) -> ReportFile:
@@ -1273,9 +1274,9 @@ class ReportGenerator:
             for metric in request_metrics:
                 if metric.stage_id is not None:
                     stage_buckets[metric.stage_id].append(metric)
-            # A zero-rate stage sent nothing, so no metric names it. It still
-            # gets a report, with a count of 0.
-            for stage_id in self._zero_rate_stage_ids(runtime_parameters):
+            # No metric names a stage that sent nothing. It still gets a
+            # report, with a count of 0.
+            for stage_id in self._rate_stage_ids(runtime_parameters):
                 stage_buckets.setdefault(stage_id, [])
             for stage_id, metrics in stage_buckets.items():
                 stage_rate = runtime_parameters.stages[stage_id].rate
@@ -1399,7 +1400,9 @@ class ReportGenerator:
                 if stage_runtime_info.sessions_not_completed_active or stage_runtime_info.sessions_not_completed_pending:
                     session_stage_ids.add(stage_id)
 
-        if request_metrics or session_stage_ids:
+        # a rate stage that sent nothing gets a partial too: its window, and no results
+        rate_stage_ids = set(self._rate_stage_ids(runtime_parameters))
+        if request_metrics or session_stage_ids or rate_stage_ids:
             # Always emit the inference-perf slice of a BR0.2 report per stage,
             # alongside the native inference-perf reports. Downstream composers
             # (llm-d-benchmark CLI, wrappers, ad-hoc yq merges) layer their
@@ -1415,7 +1418,7 @@ class ReportGenerator:
             # One eid for the whole invocation: run.eid is what lets a
             # composer group the per-stage partials as a single experiment.
             br_run_eid = generate_experiment_eid()
-            for br_stage_id in sorted(set(br_stage_buckets) | session_stage_ids):
+            for br_stage_id in sorted(set(br_stage_buckets) | session_stage_ids | rate_stage_ids):
                 # run.time needs the stage's wall-clock window: the request
                 # timestamps are monotonic and can't be mapped to epoch here.
                 stage_info = runtime_parameters.stages.get(br_stage_id)

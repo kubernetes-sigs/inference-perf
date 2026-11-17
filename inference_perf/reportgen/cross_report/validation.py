@@ -173,20 +173,27 @@ class CrossReportValidator(ReportSetValidator):
         than guess an ordering.
         """
         ordered: List[tuple[int, float]] = []
+        sent_nothing: set[int] = set()
         for stage_id, contents in sorted(reports.stage_lifecycle_files().items()):
             rate = get_path(contents, "load_summary", "requested_rate")
             if not is_number(rate):
                 return []
             ordered.append((stage_id, float(rate)))
+            if get_path(contents, "load_summary", "count") == 0:
+                sent_nothing.add(stage_id)
 
         findings: List[Finding] = []
         for (prev_id, prev_rate), (stage_id, rate) in zip(ordered, ordered[1:], strict=False):
             if rate < prev_rate:
+                # a stage that sent nothing is a pause, which reads oddly as a ramp down
+                pause = (
+                    f". Stage {stage_id} sent no requests, so it is a pause in the load" if stage_id in sent_nothing else ""
+                )
                 findings.append(
                     _global_warning(
                         f"{self.name}.stage_rates",
                         f"stage requested rates are not monotonically increasing: stage {stage_id} "
-                        f"requested_rate {rate:g} < stage {prev_id} requested_rate {prev_rate:g}",
+                        f"requested_rate {rate:g} < stage {prev_id} requested_rate {prev_rate:g}{pause}",
                     )
                 )
         return findings

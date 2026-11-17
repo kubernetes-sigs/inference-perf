@@ -79,6 +79,20 @@ def test_partly_zero_rate_still_sends() -> None:
     assert not stage.rate_is_zero
 
 
+# A rate above zero whose area is under one request also sends nothing, and says why: 0.1 req/s for
+# 5s is 0.5 requests. It is not a zero rate. A stage that sends has no reason to give.
+def test_rate_that_rounds_down_to_zero_requests() -> None:
+    stage = StandardLoadStage(rate=0.1, duration=5)
+    assert stage.expected_requests == 0
+    assert not stage.rate_is_zero
+    assert stage.zero_requests_reason == "its rate 0.1 adds up to 0.5 requests over 5s, which is less than one request"
+    assert StandardLoadStage(rate=0, duration=5).zero_requests_reason == "its rate 0.0 is zero for the whole stage"
+    assert StandardLoadStage(rate="t/100", duration=5).zero_requests_reason == (
+        "its rate 't/100' adds up to 0.125 requests over 5s, which is less than one request"
+    )
+    assert StandardLoadStage(rate=0.2, duration=5).zero_requests_reason is None
+
+
 # Negative is still rejected at load: the number -1 and -0.5, the expression "-1", and "5 - t"
 # over 60s, which is negative after t=5.
 @pytest.mark.parametrize(
@@ -95,9 +109,9 @@ def test_negative_rate_rejected(rate: float | str, message: str) -> None:
         StandardLoadStage(rate=rate, duration=60)
 
 
-# Stages of rate 5, 0 and "Max(0, -t)" log one warning each for stages 1 and 2 at config load,
-# saying the stage will send zero requests because its rate is zero for the whole stage.
-# Stage 0 gets no warning.
+# Stages of rate 5, 0, "Max(0, -t)" and 0.001 over 60s log one warning each for stages 1, 2 and 3
+# at config load, saying the stage will send zero requests and why: a rate that is zero for the
+# whole stage, or one that adds up to less than one request. Stage 0 gets no warning.
 def test_zero_rate_warns_at_config_load(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="inference_perf.config.loadgen.config"):
         LoadConfig(
@@ -105,12 +119,14 @@ def test_zero_rate_warns_at_config_load(caplog: pytest.LogCaptureFixture) -> Non
                 StandardLoadStage(rate=5, duration=60),
                 StandardLoadStage(rate=0, duration=60),
                 StandardLoadStage(rate="Max(0, -t)", duration=60),
+                StandardLoadStage(rate=0.001, duration=60),
             ]
         )
     messages = [record.getMessage() for record in caplog.records]
     assert messages == [
         "Stage 1 will send zero requests: its rate 0.0 is zero for the whole stage.",
         "Stage 2 will send zero requests: its rate 'Max(0, -t)' is zero for the whole stage.",
+        "Stage 3 will send zero requests: its rate 0.001 adds up to 0.06 requests over 60s, which is less than one request.",
     ]
 
 
@@ -208,3 +224,45 @@ async def test_worker_run_zero_rate_stage_between_two_normal_stages(caplog: pyte
     assert 2.0 <= infos[1].end_time - infos[1].start_time < 6.0
     assert elapsed < 60
     assert "Stage 1 sends zero requests: its rate 0.0 is zero for the whole stage." in caplog.text
+
+
+# In-process run of one stage at 0.1 req/s for 1s, which is a tenth of a request: it completes, sends
+# nothing, reports its rate of 0.1, lasts its 1s instead of ending at once, and logs why.
+@pytest.mark.timeout(60)
+async def test_in_process_stage_that_rounds_down_to_zero_lasts_its_duration(caplog: pytest.LogCaptureFixture) -> None:
+    stage = StandardLoadStage(rate=0.1, duration=1)
+    with caplog.at_level(logging.WARNING, logger="inference_perf.loadgen.load_generator"):
+        loadgen, collector = await _run(LoadConfig(stages=[stage], num_workers=0, worker_max_concurrency=4))
+    info = loadgen.stage_runtime_info[0]
+    assert info.status.name == "COMPLETED"
+    assert info.rate == 0.1
+    assert collector.get_metrics() == []
+    assert 1.0 <= info.end_time - info.start_time < 5.0
+    assert (
+        "Stage 0 sends zero requests: its rate 0.1 adds up to 0.1 requests over 1s, which is less than one request."
+        in caplog.text
+    )
+
+
+# Worker-process run of rate 4 for 1s, rate 0.1 for 1s, rate 4 for 1s on one worker: all three
+# complete with nothing dropped, and the middle stage holds its window (1s lead-in plus its 1s)
+# and logs why it sent nothing.
+@pytest.mark.timeout(120)
+async def test_worker_run_stage_that_rounds_down_to_zero_between_two_normal_stages(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stages = [
+        StandardLoadStage(rate=4, duration=1),
+        StandardLoadStage(rate=0.1, duration=1),
+        StandardLoadStage(rate=4, duration=1),
+    ]
+    load_config = LoadConfig(
+        interval=0, stages=stages, num_workers=1, worker_max_concurrency=4, stage_teardown_grace_seconds=10.0
+    )
+    with caplog.at_level(logging.WARNING, logger="inference_perf.loadgen.load_generator"):
+        loadgen, _ = await _run(load_config)
+    infos = [loadgen.stage_runtime_info[stage] for stage in range(3)]
+    assert [info.status.name for info in infos] == ["COMPLETED"] * 3
+    assert [info.dropped_requests for info in infos] == [0, 0, 0]
+    assert 2.0 <= infos[1].end_time - infos[1].start_time < 6.0
+    assert "Stage 1 sends zero requests: its rate 0.1 adds up to 0.1 requests over 1s" in caplog.text

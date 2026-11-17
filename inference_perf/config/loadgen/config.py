@@ -183,6 +183,15 @@ class StandardLoadStage(LoadStage):
         """True when the rate is zero for the whole stage, so the stage sends zero requests."""
         return self.rate_schedule.total <= 0
 
+    @property
+    def zero_requests_reason(self) -> Optional[str]:
+        """Why the stage sends zero requests, for a warning, or None when it sends some.
+
+        Set for a rate that is zero for the whole stage and for a rate whose
+        area over the stage is less than one request.
+        """
+        return self.rate_schedule.zero_requests_reason
+
 
 class ConcurrentLoadStage(LoadStage):
     """Load stage for CONCURRENT load type."""
@@ -472,8 +481,8 @@ class LoadConfig(StrictBaseModel):
                         "Remove load.type."
                     )
                 # legal, since a stage may idle between two others, but worth saying out loud
-                if self.type != LoadType.TRACE_REPLAY and stage.rate_is_zero:
-                    logger.warning("Stage %d will send zero requests: its rate %r is zero for the whole stage.", i, stage.rate)
+                if self.type != LoadType.TRACE_REPLAY and stage.zero_requests_reason is not None:
+                    logger.warning("Stage %d will send zero requests: %s.", i, stage.zero_requests_reason)
 
         # Validate multilora traffic split adds up to 1.0 if present
         if self.lora_traffic_split is not None:

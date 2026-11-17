@@ -82,6 +82,18 @@ class RateSchedule:
         self._total = float(self._cumulative[-1])
 
     @property
+    def zero_requests_reason(self) -> Union[str, None]:
+        """Why the stage sends zero requests, for a warning, or None when it sends some."""
+        if self.expected_requests > 0:
+            return None
+        if self._total <= 0:
+            return f"its rate {self.rate.raw!r} is zero for the whole stage"
+        return (
+            f"its rate {self.rate.raw!r} adds up to {self._total:.3g} requests over {self.duration:g}s, "
+            "which is less than one request"
+        )
+
+    @property
     def is_constant(self) -> bool:
         return self._constant is not None
 
