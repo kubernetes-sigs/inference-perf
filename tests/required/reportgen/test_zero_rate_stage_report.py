@@ -186,3 +186,21 @@ async def test_request_interval_stage_that_sent_nothing_reports_a_count_of_zero(
     assert (idle["count"], idle["request_interval"], idle["achieved_rate"]) == (0, "oo", 0.0)
     assert "requested_rate" not in idle
     assert reports["validation"].get_contents()["global"]["errors"] == []
+
+
+# A gap longer than the stage gets the same report treatment, fixed or random: stage 1 with request_interval
+# "100.0" and stage 2 with "Uniform(100, 200)" each report count 0 and get a BR0.2 partial with empty
+# results, and validation has no errors.
+async def test_request_interval_longer_than_the_stage_reports_and_gets_a_partial() -> None:
+    stages = {
+        0: _stage_info(0, 4.0),
+        1: _stage_info(1, None, request_interval="100.0"),
+        2: _stage_info(2, None, request_interval="Uniform(100, 200)"),
+    }
+    reports = await _reports(stages, [0])
+    for stage_id in (1, 2):
+        assert reports[f"stage_{stage_id}_lifecycle_metrics"].get_contents()["load_summary"]["count"] == 0
+        assert reports[f"inference-perf.partial.stage_{stage_id}"].get_contents()["results"] == {}
+    validation = reports["validation"].get_contents()
+    assert validation["global"]["errors"] == []
+    assert [group["errors"] for group in validation["reports"].values() if group["errors"]] == []
