@@ -13,13 +13,12 @@
 # limitations under the License.
 import json
 import logging
-import multiprocessing as mp
-import sys
 from argparse import ArgumentParser
 
 import yaml
 from inference_perf.analysis.analyze import analyze_reports
-from typing import List, Optional
+from inference_perf.utils.mp_context import MP_CONTEXT, start_forkserver
+from typing import Callable, List, Optional
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
 from inference_perf.datagen.base import BaseGenerator
 from inference_perf.loadgen import LoadGenerator
@@ -49,6 +48,7 @@ from inference_perf.datagen import (
     BillsumConversationsDataGenerator,
     OTelTraceReplayDataGenerator,
     WekaTraceReplayDataGenerator,
+    TraceLabTraceReplayDataGenerator,
     SyntheticAgenticDataGenerator,
     ConversationReplayDataGenerator,
     VisionArenaDataGenerator,
@@ -77,6 +77,7 @@ from inference_perf.metrics.request_collector import (
 )
 from inference_perf.circuit_breaker import feed_breakers, init_circuit_breakers
 from inference_perf.observability.metrics import PrometheusMetricsServer, RunContext, build_metrics
+from inference_perf.observability.metrics.prometheus import linger_until
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile, add_global_args, add_pydantic_args, unflatten_dict
 from inference_perf.utils.cli_summary import print_summary_table
@@ -117,6 +118,25 @@ def log_metrics_endpoint_failure(metrics_config: RuntimeMetricsConfig, error: OS
     )
 
 
+def stop_runtime_metrics(
+    server: Optional[PrometheusMetricsServer],
+    linger_seconds: float,
+    run_end: float,
+    interrupted: Callable[[], bool],
+) -> None:
+    """Keep the metrics endpoint up until ``linger_seconds`` after the run ended, then stop it.
+
+    ``run_end`` is a ``time.monotonic()`` reading taken when the load finished, so
+    the time already spent on reports counts toward the linger and the wait never
+    delays them. A run that was interrupted does not linger.
+    """
+    if server is None:
+        return
+    if not interrupted():
+        linger_until(run_end + linger_seconds, interrupted)
+    server.stop()
+
+
 class InferencePerfRunner:
     def __init__(
         self,
@@ -151,14 +171,9 @@ class InferencePerfRunner:
 
 
 def main_cli() -> None:
-    # Set multiprocessing start method to 'fork' on macOS to avoid pickle issues
-    # This must be done before any multiprocessing operations
-    if sys.platform == "darwin":  # macOS
-        try:
-            mp.set_start_method("fork", force=True)
-        except RuntimeError:
-            # Start method already set, ignore
-            pass
+    # The load generator pins its own ``forkserver`` multiprocessing context
+    # (see inference_perf.utils.mp_context), so the process-global default start
+    # method is no longer relied upon and is intentionally left untouched here.
 
     # Parse command line arguments
     parser = ArgumentParser()
@@ -261,6 +276,7 @@ def main_cli() -> None:
                 cert_path=config.server.cert_path,
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
+                wait_for=config.server.wait_for,
             )
             # vllm_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -281,6 +297,7 @@ def main_cli() -> None:
                 cert_path=config.server.cert_path,
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
+                wait_for=config.server.wait_for,
             )
             # sglang_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -301,6 +318,7 @@ def main_cli() -> None:
                 cert_path=config.server.cert_path,
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
+                wait_for=config.server.wait_for,
             )
             # tgi_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -329,15 +347,27 @@ def main_cli() -> None:
     if len(config.load.stages) == 0 and config.load.sweep is None:
         raise Exception("Load stages must be configured, or sweep must be configured")
 
+    # The first worker or manager start would do this too. Starting here lets the server's
+    # preload run while the tokenizer and datagen load.
+    if config.load.num_workers > 0:
+        start_forkserver()
+
     # Create multiprocessing manager for session replay datagens if needed.
-    # Must be created before workers are forked.
+    # Must be created before workers are started, and from the same context as
+    # the workers so its proxies are usable across the worker boundary.
     mp_manager = None
     if (
         config.data
-        and config.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay, DataGenType.SyntheticAgentic)
+        and config.data.type
+        in (
+            DataGenType.OTelTraceReplay,
+            DataGenType.WekaTraceReplay,
+            DataGenType.TraceLabTraceReplay,
+            DataGenType.SyntheticAgentic,
+        )
         and config.load.num_workers > 0
     ):
-        mp_manager = mp.Manager()
+        mp_manager = MP_CONTEXT.Manager()
 
     datagen: BaseGenerator
     if config.data:
@@ -352,6 +382,7 @@ def main_cli() -> None:
                 DataGenType.BillsumConversations,
                 DataGenType.OTelTraceReplay,
                 DataGenType.WekaTraceReplay,
+                DataGenType.TraceLabTraceReplay,
                 DataGenType.SyntheticAgentic,
                 DataGenType.ConversationReplay,
             }
@@ -431,6 +462,10 @@ def main_cli() -> None:
             datagen = WekaTraceReplayDataGenerator(
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
             )
+        elif config.data.type == DataGenType.TraceLabTraceReplay:
+            datagen = TraceLabTraceReplayDataGenerator(
+                config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
+            )
         elif config.data.type == DataGenType.SyntheticAgentic:
             datagen = SyntheticAgenticDataGenerator(
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
@@ -445,6 +480,7 @@ def main_cli() -> None:
     if config.data and config.data.type in (
         DataGenType.OTelTraceReplay,
         DataGenType.WekaTraceReplay,
+        DataGenType.TraceLabTraceReplay,
         DataGenType.SyntheticAgentic,
     ):
         session_metrics_collector = SessionMetricsCollector()
@@ -490,11 +526,19 @@ def main_cli() -> None:
         perfrunner.run()
     except KeyboardInterrupt:
         pass
-    finally:
-        if metrics_server is not None:
-            metrics_server.stop()
+    # The endpoint stays up through reporting; stop_runtime_metrics stops it once the linger is over.
+    run_end = time.monotonic()
 
     end_time = time.time()
+
+    # Bringing workers up is process setup, not benchmark work. Under forkserver
+    # each worker is rebuilt in a fresh interpreter, so counting that startup
+    # stretches the window and deflates every rate derived from it. The load
+    # generator records when load actually began; prefer it when it is set (the
+    # multiprocessing path only, which is where the startup cost lives).
+    if loadgen.load_start_time is not None:
+        start_time = loadgen.load_start_time
+
     duration = end_time - start_time  # Calculate the duration of the test
 
     # Generate Reports after the tests
@@ -536,6 +580,13 @@ def main_cli() -> None:
 
     # Print summary table to CLI
     print_summary_table(reports)
+
+    stop_runtime_metrics(
+        metrics_server,
+        metrics_config.linger_seconds if metrics_config is not None else 0.0,
+        run_end,
+        lambda: loadgen.interrupt_sig,
+    )
 
     perfrunner.stop()
 

@@ -274,14 +274,25 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         if length > 1:
             initial += random_token_ids(self.rng, self.valid_token_ids, length - 1)
 
+        seen_lens: List[int] = []
+
         def adjust(current: List[int], current_len: int, target_len: int) -> List[int]:
+            # Re-tokenizing can merge a token with its neighbour, so appending or trimming
+            # n ids can move the count by n+1 and the loop bounces between target-1 and
+            # target+1. When a length repeats the tail is the problem: drop it and resample
+            # in its place. The word-start first id is never dropped.
+            stuck = current_len in seen_lens
+            seen_lens.append(current_len)
+            if stuck and len(current) > 1:
+                current = current[:-1]
+                current_len -= 1
             if current_len < target_len:
                 current.extend(random_token_ids(self.rng, self.valid_token_ids, target_len - current_len))
                 return current
             diff = current_len - target_len
             # Preserve the word-start first token so the boundary stays stable.
             if diff < len(current) - 1:
-                return current[:-diff]
+                return current[:-diff] if diff else current
             return current[:1]
 
         _, ids = converge_to_exact_length_text(

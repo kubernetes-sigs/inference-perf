@@ -15,13 +15,20 @@
 """Tests for OpenTelemetry instrumentation."""
 
 import base64
-from typing import Any
+from multiprocessing.queues import SimpleQueue
+from typing import TYPE_CHECKING, Any, Optional
+
+import pytest
 
 from inference_perf.client.modelserver.otel_instrumentation import (
     OTelInstrumentation,
     get_otel_instrumentation,
     summarize_media,
 )
+from inference_perf.utils.mp_context import MP_CONTEXT
+
+if TYPE_CHECKING:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
 def test_otel_instrumentation_init() -> None:
@@ -62,6 +69,39 @@ def test_record_response_metrics_disabled() -> None:
         response_info={"prompt_tokens": 10, "completion_tokens": 20},
         error=None,
     )
+
+
+# A deliberately truncated session. Expects status UNSET and the explicit truncation
+# attribute, so trace-based error counts agree with the session report.
+def test_end_session_span_marks_truncation_without_error_status() -> None:
+    otel = OTelInstrumentation(enabled=True)
+    pytest.importorskip("opentelemetry.sdk")
+    exporter = _capture_spans(otel)
+    span, _ = otel.start_session_span("truncated", None, None)
+
+    otel.end_session_span(span, truncated=True)
+
+    (finished,) = exporter.get_finished_spans()
+    attributes = dict(finished.attributes or {})
+    assert finished.status.status_code.name == "UNSET"
+    assert attributes["inference_perf.session.truncated"] is True
+
+
+# A session that failed during teardown. Expects an error status carrying the failure
+# text and no deliberate-truncation marker.
+def test_end_session_span_keeps_failure_status() -> None:
+    otel = OTelInstrumentation(enabled=True)
+    pytest.importorskip("opentelemetry.sdk")
+    exporter = _capture_spans(otel)
+    span, _ = otel.start_session_span("failed", None, None)
+
+    otel.end_session_span(span, error="Session failed")
+
+    (finished,) = exporter.get_finished_spans()
+    attributes = dict(finished.attributes or {})
+    assert finished.status.status_code.name == "ERROR"
+    assert finished.status.description == "Session failed"
+    assert "inference_perf.session.truncated" not in attributes
 
 
 def test_get_otel_instrumentation() -> None:
@@ -137,6 +177,51 @@ def test_record_response_metrics_with_error() -> None:
         )
 
 
+# Hooks an in-memory exporter onto the tracer provider otel uses and returns it, so a test
+# can read the spans that finished after this call. Skips when the otel extra is missing.
+def _capture_spans(otel: OTelInstrumentation) -> "InMemorySpanExporter":
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    otel._provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return exporter
+
+
+# A request cancelled at stage teardown, recorded with its error text and cancelled=True.
+# Expects status UNSET, inference_perf.request.cancelled=True, and no error.message.
+def test_record_response_metrics_cancelled_leaves_status_unset() -> None:
+    otel = OTelInstrumentation(service_name="test-service", enabled=True)
+    exporter = _capture_spans(otel)
+
+    with otel.trace_llm_request(operation_name="chat.completions", model_name="test-model") as span:
+        otel.record_response_metrics(span=span, error="Cancelled by the load generator", cancelled=True)
+
+    (finished,) = exporter.get_finished_spans()
+    attributes = dict(finished.attributes or {})
+    assert finished.status.status_code.name == "UNSET"
+    assert attributes["inference_perf.request.cancelled"] is True
+    assert "error.message" not in attributes
+
+
+# A request that failed with "Connection timeout". Expects status ERROR carrying that text,
+# error.message set to it, and no cancelled marker.
+def test_record_response_metrics_error_sets_error_status() -> None:
+    otel = OTelInstrumentation(service_name="test-service", enabled=True)
+    exporter = _capture_spans(otel)
+
+    with otel.trace_llm_request(operation_name="chat.completions", model_name="test-model") as span:
+        otel.record_response_metrics(span=span, error="Connection timeout")
+
+    (finished,) = exporter.get_finished_spans()
+    attributes = dict(finished.attributes or {})
+    assert finished.status.status_code.name == "ERROR"
+    assert finished.status.description == "Connection timeout"
+    assert attributes["error.message"] == "Connection timeout"
+    assert "inference_perf.request.cancelled" not in attributes
+
+
 def test_summarize_media_replaces_inline_payloads_and_keeps_everything_else() -> None:
     """Spans carry a size and hash summary of each inline image or audio clip, never its bytes."""
     png = base64.b64encode(b"\x89PNG fake image bytes").decode()
@@ -160,3 +245,31 @@ def test_summarize_media_replaces_inline_payloads_and_keeps_everything_else() ->
     assert summary[1]["content"][0]["input_audio"]["data"].startswith("[3 bytes, sha256:")
     assert summary[2] == messages[2]
     assert messages[0]["content"][1]["image_url"]["url"].endswith(png)  # the request itself is untouched
+
+
+# Runs in the worker: opens one span and reports whether it is recording.
+def _span_records_in_worker(otel: OTelInstrumentation, result: "SimpleQueue[bool]") -> None:
+    with otel.trace_llm_request(operation_name="completions", model_name="test-model") as span:
+        result.put(span is not None and span.is_recording())
+
+
+@pytest.mark.parametrize("otlp_endpoint", [None, "http://localhost:4317"])
+# An enabled instance goes to a forkserver worker, once with the console exporter and once with OTLP.
+# The worker reports True: the instance pickled and the worker built a live tracer of its own.
+def test_enabled_instrumentation_traces_in_forkserver_worker(
+    monkeypatch: pytest.MonkeyPatch, otlp_endpoint: Optional[str]
+) -> None:
+    pytest.importorskip("opentelemetry.sdk.trace")
+    if otlp_endpoint is None:
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    else:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", otlp_endpoint)
+    otel = OTelInstrumentation(service_name="test-service", enabled=True)
+
+    result: "SimpleQueue[bool]" = MP_CONTEXT.SimpleQueue()
+    worker = MP_CONTEXT.Process(target=_span_records_in_worker, args=(otel, result))
+    worker.start()
+    worker.join(timeout=60)
+
+    assert worker.exitcode == 0
+    assert result.get() is True

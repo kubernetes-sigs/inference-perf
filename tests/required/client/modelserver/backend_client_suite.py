@@ -132,7 +132,11 @@ class FakeStreamingResponse:
 
 
 def make_client(backend: Backend, api_config: APIConfig, api_key: Optional[str] = None) -> openAIModelServerClient:
-    with patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer):
+    with (
+        patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+        # Construction waits for the server's readiness route; this suite has no server.
+        patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
+    ):
         return backend.client_cls(
             metrics_collector=MagicMock(),
             api_config=api_config,
@@ -377,6 +381,7 @@ class BackendClientSuite:
         mock_get.return_value.json.return_value = self.backend.models_response
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
         ):
             client = self.backend.client_cls(
@@ -408,6 +413,7 @@ class BackendClientSuite:
         mock_get.return_value.json.return_value = self.backend.models_response
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
         ):
             self.backend.client_cls(
@@ -430,6 +436,7 @@ class BackendClientSuite:
         mock_get.return_value.json.return_value = self.backend.models_response
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
         ):
             self.backend.client_cls(
@@ -452,6 +459,7 @@ class BackendClientSuite:
         mock_get = MagicMock(side_effect=requests.Timeout("connection timed out"))
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
             pytest.raises(Exception, match="no model_name could be found"),
         ):
@@ -495,6 +503,7 @@ class BackendClientSuite:
         mock_get.return_value.json.return_value = models_response
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AliasRejectingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
         ):
             client = self.backend.client_cls(
@@ -536,6 +545,7 @@ class BackendClientSuite:
         mock_get.return_value.json.return_value = models_response
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AliasRejectingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
         ):
             client = self.backend.client_cls(
@@ -561,6 +571,7 @@ class BackendClientSuite:
         mock_get = MagicMock()
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
         ):
             client = self.backend.client_cls(
@@ -582,6 +593,7 @@ class BackendClientSuite:
         mock_get = MagicMock()
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
         ):
             client = self.backend.client_cls(
@@ -608,6 +620,7 @@ class BackendClientSuite:
         mock_get = MagicMock(side_effect=requests.Timeout("connection timed out"))
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AliasRejectingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
             pytest.raises(Exception, match="tokenizer.pretrained_model_name_or_path"),
         ):
@@ -637,6 +650,7 @@ class BackendClientSuite:
         mock_get.return_value.json.return_value = models_response
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
         ):
             self.backend.client_cls(
@@ -674,6 +688,7 @@ class BackendClientSuite:
         mock_get.return_value.json.return_value = models_response
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AliasRejectingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
         ):
             client = self.backend.client_cls(
@@ -714,6 +729,7 @@ class BackendClientSuite:
         mock_get.return_value.json.return_value = models_response
         with (
             patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AlwaysFailingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
             patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
             pytest.raises(Exception, match="tokenizer.pretrained_model_name_or_path"),
         ):

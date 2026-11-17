@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from aiohttp import ClientResponse
 from PIL import Image as PILImage
 
+from inference_perf.apis.tool_output import chat_tool_calls, count_tool_tokens, message_tool_texts
 from inference_perf.apis import (
     ChatCompletionAPIData,
     ErrorResponseInfo,
@@ -59,6 +60,7 @@ from inference_perf.apis.anthropic_messages import (
 )
 from inference_perf.apis.chat import ChatMessage, reasoning_field
 from inference_perf.apis.image_parts import base64_size, image_bytes, is_image_part, to_otel_part
+from inference_perf.apis.response_errors import InBandError, in_band_error
 from inference_perf.payloads import Image, Images, RequestMetrics, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
@@ -517,9 +519,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     f"overwriting with replay-enforced value."
                 )
             names = self.expected_output_tool_names or []
-            # Build available set from self.tool_definitions (the raw list). The name
-            # field is set explicitly in to_request_body and is NOT passed through
-            # _clean_parameters, so it survives schema cleaning unchanged.
+            # Build available set from self.tool_definitions (the raw list).
             available = {t["name"] for t in self.tool_definitions if "name" in t}
             if len(names) == 1 and names[0] in available:
                 # Force the exact function the original trace recorded. This maximises
@@ -1088,29 +1088,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
         actual_tool_names: List[str] = []
         if config.streaming:
-            # Accumulate tool_call chunks alongside text content.
-            # delta.tool_calls is a list of partial objects; each chunk carries an
-            # index that identifies which tool call it belongs to.
-            tool_call_chunks = {}
 
             def _extract_streaming_content(data: Dict[str, Any]) -> Optional[str]:
                 delta = data.get("choices", [{}])[0].get("delta", {})
-                for chunk in delta.get("tool_calls") or []:
-                    idx = chunk.get("index", 0)
-                    if idx not in tool_call_chunks:
-                        tool_call_chunks[idx] = {
-                            "id": chunk.get("id", ""),
-                            "type": chunk.get("type", "function"),
-                            "function": {"name": "", "arguments": ""},
-                        }
-                    fn = chunk.get("function") or {}
-                    if fn.get("name"):
-                        tool_call_chunks[idx]["function"]["name"] += fn["name"]
-                    if fn.get("arguments"):
-                        tool_call_chunks[idx]["function"]["arguments"] += fn["arguments"]
-                    if chunk.get("id"):
-                        tool_call_chunks[idx]["id"] = chunk["id"]
-
                 content = delta.get("content")
                 return str(content) if content is not None else None
 
@@ -1135,8 +1115,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_text = text_content
 
             streaming_output_message: Optional[Dict[str, Any]] = None
-            if tool_call_chunks:
-                live_tool_calls = [tool_call_chunks[i] for i in sorted(tool_call_chunks)]
+            if parsed.tool_calls:
+                live_tool_calls = parsed.tool_calls
                 streaming_output_message = {"role": "assistant", "tool_calls": live_tool_calls}
                 if text_content:
                     streaming_output_message["content"] = text_content
@@ -1147,14 +1127,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 streaming_output_message["reasoning_content"] = reasoning_text
 
             prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
-            server_completion_tokens = server_usage.get("completion_tokens") if server_usage else None
-            if server_completion_tokens is not None:
-                output_len = int(server_completion_tokens)
-            else:
-                tc_text = ""
-                if tool_call_chunks:
-                    tc_text = json.dumps([tool_call_chunks[i] for i in sorted(tool_call_chunks)], ensure_ascii=False)
-                output_len = tokenizer.count_tokens(output_text + tc_text)
+            output_len = sum(
+                tokenizer.count_tokens(part, add_special_tokens=False) for part in (text_content, reasoning_text) if part
+            )
+            output_len += count_tool_tokens(tokenizer, [*parsed.tool_names, *parsed.tool_arguments])
             info = SessionInferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len), image=replayed_images(self.messages)),
                 response_metrics=StreamedResponseMetrics(
@@ -1165,20 +1141,28 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     server_usage=server_usage,
                     reasoning_chunks=parsed.reasoning_chunks,
                     reasoning_chunk_times=parsed.reasoning_chunk_times,
+                    tool_chunks=parsed.tool_chunks,
+                    tool_chunk_times=parsed.tool_chunk_times,
+                    has_tool_calls=parsed.has_tool_calls,
                 ),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
                 output_message=streaming_output_message,
                 extra_info={"raw_response": raw_content},
             )
-            actual_tool_names = [tool_call_chunks[i]["function"]["name"] for i in sorted(tool_call_chunks)]
+            actual_tool_names = [call["function"]["name"] for call in parsed.tool_calls]
         else:
             data = await response.json()
+            # A 200 whose body is an error payload is that error, not a success.
+            if (error_payload := in_band_error(data)) is not None:
+                raise InBandError(error_payload)
             server_usage = data.get("usage")
             prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             choices = data.get("choices", [])
             output_message: Optional[Dict[str, Any]] = None
             tool_calls = None
+            text_content = ""
+            reasoning_content = ""
             if choices:
                 msg_dict = choices[0].get("message", {})
                 text_content = msg_dict.get("content", "") or ""
@@ -1200,14 +1184,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
                 if reasoning_content:
                     output_message["reasoning_content"] = reasoning_content
-            server_completion_tokens = server_usage.get("completion_tokens") if server_usage else None
-            if server_completion_tokens is not None:
-                output_len = int(server_completion_tokens)
-            else:
-                tc_text = ""
-                if tool_calls:
-                    tc_text = json.dumps(tool_calls, ensure_ascii=False)
-                output_len = tokenizer.count_tokens(output_text + tc_text)
+            output_len = sum(
+                tokenizer.count_tokens(part, add_special_tokens=False) for part in (text_content, reasoning_content) if part
+            )
+            output_len += count_tool_tokens(tokenizer, message_tool_texts(output_message))
             info = SessionInferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len), image=replayed_images(self.messages)),
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
@@ -1215,7 +1195,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_text=output_text or None,
                 output_message=output_message,
             )
-            actual_tool_names = [tc["function"]["name"] for tc in (tool_calls or [])]
+            actual_tool_names = [tc["function"]["name"] for tc in chat_tool_calls(output_message)]
 
         if self.expected_output_tool_names is not None:
             # Compare as multisets
@@ -1344,6 +1324,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             output_text, server_usage = parsed.output_text, parsed.server_usage
             input_tokens = (server_usage or {}).get("input_tokens")
             output_len = count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
+            output_len += count_tool_tokens(tokenizer, [*parsed.tool_names, *parsed.tool_arguments])
             base_info = InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
@@ -1361,16 +1342,23 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                     server_usage=server_usage,
                     reasoning_chunks=parsed.reasoning_chunks,
                     reasoning_chunk_times=parsed.reasoning_chunk_times,
+                    tool_chunks=parsed.tool_chunks,
+                    tool_chunk_times=parsed.tool_chunk_times,
+                    has_tool_calls=parsed.has_tool_calls,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": parsed.raw_content, "output_message": output_message, "output_text": output_text},
             )
         else:
             data = await response.json()
+            # A 200 whose body is an error payload is that error, not a success.
+            if (error_payload := in_band_error(data)) is not None:
+                raise InBandError(error_payload)
             usage = data.get("usage") or {}
             output_text, output_message = parse_anthropic_content(data.get("content"))
             input_tokens = usage.get("input_tokens")
             output_len = count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
+            output_len += count_tool_tokens(tokenizer, message_tool_texts(output_message))
             base_info = InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
@@ -1484,12 +1472,13 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         super().__init__(api_config, config, tokenizer)
         self.config = config
         self.replay_config = replay_config
-        self.mp_manager = mp_manager
         self.num_workers = max(1, num_workers)
         self.base_seed = base_seed if base_seed is not None else 42
 
         self.output_registry = EventOutputRegistry()
         self.worker_tracker = WorkerSessionTracker()
+        # Keep only the queue proxy. Workers receive this datagen by pickle and the
+        # manager itself does not pickle.
         if mp_manager is not None:
             self.session_completion_queue: Any = mp_manager.Queue()
         else:

@@ -11,14 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 from typing import AsyncGenerator, List, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ClientResponse
+from pydantic import ValidationError
 
 from inference_perf.apis import ChatCompletionAPIData, ChatMessage, UnaryResponseMetrics
 from inference_perf.apis.completion import CompletionAPIData
+from inference_perf.apis.response_errors import EmptyResponseError, InBandError
 from inference_perf.config import APIType
 
 
@@ -235,3 +238,114 @@ async def test_process_response_streaming_falls_back_without_server_usage() -> N
     info = await data.process_response(response, _make_config(streaming=True), tokenizer)
 
     assert info.request_metrics.text.input_tokens == 3
+
+
+# Unary 200 whose body is `{"error": {...}}` and nothing else. Must raise
+# InBandError carrying that body as its message instead of returning a
+# zero-token InferenceInfo.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_in_band_error_body_raises() -> None:
+    """The #713 unary shape: a proxy that answers 200 with an OpenAI error object.
+    Before, the empty `choices` early-return recorded it as a success."""
+    data = CompletionAPIData(prompt="hi")
+    body = {"error": {"message": "upstream unavailable", "type": "server_error", "code": 503}}
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    with pytest.raises(InBandError) as exc_info:
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+    assert json.loads(str(exc_info.value)) == body
+
+
+# Unary 200 whose body is `{}`: no choices, no usage, no error. Must raise
+# EmptyResponseError. The sibling test above with `{"choices": [], "usage": {...}}`
+# still returns an InferenceInfo, so usage is what separates the two.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_no_choices_no_usage_raises() -> None:
+    data = CompletionAPIData(prompt="hi")
+    response = MagicMock()
+    response.json = AsyncMock(return_value={})
+
+    with pytest.raises(EmptyResponseError):
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+
+# Streaming 200 whose only frame is [DONE]: no content, no usage. Must raise
+# EmptyResponseError with the raw stream attached, not return output_tokens=0.
+@pytest.mark.asyncio
+async def test_process_response_streaming_no_content_no_usage_raises() -> None:
+    data = CompletionAPIData(prompt="hi")
+    response = cast(ClientResponse, _FakeStreamingResponse([b"data: [DONE]\n\n"]))
+
+    with pytest.raises(EmptyResponseError) as exc_info:
+        await data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+    assert exc_info.value.raw_content == "data: [DONE]\n\n"
+
+
+# Streaming 200 with no content but a usage frame saying completion_tokens=0.
+# That is a legitimate empty completion: must return an InferenceInfo, not raise.
+@pytest.mark.asyncio
+async def test_process_response_streaming_no_content_with_usage_is_a_success() -> None:
+    data = CompletionAPIData(prompt="hi")
+    sse = b'data: {"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 0}}\n\ndata: [DONE]\n\n'
+    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+
+    info = await data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+    assert info.request_metrics.text.input_tokens == 3
+    assert info.response_metrics is not None
+    assert info.response_metrics.server_usage == {"prompt_tokens": 3, "completion_tokens": 0}
+
+
+# Unary completion bodies that are not a completion even though usage is present: a choice
+# with no text, a null text, a string choice, choices as a dict, usage as a list. Each must
+# raise ValidationError. On main the first one was a zero-token success.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"choices": [{"index": 0, "finish_reason": "stop"}], "usage": {"prompt_tokens": 3}},
+        {"choices": [{"text": None}], "usage": {"prompt_tokens": 3}},
+        {"choices": ["hello"], "usage": {"prompt_tokens": 3}},
+        {"choices": {"text": "hello"}, "usage": {"prompt_tokens": 3}},
+        {"choices": [{"text": "hello"}], "usage": [3]},
+    ],
+)
+async def test_process_response_non_streaming_malformed_body_raises_validation_error(body: dict[str, object]) -> None:
+    data = CompletionAPIData(prompt="hi")
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    with pytest.raises(ValidationError):
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+
+# Unary completion bodies shaped the way TGI, vLLM and SGLang send them, all with text
+# "hello there" (2 tokens): finish_reason stop_sequence, abort and null, logprobs as a list of floats,
+# and no id/object/created/model/index/total_tokens anywhere. Each is a success and usage
+# comes back unchanged.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "choice_extra",
+    [
+        {"finish_reason": "stop_sequence"},
+        {"finish_reason": "abort"},
+        {"finish_reason": None},
+        {"finish_reason": "stop", "logprobs": [-0.1, -0.2]},
+        {},
+    ],
+)
+async def test_process_response_non_streaming_accepts_engine_specific_fields(choice_extra: dict[str, object]) -> None:
+    data = CompletionAPIData(prompt="hi")
+    body = {"choices": [{"text": "hello there", **choice_extra}], "usage": {"prompt_tokens": 42, "completion_tokens": None}}
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    info = await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+    assert data.model_response == "hello there"
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
+    assert info.response_metrics.output_tokens == 2
+    assert info.response_metrics.server_usage == {"prompt_tokens": 42, "completion_tokens": None}

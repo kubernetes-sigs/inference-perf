@@ -98,6 +98,18 @@ def test_count_disagreement_with_stage_lifecycle_is_an_error() -> None:
     assert _errors_for_check(result, "br_partial.lifecycle_agreement")
 
 
+# Stage 0's lifecycle report says 2 requests were cancelled, its partial says 1 was
+# incomplete. Expects a br_partial.lifecycle_agreement error naming requests.incomplete.
+def test_incomplete_disagreeing_with_native_cancelled_is_an_error() -> None:
+    reports, stage = tampered(make_report_set(), "stage_0_lifecycle_metrics.json")
+    stage["cancelled"] = {"count": 2}
+    reports, partial = tampered(reports, PARTIAL_0_FILE)
+    partial["results"]["request_performance"]["aggregate"]["requests"]["incomplete"] = 1
+
+    errors = _errors_for_check(_validate(reports), "br_partial.lifecycle_agreement")
+    assert errors and "requests.incomplete" in errors[0].message
+
+
 # Stage 0's partial claims a 99s run while its own run.time.start and
 # run.time.end sit 2.05s apart. Expected: one br_partial.run_time error.
 def test_run_time_duration_contradicting_start_and_end_is_an_error() -> None:

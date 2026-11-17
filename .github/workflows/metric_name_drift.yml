@@ -1,0 +1,263 @@
+# Periodic metric-name drift detection for SGLang and TGI (#669).
+#
+# inference-perf hardcodes the Prometheus metric names it queries per model
+# server. When an upstream server renames, removes or re-namespaces one,
+# nothing fails: the PromQL matches nothing, the report field comes back
+# empty, and a reader cannot tell "the server did not report this" from "we
+# asked for a name that no longer exists". #382 caught one such rename
+# (sglang:cache_hit_rate to sglang:token_usage) by hand.
+#
+# This job starts the LATEST release of each server, scrapes /metrics once,
+# and rewrites e2e/testdata/server_metric_families/<server>.txt. If the family
+# list changed it opens an issue with the diff and the verdict of the
+# serverless checks in e2e/tests/test_sglang_tgi_metric_names.py; if not it
+# exits quietly. A name we still declare but the server no longer exposes
+# shows up on one attributable issue that somebody owns, rather than on every
+# open PR at once.
+#
+# An issue, not a pull request: a commit authored by github-actions has no
+# CNCF CLA, so a bot PR would carry cncf-cla: no and tide would never merge
+# it. A maintainer lands the refresh in their own commit.
+#
+# Deliberately NOT merge blocking, and deliberately not on `pull_request`.
+# `latest` is a moving external dependency: if it gated merges, one upstream
+# rename would turn every open PR red at the same time, including the PR that
+# fixes it. Schedule plus manual dispatch is the correct contract, and it is
+# why this row does not block the release even though it lives in the live
+# tier.
+#
+# CAPACITY: both servers want an accelerator to start, and this project has no
+# runner with one yet (#641). Until it does, `runs-on` has nothing to point
+# at, so the job is gated on a repository variable: it stays skipped (not
+# queued forever, not failing every week) until somebody sets
+# METRIC_DRIFT_RUNNER to the label of a GPU runner with the NVIDIA container
+# toolkit installed. Setting that variable is the only step needed to turn
+# this on.
+name: Metric-name drift (SGLang, TGI)
+
+on:
+  schedule:
+    # Mondays, early UTC. Weekly is enough: upstream releases are weeks apart
+    # and the fixture only has to be fresher than our next release.
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model both servers load. Small and ungated; generation quality is irrelevant, only metric registration is.
+        required: false
+        default: Qwen/Qwen2.5-0.5B-Instruct
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  capture:
+    # Never on forks (a fork has neither the runner nor anywhere useful to
+    # file the issue), and never before a runner exists (#641).
+    if: github.repository == 'kubernetes-sigs/inference-perf' && vars.METRIC_DRIFT_RUNNER != ''
+    runs-on: ${{ vars.METRIC_DRIFT_RUNNER }}
+    timeout-minutes: 60
+    # One job, one server, one issue: a TGI rename must not be held up
+    # behind an SGLang server that failed to boot.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - server: sglang
+            image: docker.io/lmsysorg/sglang:latest
+            port: 30000
+            host_port: 8080
+            # SGLang exports nothing at all without --enable-metrics. The
+            # model flag comes last so the model name is appended as its own
+            # argument, never spliced into this string.
+            launch_args: python3 -m sglang.launch_server --host 0.0.0.0 --port 30000 --enable-metrics --model-path
+            warmup_body: '{"text":"1 2 3","sampling_params":{"max_new_tokens":4}}'
+          - server: tgi
+            image: ghcr.io/huggingface/text-generation-inference:latest
+            port: 80
+            host_port: 8081
+            launch_args: --model-id
+            warmup_body: '{"inputs":"1 2 3","parameters":{"max_new_tokens":4}}'
+    env:
+      MODEL: ${{ inputs.model || 'Qwen/Qwen2.5-0.5B-Instruct' }}
+      SERVER: ${{ matrix.server }}
+      FIXTURE: e2e/testdata/server_metric_families/${{ matrix.server }}.txt
+      # Per server, so two matrix jobs on one host never remove each other's
+      # container or contend for one port.
+      CONTAINER: metric-drift-${{ matrix.server }}
+      HOST_PORT: ${{ matrix.host_port }}
+      BASE_URL: http://127.0.0.1:${{ matrix.host_port }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Set up PDM
+        uses: pdm-project/setup-pdm@c6081998a653693a457d93c70b8007d979bc6741 # v4
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pdm sync -d
+
+      - name: Start ${{ matrix.server }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          PORT: ${{ matrix.port }}
+          LAUNCH_ARGS: ${{ matrix.launch_args }}
+        run: |
+          set -euo pipefail
+
+          # GPU runners are usually persistent, so never inherit a container
+          # from a previous run.
+          docker rm -f "${CONTAINER}" 2>/dev/null || true
+          docker pull "${IMAGE}"
+
+          # LAUNCH_ARGS is unquoted on purpose so it word-splits into
+          # arguments; it is a literal from this workflow file, not input.
+          docker run -d --name "${CONTAINER}" --gpus all --shm-size 8g \
+            -p "127.0.0.1:${HOST_PORT}:${PORT}" \
+            -v "${HOME}/hf-cache:/data" -e HF_HOME=/data \
+            "${IMAGE}" ${LAUNCH_ARGS} "${MODEL}"
+
+          # Both images do a model download plus an engine warmup on first
+          # boot, so this deadline is generous. It is also what stands between
+          # a wedged boot and the job timeout.
+          for _ in $(seq 1 120); do
+            if curl -sf "${BASE_URL}/health" > /dev/null; then
+              echo "${SERVER} is ready"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::${SERVER} did not become ready"
+          exit 1
+
+      # Both servers register most metric families lazily, on first use, so a
+      # scrape of a freshly booted server under-reports. One real request is
+      # enough; no benchmark run is needed.
+      - name: Warm up ${{ matrix.server }}
+        env:
+          WARMUP_BODY: ${{ matrix.warmup_body }}
+        run: |
+          set -euo pipefail
+          curl -sf -X POST "${BASE_URL}/generate" \
+            -H 'Content-Type: application/json' \
+            -d "${WARMUP_BODY}" > /dev/null
+
+      # Writes only when the family list or the reported version differs from
+      # what is committed, so an unchanged metric surface leaves no diff and
+      # the issue step has nothing to file.
+      - name: Capture metric-family fixture
+        run: |
+          set -euo pipefail
+          pdm run python scripts/capture_server_metric_names.py \
+            --server "${SERVER}" --base-url "${BASE_URL}"
+
+      # The serverless checks need no server, so run them here against the
+      # fixture just captured and put the verdict in the issue.
+      - name: Check declared names against the new fixture
+        id: check
+        run: |
+          set -uo pipefail
+          T=e2e/tests/test_sglang_tgi_metric_names.py
+          if pdm run pytest -p no:cacheprovider \
+              "${T}::test_fixture_header_is_complete[${SERVER}]" \
+              "${T}::test_declared_names_resolve_against_fixture[${SERVER}]" \
+              "${T}::test_known_unresolved_are_still_unresolved[${SERVER}]" \
+              2>&1 | tee drift-check.log; then
+            echo "result=pass" >> "${GITHUB_OUTPUT}"
+          else
+            echo "result=fail" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Collect server logs
+        if: always()
+        run: docker logs "${CONTAINER}" > "${SERVER}-server.log" 2>&1 || true
+
+      - name: Upload server logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.server }}-server-log
+          path: ${{ matrix.server }}-server.log
+
+      - name: Stop ${{ matrix.server }}
+        if: always()
+        run: docker rm -f "${CONTAINER}" 2>/dev/null || true
+
+      # The issue carries a capped diff. The artifact is the whole fixture, so
+      # whoever lands the refresh does not need a GPU to regenerate it.
+      - name: Upload captured fixture
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.server }}-fixture
+          path: ${{ env.FIXTURE }}
+
+      # An issue, not a test failure: the diff is the finding, and the check
+      # step above says whether it breaks anything we declare.
+      - name: File or update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_RESULT: ${{ steps.check.outputs.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- "${FIXTURE}"; then
+            echo "${SERVER} metric names unchanged; nothing to do."
+            exit 0
+          fi
+
+          VERSION="$(sed -n 's/^# version: //p' "${FIXTURE}")"
+          TITLE="Metric-name drift: ${SERVER}"
+          # Written to a file so head cannot SIGPIPE git under pipefail.
+          git diff -- "${FIXTURE}" > drift.diff
+
+          cat > issue-body.md <<EOF
+          Automated by .github/workflows/metric_name_drift.yml (#669).
+
+          The /metrics exposition of ${SERVER} ${VERSION} no longer matches the checked-in
+          fixture. The diff is the drift.
+
+          Declared names against the new fixture: ${CHECK_RESULT} (the serverless checks in
+          e2e/tests/test_sglang_tgi_metric_names.py, run by the workflow before filing this).
+
+          On fail, a name inference-perf declares in get_prometheus_metric_metadata()
+          disappeared, and the declaration in inference_perf/client/modelserver/${SERVER}_client.py
+          needs updating in the same change as the refresh. On pass, upstream added or removed
+          metrics this project does not query and the refresh can land as is.
+
+          To land it, download the \`${SERVER}-fixture\` artifact from ${RUN_URL}, copy it over
+          ${FIXTURE} and open a PR from your own fork. The workflow does not open the PR itself
+          because a commit authored by github-actions cannot pass EasyCLA.
+
+          <details><summary>fixture diff (first 400 lines)</summary>
+
+          \`\`\`diff
+          $(head -n 400 drift.diff)
+          \`\`\`
+          </details>
+
+          <details><summary>check output</summary>
+
+          \`\`\`
+          $(tail -n 40 drift-check.log)
+          \`\`\`
+          </details>
+          EOF
+
+          # One open issue per server. A second drift before the first is
+          # handled lands as a comment, not a second issue.
+          EXISTING="$(gh issue list --state open --limit 200 --json number,title \
+            --jq "[.[] | select(.title == \"${TITLE}\")][0].number // empty")"
+          if [ -n "${EXISTING}" ]; then
+            gh issue comment "${EXISTING}" --body-file issue-body.md
+          else
+            gh issue create --title "${TITLE}" --body-file issue-body.md
+          fi

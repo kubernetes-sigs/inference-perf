@@ -46,7 +46,7 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     convert_wire_file,
     derive_trace_id,
     detect_trace_format,
-    TRACE_READ_ERRORS,
+    trace_read_errors,
     iter_wire_spans,
     open_trace_text,
     trace_stem,
@@ -274,7 +274,7 @@ class LocalTraceSource:
     def _index_one(self, path: Path) -> List[LocalTraceRecord]:
         try:
             trace_format = detect_trace_format(path)
-        except TRACE_READ_ERRORS as e:
+        except trace_read_errors() as e:
             raise TraceReadError(f"{path}: {e}") from e
 
         if trace_format == FORMAT_OTEL_JSONL:
@@ -327,7 +327,7 @@ class LocalTraceSource:
         try:
             with open_trace_text(path) as f:
                 document = json.load(f)
-        except (*TRACE_READ_ERRORS, json.JSONDecodeError) as e:
+        except trace_read_errors() + (json.JSONDecodeError,) as e:
             raise InvalidTraceError(f"{path}: unable to read OTel identity: {e}") from e
         if not isinstance(document, dict):
             raise InvalidTraceError(f"{path}: expected a trace object, got {type(document).__name__}")
@@ -397,7 +397,7 @@ class LocalTraceSource:
                 converted = convert_wire_file(path)
             except ValueError as e:
                 raise InvalidTraceError(str(e)) from e
-            except TRACE_READ_ERRORS as e:
+            except trace_read_errors() as e:
                 raise TraceReadError(f"{path}: {e}") from e
             except Exception as e:
                 raise InvalidTraceError(f"{path}: wire conversion failed: {e}") from e
@@ -410,7 +410,7 @@ class LocalTraceSource:
                 return cast(Dict[str, Any], json.load(f))
         except json.JSONDecodeError as e:
             raise InvalidTraceError(f"{path}: not valid JSON: {e}") from e
-        except TRACE_READ_ERRORS as e:
+        except trace_read_errors() as e:
             raise TraceReadError(f"{path}: {e}") from e
 
 
@@ -479,7 +479,7 @@ def _validate_wire_convertible(path: Path, trace_id: str) -> None:
             span_count += 1
     except ValueError as e:
         raise InvalidTraceError(str(e)) from e
-    except TRACE_READ_ERRORS as e:
+    except trace_read_errors() as e:
         raise TraceReadError(f"{path}: {e}") from e
 
     if span_count == 0:

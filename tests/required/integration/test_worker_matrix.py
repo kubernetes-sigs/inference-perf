@@ -67,6 +67,7 @@ from inference_perf.metrics.request_collector import (
 )
 from inference_perf.reportgen.base import ResponsesSummary, summarize_requests
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.utils.mp_context import MP_CONTEXT
 
 # N is pinned rather than inherited from cpu_count(), which is what makes a CI
 # run test a known cell instead of whichever cell the runner happens to have.
@@ -404,9 +405,7 @@ def _record_all(collector: MultiprocessRequestMetricCollector, metrics: List[Req
 async def _feed_from_child_process(
     collector: MultiprocessRequestMetricCollector, metrics: List[RequestLifecycleMetric]
 ) -> None:
-    import multiprocessing as mp
-
-    process = mp.Process(target=_record_all, args=(collector, metrics), daemon=True)
+    process = MP_CONTEXT.Process(target=_record_all, args=(collector, metrics), daemon=True)
     process.start()
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, process.join)

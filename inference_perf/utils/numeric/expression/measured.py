@@ -93,6 +93,7 @@ WINDOWS: Dict[str, str] = {
 
 # Aggregates answered from a sorted copy of the window rather than running sums.
 _ORDERED = frozenset({"min", "max", "quantile"})
+_SUMMED = frozenset({"sum", "avg", "stddev"})
 
 _TERM_CALL = re.compile(r"\b([A-Za-z0-9]+)_over_([A-Za-z0-9]+)\s*\(")
 _PLACEHOLDER = "_term"
@@ -314,21 +315,25 @@ class _Window:
         self.count = 0
         self._sum = 0
         self._sumsq = 0
+        # the exact sums dominate the per-sample cost, so only keep the ones this aggregate reads
+        self._summed = aggregate in _SUMMED
         self._sorted: Optional[List[float]] = [] if aggregate in _ORDERED else None
 
     def add(self, value: float) -> None:
-        scaled = _scaled(value)
         self.count += 1
-        self._sum += scaled
-        self._sumsq += scaled * scaled
+        if self._summed:
+            scaled = _scaled(value)
+            self._sum += scaled
+            self._sumsq += scaled * scaled
         if self._sorted is not None:
             insort(self._sorted, value)
 
     def remove(self, value: float) -> None:
-        scaled = _scaled(value)
         self.count -= 1
-        self._sum -= scaled
-        self._sumsq -= scaled * scaled
+        if self._summed:
+            scaled = _scaled(value)
+            self._sum -= scaled
+            self._sumsq -= scaled * scaled
         if self._sorted is not None:
             del self._sorted[bisect_left(self._sorted, value)]
 

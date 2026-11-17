@@ -40,7 +40,10 @@ api:
   slo_unit: "ms"               # Optional SLO unit (e.g., ms, s), default is ms
   slo_tpot_header: "x-slo-tpot-ms"        # Optional header name for TPOT SLO Header, default is x-slo-tpot-ms
   slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
+  clean_tool_schemas: false    # Optional: rewrite tool schemas for strict servers (see below), default is false
 ```  
+
+Tool parameter schemas (from trace replay or agentic datagen) are sent to the server unchanged by default. Some servers reject valid JSON Schema that they do not support. For example, vLLM with the xgrammar backend and llm-d-inference-sim reject `default`, `title`, numeric/array constraints, `anyOf`/`oneOf`, object-valued `additionalProperties` and `type: object` without `properties`. Set `clean_tool_schemas: true` to rewrite each schema into a subset these servers accept. This applies to `chat` (`tools[].function.parameters`) and `anthropic_messages` (`tools[].input_schema`). The rewrite changes the prompt the server tokenizes, so enable it only when the server rejects the recorded schemas. This also means the token count emitted from the server is different from the client-side tokenization.
 
 With `type: embeddings`, requests go to `/v1/embeddings`. Embeddings responses have no generated tokens, so `streaming` and `response_format` are not supported and TTFT, TPOT, ITL and NTPOT are not reported. Request options go under `embeddings`:
 
@@ -172,7 +175,7 @@ Its `min` and `max` must be within `[0, 1]`; for distributions other than
 throughout the prompt. Token and media count distributions continue to produce
 integers.
 
-The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`.
+The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio,seconds}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`. A field the client never measured, such as the size of media sent as a URL, is left out of its distribution rather than counted as 0. Media a response returns is reported the same way under `output_image`, `output_video`, `output_audio` and `throughput.output_{images,videos,audios}_per_sec`, present only when some response returned media. The same counts and sizes are exported on `/metrics`, see [runtime_metrics.md](runtime_metrics.md).
 
 ##### Wire formats
 
@@ -212,7 +215,7 @@ load:
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
-      concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
+      concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS, defaults to num_conversations for conversation_replay)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
   num_workers: 4                    # Concurrent worker threads (default: cgroup-aware CPU count: min(CPU affinity, cgroup CPU quota when present, host CPUs))
   worker_max_concurrency: 10        # Max concurrent requests per worker
@@ -297,6 +300,7 @@ server:
   api_key: ""                                         # Optional API key for authenticated endpoints
   cert_path: ""                                       # Optional path to a client TLS certificate (mutual TLS)
   key_path: ""                                        # Optional path to the private key for cert_path
+  wait_for: ready                                     # What to wait for before the first request (ready|reachable|none)
 ```
 
 `server.type` selects the model server (vLLM by default). Verified servers are vLLM,
@@ -325,6 +329,36 @@ servers that serve exactly one model need no model identifier at all. The lookup
 
 The same `/v1/models` lookup validates LoRA adapter names when
 `load.lora_traffic_split` is configured.
+
+`server.wait_for` sets what the client waits for before the first request. The wait
+polls the profile's readiness route (`/health` for vLLM, `/v1/models` for SGLang and
+TGI) once a second for up to 600 seconds:
+
+- `ready` (default): until the route answers 200. A 404 means the route is not served
+  there, and the run starts without waiting.
+- `reachable`: until the route gives any HTTP response. A gateway in front of a pool
+  that has scaled to zero answers 503, and the run's first requests are what bring the
+  servers up. A probe that connects and then gets no response within 5 seconds also
+  counts, since such a gateway may hold it until a backend exists.
+- `none`: no wait.
+
+The `reachable` probe is itself a request to the gateway. A gateway that scales up on
+any request starts the cold start at the probe rather than at the first measured
+request, so the run measures only what is left of it. Use `none` when the whole cold
+start has to land inside the run.
+
+With `reachable` or `none`, the client sends nothing else to the server before the
+run. `server.model_name` is required, the tokenizer loads from
+`tokenizer.pretrained_model_name_or_path` or else `server.model_name` with no `root`
+fallback, and LoRA adapter names are not checked.
+
+```yaml
+server:
+  type: vllm
+  base_url: http://gateway:80
+  model_name: Qwen/Qwen3-8B
+  wait_for: reachable
+```
 
 Example — let both the model name and the tokenizer be auto-detected:
 
@@ -511,14 +545,17 @@ Runtime metrics inference-perf exports about the benchmark run itself (stage sta
 ```yaml
 observability:
   metrics:
-    port: 9464   # Port of the endpoint. 0 picks an ephemeral port, logged at startup
+    port: 9464            # Port of the endpoint. 0 picks an ephemeral port, logged at startup
+    linger_seconds: 30    # How long the endpoint stays up after the run ends. 0 stops it once the reports are saved
 ```
 
 Metrics are always collected in-process, where they drive the progress bars. The HTTP `/metrics` endpoint starts only when `observability.metrics` is set, so a run that never asked for it opens no port. `metrics: {}` serves on the default port. A bare `metrics:` with nothing under it is YAML null and leaves the endpoint off. Passing `--observability.metrics.port` on the command line also turns it on.
 
 The endpoint binds every interface, so a scraper reaches it by pod IP in Kubernetes or through `docker run -p`. The Helm chart values and the `deploy/` Job turn it on. The root `config.yml` does not, so the README quickstart exposes nothing. If the port cannot be bound, the run continues without the endpoint and logs an error. The reports are unaffected.
 
-Transient signals (current stage, in-flight requests) only exist while the run is active, so they need a scraper attached during the run. The last scrape can land up to one scrape interval before the run ends, and a run shorter than the interval may not be scraped at all. The final numbers are in the reports.
+After the run ends the endpoint stays up for `linger_seconds` (default 30), counted from the end of the load, so a scraper can collect the final counters and the last stage's end timestamp. Report generation and saving happen inside that window, so the wait never delays the reports. Set `linger_seconds` to at least the scrape interval, or the last scrape may still miss the end of the run. The wait applies only when the endpoint is running, and `linger_seconds: 0` stops it as soon as the reports are saved. SIGINT or SIGTERM ends the wait immediately, and a run that was interrupted does not linger. The Helm chart and the `deploy/` Job inherit the 30 second default.
+
+Transient signals (current stage, in-flight requests) only exist while the run is active, so they need a scraper attached during the run. The final numbers are in the reports.
 
 ## Full Configuration Examples
 

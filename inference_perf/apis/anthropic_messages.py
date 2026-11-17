@@ -18,9 +18,11 @@ from typing import Any
 
 from aiohttp import ClientResponse
 
+from inference_perf.apis.tool_output import count_tool_tokens, message_tool_texts
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, StreamedResponseMetrics, UnaryResponseMetrics
-from inference_perf.apis.chat import ChatMessage, _clean_parameters
+from inference_perf.apis.chat import ChatMessage
 from inference_perf.apis.image_parts import is_image_part, openai_image_to_part
+from inference_perf.apis.response_errors import InBandError, in_band_error
 from inference_perf.apis.streaming_parser import ParsedSSEStream, parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
@@ -133,7 +135,7 @@ def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
     name = function.get("name", "")
     result = {
         "name": name,
-        "input_schema": _clean_parameters(function.get("parameters") or {"type": "object", "properties": {}}),
+        "input_schema": function.get("parameters") or {"type": "object", "properties": {}},
     }
     if function.get("description") is not None:
         result["description"] = function["description"]
@@ -361,6 +363,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             output_text, server_usage = parsed.output_text, parsed.server_usage
             input_tokens = (server_usage or {}).get("input_tokens")
             output_len = count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
+            output_len += count_tool_tokens(tokenizer, [*parsed.tool_names, *parsed.tool_arguments])
             return InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
@@ -375,16 +378,23 @@ class AnthropicMessagesAPIData(InferenceAPIData):
                     server_usage=server_usage,
                     reasoning_chunks=parsed.reasoning_chunks,
                     reasoning_chunk_times=parsed.reasoning_chunk_times,
+                    tool_chunks=parsed.tool_chunks,
+                    tool_chunk_times=parsed.tool_chunk_times,
+                    has_tool_calls=parsed.has_tool_calls,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": parsed.raw_content, "output_message": output_message, "output_text": output_text},
             )
 
         data = await response.json()
+        # A 200 whose body is an error payload is that error, not a success.
+        if (error_payload := in_band_error(data)) is not None:
+            raise InBandError(error_payload)
         usage = data.get("usage") or {}
         output_text, output_message = parse_anthropic_content(data.get("content"))
         input_tokens = usage.get("input_tokens")
         output_len = count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
+        output_len += count_tool_tokens(tokenizer, message_tool_texts(output_message))
         extra_info: dict[str, Any] = {
             "stop_reason": data.get("stop_reason"),
             "output_message": output_message,

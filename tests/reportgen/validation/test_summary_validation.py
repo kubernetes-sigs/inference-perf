@@ -67,6 +67,36 @@ def test_unreconciled_counts_is_an_error() -> None:
     assert _errors_for_check(result, "summary.counts")
 
 
+# The run summary's one failure becomes a cancel: 5 successes + 0 failures + 1 cancelled
+# against a total of 6. Expects no summary.counts error.
+def test_cancelled_requests_reconcile_the_counts() -> None:
+    reports, contents = tampered(make_report_set(), SUMMARY_FILE)
+    contents["failures"]["count"] -= 1
+    contents["cancelled"] = {"count": 1}
+
+    assert not _errors_for_check(_validate(reports), "summary.counts")
+
+
+# 5 successes + 1 failure + 2 cancelled against a total of 6. Expects a summary.counts
+# error whose message names the cancelled term.
+def test_cancelled_requests_that_do_not_reconcile_are_an_error() -> None:
+    reports, contents = tampered(make_report_set(), SUMMARY_FILE)
+    contents["cancelled"] = {"count": 2}
+
+    errors = _errors_for_check(_validate(reports), "summary.counts")
+    assert errors and "cancelled (2)" in errors[0].message
+
+
+# A cancelled block whose count is the string "two". Expects a summary.counts error
+# rather than a crash.
+def test_non_numeric_cancelled_count_is_an_error() -> None:
+    reports, contents = tampered(make_report_set(), SUMMARY_FILE)
+    contents["cancelled"] = {"count": "two"}
+
+    errors = _errors_for_check(_validate(reports), "summary.counts")
+    assert errors and "cancelled.count" in errors[0].message
+
+
 def test_mean_outside_min_max_is_an_error() -> None:
     reports, contents = tampered(make_report_set(), SUMMARY_FILE)
     latency = contents["successes"]["latency"]["request_latency"]

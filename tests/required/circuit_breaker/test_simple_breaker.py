@@ -18,8 +18,10 @@ fed to it, so a small purpose-built BaseModel stands in for the metric here;
 its exact type is irrelevant to the behavior under test.
 """
 
+import logging
 from typing import List, Optional
 
+import pytest
 from pydantic import BaseModel
 
 from inference_perf.circuit_breaker.simple_breaker import SimpleCircuitBreaker
@@ -107,22 +109,36 @@ def test_empty_rules_means_a_match_is_a_hit() -> None:
     assert breaker.is_open() is True
 
 
-# --- _search swallowing exceptions: characterization, not endorsement ------
+# --- evaluation errors are reported once per expression ---------------------
 
 
-def test_search_swallows_data_dependent_type_error() -> None:
-    """Characterize existing JMESPath error handling; see follow-up #927.
+# matches=["latency > `0`"] fed latency="not-a-number" 3 times: feed() never raises,
+# the breaker stays closed, and exactly 1 warning names the expression and TypeError.
+def test_evaluation_error_is_logged_once_per_expression(caplog: pytest.LogCaptureFixture) -> None:
+    breaker = SimpleCircuitBreaker(_config(matches=["latency > `0`"]))
 
-    Comparing a string latency to a numeric literal raises TypeError
-    during expression evaluation. The current breaker suppresses it.
-    This test does not endorse silent error handling.
-    """
-    config = _config(matches=["latency > `0`"])
-    breaker = SimpleCircuitBreaker(config)
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            breaker.feed(_StringMetric(latency="not-a-number"))
 
-    breaker.feed(_StringMetric(latency="not-a-number"))
-
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "latency > `0`" in warnings[0].getMessage()
+    assert "TypeError" in warnings[0].getMessage()
     assert breaker.is_open() is False
+
+
+# Two broken expressions ["latency > `0`", "latency < `0`"] on a string latency log 2
+# warnings (one each); a later healthy expression in the same list still matches.
+def test_each_failing_expression_is_logged_and_others_still_evaluate(caplog: pytest.LogCaptureFixture) -> None:
+    breaker = SimpleCircuitBreaker(_config(matches=["latency > `0`", "latency < `0`", "latency == 'slow'"]))
+
+    with caplog.at_level(logging.WARNING):
+        breaker.feed(_StringMetric(latency="slow"))
+        breaker.feed(_StringMetric(latency="slow"))
+
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
+    assert breaker.is_open() is True
 
 
 # --- trigger integration -----------------------------------------------------

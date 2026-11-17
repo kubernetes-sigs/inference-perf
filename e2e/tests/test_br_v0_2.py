@@ -22,6 +22,7 @@ BR0.2 report (``version``, ``run.uid``, ``run.eid``, ``run.time``,
 both halves of that contract.
 """
 
+import shutil
 from typing import Any, Dict
 
 import pytest
@@ -157,3 +158,45 @@ async def test_br_v0_2_partial_emitted_and_mergeable() -> None:
         assert parsed.scenario.stack[0].metadata.label == "sim-0"
         assert parsed.results.request_performance is not None
         assert parsed.results.request_performance.aggregate is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
+@pytest.mark.skipif(shutil.which("prometheus") is None, reason="local environment missing prometheus")
+async def test_br_v0_2_partial_carries_server_component(prometheus_server) -> None:
+    """With report.prometheus.per_stage on, the stage partial carries the stage's
+    Prometheus summary as one observability component labelled with the server
+    type, and still validates as BR0.2."""
+    model_path = extract_tarball(TEST_MODEL_TARBALL)
+
+    async with LLMDInferenceSimRunner(TEST_MODEL_NAME, port=prometheus_server.sim_port) as sim:
+        result = await run_benchmark_minimal(
+            {
+                "data": {"type": "mock"},
+                "load": {"type": "constant", "stages": [{"rate": 5, "duration": 15}], "num_workers": 1},
+                "api": {"type": "completion", "streaming": True},
+                "server": {
+                    "type": "vllm",
+                    "model_name": TEST_MODEL_NAME,
+                    "base_url": f"http://{sim.host}:{sim.port}",
+                    "ignore_eos": True,
+                },
+                "tokenizer": {"pretrained_model_name_or_path": str(model_path)},
+                "metrics": {"type": "prometheus", "prometheus": {"url": prometheus_server.url, "scrape_interval": 5}},
+                "report": {
+                    "request_lifecycle": {"summary": True},
+                    "prometheus": {"summary": False, "per_stage": True},
+                },
+            }
+        )
+
+    assert result.success, f"Benchmark failed: {result.stdout}"
+    assert result.reports, "No reports produced"
+
+    partial = result.reports["inference-perf.partial.stage_0.yaml"]
+    [component] = partial["results"]["observability"]["components"]
+    assert component["component_label"] == "vllm"
+    # Gauges the sim always exports.
+    assert component["aggregate"]["running_requests"]["units"] == "count"
+    assert component["aggregate"]["waiting_requests"]["units"] == "count"
+    BenchmarkReportV021.model_validate(partial)

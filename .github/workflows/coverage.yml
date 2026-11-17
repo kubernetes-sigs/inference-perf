@@ -144,12 +144,16 @@ jobs:
           pdm sync -d -G analysis -G otel
       # The budget sits 10 minutes under the job's timeout-minutes, which also covers setup and the
       # upload, so a slow run fails with a summary instead of being cancelled without one.
+      # The step timeout catches a run that overruns the budget anyway. The runner counts a step
+      # timeout as a step failure, which continue-on-error absorbs. A job timeout cancels the job
+      # instead, which fails the workflow and holds the merge gate.
       # continue-on-error keeps the job green on a FAIL verdict, a budget
       # overrun or a script error. The summary and the inline annotations
       # still land, only the merge gate stops seeing them.
       - name: Run mutation ratchet
         if: steps.changes.outputs.code == 'true'
         continue-on-error: true
+        timeout-minutes: 85
         run: pdm run check:mutation --base "origin/${{ github.base_ref }}" --budget-minutes 80
       - name: Upload mutation results
         if: always() && steps.changes.outputs.code == 'true'

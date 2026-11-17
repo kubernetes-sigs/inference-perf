@@ -22,12 +22,12 @@ interface over it.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, Optional, cast
 from unittest.mock import Mock
 
 from inference_perf.client.server_metrics import PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import StageRuntimeInfo, StageStatus
-from inference_perf.apis.base import RequestLifecycleMetric, SessionLifecycleMetric
+from inference_perf.apis.base import RequestLifecycleMetric, SessionLifecycleMetric, stage_teardown_cancelled_error
 from inference_perf.config import Config
 from inference_perf.config.reportgen.config import ReportConfig, RequestLifecycleMetricsReportConfig
 from inference_perf.metrics.request_collector import RequestMetricCollector
@@ -40,10 +40,10 @@ from .helpers import STAGE_DISPATCH_LEAD, STAGE_TEARDOWN_OVERHANG, make_metric, 
 
 
 # Drives the real generate_reports over two stages of synthesized requests
-# (stage 0: 3 successes + 1 failure, stage 1: 2 successes) and returns the
-# emitted report files, validation.json included.
-def _generate_reports() -> List[ReportFile]:
-    stage_metrics = make_stage_metrics()
+# (by default stage 0: 3 successes + 1 failure, stage 1: 2 successes) and
+# returns the emitted report files, validation.json included.
+def _generate_reports(stage_metrics: Optional[Dict[int, List[RequestLifecycleMetric]]] = None) -> List[ReportFile]:
+    stage_metrics = stage_metrics if stage_metrics is not None else make_stage_metrics()
     all_metrics = [m for metrics in stage_metrics.values() for m in metrics]
 
     collector = Mock(spec=RequestMetricCollector)
@@ -88,6 +88,24 @@ def test_generate_reports_emits_validation_json_and_it_is_clean() -> None:
     assert all_errors == [], all_errors
     all_warnings = [w for group in validation["reports"].values() for w in group["warnings"]]
     assert all_warnings == [], all_warnings
+
+
+# Stage 0 gains a fifth request, cancelled at stage teardown. Expects validation.json with
+# no errors, the stage report's cancelled.count=1 and the BR partial's requests.incomplete=1.
+def test_generate_reports_with_a_teardown_cancel_validates_cleanly() -> None:
+    stage_metrics = make_stage_metrics()
+    stage_metrics[0].append(
+        make_metric(0, 1.8, 2.4, failed=True).model_copy(update={"error": stage_teardown_cancelled_error()})
+    )
+
+    contents = {r.get_filename(): r.get_contents() for r in _generate_reports(stage_metrics)}
+
+    validation = contents["validation.json"]
+    all_errors = validation["global"]["errors"] + [e for group in validation["reports"].values() for e in group["errors"]]
+    assert all_errors == [], all_errors
+    assert contents["stage_0_lifecycle_metrics.json"]["cancelled"]["count"] == 1
+    br_requests = contents["inference-perf.partial.stage_0.yaml"]["results"]["request_performance"]["aggregate"]["requests"]
+    assert (br_requests["failures"], br_requests["incomplete"]) == (1, 1)
 
 
 def test_generate_reports_validation_covers_the_emitted_files() -> None:

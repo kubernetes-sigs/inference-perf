@@ -1,0 +1,56 @@
+# tgi metric families, as inference-perf expects to find them on /metrics.
+#
+# provenance: upstream-source
+# server: tgi
+# version: v3.3.7
+# source: https://github.com/huggingface/text-generation-inference/tree/v3.3.7 (metrics macro invocations in router/src and backends/*/src)
+# captured: 2026-08-17
+#
+# Regenerate against a running server:
+#   python scripts/capture_server_metric_names.py --server tgi \
+#     --base-url http://127.0.0.1:<port>
+#
+# UNVERIFIED AGAINST A LIVE SERVER. Same reason and same caveats as the SGLang
+# fixture: derived from pinned upstream source, not scraped. Derivation rule:
+# every counter!/gauge!/histogram! and describe_counter!/describe_gauge!/
+# describe_histogram! macro invocation over **/*.rs at tag v3.3.7 whose first
+# argument is a "tgi_" string literal, with the type taken from the macro name.
+# TGI's exporter (metrics-exporter-prometheus) emits counter families under the
+# name as registered, with no _total suffix, which the repo's own Grafana
+# dashboard corroborates: assets/tgi_grafana.json queries tgi_request_success
+# directly.
+#
+# This is a strict superset of a live exposition: the metrics-rs recorder only
+# renders a family once something has recorded to it, so a server that has
+# served no request exposes almost nothing. It is also a superset of TGI's own
+# documented list (docs/source/reference/metrics.md at v3.3.7 tabulates 21 of
+# these 27; tgi_batch_concat, tgi_batch_concat_duration,
+# tgi_batch_inference_failure, tgi_batch_max_total_tokens, tgi_batch_total_tokens
+# and tgi_request_failure are registered but undocumented).
+tgi_batch_concat counter
+tgi_batch_concat_duration histogram
+tgi_batch_current_max_tokens gauge
+tgi_batch_current_size gauge
+tgi_batch_decode_duration histogram
+tgi_batch_filter_duration histogram
+tgi_batch_forward_duration histogram
+tgi_batch_inference_count counter
+tgi_batch_inference_duration histogram
+tgi_batch_inference_failure counter
+tgi_batch_inference_success counter
+tgi_batch_max_total_tokens gauge
+tgi_batch_next_size histogram
+tgi_batch_total_tokens gauge
+tgi_queue_size gauge
+tgi_request_count counter
+tgi_request_duration histogram
+tgi_request_failure counter
+tgi_request_generated_tokens histogram
+tgi_request_inference_duration histogram
+tgi_request_input_length histogram
+tgi_request_max_new_tokens histogram
+tgi_request_mean_time_per_token_duration histogram
+tgi_request_queue_duration histogram
+tgi_request_skipped_tokens histogram
+tgi_request_success counter
+tgi_request_validation_duration histogram

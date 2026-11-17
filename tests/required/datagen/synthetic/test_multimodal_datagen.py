@@ -239,7 +239,8 @@ async def test_multimodal_datagen_video_png_frames() -> None:
     assert item.realized_videos is not None
     assert item.realized_videos.count == 1
     assert item.realized_videos.instances[0].frames == expected_frames
-    assert item.realized_videos.instances[0].bytes > 0
+    realized_bytes = item.realized_videos.instances[0].bytes
+    assert realized_bytes is not None and realized_bytes > 0
     assert item.realized_images is None
 
 

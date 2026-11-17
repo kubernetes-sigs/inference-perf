@@ -51,7 +51,11 @@ DURATION = 60.0
 
 
 def make_client(client_cls: Type[openAIModelServerClient]) -> openAIModelServerClient:
-    with patch("inference_perf.client.modelserver.openai_client.CustomTokenizer"):
+    with (
+        patch("inference_perf.client.modelserver.openai_client.CustomTokenizer"),
+        # Construction waits for the server's readiness route; this test has no server.
+        patch("inference_perf.client.modelserver.openai_client.openAIModelServerClient.wait_until_ready"),
+    ):
         return client_cls(
             metrics_collector=MagicMock(),
             api_config=APIConfig(type=APIType.Completion, streaming=False),

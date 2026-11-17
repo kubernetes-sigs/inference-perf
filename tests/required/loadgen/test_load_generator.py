@@ -20,7 +20,7 @@ import typing
 import signal
 import sys
 import numpy as np
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData
 from inference_perf.config import LoadConfig, LoadType, TraceConfig, TraceFormat, StandardLoadStage
@@ -30,6 +30,7 @@ from inference_perf.apis.base import ErrorResponseInfo, InferenceInfo, RequestLi
 from inference_perf.circuit_breaker.simple_breaker import SimpleCircuitBreaker
 from inference_perf.config.circuit_breaker import CircuitBreakerConfig, MetricsSpec, TriggerConsecutive
 from inference_perf.payloads import RequestMetrics, Text
+from inference_perf.utils.mp_context import MP_CONTEXT
 from inference_perf.utils.request_queue import Drained, RequestQueue
 
 # Patch asyncio.TaskGroup for Python < 3.11
@@ -54,6 +55,15 @@ if sys.version_info < (3, 10):
 from inference_perf.datagen import DataGenerator
 
 
+# A worker as the startup gate sees it: exitcode None while alive, 1 once dead, and
+# a ready event that is set when ready=True.
+def _starting_worker(exitcode: Optional[int], ready: bool) -> MagicMock:
+    event = MP_CONTEXT.Event()
+    if ready:
+        event.set()
+    return MagicMock(exitcode=exitcode, ready_event=event)
+
+
 class MockWorker:
     def __init__(self, id: int, shared_max_concurrency: Any) -> None:
         self.id = id
@@ -75,10 +85,10 @@ class TestLoadGeneratorConcurrency(unittest.TestCase):
     def _add_workers(self, n: int) -> None:
         self.load_generator.workers = []
         for i in range(n):
-            self.load_generator.workers.append(MockWorker(i, mp.Value("i", 0)))  # type: ignore
+            self.load_generator.workers.append(MockWorker(i, mp.Value("i", 0)))  # type: ignore[arg-type]
 
     def _worker_concurrencies(self) -> list[int]:
-        return [worker.shared_max_concurrency.value for worker in self.load_generator.workers]  # type: ignore
+        return [worker.shared_max_concurrency.value for worker in self.load_generator.workers]  # type: ignore[union-attr]
 
     # 4 workers, concurrency_level 8, and the datagen pins every request to
     # one worker. Pins the split [8, 0, 0, 0]: workers the pins never reach
@@ -118,47 +128,47 @@ class TestLoadGeneratorConcurrency(unittest.TestCase):
         self.load_generator.workers = []
         for i in range(4):
             shared_val = mp.Value("i", 0)
-            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore
+            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore[arg-type]
 
         # Test concurrency_level = 8 (8 / 4 = 2 per worker)
         self.load_generator._set_worker_concurrency(8)
 
         for worker in self.load_generator.workers:
-            self.assertEqual(worker.shared_max_concurrency.value, 2, f"Worker {worker.id} should have concurrency 2")  # type: ignore
+            self.assertEqual(worker.shared_max_concurrency.value, 2, f"Worker {worker.id} should have concurrency 2")  # type: ignore[union-attr]
 
     def test_set_worker_concurrency_remainder(self) -> None:
         # Setup workers
         self.load_generator.workers = []
         for i in range(4):
             shared_val = mp.Value("i", 0)
-            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore
+            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore[arg-type]
 
         # Test concurrency_level = 10 (10 // 4 = 2, 10 % 4 = 2)
         # Workers 0, 1 should have 3
         # Workers 2, 3 should have 2
         self.load_generator._set_worker_concurrency(10)
 
-        self.assertEqual(self.load_generator.workers[0].shared_max_concurrency.value, 3)  # type: ignore
-        self.assertEqual(self.load_generator.workers[1].shared_max_concurrency.value, 3)  # type: ignore
-        self.assertEqual(self.load_generator.workers[2].shared_max_concurrency.value, 2)  # type: ignore
-        self.assertEqual(self.load_generator.workers[3].shared_max_concurrency.value, 2)  # type: ignore
+        self.assertEqual(self.load_generator.workers[0].shared_max_concurrency.value, 3)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[1].shared_max_concurrency.value, 3)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[2].shared_max_concurrency.value, 2)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[3].shared_max_concurrency.value, 2)  # type: ignore[union-attr]
 
     def test_set_worker_concurrency_less_than_workers(self) -> None:
         # Setup workers
         self.load_generator.workers = []
         for i in range(4):
             shared_val = mp.Value("i", 0)
-            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore
+            self.load_generator.workers.append(MockWorker(i, shared_val))  # type: ignore[arg-type]
 
         # Test concurrency_level = 3
         # Workers 0, 1 should have 1
         # Worker 3 should have 0
         self.load_generator._set_worker_concurrency(3)
 
-        self.assertEqual(self.load_generator.workers[0].shared_max_concurrency.value, 1)  # type: ignore
-        self.assertEqual(self.load_generator.workers[1].shared_max_concurrency.value, 1)  # type: ignore
-        self.assertEqual(self.load_generator.workers[2].shared_max_concurrency.value, 1)  # type: ignore
-        self.assertEqual(self.load_generator.workers[3].shared_max_concurrency.value, 0)  # type: ignore
+        self.assertEqual(self.load_generator.workers[0].shared_max_concurrency.value, 1)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[1].shared_max_concurrency.value, 1)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[2].shared_max_concurrency.value, 1)  # type: ignore[union-attr]
+        self.assertEqual(self.load_generator.workers[3].shared_max_concurrency.value, 0)  # type: ignore[union-attr]
 
 
 class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
@@ -328,6 +338,15 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
             mock_tg = MagicMock()
             MockTaskGroup.return_value.__aenter__.return_value = mock_tg
 
+            # create_task is given client.process_request(...) — an AsyncMock
+            # coroutine. The real TaskGroup would await it; the mock must close
+            # it so it isn't garbage-collected later as "never awaited".
+            def _close_coro(coro: Any) -> MagicMock:
+                coro.close()
+                return MagicMock()
+
+            mock_tg.create_task.side_effect = _close_coro
+
             async def dummy_process_request(*args: Any, **kwargs: Any) -> None:
                 pass
 
@@ -406,6 +425,70 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         drained = q.drain(0)
         self.assertEqual(drained, (2, True))
         self.assertTrue(q.get_channel(0).empty())
+
+    # 2 live workers that have both signalled ready. The gate returns at once.
+    async def test_await_workers_ready_returns_once_workers_signal(self) -> None:
+        self.load_generator.workers = typing.cast(
+            Any, [_starting_worker(exitcode=None, ready=True), _starting_worker(exitcode=None, ready=True)]
+        )
+
+        await asyncio.wait_for(self.load_generator._await_workers_ready(), timeout=5)
+
+    # 2 workers: one dies at startup, the other has not signalled yet. The gate keeps
+    # waiting, then returns once the live one signals.
+    async def test_await_workers_ready_waits_for_live_workers_after_one_exits(self) -> None:
+        live = _starting_worker(exitcode=None, ready=False)
+        self.load_generator.workers = typing.cast(Any, [live, _starting_worker(exitcode=1, ready=False)])
+
+        wait = asyncio.create_task(self.load_generator._await_workers_ready())
+        await asyncio.sleep(0.2)
+        self.assertFalse(wait.done())
+
+        live.ready_event.set()
+        await asyncio.wait_for(wait, timeout=5)
+
+    # 2 workers: one signals ready and then dies, the other is still starting. A shared
+    # counter read that as 1 ready + 1 dead = 2 and let load start early. The gate must
+    # keep waiting until the live one signals.
+    async def test_await_workers_ready_does_not_count_a_ready_then_dead_worker_twice(self) -> None:
+        live = _starting_worker(exitcode=None, ready=False)
+        self.load_generator.workers = typing.cast(Any, [_starting_worker(exitcode=1, ready=True), live])
+
+        wait = asyncio.create_task(self.load_generator._await_workers_ready())
+        await asyncio.sleep(0.2)
+        self.assertFalse(wait.done())
+
+        live.ready_event.set()
+        await asyncio.wait_for(wait, timeout=5)
+
+    # Both workers die at startup and neither ever signals. The gate returns
+    # instead of blocking the run until its 300s timeout.
+    async def test_await_workers_ready_gives_up_when_every_worker_exits(self) -> None:
+        self.load_generator.workers = typing.cast(
+            Any, [_starting_worker(exitcode=1, ready=False), _starting_worker(exitcode=1, ready=False)]
+        )
+
+        await asyncio.wait_for(self.load_generator._await_workers_ready(), timeout=5)
+
+    # 2 live workers, neither has signalled, and SIGINT has arrived. The gate
+    # returns instead of holding Ctrl-C until its 300s timeout.
+    async def test_await_workers_ready_returns_on_sigint(self) -> None:
+        self.load_generator.workers = typing.cast(
+            Any, [_starting_worker(exitcode=None, ready=False), _starting_worker(exitcode=None, ready=False)]
+        )
+        self.load_generator.interrupt_sig = True
+
+        await asyncio.wait_for(self.load_generator._await_workers_ready(), timeout=5)
+
+    # 2 live workers that never signal, with the startup timeout cut to 0.1s. The gate
+    # expires and returns so load starts anyway.
+    async def test_await_workers_ready_gives_up_on_timeout(self) -> None:
+        self.load_generator.workers = typing.cast(
+            Any, [_starting_worker(exitcode=None, ready=False), _starting_worker(exitcode=None, ready=False)]
+        )
+
+        with patch("inference_perf.loadgen.load_generator.WORKER_STARTUP_TIMEOUT_SEC", 0.1):
+            await asyncio.wait_for(self.load_generator._await_workers_ready(), timeout=5)
 
     def test_sigint_and_sigterm_interrupt_the_run(self) -> None:
         for signum in (signal.SIGINT, signal.SIGTERM):

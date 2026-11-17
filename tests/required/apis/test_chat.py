@@ -12,16 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import base64
+import json
 import logging
 from typing import Any, AsyncGenerator, Iterator, List, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientResponse
+from pydantic import ValidationError
 
 from inference_perf.apis import UnaryResponseMetrics
 from inference_perf.apis import chat as chat_module
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
+from inference_perf.apis.response_errors import EmptyResponseError, InBandError
 from inference_perf.config import APIType
 from inference_perf.payloads import (
     ImageRepresentation,
@@ -178,6 +181,189 @@ async def test_process_response_streaming_uses_server_prompt_tokens() -> None:
     info = await data.process_response(response, _make_config(streaming=True), tokenizer)
 
     assert info.request_metrics.text.input_tokens == 17
+
+
+# Unary 200 whose body is `{"error": {...}}` (the #713 shape). Must raise
+# InBandError carrying that body as its message rather than return a zero-token
+# InferenceInfo through the empty-choices early return.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_in_band_error_body_raises() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    body = {"error": {"message": "upstream unavailable", "type": "server_error", "code": 503}}
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    with pytest.raises(InBandError) as exc_info:
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+    assert json.loads(str(exc_info.value)) == body
+
+
+# Unary 200 whose body is `{}`: no choices, no usage. Must raise EmptyResponseError.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_no_choices_no_usage_raises() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    response = MagicMock()
+    response.json = AsyncMock(return_value={})
+
+    with pytest.raises(EmptyResponseError):
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+
+# Streaming 200 whose frames are a role-only delta and [DONE]: no content, no
+# usage. Must raise EmptyResponseError with the raw stream attached.
+@pytest.mark.asyncio
+async def test_process_response_streaming_no_content_no_usage_raises() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\ndata: [DONE]\n\n'
+    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+
+    with pytest.raises(EmptyResponseError) as exc_info:
+        await data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+    assert exc_info.value.raw_content == sse.decode()
+
+
+# Counts whitespace-separated words: "a b" is 2 tokens, "" is 0.
+def _word_tokenizer() -> MagicMock:
+    tok = MagicMock()
+    tok.count_tokens = lambda text, **kw: len(text.split())
+    return tok
+
+
+# Streaming: content "a b", no reasoning, no usage. A completion, output_tokens = 2.
+@pytest.mark.asyncio
+async def test_process_response_streaming_content_only_no_usage_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = b'data: {"choices": [{"delta": {"content": "a b"}}]}\n\ndata: [DONE]\n\n'
+
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
+    )
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == 2
+
+
+# Streaming: reasoning "a b", no content, no usage (max_tokens ran out mid-reasoning).
+# A completion, output_tokens = 2.
+@pytest.mark.asyncio
+async def test_process_response_streaming_reasoning_only_no_usage_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = b'data: {"choices": [{"delta": {"reasoning": "a b"}}]}\n\ndata: [DONE]\n\n'
+
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
+    )
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == 2
+
+
+# Streaming: a role-only delta and a usage frame, no content, no reasoning. The
+# server says it generated nothing, which is a zero-token completion, not an error.
+@pytest.mark.asyncio
+async def test_process_response_streaming_usage_only_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = (
+        b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\n'
+        b'data: {"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 0}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
+    )
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == 0
+
+
+# Unary: content null, reasoning "a b", no usage, the shape vLLM returns when
+# max_tokens runs out mid-reasoning. A completion, output_tokens = 2.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_reasoning_only_null_content_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    body = {"choices": [{"message": {"role": "assistant", "content": None, "reasoning": "a b"}, "finish_reason": "length"}]}
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    info = await data.process_response(response, _make_config(streaming=False), _word_tokenizer())
+
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
+    assert info.response_metrics.output_tokens == 2
+
+
+# Streaming: only tool-call deltas, no content and no usage. The tool call is the
+# generation, so this is a completion and not the empty body #744 rejects. The exact
+# token total is pinned in tests/required/apis/test_tool_output.py.
+@pytest.mark.asyncio
+async def test_process_response_streaming_tool_calls_only_no_usage_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = (
+        b'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", '
+        b'"function": {"name": "ping", "arguments": ""}}]}}]}\n\n'
+        b'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "a b"}}]}}]}\n\n'
+        b"data: [DONE]\n\n"
+    )
+
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
+    )
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens > 0
+
+
+# Unary: one tool call, content null, no usage. Same rule as the streaming case.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_tool_calls_only_null_content_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "ping", "arguments": "a b"}}],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    info = await data.process_response(response, _make_config(streaming=False), _word_tokenizer())
+
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
+    assert info.response_metrics.output_tokens > 0
+
+
+# Unary: a tool call whose arguments are empty, content null, no usage. The call is
+# still generated output, so the body is a completion even though it tokenizes to
+# nothing on this side.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_empty_argument_tool_call_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "ping", "arguments": ""}}],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    info = await data.process_response(response, _make_config(streaming=False), _word_tokenizer())
+
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
 
 
 def _reset_multimodal_progress_state() -> None:
@@ -372,3 +558,63 @@ async def test_materialize_pre_encoded_image_webp_mime() -> None:
     payload = await data.to_request_body(effective_model_name="gpt-vlm", max_tokens=10, ignore_eos=False, streaming=False)
     image_blocks = [c for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
     assert image_blocks[0]["image_url"]["url"].startswith("data:image/webp;base64,")
+
+
+# Unary chat bodies that are not a completion even though usage is present: a choice with
+# no message, a string message, a list content, choices as a dict, usage as a list. Each
+# must raise ValidationError. On main the first one was a zero-token success.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"choices": [{"index": 0, "finish_reason": "stop"}], "usage": {"prompt_tokens": 3}},
+        {"choices": [{"message": "hello"}], "usage": {"prompt_tokens": 3}},
+        {"choices": [{"message": {"content": ["hello"]}}], "usage": {"prompt_tokens": 3}},
+        {"choices": {"message": {"content": "hello"}}, "usage": {"prompt_tokens": 3}},
+        {"choices": [{"message": {"content": "hello"}}], "usage": [3]},
+    ],
+)
+async def test_process_response_non_streaming_malformed_body_raises_validation_error(body: dict[str, object]) -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    with pytest.raises(ValidationError):
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+
+# Unary chat bodies shaped the way TGI, vLLM, SGLang and gateways send them, all with
+# content "hello there" (2 tokens): finish_reason stop_sequence, abort, repetition and null, a
+# metadata dict with a non-string value, a custom service_tier, and no id/object/created/
+# model/index/total_tokens anywhere. Each is a success and usage comes back unchanged.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "choice_extra, body_extra",
+    [
+        ({"finish_reason": "stop_sequence"}, {}),
+        ({"finish_reason": "abort"}, {}),
+        ({"finish_reason": "repetition"}, {}),
+        ({"finish_reason": None}, {}),
+        ({"finish_reason": "stop"}, {"metadata": {"weight_version": 3}}),
+        ({"finish_reason": "stop"}, {"service_tier": "premium"}),
+        ({}, {}),
+    ],
+)
+async def test_process_response_non_streaming_accepts_engine_specific_fields(
+    choice_extra: dict[str, object], body_extra: dict[str, object]
+) -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    usage = {"prompt_tokens": 42, "completion_tokens": None}
+    body = {
+        "choices": [{"message": {"role": "assistant", "content": "hello there"}, **choice_extra}],
+        "usage": usage,
+        **body_extra,
+    }
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    info = await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
+    assert info.response_metrics.output_tokens == 2
+    assert info.response_metrics.server_usage == {"prompt_tokens": 42, "completion_tokens": None}

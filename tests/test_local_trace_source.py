@@ -31,7 +31,10 @@ that have nothing to do with aggregation.
 
 from __future__ import annotations
 
+import io
 import json
+import logging
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
@@ -743,3 +746,85 @@ def test_zst_of_json_and_jsonl_only_is_taken(tmp_path: Path, name: str, accepted
     else:
         with pytest.raises(ValueError, match=r"\.json or \.jsonl file"):
             generator()
+
+
+# A directory holding a.json and its zstd copy a.json.zst (what compressing in place
+# leaves): the generator loads 1 session, not 2, and warns that a.json.zst was skipped.
+def test_directory_with_a_trace_and_its_zst_copy_loads_one_copy(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    plain = tmp_path / "a.json"
+    plain.write_text(json.dumps(otel_trace("t-a")), encoding="utf-8")
+    zst(plain)
+    # A second, unrelated trace sorted after the duplicate pair: it must still load.
+    (tmp_path / "b.json").write_text(json.dumps(otel_trace("t-b")), encoding="utf-8")
+    config = DataConfig(type="otel_trace_replay", otel_trace_replay=OTelTraceReplayConfig(trace_directory=str(tmp_path)))
+
+    with caplog.at_level(logging.WARNING):
+        generator = OTelTraceReplayDataGenerator(
+            api_config=APIConfig(type=APIType.Chat, streaming=False), config=config, tokenizer=None, num_workers=1
+        )
+
+    assert len(generator.sessions) == 2
+    assert "a.json.zst" in caplog.text
+
+
+# A directory with a.jsonl and a.jsonl.zst: OTel .jsonl cannot be read compressed, so the
+# uncompressed copy is loaded (once) and the .zst is skipped with a warning instead of failing the run.
+def test_directory_with_a_jsonl_and_its_zst_copy_loads_the_jsonl(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    plain = write_jsonl(tmp_path / "a.jsonl", [chat_record("s-1")])
+    zst(plain)
+    config = DataConfig(type="otel_trace_replay", otel_trace_replay=OTelTraceReplayConfig(trace_directory=str(tmp_path)))
+
+    with caplog.at_level(logging.WARNING):
+        generator = OTelTraceReplayDataGenerator(
+            api_config=APIConfig(type=APIType.Chat, streaming=False), config=config, tokenizer=None, num_workers=1
+        )
+
+    assert len(generator.sessions) == 1
+    assert "a.jsonl.zst" in caplog.text
+
+
+# If reading the OTel identity of a .json fails (unreadable, or not JSON), the error is an InvalidTraceError naming the file.
+@pytest.mark.parametrize("failure", ["unreadable", "not_json"])
+def test_failing_identity_read_is_an_invalid_trace_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    path = tmp_path / "a.json"
+    path.write_text(json.dumps(otel_trace()), encoding="utf-8")
+
+    def flaky_open(p: Path) -> Any:
+        if failure == "unreadable":
+            raise OSError("disk went away")
+        return io.StringIO("{not json")
+
+    monkeypatch.setattr(trace_source_module, "open_trace_text", flaky_open)
+
+    with pytest.raises(InvalidTraceError, match="unable to read OTel identity"):
+        source_for([path])
+
+
+# A trace_files glob "dir/*" matching a.json and a.json.zst loads 1 session, not 2.
+def test_glob_matching_a_trace_and_its_zst_copy_loads_one_copy(tmp_path: Path) -> None:
+    plain = tmp_path / "a.json"
+    plain.write_text(json.dumps(otel_trace()), encoding="utf-8")
+    zst(plain)
+    config = DataConfig(type="otel_trace_replay", otel_trace_replay=OTelTraceReplayConfig(trace_files=[str(tmp_path / "*")]))
+
+    generator = OTelTraceReplayDataGenerator(
+        api_config=APIConfig(type=APIType.Chat, streaming=False), config=config, tokenizer=None, num_workers=1
+    )
+
+    assert len(generator.sessions) == 1
+
+
+# With compression.zstd and backports.zstd both unimportable, `import inference_perf.datagen`
+# still succeeds and exits 0 (run in a fresh interpreter so no earlier import is cached).
+def test_datagen_imports_without_zstd() -> None:
+    code = (
+        "import sys\n"
+        "for name in ('compression.zstd', 'backports.zstd', 'backports'):\n"
+        "    sys.modules[name] = None\n"
+        "import inference_perf.datagen\n"
+    )
+    result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr

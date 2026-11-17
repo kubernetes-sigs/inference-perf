@@ -23,11 +23,12 @@ acted on: a bug here does not fail the run, it ships wrong results.
 `generate_session_reports` and `generate_prometheus_metrics_report`.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import Mock, patch
 
 import pytest
 
+from inference_perf.apis import InferenceInfo, RequestLifecycleMetric, StreamedResponseMetrics
 from inference_perf.apis.base import SessionLifecycleMetric
 from inference_perf.client.modelserver.metrics import BaseMetrics
 from inference_perf.client.modelserver.metrics.counter.base import CounterResult
@@ -40,13 +41,16 @@ from inference_perf.client.server_metrics.base import (
     StageStatus,
 )
 from inference_perf.client.server_metrics.prometheus_client.base import PrometheusMetricsClient
+from inference_perf.config.client.modelserver.config import ModelServerType
 from inference_perf.config.client.server_metrics.config import PrometheusClientConfig
 from inference_perf.config.reportgen.config import (
     PrometheusMetricsReportConfig,
     ReportConfig,
     SessionLifecycleReportConfig,
 )
+from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.reportgen.base import ReportGenerator, summarize_prometheus_metrics
+from inference_perf.utils.report_file import ReportFile
 
 PERCENTILES = [50.0, 90.0]
 
@@ -581,7 +585,8 @@ class TestGeneratePrometheusMetricsReport:
         # 25 hits over 100 queries, reported as a percentage.
         assert successes["prefix_cache_hit_percent"]["mean"] == pytest.approx(25.0)
 
-    def test_cache_hit_percent_is_zero_when_nothing_queried_the_cache(self) -> None:
+    # 0 cache queries means no hit rate can be computed; must report null, not 0.0%.
+    def test_cache_hit_percent_is_null_when_nothing_queried_the_cache(self) -> None:
         client = _prometheus_client()
         gen = _make_generator(metrics_client=client)
         metrics = ModelServerMetrics(
@@ -597,7 +602,7 @@ class TestGeneratePrometheusMetricsReport:
                 _runtime({}), PrometheusMetricsReportConfig(summary=True, per_stage=False)
             )
 
-        assert reports[0].contents["successes"]["prefix_cache_hit_percent"]["mean"] == 0.0
+        assert reports[0].contents["successes"]["prefix_cache_hit_percent"]["mean"] is None
 
     def test_per_stage_emits_one_report_per_configured_stage(self) -> None:
         client = _prometheus_client()
@@ -671,6 +676,7 @@ class TestSummarizePrometheusMetricsMissing:
         # Healthy fields keep their values.
         assert summary["request_latency"] == {"mean": 0.5, "median": 0.4, "p90": 0.9, "p99": 1.1}
 
+    # A missing hit/query count must not render as 0%.
     def test_missing_cache_counts_yield_null_hit_percent(self) -> None:
         """A missing hit/query count must not render as 0%."""
         summary = summarize_prometheus_metrics(
@@ -682,6 +688,34 @@ class TestSummarizePrometheusMetricsMissing:
 
         assert summary["prefix_cache_hit_percent"] == {"mean": None}
 
+    # Zero queries or undeclared counters (defaulting to total=0.0) produce null hit percent.
+    def test_zero_cache_queries_yields_null_hit_percent(self) -> None:
+        summary = summarize_prometheus_metrics(
+            ModelServerMetrics(
+                prefix_cache_hits=CounterResult(total=0.0),
+                prefix_cache_queries=CounterResult(total=0.0),
+                external_prefix_cache_hits=CounterResult(total=0.0),
+                external_prefix_cache_queries=CounterResult(total=0.0),
+                mm_cache_hits=CounterResult(total=0.0),
+                mm_cache_queries=CounterResult(total=0.0),
+            )
+        ).model_dump()["successes"]
+
+        assert summary["prefix_cache_hit_percent"] == {"mean": None}
+        assert summary["external_prefix_cache_hit_percent"] == {"mean": None}
+        assert summary["mm_cache_hit_percent"] == {"mean": None}
+
+    # When queries > 0 and hits == 0, hit percent should be 0.0%, not null.
+    def test_zero_cache_hits_with_positive_queries_yields_zero_hit_percent(self) -> None:
+        summary = summarize_prometheus_metrics(
+            ModelServerMetrics(
+                prefix_cache_hits=CounterResult(total=0.0),
+                prefix_cache_queries=CounterResult(total=50.0),
+            )
+        ).model_dump()["successes"]
+
+        assert summary["prefix_cache_hit_percent"] == {"mean": 0.0}
+
     def test_partially_missing_quantile_reports_null_value(self) -> None:
         """One failed quantile reports that value as null while the rest of the metric stays."""
         summary = summarize_prometheus_metrics(
@@ -691,3 +725,110 @@ class TestSummarizePrometheusMetricsMissing:
         ).model_dump()["successes"]
 
         assert summary["request_latency"] == {"mean": 0.5, "median": None, "p90": 0.9, "p99": 1.1}
+
+
+# ---------------------------------------------------------------------------
+# The stage's Prometheus summary in the BR0.2 partial (#799)
+# ---------------------------------------------------------------------------
+
+
+def _partial_generator(server: Optional[ModelServerType]) -> ReportGenerator:
+    request = RequestLifecycleMetric(
+        stage_id=0,
+        scheduled_time=1.0,
+        start_time=1.0,
+        end_time=2.0,
+        request_data="{}",
+        response_data="ok",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=10)),
+            response_metrics=StreamedResponseMetrics(response_chunks=[], output_tokens=2, output_token_times=[1.5, 1.9]),
+        ),
+        error=None,
+    )
+    collector = Mock()
+    collector.get_metrics.return_value = [request]
+    config = Mock()
+    config.tokenizer = None
+    config.server = Mock(type=server) if server else None
+    config.model_dump.return_value = {}
+    return ReportGenerator(metrics_client=_prometheus_client(), metrics_collector=collector, config=config)
+
+
+async def _stage_0_partial(gen: ReportGenerator, per_stage: bool) -> Tuple[ReportFile, int]:
+    report_config = ReportConfig(prometheus=PrometheusMetricsReportConfig(summary=False, per_stage=per_stage))
+    with (
+        patch.object(PrometheusMetricsClient, "wait"),
+        patch.object(PrometheusMetricsClient, "collect_metrics_for_stage", return_value=_server_metrics()) as collect,
+    ):
+        reports = await gen.generate_reports(report_config, _runtime({0: _stage_info(0)}))
+    partial = next(r for r in reports if r.name == "inference-perf.partial.stage_0")
+    return partial, collect.call_count
+
+
+class TestPrometheusComponentInPartial:
+    async def test_per_stage_metrics_fill_the_component(self) -> None:
+        partial, _ = await _stage_0_partial(_partial_generator(ModelServerType.VLLM), per_stage=True)
+
+        [component] = partial.contents["results"]["observability"]["components"]
+        assert component["component_label"] == "vllm"
+        assert component["aggregate"]["waiting_requests"]["mean"] == 3.0
+
+    async def test_the_label_follows_the_server_type(self) -> None:
+        partial, _ = await _stage_0_partial(_partial_generator(ModelServerType.SGLANG), per_stage=True)
+
+        assert [c["component_label"] for c in partial.contents["results"]["observability"]["components"]] == ["sglang"]
+
+    async def test_no_component_without_per_stage_metrics(self) -> None:
+        partial, collections = await _stage_0_partial(_partial_generator(ModelServerType.VLLM), per_stage=False)
+
+        assert collections == 0
+        assert "observability" not in partial.contents["results"]
+
+    async def test_no_component_without_a_server_type(self) -> None:
+        partial, _ = await _stage_0_partial(_partial_generator(None), per_stage=True)
+
+        assert "observability" not in partial.contents["results"]
+
+    async def test_a_later_call_without_per_stage_has_no_component(self) -> None:
+        gen = _partial_generator(ModelServerType.VLLM)
+        await _stage_0_partial(gen, per_stage=True)
+
+        partial, _ = await _stage_0_partial(gen, per_stage=False)
+
+        assert "observability" not in partial.contents["results"]
+
+    async def test_a_failed_collection_leaves_no_component(self) -> None:
+        """Stage 1's query raises after stage 0's was collected: the native Prometheus
+        files are dropped, so stage 0's partial must not carry the component either."""
+        gen = _partial_generator(ModelServerType.VLLM)
+        report_config = ReportConfig(prometheus=PrometheusMetricsReportConfig(summary=False, per_stage=True))
+        with (
+            patch.object(PrometheusMetricsClient, "wait"),
+            patch.object(
+                PrometheusMetricsClient, "collect_metrics_for_stage", side_effect=[_server_metrics(), RuntimeError("boom")]
+            ),
+        ):
+            reports = await gen.generate_reports(report_config, _runtime({0: _stage_info(0), 1: _stage_info(1)}))
+
+        assert not any("prometheus" in r.name for r in reports)
+        partial = next(r for r in reports if r.name == "inference-perf.partial.stage_0")
+        assert "observability" not in partial.contents["results"]
+
+
+class TestDropRateInPartial:
+    async def _drop_rate(self, dropped: int, exact: bool) -> object:
+        stage = _stage_info(0).model_copy(update={"dropped_requests": dropped, "dropped_requests_exact": exact})
+        gen = _partial_generator(ModelServerType.VLLM)
+        report_config = ReportConfig(prometheus=PrometheusMetricsReportConfig(summary=False, per_stage=False))
+        with patch.object(PrometheusMetricsClient, "wait"):
+            reports = await gen.generate_reports(report_config, _runtime({0: stage}))
+        partial = next(r.contents for r in reports if r.name == "inference-perf.partial.stage_0")
+        drop_rate: object = partial["results"].get("observability", {}).get("drop_rate")
+        return drop_rate
+
+    async def test_an_exact_count_fills_drop_rate(self) -> None:
+        assert await self._drop_rate(dropped=3, exact=True) == {"units": "percent", "mean": 75.0}
+
+    async def test_a_lower_bound_leaves_drop_rate_out(self) -> None:
+        assert await self._drop_rate(dropped=3, exact=False) is None

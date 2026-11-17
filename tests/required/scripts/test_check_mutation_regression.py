@@ -16,6 +16,7 @@
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -1454,7 +1455,8 @@ def pytest_with_plugin(cmr: Any, project: Path, tests: list[str], env: dict[str,
     base = {k: v for k, v in os.environ.items() if k not in ("MUTANT_UNDER_TEST", "PYTHONPATH")}
     full = cmr.harness_env(project, {**base, **env})
     command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", cmr.CHILD_PLUGIN, *tests]
-    return subprocess.run(command, cwd=project, env=full, capture_output=True).returncode
+    # no pipes: a process the run leaves behind would hold them open and keep this call waiting
+    return subprocess.run(command, cwd=project, env=full, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
 
 # One test forks a child that records a trampoline hit the way mutmut does, and the next test
@@ -1481,6 +1483,134 @@ def test_child_plugin_carries_child_hits_to_the_test(cmr: Any, tmp_path: Path, m
     assert pytest_with_plugin(cmr, project, ["tests/test_fork.py"], {"MUTANT_UNDER_TEST": "stats"}) == 0
     assert list((tmp_path / "harness" / "hits" / "project").iterdir()) == []
     assert pytest_with_plugin(cmr, project, ["tests/test_fork.py"], {}) == 1
+
+
+# Writes a project whose one test starts a process that sleeps 60 s through the `context` start
+# method, records its pid in child.pid and then leaves through os._exit(1), the way mutmut ends a
+# mutant's run.
+def stranded_child_project(tmp_path: Path, context: str) -> Path:
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    (project / "tests" / "test_strand.py").write_text(
+        "import multiprocessing as mp\n"
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n\n\n"
+        "def test_exits_with_a_child_running():\n"
+        f"    p = mp.get_context('{context}').Process(target=time.sleep, args=(60,), daemon=True)\n"
+        "    p.start()\n"
+        "    Path('child.pid').write_text(str(p.pid))\n"
+        "    os._exit(1)\n"
+    )
+    return project
+
+
+# True once `pid` is gone or a zombie, checked every 0.1 s for up to `seconds`.
+def process_ended(pid: int, seconds: float) -> bool:
+    stat = Path(f"/proc/{pid}/stat")
+    for _ in range(int(seconds * 10)):
+        if not stat.exists() or stat.read_text().rpartition(")")[2].split()[0] == "Z":
+            return True
+        time.sleep(0.1)
+    return False
+
+
+# With mutant inference_perf.m.x_f__mutmut_1 active, the sleeping process the test started is gone
+# within 5 s of the run's os._exit(1). Under mutmut's stats run the same process is still alive 0.5 s on.
+# "fork" is a child of the test process. "forkserver" is a child of the server, the way Workers start.
+@pytest.mark.parametrize("context", ["fork", "forkserver"])
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="prctl and /proc are Linux only")
+def test_child_plugin_ends_what_a_mutants_test_forked(
+    cmr: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, context: str
+) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    project = stranded_child_project(tmp_path, context)
+
+    assert (
+        pytest_with_plugin(cmr, project, ["tests/test_strand.py"], {"MUTANT_UNDER_TEST": "inference_perf.m.x_f__mutmut_1"})
+        == 1
+    )
+    assert process_ended(int((project / "child.pid").read_text()), 5)
+
+    assert pytest_with_plugin(cmr, project, ["tests/test_strand.py"], {"MUTANT_UNDER_TEST": "stats"}) == 1
+    survivor = int((project / "child.pid").read_text())
+    try:
+        assert not process_ended(survivor, 0.5)
+    finally:
+        os.kill(survivor, signal.SIGKILL)
+
+
+# Writes a project whose one test allocates 1 GiB, more than the 128 MiB headroom the cap tests set.
+def big_allocation_project(tmp_path: Path) -> Path:
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    (project / "tests" / "test_big.py").write_text("def test_allocates():\n    assert len(bytearray(1024**3)) == 1024**3\n")
+    return project
+
+
+# With mutant inference_perf.m.x_f__mutmut_1 active and a 128 MiB headroom, a test that keeps 1 MiB
+# per 5 ms of CPU, the way a runaway loop grows, makes the run exit 36, mutmut's timeout code.
+@pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="the cap reads VmData from /proc")
+def test_child_plugin_times_out_a_mutant_that_keeps_growing(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    (project / "tests" / "test_grow.py").write_text(
+        "import time\n\n\n"
+        "def test_grows():\n"
+        "    kept = []\n"
+        "    for _ in range(1024):\n"
+        "        kept.append(bytearray(1024**2))\n"
+        "        end = time.process_time() + 0.005\n"
+        "        while time.process_time() < end:\n"
+        "            pass\n"
+    )
+    env = {"MUTANT_UNDER_TEST": "inference_perf.m.x_f__mutmut_1", "MUTATION_MEMORY_HEADROOM": str(128 * 1024**2)}
+
+    assert pytest_with_plugin(cmr, project, ["tests/test_grow.py"], env) == 36
+
+
+# With the same mutant and headroom, one 1 GiB bytearray jumps past the hard limit (headroom plus
+# half again) before the timer can look, so it raises MemoryError and the test fails (exit 1).
+@pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="the cap reads VmData from /proc")
+def test_child_plugin_limits_a_mutants_memory(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    project = big_allocation_project(tmp_path)
+    env = {"MUTANT_UNDER_TEST": "inference_perf.m.x_f__mutmut_1", "MUTATION_MEMORY_HEADROOM": str(128 * 1024**2)}
+
+    assert pytest_with_plugin(cmr, project, ["tests/test_big.py"], env) == 1
+
+
+# The same 1 GiB allocation passes (exit 0) under mutmut's stats run with the headroom set, and
+# under a mutant with no headroom set, so only a mutant's run is ever capped.
+@pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="the cap reads VmData from /proc")
+def test_child_plugin_leaves_other_runs_uncapped(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    project = big_allocation_project(tmp_path)
+    headroom = {"MUTATION_MEMORY_HEADROOM": str(128 * 1024**2)}
+    mutant = {"MUTANT_UNDER_TEST": "inference_perf.m.x_f__mutmut_1"}
+
+    assert pytest_with_plugin(cmr, project, ["tests/test_big.py"], {"MUTANT_UNDER_TEST": "stats", **headroom}) == 0
+    assert pytest_with_plugin(cmr, project, ["tests/test_big.py"], mutant) == 0
+
+
+# mutmut() hands every mutmut command MUTANT_MEMORY_HEADROOM (2 GiB) through the environment, and
+# the setup diagnosis, which reproduces mutmut's uncapped clean run, gets none.
+def test_only_mutmut_runs_get_the_memory_headroom(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    monkeypatch.delenv("MUTATION_MEMORY_HEADROOM", raising=False)
+    envs: list[dict[str, str]] = []
+
+    def record(command: list[str], cwd: Path, env: dict[str, str] | None = None, timeout: float | None = None) -> Any:
+        envs.append(env or {})
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(cmr, "run_bounded", record)
+    cmr.mutmut(tmp_path, "results")
+    cmr.diagnose_setup_failure(cmr.Side(tree=tmp_path, tests=[]), [])
+
+    assert envs[0]["MUTATION_MEMORY_HEADROOM"] == str(2 * 1024**3)
+    assert "MUTATION_MEMORY_HEADROOM" not in envs[1]
 
 
 # inference_perf/m.py has in_child, which the test only runs in a forked process, and in_parent,

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Sequence
 
+from inference_perf.reportgen.base import TOOL_TOKEN_AGREEMENT_ABS_TOL, TOOL_TOKEN_AGREEMENT_REL_TOL
 from inference_perf.reportgen.validation import (
     SUMMARY_LIFECYCLE_FILENAME,
     Check,
@@ -57,18 +58,24 @@ def structure_findings(filename: str, contents: Any, check: str) -> List[Finding
 
 
 def count_findings(filename: str, contents: Any, check: str) -> List[Finding]:
-    """successes.count + failures.count must equal load_summary.count."""
+    """successes.count + failures.count + cancelled.count must equal load_summary.count."""
     total = _get(contents, "load_summary", "count")
     successes = _get(contents, "successes", "count")
     failures = _get(contents, "failures", "count")
     if not (is_number(total) and is_number(successes) and is_number(failures)):
         return [_error(check, filename, "missing or non-numeric request counts")]
-    if successes + failures != total:
+    # The cancelled block is omitted when nothing was cancelled, so its absence means zero.
+    has_cancelled = isinstance(_get(contents, "cancelled"), dict)
+    cancelled = _get(contents, "cancelled", "count") if has_cancelled else 0
+    if not is_number(cancelled):
+        return [_error(check, filename, "non-numeric cancelled.count")]
+    if successes + failures + cancelled != total:
+        cancelled_term = f" + cancelled ({cancelled})" if has_cancelled else ""
         return [
             _error(
                 check,
                 filename,
-                f"request counts do not reconcile: successes ({successes}) + failures ({failures}) "
+                f"request counts do not reconcile: successes ({successes}) + failures ({failures}){cancelled_term} "
                 f"!= load_summary.count ({total})",
             )
         ]
@@ -212,17 +219,26 @@ def token_mismatch_findings(filename: str, contents: Any, check: str) -> List[Fi
     A non-zero count is the #564 regression family showing up in-band:
     per-chunk re-tokenization disagreeing with the server's own count.
     """
-    mismatches = _get(contents, "successes", "token_count_mismatches")
-    if is_number(mismatches) and mismatches > 0:
-        return [
-            _warning(
-                check,
-                filename,
-                f"{mismatches} request(s) where the client-side token count disagrees with the "
-                "server-reported completion_tokens",
+    findings: List[Finding] = []
+    for key, label in (
+        ("token_count_mismatches", "request(s)"),
+        (
+            "tool_token_count_mismatches",
+            f"tool request(s), outside both the {TOOL_TOKEN_AGREEMENT_ABS_TOL}-token absolute "
+            f"and {TOOL_TOKEN_AGREEMENT_REL_TOL:.0%} relative tolerances,",
+        ),
+    ):
+        mismatches = _get(contents, "successes", key)
+        if is_number(mismatches) and mismatches > 0:
+            findings.append(
+                _warning(
+                    check,
+                    filename,
+                    f"{mismatches} {label} where the client-side token count disagrees with the "
+                    "server-reported output count (completion_tokens / output_tokens)",
+                )
             )
-        ]
-    return []
+    return findings
 
 
 def summary_content_findings(filename: str, contents: Any, check_prefix: str) -> List[Finding]:

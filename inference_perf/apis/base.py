@@ -15,10 +15,16 @@
 from abc import abstractmethod
 from typing import Any, List, Optional
 from aiohttp import ClientResponse
-from pydantic import BaseModel, Field, SerializeAsAny, computed_field, model_serializer
-from inference_perf.payloads import RequestBody, RequestMetrics
+from pydantic import BaseModel, Field, SerializeAsAny, SerializerFunctionWrapHandler, computed_field, model_serializer
+from inference_perf.payloads import Audios, Images, RequestBody, RequestMetrics, Videos
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
+
+
+# Undecorated so mutation testing reaches it: mutmut skips the body of the
+# decorated serializer that calls this.
+def _drop_absent_media(dumped: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in dumped.items() if value is not None or key not in ("image", "video", "audio")}
 
 
 class ResponseMetrics(BaseModel):
@@ -26,6 +32,20 @@ class ResponseMetrics(BaseModel):
     # Last-seen `usage` dict reported by the server (streaming: the trailing
     # usage chunk; non-streaming: the response body's `usage`).
     server_usage: Optional[dict[str, Any]] = None
+    # Media the response returned, with the same per-modality records
+    # RequestMetrics keeps for what the request sent. None on a text response.
+    image: Optional[Images] = None
+    video: Optional[Videos] = None
+    audio: Optional[Audios] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_media(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        """Drop the media fields from a response that returned no media.
+
+        Keeps per_request_lifecycle_metrics.json byte-identical for text runs,
+        which would otherwise carry three nulls on every request.
+        """
+        return _drop_absent_media(handler(self))
 
 
 class UnaryResponseMetrics(ResponseMetrics):
@@ -41,9 +61,13 @@ class StreamedResponseMetrics(ResponseMetrics):
     output_token_times: List[float] = []
     # Reasoning-only chunks (delta.reasoning_content / delta.reasoning, or
     # Anthropic thinking deltas). Kept apart from response_chunks/chunk_times,
-    # which stay the content channel alone and give time to first output token.
+    # which stay the content channel alone; TTFO also includes tool output.
     reasoning_chunks: List[str] = []
     reasoning_chunk_times: List[float] = []
+    # Tool-only deltas; content and reasoning mixtures stay in their original channel.
+    tool_chunks: List[str] = []
+    tool_chunk_times: List[float] = []
+    has_tool_calls: bool = False
 
 
 class InferenceInfo(BaseModel):
@@ -98,6 +122,35 @@ class InferenceInfo(BaseModel):
 class ErrorResponseInfo(BaseModel):
     error_type: str
     error_msg: str
+
+
+# Error type of a request the load generator cancelled while it was in flight.
+# This is the stage's deadline, not the request's: the stage ended and the
+# request had still not finished when stage_teardown_grace_seconds ran out.
+# Kept apart from "TimeoutError", which means request_timeout was hit and so
+# describes the server under one fixed limit; how long a request gets before
+# teardown cancels it depends on when in the stage it was sent.
+STAGE_TEARDOWN_CANCELLED_ERROR_TYPE = "StageTeardownCancelled"
+STAGE_TEARDOWN_CANCELLED_ERROR_MSG = (
+    "Cancelled by the load generator: the stage ended and the request was still in flight "
+    "when stage_teardown_grace_seconds ran out. This is the stage's deadline, not request_timeout."
+)
+
+
+def stage_teardown_cancelled_error() -> ErrorResponseInfo:
+    return ErrorResponseInfo(
+        error_type=STAGE_TEARDOWN_CANCELLED_ERROR_TYPE,
+        error_msg=STAGE_TEARDOWN_CANCELLED_ERROR_MSG,
+    )
+
+
+def is_stage_teardown_cancelled(error: Optional[ErrorResponseInfo]) -> bool:
+    """A cancelled request is its own outcome, neither a success nor a failure.
+
+    The server never answered it and never refused it, so every consumer that
+    splits requests into successes and failures keeps it out of both.
+    """
+    return error is not None and error.error_type == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
 
 
 class RequestLifecycleMetric(BaseModel):
@@ -224,6 +277,10 @@ class InferenceAPIData(BaseModel):
 
     def on_completion(self, info: InferenceInfo) -> None:
         """Called after every request completes (real or mock). Override to add post-completion side effects."""
+        pass
+
+    def on_request_finished(self) -> None:
+        """Called by the worker exactly once when a scheduled request task ends."""
         pass
 
     async def process_failure(

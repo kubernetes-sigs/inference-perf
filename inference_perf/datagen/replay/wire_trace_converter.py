@@ -40,12 +40,8 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, TextIO, Tuple
-
-if sys.version_info >= (3, 14):
-    from compression import zstd
-else:
-    from backports import zstd
+from types import ModuleType
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, TextIO, Tuple, Type
 
 from inference_perf.apis.image_parts import anthropic_image_to_part, is_image_part, openai_image_to_part
 
@@ -75,12 +71,52 @@ def trace_stem(path: Path) -> str:
     return path.with_suffix("").stem if path.suffix == ".zst" else path.stem
 
 
-# What reading a trace file can raise: I/O errors, and a truncated or corrupt .zst.
-TRACE_READ_ERRORS = (OSError, EOFError, zstd.ZstdError)
+def _zstd() -> ModuleType:
+    """Import zstd on first use, so only reading a .zst needs it.
+
+    PEP 784 makes compression.zstd optional at build time; importing it at module
+    load would break every workload on an interpreter built without libzstd.
+    """
+    try:
+        if sys.version_info >= (3, 14):
+            from compression import zstd
+        else:
+            from backports import zstd
+    except ImportError as e:
+        raise ImportError(
+            "Reading a .zst trace needs zstd support: use a Python built with libzstd (3.14+) or install backports.zstd"
+        ) from e
+    return zstd
+
+
+def trace_read_errors() -> Tuple[Type[BaseException], ...]:
+    """What reading a trace file can raise: I/O errors, and a truncated or corrupt .zst."""
+    try:
+        return (OSError, EOFError, _zstd().ZstdError)
+    except ImportError:
+        return (OSError, EOFError)
 
 
 def open_trace_text(path: Path) -> TextIO:
-    return zstd.open(path, "rt", encoding="utf-8") if path.suffix == ".zst" else path.open(encoding="utf-8")
+    return _zstd().open(path, "rt", encoding="utf-8") if path.suffix == ".zst" else path.open(encoding="utf-8")
+
+
+def drop_compressed_duplicates(files: Iterable[Path]) -> List[Path]:
+    """Drop each ``x.zst`` whose uncompressed ``x`` is also listed, warning for each.
+
+    Compressing a trace directory in place (the zstd CLI keeps the original)
+    leaves both copies, and loading both would replay every trace twice. The
+    uncompressed copy is kept: OTel .jsonl can only be read uncompressed.
+    """
+    listed = list(files)
+    present = set(listed)
+    kept: List[Path] = []
+    for path in listed:
+        if path.suffix == ".zst" and path.with_suffix("") in present:
+            logger.warning(f"Skipping {path}: {path.with_suffix('').name} is also listed and would replay the trace twice")
+            continue
+        kept.append(path)
+    return kept
 
 
 def _span_id(trace_id: str, line_no: int) -> str:

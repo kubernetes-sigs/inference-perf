@@ -19,8 +19,8 @@ For the Prometheus metrics inference-perf exports about its own runtime (as oppo
 | Metric | Formula | Unit | Used For
 | :--- | :--- | :--- | :---
 | **Time per request (e2e request latency)** | `request completion time - request send time` | seconds per request | Calculating how long a request takes to complete
-| **Time to first token (TTFT)** | `time first non empty output token received - request send time` | ms | Calculating the time it takes the server to produce the first token of the response, reasoning included
-| **Time to first output token (TTFO)** | `time first non empty content token received - request send time` | ms | Calculating the time it takes for the user to receive the first token of the answer, after any reasoning. Equals TTFT for models that do not reason; absent when the output budget runs out before any content
+| **Time to first token (TTFT)** | `time first non empty output token received - request send time` | ms | Calculating the time it takes the server to produce the first token of the response, reasoning, tool names, and arguments included
+| **Time to first output token (TTFO)** | `time first non empty non-reasoning token received - request send time` | ms | Calculating the time it takes for the user to receive the first token of the answer, after any reasoning. Includes answer text, tool names, and tool arguments; absent for reasoning-only turns
 | **Time per output token (TPOT)** | `(last token time - first token time) / (output tokens - 1)` | ms per output token | Calculating the average time it takes for the user to receive successive tokens after the first token
 | **Normalized time per output token** | `e2e request latency / output tokens` | ms per output token | Normalizing the request latency at the output token level for comparing different use cases
 | **Inter Token Latency (ITL)** | `time between output token generation within a request` | ms per output token | Calculating the time it takes for the user to receive successive tokens after the first token, but at a more granular level than TPOT which averages the token latency within a request
@@ -33,9 +33,9 @@ Reasoning models stream their reasoning on a separate channel (`reasoning` or
 `reasoning_content` on OpenAI-compatible servers, `reasoning` when a server sends both,
 `thinking` blocks on the Anthropic Messages API) before the answer. The server generates
 and counts those tokens like any other, so TTFT, TPOT, ITL and output token counts include
-them, and TTFT is the time to the first reasoning token.
-TTFO is the time to the first token of the answer itself. The gap between TTFT and TTFO is the
-time spent reasoning before the answer started.
+them. TTFT is the time to the first generated token, which can be reasoning, text, tool names, or tool arguments.
+TTFO is the time to the first non-reasoning token, including a tool call as the answer
+to an agentic turn. The gap between TTFT and TTFO is the reasoning before that output.
 
 A reasoning model served without a reasoning parser sends its reasoning inside the content,
 usually wrapped in `<think>` tags. The reasoning then counts as content: TTFO equals TTFT.
@@ -67,10 +67,11 @@ therefore keeps both and records which is which.
 | :--- | :--- | :---
 | `prompt_tokens` | server `usage.prompt_tokens`, client tokenization when the server reports none | Resolved per request while the response is processed. Supersedes `prompt_len`. |
 | `prompt_tokens.cached` / `.uncached` | server `usage.prompt_tokens_details` | Absent when the server does not report the detail |
-| `output_len` | client | The response text re-tokenized as one whole message, reasoning included |
+| `output_len` | client | Client re-tokenized text, reasoning, tool names, and tool-call arguments; each channel and each assembled call counted separately, without special tokens |
 | `output_tokens` | server `usage.completion_tokens` / `usage.output_tokens`, client `output_len` when the server reports none | Server-side this is an exact count of decode steps |
 | `client_fallback_requests` | n/a | Per side (`prompt`, `output`), how many successful requests carry a client count because the server reported none. Counts requests, not tokens. Nonzero means that distribution mixes sources |
-| `token_count_mismatches` | n/a | Streamed requests where the sum of the per-chunk client tokenization differs from the server count |
+| `token_count_mismatches` | n/a | Streamed turns without tool calls whose per-chunk client count differs from server usage |
+| `tool_token_count_mismatches` | n/a | Streamed tool turns whose per-chunk client count differs from server usage by more than both 16 tokens and 25% of the larger count |
 
 Usage keys differ by API: OpenAI-compatible servers report `prompt_tokens` and
 `completion_tokens`, the Anthropic Messages API reports `input_tokens` and `output_tokens`.
@@ -87,8 +88,10 @@ per-token metrics divide by.
 
 ### Reading a mismatch
 
-A nonzero `token_count_mismatches` means client and server disagree on how many tokens the
-response contained, so any metric normalized by the client count is off by that much. A
+A nonzero `token_count_mismatches` means the client timeline count differs from server
+usage on a non-tool turn. Tool turns use `tool_token_count_mismatches` and the tolerance
+described below. Neither counter compares the assembled `output_len` directly: fragment
+boundaries can change tokenization. A
 nonzero `client_fallback_requests` entry means the opposite problem: for those requests there is no
 server number to compare against, and `output_tokens` is carrying the client count. Both are
 worth checking before comparing runs, and before comparing against another tool (see
@@ -113,3 +116,51 @@ Both metrics use the server-reported `prompt_tokens` as the denominator and `pro
 **Note on all-zero readings:** an all-zero `cached_tokens` run is ambiguous — it can mean a genuinely cold cache, or usage counters normalized to `0` by a gateway or sidecar in front of the engine (e.g. llm-d's prefill/decode sidecar, see [#818](https://github.com/kubernetes-sigs/inference-perf/issues/818)). The reported rate stays `0%` as the server sent it, and report validation flags it as a `session.cache` warning in `validation.json` suggesting verification against server-side cache metrics.
 
 **Note:** vLLM's `cached_tokens` is block-granular — the reported value is quantized by the KV cache block size, so the hit rate may not reflect exact token-level precision.
+
+### Tool-call output accounting
+
+Chat Completions, Anthropic Messages, and both session replay paths count generated
+text, reasoning, tool names, and tool arguments in `output_len`, independently of server usage.
+Each call's name and argument fragments are assembled separately before counting.
+Names and arguments are tokenized independently, without inserting separators. IDs,
+protocol wrappers, and model-specific template tokens are excluded. OpenAI argument
+strings retain their original spelling, including malformed or incomplete JSON.
+Unary Anthropic input objects use `json.dumps(input, ensure_ascii=False)` with its
+default separators. Streaming uses the received JSON fragments; the empty `{}` at
+`content_block_start` is a placeholder, while a nonempty starting input is counted.
+Serialization and whitespace differences can therefore change client counts between
+unary and streaming responses. Server `usage` remains unchanged.
+
+Tool-only deltas retain their arrival timestamps. TTFT starts at the first generated
+text, reasoning, name, or argument token. TTFO starts at the first answer text,
+tool name, or argument token, excluding reasoning. A tool-only turn has both TTFT
+and TTFO; an ID-only delta establishes neither. TPOT and ITL need at least two distinct arrival times; a whole call
+received at once has TTFT but no TPOT or ITL. Tokens within a chunk share its timestamp.
+The per-fragment token timeline can differ from the assembled `output_len` because
+fragment boundaries need not coincide with tokenizer boundaries.
+
+`token_count_mismatches` counts exact timeline/server-count disagreements for turns
+without tool calls. `tool_token_count_mismatches` counts tool turns only when
+`abs(client - server) > max(16, 0.25 * max(client, server))`, using the re-tokenized timeline
+count and server output usage (`completion_tokens` or `output_tokens`). Missing usage
+produces neither mismatch. The separate counter and tolerance keep template-token
+and fragment-tokenization differences from drowning the text-turn signal. Expected
+template overhead, especially across multiple calls, can still exceed this threshold; a
+nonzero count is a diagnostic, not proof of an accounting bug.
+Per-request token-agreement validation uses the same absolute and relative tolerances
+for streamed records marked `has_tool_calls`. It compares assembled client counts,
+while the summary compares the fragment timeline, so fragmentation can still make
+the findings differ. Other per-request records retain their existing relative check.
+The 16-token floor covers the 13–14 token gaps measured for three single-call
+outputs rendered with the [Hermes 3 tool-use template](https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-8B/blob/896ea440e5a9e6070e3d8a2774daf2b481ab425b/tokenizer_config.json)
+and its tokenizer (empty, short, and long arguments). This is a template check,
+not a live-server calibration or a bound for every template.
+
+Compared with earlier reports, agentic runs now include tool-only turns in TTFT, TTFO,
+TPOT, ITL, and output throughput (subject to the timing requirements above).
+The single-arrival timing correction also affects plain-text workloads: a one-token
+response now has TTFT, and a buffered response delivered at one arrival time has
+no TPOT or ITL instead of zero. Chat replay's client `output_len` no longer switches
+to server usage when present. With client-based metrics, this changes throughput
+and TPOT denominators; `use_server_output_tokens` still selects server counts when
+available.

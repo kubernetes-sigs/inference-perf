@@ -14,7 +14,37 @@ Every metric declares a stability level, and that level is prepended to the metr
 - `BETA`: Labels may still change, but no rename or removal without a release that deprecates it first.
 - `STABLE`: Name, type and label names are fixed for the current major version.
 
-**Every metric below is `ALPHA` today, and nothing is promoted before v1.0.0.** These names, labels and buckets are a first cut that we expect to refine while the endpoint gets used; promotion is per metric, one `stability=` in its spec, not a blanket graduation of the set. The level appears only in the HELP text, never in a metric name and never in a label, so promoting a metric later does not break the queries or dashboards written against it.
+Promotion is per metric, one `stability=` on its spec, never a blanket graduation of the set. The level appears only in the HELP text, never in a metric name and never in a label, so promoting a metric does not break the queries or dashboards written against it.
+
+### Promotion
+
+A promotion is an ordinary PR. It changes `stability=` on the spec, adds the metric to the promoted list in `tests/required/observability/test_metric_sets.py`, regenerates this doc, and says in its description what reads the metric. It is reviewed like any other change and ships in the next minor release, named in the release notes. A promotion never lands in a patch release, and nothing is promoted before v1.0.0.
+
+The evidence for promotion is use, not age:
+
+- `ALPHA` to `BETA`: something outside this repo reads the metric by name from a released version. A dashboard, an alert rule, a recording rule, a benchmark harness. The PR links to it.
+- `BETA` to `STABLE`: the metric has been `BETA` for at least one minor release with no change to its name, type or labels, and is still read.
+
+Nothing is demoted. A `STABLE` metric that needs a different shape is added under a new name beside the old one, and the old one is removed only in the next major version. A `BETA` metric that needs renaming or removal keeps the old name exported for one more release, as its promise says.
+
+## Queries
+
+The endpoint is up while the run is and, after it, for `observability.metrics.linger_seconds` (default 30), so a scraper can collect the final values. Set `linger_seconds` to at least the scrape interval, and keep the scrape interval short relative to the stage length. See [config.md](./config.md#observability) for turning the endpoint on and the Helm chart README for scrape configs. A few starting points, all per stage:
+
+```promql
+# request throughput, successes and failures together
+sum by (stage) (rate(inference_perf_requests_total[1m]))
+
+# failure ratio
+sum by (stage) (rate(inference_perf_requests_total{status="failure"}[1m]))
+  / sum by (stage) (rate(inference_perf_requests_total[1m]))
+
+# failures by class, the same string the report shortens into its by_label keys
+sum by (stage, error_type) (increase(inference_perf_request_errors_total[5m]))
+
+# p99 time to first token, streaming runs only
+histogram_quantile(0.99, sum by (stage, le) (rate(inference_perf_time_to_first_token_seconds_bucket[1m])))
+```
 
 ## Metrics
 
@@ -26,7 +56,7 @@ Every metric declares a stability level, and that level is prepended to the metr
 | `inference_perf_stage_start_timestamp_seconds` | Gauge | `ALPHA` | `stage` | Always | Unix time at which the stage started. |
 | `inference_perf_stage_end_timestamp_seconds` | Gauge | `ALPHA` | `stage` | Always | Unix time at which the stage ended, whether it completed or was cut short. |
 | `inference_perf_requests_in_flight` | Gauge | `ALPHA` | none | Always | Requests sent to the server and not yet finished, sampled at scrape time. |
-| `inference_perf_requests_total` | Counter | `ALPHA` | `stage`, `status` | Always | Request attempts that have completed, by stage and final status. Incremented when the attempt finishes or fails, not when it is sent. |
+| `inference_perf_requests_total` | Counter | `ALPHA` | `stage`, `status` | Always | Request attempts that have completed, by stage and final status: success, failure, or cancelled (still in flight when the stage's teardown grace ran out). Incremented when the attempt finishes, fails or is cancelled, not when it is sent. |
 | `inference_perf_workers_lost_total` | Counter | `ALPHA` | `stage`, `cause` | Always | Worker processes that died during the stage, by stage and cause (the exception class the worker reported, else the signal that killed it, else its exit code). The run replaces a dead worker and carries on, so a non-zero value marks a stage that did not offer the load it was configured for: its results are not comparable with a stage that kept every worker. |
 | `inference_perf_request_errors_total` | Counter | `ALPHA` | `stage`, `error_type` | Always | Failed request attempts by stage and error class (the client's exception class or 'HTTP Error <status>'). |
 | `inference_perf_prompt_tokens_total` | Counter | `ALPHA` | `stage` | Always | Prompt tokens of successful requests by stage; rate() gives input throughput. |
@@ -43,3 +73,13 @@ Every metric declares a stability level, and that level is prepended to the metr
 | `inference_perf_request_latency_seconds` | Histogram | `ALPHA` | `stage` | Always | End-to-end latency of successful requests by stage. |
 | `inference_perf_time_to_first_token_seconds` | Histogram | `ALPHA` | `stage` | Streaming runs only (api.streaming); unary responses have no token timeline. | Time to first token of successful streaming requests by stage: first generated token minus request start. |
 | `inference_perf_time_per_output_token_seconds` | Histogram | `ALPHA` | `stage` | Streaming runs only (api.streaming); unary responses have no token timeline. | Time per output token of successful streaming requests by stage: (last chunk - first chunk) / (output tokens - 1), for requests with more than one output token. |
+| `inference_perf_input_media_total` | Counter | `ALPHA` | `stage`, `modality` | Always | Media instances sent on successful requests, by stage and modality (image, video, audio). |
+| `inference_perf_input_media_bytes` | Histogram | `ALPHA` | `stage`, `modality` | Always | Encoded size of each media instance sent on a successful request, by stage and modality. An instance sent or returned as a URL has no size and is not observed. |
+| `inference_perf_input_media_pixels` | Histogram | `ALPHA` | `stage`, `modality` | Always | Pixels of each image, or of one frame of each video, sent on a successful request, by stage and modality. |
+| `inference_perf_input_media_seconds` | Histogram | `ALPHA` | `stage`, `modality` | Always | Duration of each audio or video instance sent on a successful request, by stage and modality. |
+| `inference_perf_input_video_frames` | Histogram | `ALPHA` | `stage` | Always | Frames in each video sent on a successful request, by stage. |
+| `inference_perf_output_media_total` | Counter | `ALPHA` | `stage`, `modality` | Always | Media instances received on successful requests, by stage and modality (image, video, audio). |
+| `inference_perf_output_media_bytes` | Histogram | `ALPHA` | `stage`, `modality` | Always | Encoded size of each media instance received on a successful request, by stage and modality. An instance sent or returned as a URL has no size and is not observed. |
+| `inference_perf_output_media_pixels` | Histogram | `ALPHA` | `stage`, `modality` | Always | Pixels of each image, or of one frame of each video, received on a successful request, by stage and modality. |
+| `inference_perf_output_media_seconds` | Histogram | `ALPHA` | `stage`, `modality` | Always | Duration of each audio or video instance received on a successful request, by stage and modality. |
+| `inference_perf_output_video_frames` | Histogram | `ALPHA` | `stage` | Always | Frames in each video received on a successful request, by stage. |

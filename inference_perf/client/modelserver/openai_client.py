@@ -14,7 +14,7 @@
 
 from abc import abstractmethod
 from inference_perf.metrics.request_collector import RequestMetricCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig, WaitFor
 from inference_perf.apis import (
     InferenceAPIData,
     InferenceInfo,
@@ -23,7 +23,10 @@ from inference_perf.apis import (
     StreamedResponseMetrics,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anthropic_content
+from inference_perf.apis.response_errors import InvalidResponseError
+from inference_perf.apis.base import is_stage_teardown_cancelled, stage_teardown_cancelled_error
 from inference_perf.apis.streaming_parser import StreamInterruptedError
+from inference_perf.apis.tool_schema import clean_request_tool_schemas
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession
@@ -47,6 +50,13 @@ logger = logging.getLogger(__name__)
 # is optional and defaults to None; an unresponsive server must not hang startup, so
 # the probe falls back to this bounded deadline.
 _SUPPORTED_MODELS_TIMEOUT_SEC = 30.0
+
+# Readiness wait: the pause between probes of the readiness route, and the cap on a
+# single probe so one hung connection cannot eat the whole readiness budget.
+_READINESS_POLL_INTERVAL_SEC = 1.0
+_READINESS_PROBE_TIMEOUT_SEC = 5.0
+# Probed when a profile names no readiness route of its own.
+_READINESS_FALLBACK_ROUTE = "/v1/models"
 
 
 class OpenAIMetrics(BaseMetrics):
@@ -82,6 +92,11 @@ class OpenAIMetrics(BaseMetrics):
 class openAIModelServerClient(ModelServerClient):
     _session: "Optional[openAIModelServerClientSession]" = None
     _session_lock = asyncio.Lock()
+    # Route that answers 200 once the server can take requests. A profile without one
+    # probes _READINESS_FALLBACK_ROUTE instead.
+    readiness_route: Optional[str] = None
+    # Budget for the readiness wait. Profiles override it when their boot takes longer.
+    readiness_timeout_sec: float = 600.0
 
     def __init__(
         self,
@@ -100,6 +115,7 @@ class openAIModelServerClient(ModelServerClient):
         lora_config: Optional[List[MultiLoRAConfig]] = None,
         request_retries: int = 0,
         request_retry_backoff_sec: float = 0.5,
+        wait_for: WaitFor = WaitFor.READY,
     ) -> None:
         super().__init__(
             api_config,
@@ -127,6 +143,18 @@ class openAIModelServerClient(ModelServerClient):
         tokenizer_config = tokenizer_config if tokenizer_config is not None else CustomTokenizerConfig()
         self.tokenizer_config = tokenizer_config
 
+        # Before the /v1/models probe below, so a server still loading its weights is
+        # waited for instead of failing model auto-detection. With 'reachable' or 'none'
+        # nothing may be serving yet (a gateway in front of a pool scaled to zero), so the
+        # client asks the server nothing before the run: no model, tokenizer or LoRA lookup.
+        queries_server = wait_for == WaitFor.READY
+        if queries_server:
+            self.wait_until_ready()
+        elif model_name is None:
+            raise ValueError(f"wait_for {wait_for.value} requires model_name: an unset name is read from /v1/models")
+        elif wait_for == WaitFor.REACHABLE:
+            self.wait_until_reachable()
+
         supported_models: Optional[List[dict[str, Any]]] = None
         inferred_entry: Optional[dict[str, Any]] = None
         probe_for_root = False
@@ -148,9 +176,9 @@ class openAIModelServerClient(ModelServerClient):
             # Deferred, not probed here: a name that loads its own tokenizer never needs
             # the entry, and probing first would cost every pinned-name run one request
             # (and one timeout against a server that has no /v1/models at all).
-            probe_for_root = not tokenizer_config.pretrained_model_name_or_path
+            probe_for_root = queries_server and not tokenizer_config.pretrained_model_name_or_path
 
-        if self.lora_config is not None:
+        if self.lora_config is not None and queries_server:
             if supported_models is None:
                 supported_models = self.get_supported_models()
             supported_model_names = set()
@@ -160,6 +188,8 @@ class openAIModelServerClient(ModelServerClient):
             for adapter in lora_adapters:
                 if adapter not in supported_model_names:
                     raise ValueError(f"LoRA adapter {adapter} not found in model server's available models")
+        elif self.lora_config is not None:
+            logger.info(f"wait_for {wait_for.value}: LoRA adapter names are not checked against /v1/models")
 
         if tokenizer_config.pretrained_model_name_or_path:
             self.tokenizer = CustomTokenizer(tokenizer_config)
@@ -259,6 +289,90 @@ class openAIModelServerClient(ModelServerClient):
     @abstractmethod
     def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         raise NotImplementedError
+
+    def wait_until_reachable(self) -> None:
+        """Poll the server's readiness route until it gives any HTTP response.
+
+        For a server that answers 503 until the run's first requests bring a backend up, such
+        as a gateway in front of a pool scaled to zero. A refused connection, a DNS failure
+        and a connect timeout keep polling, for at most ``readiness_timeout_sec``. A probe
+        that connects and then gets no response in time also counts as reachable: that is a
+        gateway holding the request until a backend exists. The first failed probe is logged
+        at info, the rest at debug.
+        """
+        route = self.readiness_route if self.readiness_route is not None else _READINESS_FALLBACK_ROUTE
+        url = f"{self.uri}{route}"
+        headers = _build_request_headers(self.api_config, self.api_key)
+        cert = (self.cert_path, self.key_path) if self.cert_path and self.key_path else None
+        timeout = self.readiness_timeout_sec
+        deadline = time.monotonic() + timeout
+        last_seen = "no response"
+        announced = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Exception(f"Server not reachable: {url} gave no HTTP response within {timeout}s (last: {last_seen})")
+            try:
+                response = requests.get(url, headers=headers, timeout=min(remaining, _READINESS_PROBE_TIMEOUT_SEC), cert=cert)
+                logger.info(f"Server reachable: {url} answered HTTP {response.status_code}")
+                return
+            except requests.ReadTimeout:
+                logger.info(f"Server reachable: {url} accepted the connection and holds the request")
+                return
+            except requests.RequestException as e:
+                last_seen = f"{type(e).__name__}: {e}"
+            if announced:
+                logger.debug(f"Waiting for {url}: {last_seen}")
+            else:
+                logger.info(f"Waiting up to {timeout}s for {url} to give any HTTP response (last: {last_seen})")
+                announced = True
+            time.sleep(min(_READINESS_POLL_INTERVAL_SEC, max(0.0, deadline - time.monotonic())))
+
+    def wait_until_ready(self) -> None:
+        """Poll the server's readiness route until it answers 200.
+
+        A profile without a readiness route probes ``/v1/models`` instead. A 404 means the
+        route is not served here, so the run carries on without waiting. A 401 or 403 means the
+        credentials are wrong and will not fix themselves, so it raises at once. Any other status
+        and any transport error count as not ready yet, for at most
+        ``readiness_timeout_sec``; the first of them is logged at info, the rest at debug, and
+        the error raised at the deadline names the last one seen.
+        """
+        route = self.readiness_route if self.readiness_route is not None else _READINESS_FALLBACK_ROUTE
+        url = f"{self.uri}{route}"
+        headers = _build_request_headers(self.api_config, self.api_key)
+        cert = (self.cert_path, self.key_path) if self.cert_path and self.key_path else None
+        timeout = self.readiness_timeout_sec
+        deadline = time.monotonic() + timeout
+        last_seen = "no response"
+        announced = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Exception(f"Server not ready: {url} did not answer 200 within {timeout}s (last: {last_seen})")
+            try:
+                response = requests.get(url, headers=headers, timeout=min(remaining, _READINESS_PROBE_TIMEOUT_SEC), cert=cert)
+                if response.status_code == 200:
+                    logger.info(f"Server ready: {url} answered 200")
+                    return
+                if response.status_code == 404:
+                    logger.info(f"Server does not serve {url}, starting without waiting for it")
+                    return
+                if response.status_code in (401, 403):
+                    raise Exception(
+                        f"Server refused the readiness probe: {url} answered HTTP {response.status_code}; "
+                        "check the api_key and any auth headers"
+                    )
+                last_seen = f"HTTP {response.status_code}"
+            except requests.RequestException as e:
+                last_seen = f"{type(e).__name__}: {e}"
+            if announced:
+                logger.debug(f"Waiting for {url}: {last_seen}")
+            else:
+                # The first failed probe is logged at info so a wrong base_url shows before the deadline.
+                logger.info(f"Waiting up to {timeout}s for {url} to answer 200 (last: {last_seen})")
+                announced = True
+            time.sleep(min(_READINESS_POLL_INTERVAL_SEC, max(0.0, deadline - time.monotonic())))
 
     def get_supported_models(self) -> List[dict[str, Any]]:
         try:
@@ -410,6 +524,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if not self.client.otel.enabled or span is None:
             return
 
+        cancelled = is_stage_teardown_cancelled(error)
+
         if info:
             inner = info.response_metrics
             otel_response_info: Dict[str, Any] = {
@@ -549,6 +665,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 span=span,
                 response_info=otel_response_info,
                 error=error.error_msg if error else None,
+                cancelled=cancelled,
             )
         elif error:
             # No `info` to draw response metrics from, but the retry cost is known -- and
@@ -560,6 +677,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 span=span,
                 response_info=failed_info or None,
                 error=error.error_msg,
+                cancelled=cancelled,
             )
 
     async def process_request(
@@ -573,6 +691,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
             ignore_eos=self.client.ignore_eos,
             streaming=self.client.api_config.streaming,
         )
+
+        # Opt-in: rewrite tool schemas for servers that reject the recorded ones.
+        if self.client.api_config.clean_tool_schemas:
+            clean_request_tool_schemas(payload, self.client.api_config.type)
 
         # Add response_format for structured output if configured.
         if self.client.api_config.type != APIType.AnthropicMessages and self.client.api_config.response_format:
@@ -624,6 +746,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
         error = None
         response_content = ""
         caught_exception: Optional[Exception] = None
+        # Set when the load generator cancels this request at stage teardown. The
+        # request is still recorded below, with its own cancelled outcome rather
+        # than as a failure, and the cancellation is re-raised once it has been.
+        cancelled = False
         retries_attempted = 0
         retries_recovered = False
         # Set once the attempt loop exits; read again after the span closes.
@@ -734,6 +860,12 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                     original_error = read_error.original
                                     if read_error.raw_content:
                                         response_content = read_error.raw_content
+                                # A 200 whose body is not a completion (an in-band
+                                # error payload, or no content and no usage) is
+                                # reported under its own type; the body it carries
+                                # is the evidence, so keep it as the response.
+                                elif isinstance(read_error, InvalidResponseError) and read_error.raw_content:
+                                    response_content = read_error.raw_content
                                 error = ErrorResponseInfo(
                                     error_msg=str(original_error),
                                     error_type=type(original_error).__name__,
@@ -758,6 +890,12 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     caught_exception = e
                     log_message = "Request timed out:"
                     error = ErrorResponseInfo(error_msg="Request timed out", error_type="TimeoutError")
+                except asyncio.CancelledError:
+                    # Not an Exception, so nothing above sees it. Without this the
+                    # request would leave no lifecycle metric and be missing from the
+                    # report: sent to the server, then counted nowhere.
+                    cancelled = True
+                    error = stage_teardown_cancelled_error()
                 except Exception as e:
                     caught_exception = e
                     log_message = "Unexpected error during request processing:"
@@ -776,7 +914,15 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     backoff = self.client.request_retry_backoff_sec * (2**attempt)
                     # Jitter keeps concurrent requests from resynchronizing into a burst
                     # against a server that is already shedding connections.
-                    await sleep(backoff * (0.5 + random.random()))
+                    try:
+                        await sleep(backoff * (0.5 + random.random()))
+                    except asyncio.CancelledError:
+                        # Cancelled between attempts: the fault being retried is no
+                        # longer what ended this request.
+                        cancelled = True
+                        caught_exception = None
+                        error = stage_teardown_cancelled_error()
+                        break
                     logger.warning(
                         f"Retrying request after {type(caught_exception).__name__} (attempt {attempt + 2}/{max_attempts})."
                     )
@@ -909,6 +1055,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         # Record the metric
         self.client.metrics_collector.record_metric(metric)
+
+        if cancelled:
+            raise asyncio.CancelledError()
 
     async def close(self) -> None:
         await self.session.close()

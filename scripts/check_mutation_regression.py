@@ -111,18 +111,27 @@ DOC_LINE = f"What each failure means and how to pass: {DOC_URL}"
 # hits in the pytest process, and coverage in a child starts from the config file with the empty
 # context that marks import time. This pytest plugin, loaded into every test run, carries both back
 # to the test that started the child. It is written outside the tree, so a change cannot edit it.
+# It also caps how much memory one mutant's run may take, see MUTANT_MEMORY_HEADROOM, and ends the
+# processes a mutant's tests fork when that run ends.
 CHILD_PLUGIN = "mutation_child_hits"
 CHILD_PLUGIN_SOURCE = '''"""Carry what a forked child does back to the test that started it."""
 
 import os
+import resource
+import signal
 from pathlib import Path
 
 import pytest
+from mutation_orphan_guard import die_with_parent, note_parent
 
 HITS_DIR = Path(os.environ.get("MUTATION_HITS_DIR", "."))
+MEMORY_HEADROOM = int(os.environ.get("MUTATION_MEMORY_HEADROOM", "0"))
+# mutmut's exit code for a timeout
+TIMEOUT_EXIT = 36
 _current = None
 _count = 0
 _registered = False
+_timer_armed = False
 
 
 def pytest_configure(config):
@@ -130,7 +139,48 @@ def pytest_configure(config):
     # pytest.main can run more than once in a process, and a forked child inherits the handler
     if not _registered:
         _registered = True
-        os.register_at_fork(after_in_child=_in_child)
+        os.register_at_fork(before=note_parent, after_in_child=_in_child)
+    _cap_memory()
+
+
+def _vm_data():
+    try:
+        status = Path("/proc/self/status").read_text()
+    except OSError:
+        return None
+    return next(int(line.split()[1]) * 1024 for line in status.splitlines() if line.startswith("VmData:"))
+
+
+def _cap_memory():
+    # mutmut sets the mutant before each mutant's pytest run, so this skips the stats and clean runs
+    if not MEMORY_HEADROOM or "__mutmut_" not in os.environ.get("MUTANT_UNDER_TEST", ""):
+        return
+    # what the run inherits from mutmut's fork server is already in VmData, so only growth counts
+    start = _vm_data()
+    if start is None:
+        return
+    limit = start + MEMORY_HEADROOM
+
+    # a failed allocation can abort Python, which mutmut reads as suspicious, a survivor. Exiting first
+    # records the timeout mutmut's own timer would have. Checked every 0.1 s of CPU, which a runaway burns
+    def check(signum, frame):
+        if (_vm_data() or 0) > limit:
+            os._exit(TIMEOUT_EXIT)
+
+    global _timer_armed
+    signal.signal(signal.SIGPROF, check)
+    signal.setitimer(signal.ITIMER_PROF, 0.1, 0.1)
+    _timer_armed = True
+    # for processes the tests fork, which inherit the limit but not the timer
+    _, hard = resource.getrlimit(resource.RLIMIT_DATA)
+    soft = limit + MEMORY_HEADROOM // 2
+    resource.setrlimit(resource.RLIMIT_DATA, (soft if hard == resource.RLIM_INFINITY else min(soft, hard), hard))
+
+
+def pytest_unconfigure(config):
+    # interpreter shutdown restores SIGPROF's default action, which would kill the process on the next tick
+    if _timer_armed:
+        signal.setitimer(signal.ITIMER_PROF, 0)
 
 
 def pytest_sessionstart(session):
@@ -146,6 +196,7 @@ def pytest_runtest_setup(item):
 
 
 def _in_child():
+    die_with_parent()
     # only mutmut's stats run records hits. A mutant run reaches the child through the environment
     if os.environ.get("MUTANT_UNDER_TEST") != "stats" or _current is None:
         return
@@ -174,12 +225,66 @@ def pytest_runtest_teardown(item, nextitem):
     state()._stats.update(_current.read_text().split())
     _current.unlink()
 '''
+# mutmut ends a mutant's run with os._exit or a kill. Both skip the exit hook that stops daemon
+# processes, so a Worker the test left waiting would outlive the run and keep its memory. The child
+# plugin's fork hook covers what a test forks itself. Workers are forked by multiprocessing's
+# forkserver, which starts by exec and so runs no fork hook, and each Worker holds the pipe that
+# keeps the server up. STARTUP_SOURCE is the harness directory's sitecustomize: it runs the guard in
+# every interpreter started under a mutant, the server included.
+ORPHAN_GUARD = "mutation_orphan_guard"
+ORPHAN_GUARD_SOURCE = '''"""End a process started or forked under a mutant when its parent exits."""
+
+import os
+import signal
+
+# prctl option: signal this process when its parent exits
+PR_SET_PDEATHSIG = 1
+_forked_from = None
+
+
+def _signal_on_parent_exit():
+    if "__mutmut_" not in os.environ.get("MUTANT_UNDER_TEST", ""):
+        return False
+    # imported here so an interpreter outside a mutant's run pays nothing at startup
+    import ctypes
+
+    try:
+        ctypes.CDLL(None).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    except (OSError, AttributeError):
+        # no prctl off Linux
+        return False
+    return True
+
+
+def note_parent():
+    global _forked_from
+    _forked_from = os.getpid()
+
+
+def die_with_parent():
+    # a parent that left before the prctl call never sends the signal
+    if _signal_on_parent_exit() and os.getppid() != _forked_from:
+        os._exit(1)
+
+
+def guard_started_process():
+    if _signal_on_parent_exit():
+        os.register_at_fork(before=note_parent, after_in_child=die_with_parent)
+'''
+STARTUP_SOURCE = f"import {ORPHAN_GUARD}\n\n{ORPHAN_GUARD}.guard_started_process()\n"
+
 CHILD_COVERAGE_CONFIG = """[tool.coverage.run]
 source = ["inference_perf"]
 concurrency = ["multiprocessing"]
 # empty in the pytest process, which reads this before the plugin sets the variable; set in a child
 context = "${MUTATION_CHILD_CONTEXT-}"
 """
+
+# Memory one mutant's tests may allocate on top of what they inherit from mutmut's fork server. A
+# mutant that never leaves a loop can allocate faster than mutmut's timeout fires: on #941 an AsyncMock
+# recording every call grew each worker ~200 MB/s, and four at once killed a 16 GB runner. Past the
+# headroom the run exits as a timeout. Four workers at the cap still fit on that runner.
+MUTANT_MEMORY_HEADROOM = 2 * 1024**3
 
 # Where the plugin and its coverage config are written. main() puts it next to the trees.
 HARNESS_DIR: Path | None = None
@@ -345,6 +450,8 @@ def harness_dir() -> Path:
     plugin = HARNESS_DIR / f"{CHILD_PLUGIN}.py"
     if not plugin.exists():
         plugin.write_text(CHILD_PLUGIN_SOURCE)
+        (HARNESS_DIR / f"{ORPHAN_GUARD}.py").write_text(ORPHAN_GUARD_SOURCE)
+        (HARNESS_DIR / "sitecustomize.py").write_text(STARTUP_SOURCE)
         (HARNESS_DIR / "coverage.toml").write_text(CHILD_COVERAGE_CONFIG)
     return HARNESS_DIR
 
@@ -1196,7 +1303,9 @@ def export_working_tree(dest: Path) -> None:
 
 
 def mutmut(tree: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return run_bounded([sys.executable, "-m", "mutmut", *args], tree, harness_env(tree))
+    # only here: the setup diagnosis reproduces mutmut's clean run, which is not capped
+    env = {**harness_env(tree), "MUTATION_MEMORY_HEADROOM": str(MUTANT_MEMORY_HEADROOM)}
+    return run_bounded([sys.executable, "-m", "mutmut", *args], tree, env)
 
 
 def pytest_command(tests: list[str], pytest_args: list[str]) -> list[str]:

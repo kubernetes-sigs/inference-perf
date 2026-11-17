@@ -157,7 +157,11 @@ async def run_scripted_request(
 
     async with FakeOpenAIServer(script, completion_tokens=completion_tokens) as server:
         # The client would otherwise build a CustomTokenizer by fetching from the Hub.
-        with patch.object(openai_client_module, "CustomTokenizer", return_value=make_tokenizer()):
+        with (
+            patch.object(openai_client_module, "CustomTokenizer", return_value=make_tokenizer()),
+            # The wait blocks the event loop this fake server runs on; readiness is not under test here.
+            patch.object(openai_client_module.openAIModelServerClient, "wait_until_ready"),
+        ):
             client = _ConcreteOpenAIClient(
                 metrics_collector=collector,
                 api_config=APIConfig(type=APIType.Chat, streaming=True),

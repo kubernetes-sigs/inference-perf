@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any, List
 
+import pytest
+
 from inference_perf.reportgen.per_request.validation import PerRequestLifecycleValidator
 from inference_perf.reportgen.validation import Finding, ValidationReport, run_validators
 from inference_perf.utils import ReportFile
@@ -120,3 +122,21 @@ def test_absent_per_request_report_is_skipped_silently() -> None:
 
     assert PER_REQUEST_FILE not in result.reports
     assert not result.all_errors() and not result.all_warnings()
+
+
+@pytest.mark.parametrize("usage_key", ["completion_tokens", "output_tokens"])
+@pytest.mark.parametrize("tool", [True, False])
+@pytest.mark.parametrize(
+    "client,server,tool_warning", [(2, 16, False), (2, 18, False), (2, 19, True), (100, 75, False), (100, 74, True)]
+)
+def test_tool_token_agreement_uses_summary_floor(
+    usage_key: str, tool: bool, client: int, server: int, tool_warning: bool
+) -> None:
+    reports, records = tampered(make_report_set(), PER_REQUEST_FILE)
+    metrics = records[0]["info"]["response_metrics"]
+    metrics.update(output_tokens=client, server_usage={usage_key: server}, has_tool_calls=tool)
+    warnings = _findings_for_check(_validate(reports), "per_request.token_agreement")
+    expected = tool_warning if tool else abs(client - server) > 0.25 * max(client, server)
+    assert bool(warnings) is expected
+    if tool and warnings:
+        assert "16 tokens" in warnings[0].message

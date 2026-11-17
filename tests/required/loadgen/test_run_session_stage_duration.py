@@ -728,12 +728,33 @@ class _RecordingOtel:
 
     def __init__(self) -> None:
         self.ended: Dict[str, Optional[str]] = {}
+        self.truncated: Dict[str, bool] = {}
 
     def start_session_span(self, session_id: str, session_info: Any, parent_ctx: Any) -> Any:
         return (session_id, None)
 
-    def end_session_span(self, span: Any, error_msg: Optional[str]) -> None:
+    def end_session_span(self, span: Any, error_msg: Optional[str] = None, *, truncated: bool = False) -> None:
         self.ended[span] = error_msg
+        self.truncated[span] = truncated
+
+
+# Four sessions stay active until a duration-bounded stage ends. Their lifecycle rows
+# are truncated, and their OTel spans must carry that outcome without an error.
+@pytest.mark.asyncio
+async def test_sessions_truncated_at_the_boundary_do_not_end_otel_spans_as_errors() -> None:
+    datagen = ScriptedSessionGenerator(num_sessions=5000, polls_to_complete=None)
+    loadgen, collector = _load_generator(datagen)
+    otel = _RecordingOtel()
+
+    with patch("inference_perf.loadgen.load_generator.get_otel_instrumentation", return_value=otel):
+        await _run_stage(loadgen, TraceSessionReplayLoadStage(concurrent_sessions=4, duration=0.2))
+
+    recorded = collector.get_metrics()
+    assert len(recorded) == 4
+    assert all(metric.truncated for metric in recorded)
+    assert set(otel.ended) == {metric.session_id for metric in recorded}
+    assert all(error is None for error in otel.ended.values())
+    assert all(otel.truncated.values())
 
 
 @pytest.mark.asyncio
@@ -774,3 +795,4 @@ async def test_a_session_failing_during_teardown_ends_at_its_failure_and_reports
         assert m.end_time - m.start_time == pytest.approx(m.duration_sec, abs=1e-6)
     assert set(otel.ended) == {m.session_id for m in recorded}
     assert all(status is not None for status in otel.ended.values()), "a failed session must not be traced as OK"
+    assert not any(otel.truncated.values()), "a failed session must not be marked as deliberately truncated"

@@ -150,6 +150,19 @@ class OTelInstrumentation:
             self._setup_tracer()
             logger.info(f"OTEL tracing enabled for service: {self.service_name}")
 
+    def __getstate__(self) -> Dict[str, Any]:
+        # Workers receive the client by pickle. The provider holds locks and an exporter
+        # thread, so only the settings travel and each worker builds its own.
+        state = self.__dict__.copy()
+        state["tracer"] = None
+        state.pop("_provider", None)
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        if self.enabled:
+            self._setup_tracer()
+
     def _setup_tracer(self) -> None:
         """Set up the OpenTelemetry tracer."""
         if not OTEL_AVAILABLE:
@@ -290,6 +303,7 @@ class OTelInstrumentation:
         span: Optional[Any],
         response_info: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
+        cancelled: bool = False,
     ) -> None:
         """
         Record response metrics on the span.
@@ -298,12 +312,18 @@ class OTelInstrumentation:
             span: The OTEL span to record metrics on
             response_info: Response information including token counts, latency, etc.
             error: Error message if the request failed
+            cancelled: The request was cancelled at stage teardown. Takes precedence over error.
         """
         if not self.enabled or span is None:
             return
 
         try:
-            if error:
+            if cancelled:
+                # The load generator ended the request on purpose. OTel's HTTP client conventions
+                # leave a deliberate cancel's status unset, and the report counts it as neither a
+                # success nor a failure, so the span gets a marker instead of ERROR or OK.
+                span.set_attribute("inference_perf.request.cancelled", True)
+            elif error:
                 span.set_status(Status(StatusCode.ERROR, error))
                 # Note: There's no standard attribute for error in the semantic conventions yet
                 span.set_attribute("error.message", error)
@@ -468,19 +488,23 @@ class OTelInstrumentation:
 
         return span, context_dict
 
-    def end_session_span(self, span: Optional[Any], error: Optional[str] = None) -> None:
+    def end_session_span(self, span: Optional[Any], error: Optional[str] = None, *, truncated: bool = False) -> None:
         """
         End a session span.
 
         Args:
             span: The OTEL span to end
             error: Optional error message if session failed
+            truncated: Whether the session was cut short at the stage boundary
         """
         if not self.enabled or span is None:
             return
 
         try:
-            if error:
+            if truncated:
+                # Leave status UNSET: the stage boundary is not a session failure.
+                span.set_attribute("inference_perf.session.truncated", True)
+            elif error:
                 span.set_status(Status(StatusCode.ERROR, error))
             else:
                 span.set_status(Status(StatusCode.OK))

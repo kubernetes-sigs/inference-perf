@@ -19,13 +19,14 @@ same derivation the report uses.
 """
 
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import pytest
 from prometheus_client import Counter, Gauge, Histogram  # noqa: TID251 (throwaway metrics for these tests)
 from prometheus_client.exposition import generate_latest
 
 from inference_perf.apis.base import (
+    STAGE_TEARDOWN_CANCELLED_ERROR_TYPE,
     ErrorResponseInfo,
     InferenceInfo,
     RequestLifecycleMetric,
@@ -211,6 +212,23 @@ def test_errors_counted_by_class_and_only_for_failures() -> None:
     assert 'error_type=""' not in generate_latest(hub.registry).decode(), "successes must not create an error series"
 
 
+# Three stage-0 requests: one HTTP 503 failure, one cancelled at stage teardown, one
+# success. Expects requests_total 1 each for failure, cancelled and success, and the
+# cancellation absent from errors_total, which reads 1 for "HTTP Error 503" only.
+def test_cancelled_requests_are_their_own_status_and_not_errors() -> None:
+    hub = _streaming_hub()
+    hub.observe_request(_streamed(error="HTTP Error 503"))
+    hub.observe_request(_streamed(error=STAGE_TEARDOWN_CANCELLED_ERROR_TYPE))
+    hub.observe_request(_streamed())
+
+    requests = "inference_perf_requests_total"
+    assert _sample(hub, requests, stage="0", status="failure") == 1.0
+    assert _sample(hub, requests, stage="0", status="cancelled") == 1.0
+    assert _sample(hub, requests, stage="0", status="success") == 1.0
+    assert _sample(hub, "inference_perf_request_errors_total", stage="0", error_type="HTTP Error 503") == 1.0
+    assert STAGE_TEARDOWN_CANCELLED_ERROR_TYPE not in generate_latest(hub.registry).decode()
+
+
 # Feeds the resolver a missing response, a client count of 5, a server count of 7,
 # the Anthropic spelling of a server count of 6, a server payload with no output
 # count, and a server count of 0. Expects 0, 5, 7, 6, 5, 0: the server wins
@@ -295,13 +313,18 @@ def test_ttft_and_tpot_absent_on_unary_runs() -> None:
 # --- conventions (the checkable half of #628) -----------------------------------
 
 # "cause" is bounded the same way "error_type" is: an exception class name, a
-# signal name, or an exit code, never a message or an id.
-ALLOWED_LABELS = {"stage", "status", "error_type", "cause"}
+# signal name, or an exit code, never a message or an id. "modality" is one of
+# image, video or audio.
+ALLOWED_LABELS = {"stage", "status", "error_type", "cause", "modality"}
+
+# A histogram observes one quantity per request or media instance, named by its
+# unit: a base unit (seconds, bytes) or a plain count of something (pixels, frames).
+HISTOGRAM_UNIT_SUFFIXES = ("_seconds", "_bytes", "_pixels", "_frames")
 
 
 # Walks every spec in ALL_SPECS. Expects unique inference_perf_-prefixed names with
 # no hand-written _total suffix, labels drawn only from the allowlist, histograms
-# named _seconds with explicit buckets, timestamps named _timestamp_seconds, and a
+# named by their unit with explicit buckets, timestamps named _timestamp_seconds, and a
 # non-empty description on each.
 def test_all_specs_follow_naming_and_label_conventions() -> None:
     names = [spec.name for spec in ALL_SPECS]
@@ -311,7 +334,7 @@ def test_all_specs_follow_naming_and_label_conventions() -> None:
         assert not spec.name.endswith("_total"), f"{spec.name}: prometheus_client appends _total to counters"
         assert set(spec.labelnames) <= ALLOWED_LABELS, f"{spec.name}: labels must be bounded and from the allowlist"
         if spec.metric_type is Histogram:
-            assert spec.name.endswith("_seconds"), f"{spec.name}: histograms here are durations in base units"
+            assert spec.name.endswith(HISTOGRAM_UNIT_SUFFIXES), f"{spec.name}: histograms are named by their unit"
             assert spec.buckets is not None
         if spec.metric_type is Gauge and "timestamp" in spec.name:
             assert spec.name.endswith("_timestamp_seconds"), spec.name
@@ -319,11 +342,27 @@ def test_all_specs_follow_naming_and_label_conventions() -> None:
         assert spec.documentation.strip()
 
 
-# Reads the stability level off every spec in ALL_SPECS. Expects all of them to be
-# ALPHA: the set ships changeable, so promoting one to BETA or STABLE is a release
-# decision that has to come here and say so.
-def test_no_metric_is_promoted_yet() -> None:
+# Metrics promoted past ALPHA, by spec name, with the level each one holds. The PR
+# that changes stability= on a spec also adds the metric here, so a promotion cannot
+# slip in through a spec edit alone. The policy is the Stability section of
+# docs/runtime_metrics.md.
+PROMOTED: Dict[str, MetricStability] = {}
+
+
+# Reads the stability level off every spec in ALL_SPECS. Expects every spec not in
+# PROMOTED to be ALPHA and every promoted one to hold exactly the level listed, so a
+# spec edit that promotes or demotes a metric fails until this list says so too.
+def test_promotions_are_listed_here() -> None:
     for spec in ALL_SPECS:
-        assert spec.stability is MetricStability.ALPHA, (
-            f"{spec.name}: promotion is a release decision, and nothing is promoted before v1.0.0"
+        expected = PROMOTED.get(spec.name, MetricStability.ALPHA)
+        assert spec.stability is expected, (
+            f"{spec.name}: stability={spec.stability.value}, the promoted list says {expected.value}. "
+            "Promotion is a release decision, see the Stability section of docs/runtime_metrics.md."
         )
+
+
+# Builds the set of spec names and checks PROMOTED against it. Expects no entry for
+# a metric that no longer exists, so a removed or renamed metric cannot leave a
+# stale promotion behind.
+def test_promoted_list_names_only_real_metrics() -> None:
+    assert set(PROMOTED) <= {spec.name for spec in ALL_SPECS}

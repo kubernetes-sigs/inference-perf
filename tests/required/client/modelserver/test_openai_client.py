@@ -16,6 +16,7 @@ import logging
 import random
 import ssl
 from types import SimpleNamespace
+from typing import FrozenSet, Sequence
 
 from aiohttp.client_reqrep import ConnectionKey
 import pytest
@@ -31,6 +32,7 @@ from inference_perf.client.modelserver.openai_client import (
 from inference_perf.client.modelserver.metrics import Metric, CounterResult
 from inference_perf.apis import (
     AnthropicMessagesAPIData,
+    ChatCompletionAPIData,
     ChatMessage,
     EmbeddingsAPIData,
     ErrorResponseInfo,
@@ -39,6 +41,7 @@ from inference_perf.apis import (
     SessionLifecycleMetric,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
+from inference_perf.apis.base import STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
 from inference_perf.config import APIType
 from inference_perf.payloads import RequestMetrics, Text
 
@@ -51,6 +54,7 @@ def mock_client() -> MagicMock:
     client.api_config.headers = {}
     client.api_config.response_format = None
     client.api_config.streaming = False
+    client.api_config.clean_tool_schemas = False
     client.tokenizer = MagicMock()
     client.metrics_collector = MagicMock()
     client.cert_path = None
@@ -308,6 +312,46 @@ async def test_anthropic_messages_request_uses_messages_route_and_headers(mock_c
     assert headers_passed["anthropic-version"] == ANTHROPIC_VERSION
     assert "Authorization" not in headers_passed
     assert '"ignore_eos"' not in session.session.post.call_args.kwargs["data"]
+
+
+# Sends a Chat request whose tool schema has "title": "F" and returns the body that went on the wire.
+async def _send_chat_with_tool_schema(mock_client: MagicMock, clean: bool) -> dict[str, Any]:
+    mock_client.api_config.type = APIType.Chat
+    mock_client.api_config.session_id_header_key = None
+    mock_client.api_config.clean_tool_schemas = clean
+    mock_client.api_key = None
+    mock_client.model_name = "m"
+    mock_client.max_completion_tokens = 16
+    mock_client.ignore_eos = False
+
+    data = ChatCompletionAPIData(
+        messages=[ChatMessage(role="user", content="hi")],
+        tool_definitions=[{"type": "function", "name": "f", "parameters": {"type": "object", "title": "F"}}],
+    )
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(data, stage_id=1, scheduled_time=0.0)
+    body: dict[str, Any] = json.loads(session.session.post.call_args.kwargs["data"])
+    return body
+
+
+# clean_tool_schemas=False (default): the tool schema {"type": "object", "title": "F"} is sent unchanged.
+@pytest.mark.asyncio
+async def test_tool_schema_sent_verbatim_by_default(mock_client: MagicMock) -> None:
+    body = await _send_chat_with_tool_schema(mock_client, clean=False)
+    assert body["tools"][0]["function"]["parameters"] == {"type": "object", "title": "F"}
+
+
+# clean_tool_schemas=True: "title" is dropped and "properties": {} is added before sending.
+@pytest.mark.asyncio
+async def test_tool_schema_cleaned_when_enabled(mock_client: MagicMock) -> None:
+    body = await _send_chat_with_tool_schema(mock_client, clean=True)
+    assert body["tools"][0]["function"]["parameters"] == {"type": "object", "properties": {}}
 
 
 @pytest.mark.asyncio
@@ -599,6 +643,9 @@ def test_openai_metrics_iteration_yields_each_field_once() -> None:
 
         def get_queries(self, duration: float, filters: str) -> list[str]:
             return []
+
+        def candidate_names(self) -> Sequence[FrozenSet[str]]:
+            return (frozenset({self.metric_name}),)
 
         def parse(self, results: list[Optional[float]]) -> CounterResult:
             return CounterResult()
@@ -1314,3 +1361,135 @@ async def test_retry_ending_in_http_error_is_not_recovered(mock_client: MagicMoc
     assert metric.error is not None
     assert metric.info.retries_attempted == 1
     assert metric.info.retries_recovered is False
+
+
+# A POST that never returns; the request task is cancelled 50ms in. Expects one
+# metric recorded with error type StageTeardownCancelled (not TimeoutError), and the
+# cancellation still raised to the caller.
+@pytest.mark.asyncio
+async def test_process_request_cancelled_in_flight_is_recorded_then_reraised(
+    mock_client: MagicMock, mock_data: MagicMock
+) -> None:
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    async def hang(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(3600)
+
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=hang)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    task = asyncio.create_task(session.process_request(mock_data, stage_id=1, scheduled_time=0.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    mock_client.metrics_collector.record_metric.assert_called_once()
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert isinstance(metric.error, ErrorResponseInfo)
+    assert metric.error.error_type == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
+    assert metric.error.error_type != "TimeoutError"
+    assert "stage_teardown_grace_seconds" in metric.error.error_msg
+    assert "not request_timeout" in metric.error.error_msg
+    assert metric.stage_id == 1
+    mock_data.process_failure.assert_not_called()
+
+
+# Retries on, first POST fails with a connection reset, and the task is cancelled
+# during the backoff sleep. Expects one metric, recorded as StageTeardownCancelled
+# rather than as the connection fault that was about to be retried.
+@pytest.mark.asyncio
+async def test_process_request_cancelled_during_retry_backoff_is_recorded(
+    mock_client: MagicMock, mock_data: MagicMock
+) -> None:
+    mock_client.request_retries = 3
+    mock_client.request_retry_backoff_sec = 60.0
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=aiohttp.ServerDisconnectedError("reset"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    task = asyncio.create_task(session.process_request(mock_data, stage_id=0, scheduled_time=0.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    mock_client.metrics_collector.record_metric.assert_called_once()
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error.error_type == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
+    assert metric.info.retries_attempted == 1
+
+
+# Stands in for a server that never answers: sleeps an hour, so only a cancel ends it.
+async def _hang(*args: Any, **kwargs: Any) -> None:
+    await asyncio.sleep(3600)
+
+
+# Turns OTel on and captures the keyword arguments of the last record_response_metrics
+# call into the returned dict, e.g. {"error": "...", "cancelled": True}.
+def _capture_otel_record(mock_client: MagicMock) -> dict[str, Any]:
+    mock_client.otel.enabled = True
+    recorded: dict[str, Any] = {}
+    mock_client.otel.record_response_metrics = MagicMock(side_effect=lambda **kwargs: recorded.update(kwargs))
+    return recorded
+
+
+# The POST never returns and the task is cancelled 50ms in, before any response.
+# Expects the span recorded with cancelled=True, so its status is left unset, not ERROR.
+@pytest.mark.asyncio
+async def test_otel_marks_request_cancelled_in_flight(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    recorded = _capture_otel_record(mock_client)
+    session = _retrying_session(mock_client, retries=0)
+    hanging = MagicMock()
+    hanging.__aenter__ = AsyncMock(side_effect=_hang)
+    hanging.__aexit__ = AsyncMock(return_value=None)
+    _post(session).return_value = hanging
+
+    task = asyncio.create_task(session.process_request(mock_data, stage_id=0, scheduled_time=0.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert recorded["cancelled"] is True
+
+
+# A 200 is read, then the task is cancelled 50ms into releasing the connection. Expects the
+# span recorded through the answered-request path (response_info set) with cancelled=True.
+@pytest.mark.asyncio
+async def test_otel_marks_request_cancelled_after_its_response(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    recorded = _capture_otel_record(mock_client)
+    session = _retrying_session(mock_client, retries=0)
+    answered = _ok_ctx()
+    answered.__aexit__ = AsyncMock(side_effect=_hang)
+    _post(session).return_value = answered
+
+    task = asyncio.create_task(session.process_request(mock_data, stage_id=0, scheduled_time=0.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert recorded["response_info"] is not None
+    assert recorded["cancelled"] is True
+
+
+# A connection reset with retries off is a real failure. Expects cancelled=False and the
+# error passed through, so the span still ends ERROR.
+@pytest.mark.asyncio
+async def test_otel_does_not_mark_failed_request_cancelled(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    recorded = _capture_otel_record(mock_client)
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError())]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    assert recorded["error"] is not None
+    assert recorded["cancelled"] is False

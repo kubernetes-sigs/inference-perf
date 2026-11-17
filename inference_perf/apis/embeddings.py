@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from aiohttp import ClientResponse
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics
+from inference_perf.apis.response_errors import InBandError, in_band_error
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType, EmbeddingsConfig, EmbeddingsEncodingFormat
@@ -76,6 +77,9 @@ class EmbeddingsAPIData(InferenceAPIData):
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
     ) -> InferenceInfo:
         data = await response.json()
+        # A 200 whose body is an error payload is that error, not a success.
+        if (error_payload := in_band_error(data)) is not None:
+            raise InBandError(error_payload)
         server_usage = data.get("usage")
         # The embedding vectors themselves are not kept: only latency and token
         # counts are measured. With no generated tokens there are no token

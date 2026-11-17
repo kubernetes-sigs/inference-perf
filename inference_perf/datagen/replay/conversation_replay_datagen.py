@@ -17,7 +17,8 @@ Closed-loop continuous replenishment model
 ------------------------------------------
 Each slot (preferred_worker_id) maps to one concurrent conversation. When a
 conversation completes all its turns, the slot immediately resets to a fresh
-LocalUserSession and starts a new conversation from turn 0. This models
+LocalUserSession and starts the next blueprint its worker was handed, from turn
+0. This models
 steady-state production traffic where a new conversation begins as soon as
 the previous one ends.
 
@@ -27,10 +28,13 @@ production mean across all active slots.
 
 Usage
 -----
-Set ``num_conversations = C`` (the concurrency level) so each slot owns
-exactly one conversation. Set ``num_requests = C × turns × num_rounds`` to
-run ``num_rounds`` complete conversations per slot. The first round is
-warmup; report throughput from round 2 onward.
+Set ``num_conversations >= C`` (the concurrency level). With a larger pool,
+slots rotate through their worker's blueprints at conversation boundaries,
+prioritizing newly named blueprints over recycled ones. With equality,
+each slot replays its own blueprint. For fixed-length conversations, set
+``num_requests = C × turns × num_rounds`` for ``num_rounds`` conversations
+per slot on average. Allow sufficient requests to warm up the whole pool
+before measuring steady-state throughput.
 
 Run each concurrency level as a separate benchmark (fresh state, not stages
 of one run) to avoid context accumulating across concurrency levels.
@@ -39,10 +43,12 @@ of one run) to avoid context accumulating across concurrency levels.
 import asyncio
 import hashlib
 import logging
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Generator, List, Optional
+from typing import Callable, Generator, List, Optional
 
 import numpy as np
+from pydantic import PrivateAttr
 
 from aiohttp import ClientResponse
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, LazyLoadInferenceAPIData
@@ -84,6 +90,36 @@ class _ConversationReplayAPIData(UserSessionCompletionAPIData):
     """
 
     tool_call_latency_sec: float = 0.0
+    _bound_session: Optional[LocalUserSession] = PrivateAttr(default=None)
+    _request_finished_callback: Optional[Callable[[], None]] = PrivateAttr(default=None)
+
+    def bind_request_finished(self, session: LocalUserSession, callback: Callable[[], None]) -> None:
+        self._bound_session = session
+        self._request_finished_callback = callback
+
+    def on_request_finished(self) -> None:
+        callback = self._request_finished_callback
+        if callback is None:
+            return
+        session = self._bound_session
+        self._request_finished_callback = None
+        self._bound_session = None
+        try:
+            # Clean up the session this request was created against, not whatever the
+            # registry holds for its id now. Never look the id up here: a later stage
+            # re-primes the same id with a new object, so an id lookup would find that
+            # new session and release the lock a current request holds on it. A session
+            # whose stage was torn down needs no cleanup either, and resolving through
+            # the user_session property would resurrect the cleared id and make the next
+            # stage skip its re-prime.
+            if session is not None and session._in_flight is not None and session._in_flight.locked():
+                try:
+                    session.update_context(getattr(self, "_session_context", session.context))
+                finally:
+                    if session._in_flight.locked():
+                        session._in_flight.release()
+        finally:
+            callback()
 
     async def process_response(
         self,
@@ -138,6 +174,15 @@ class ConversationBlueprint:
     turn_tool_call_latencies: List[float] = field(default_factory=list)
 
 
+@dataclass
+class _ConversationSlotState:
+    next_round: int = 0
+    busy: bool = False
+    blueprint_index: Optional[int] = None
+    next_turn: int = 0
+    conversation_number: int = 0
+
+
 class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
     """Generates synthetic multi-turn conversations from distribution configs.
 
@@ -148,7 +193,8 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
 
     Conversations are dispatched round-robin across workers using
     preferred_worker_id for affinity. When all turns of a conversation are
-    exhausted, the session resets and replays from the beginning (recycling).
+    exhausted, the slot resets its session and takes the next blueprint its own
+    worker's token stream named (recycling its own when that pool is active).
     """
 
     def __init__(
@@ -212,6 +258,14 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.blueprints: List[ConversationBlueprint] = []
         self.user_sessions: List[LocalUserSession] = []
         self._build_conversations()
+        self._slot_states = [_ConversationSlotState() for _ in self.blueprints]
+        self._ready_slots: deque[int] = deque()
+        # The blueprints this worker's own token stream has named: the ones no
+        # slot is running (new arrivals first, recycled ones FIFO), and the full
+        # set already named.
+        self._available_blueprints: deque[int] = deque()
+        self._pooled_blueprints: set[int] = set()
+        self._scheduler_stage_id: Optional[int] = None
 
         logger.info(
             "ConversationReplayDataGenerator: %d conversations, %d total turns",
@@ -240,51 +294,116 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
     # -- LazyLoadDataMixin interface --------------------------------------
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
-        conv_idx = data.data_index % len(self.blueprints)
-        bp = self.blueprints[conv_idx]
-        round_num = data.data_index // len(self.blueprints)
-        turn_idx = round_num % bp.num_turns
-        convo_num = round_num // bp.num_turns  # which conversation this slot is on
+        if self._scheduler_stage_id != data.stage_id:
+            self._slot_states = [_ConversationSlotState() for _ in self.blueprints]
+            self._ready_slots.clear()
+            self._available_blueprints.clear()
+            self._pooled_blueprints.clear()
+            self._scheduler_stage_id = data.stage_id
 
-        # Re-prime if the session was cleared (e.g. LoadGenerator calls
-        # LocalUserSession.clear_instances() between load stages). Without this,
-        # subsequent stages would dispatch with empty session_context, losing the
-        # system_prompt the conversation was built around.
-        expected_session_id = self.user_sessions[conv_idx].user_session_id
-        if expected_session_id not in LocalUserSession._instances:
-            # Get or generate the shared system prompt for this stage.
-            shared_prompt = self._get_or_generate_shared_prompt(data.stage_id)
-            bp.system_prompt = self._build_system_prompt(shared_prompt, bp.dynamic_system_prompt)
+        # Every token names one blueprint, and loadgen routes a token by its
+        # preferred_worker_id, so the blueprints one worker can reach are exactly
+        # the ones its own tokens name. Collecting them on sight therefore keeps
+        # each worker inside its share without knowing the worker count, which no
+        # request carries: a worker only ever pools a blueprint it was handed.
+        candidate_idx = data.data_index % len(self.blueprints)
+        if candidate_idx not in self._pooled_blueprints:
+            self._pooled_blueprints.add(candidate_idx)
+            # A first pass should open the pool rather than replay returned
+            # blueprints while newly discovered ones wait behind them.
+            self._available_blueprints.appendleft(candidate_idx)
 
-            self.user_sessions[conv_idx] = self._new_session(
-                user_session_id=expected_session_id,
-                context=bp.system_prompt,
-                system_prompt=bp.system_prompt,
+        if self._ready_slots:
+            conv_idx = self._ready_slots.popleft()
+        elif not self._slot_states[candidate_idx].busy:
+            conv_idx = candidate_idx
+        else:
+            raise RuntimeError(
+                "Conversation replay has no ready conversation for an available request slot. "
+                "Ensure concurrency_level does not exceed num_conversations."
             )
-            logger.debug("Slot %d: refreshed system prompt and re-primed session %s", conv_idx, expected_session_id)
 
-        # Closed-loop replenishment: when a conversation finishes all its turns,
-        # reset the session so the slot immediately starts a fresh conversation.
-        # The id carries the stage because get_data() restarts data_index at 0 every
-        # stage while the slot keeps its previous id: without it, a stage-1 slot
-        # re-primed as slot_0_convo_1 would roll over onto slot_0_convo_1 again
-        # instead of starting a new conversation.
-        if turn_idx == 0 and round_num > 0:
-            self.user_sessions[conv_idx] = self._new_session(
-                user_session_id=f"stage_{data.stage_id}_slot_{conv_idx}_convo_{convo_num}",
-                context=bp.system_prompt,
-                system_prompt=bp.system_prompt,
+        slot = self._slot_states[conv_idx]
+        slot.busy = True
+        previous_blueprint = slot.blueprint_index
+        rollover = previous_blueprint is not None and slot.next_turn == self.blueprints[previous_blueprint].num_turns
+        if previous_blueprint is None:
+            # Keep the slot's own blueprint only if rotation has not already
+            # handed it to another slot. Otherwise take a genuinely free one.
+            blueprint_index = conv_idx if conv_idx in self._available_blueprints else self._available_blueprints[0]
+            turn_idx = 0
+        elif rollover:
+            # A finished conversation hands its slot to the next blueprint its
+            # worker's token stream named; with the whole pool active there is
+            # none left, so the slot keeps its own and replays it as before.
+            blueprint_index = self._available_blueprints[0] if self._available_blueprints else previous_blueprint
+            turn_idx = 0
+        else:
+            blueprint_index = previous_blueprint
+            turn_idx = slot.next_turn
+        bp = self.blueprints[blueprint_index]
+        round_num = slot.next_round
+        convo_num = slot.conversation_number + int(rollover)
+        try:
+            # Re-prime if the session was cleared (e.g. LoadGenerator calls
+            # LocalUserSession.clear_instances() between load stages). Without this,
+            # subsequent stages would dispatch with empty session_context, losing the
+            # system_prompt the conversation was built around.
+            expected_session_id = self.user_sessions[conv_idx].user_session_id
+            if expected_session_id not in LocalUserSession._instances:
+                # Get or generate the shared system prompt for this stage.
+                shared_prompt = self._get_or_generate_shared_prompt(data.stage_id)
+                bp.system_prompt = self._build_system_prompt(shared_prompt, bp.dynamic_system_prompt)
+
+                self.user_sessions[conv_idx] = self._new_session(
+                    user_session_id=expected_session_id,
+                    context=bp.system_prompt,
+                    system_prompt=bp.system_prompt,
+                )
+                logger.debug("Slot %d: refreshed system prompt and re-primed session %s", conv_idx, expected_session_id)
+
+            # Rollover happens only after the slot's preceding request has
+            # completed and returned it to the ready pool. The id carries the stage
+            # because get_data() restarts data_index at 0 every stage while the slot
+            # keeps its previous id: without it, a stage-1 slot re-primed as
+            # slot_0_convo_1 would roll over onto slot_0_convo_1 again instead of
+            # starting a new conversation.
+            if rollover or (previous_blueprint is None and blueprint_index != conv_idx):
+                # Rollover and a fresh slot assigned another blueprint both need
+                # that blueprint's context with the current stage's shared prefix.
+                shared_prompt = self._get_or_generate_shared_prompt(data.stage_id)
+                bp.system_prompt = self._build_system_prompt(shared_prompt, bp.dynamic_system_prompt)
+                self.user_sessions[conv_idx] = self._new_session(
+                    user_session_id=f"stage_{data.stage_id}_slot_{conv_idx}_convo_{convo_num}",
+                    context=bp.system_prompt,
+                    system_prompt=bp.system_prompt,
+                )
+                logger.debug("Slot %d starting conversation %d", conv_idx, convo_num)
+
+            latency = bp.turn_tool_call_latencies[turn_idx] if bp.turn_tool_call_latencies else 0.0
+            session = self.user_sessions[conv_idx]
+            request = _ConversationReplayAPIData(
+                prompt=bp.turn_prompts[turn_idx],
+                max_tokens=bp.turn_output_lens[turn_idx],
+                user_session_id=session.user_session_id,
+                target_round=round_num,
+                tool_call_latency_sec=latency,
             )
-            logger.debug("Slot %d starting conversation %d", conv_idx, convo_num)
-
-        latency = bp.turn_tool_call_latencies[turn_idx] if bp.turn_tool_call_latencies else 0.0
-        return _ConversationReplayAPIData(
-            prompt=bp.turn_prompts[turn_idx],
-            max_tokens=bp.turn_output_lens[turn_idx],
-            user_session_id=self.user_sessions[conv_idx].user_session_id,
-            target_round=round_num,
-            tool_call_latency_sec=latency,
-        )
+            request.bind_request_finished(session, lambda: self._release_slot(conv_idx, data.stage_id))
+            # Hand the slot over only once the request exists: a failed
+            # materialization must not consume a blueprint or skip a turn.
+            if blueprint_index in self._available_blueprints:
+                self._available_blueprints.remove(blueprint_index)
+            if previous_blueprint is not None and previous_blueprint != blueprint_index:
+                self._available_blueprints.append(previous_blueprint)
+            slot.blueprint_index = blueprint_index
+            slot.next_turn = turn_idx + 1
+            slot.conversation_number = convo_num
+            slot.next_round += 1
+            return request
+        except Exception:
+            self._release_slot(conv_idx, data.stage_id)
+            raise
 
     # -- DataGenerator interface ------------------------------------------
 
@@ -325,6 +444,15 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         )
         LocalUserSession._instances[user_session_id] = session
         return session
+
+    def _release_slot(self, conv_idx: int, stage_id: int) -> None:
+        if stage_id != self._scheduler_stage_id:
+            return
+        slot = self._slot_states[conv_idx]
+        if not slot.busy:
+            return
+        slot.busy = False
+        self._ready_slots.append(conv_idx)
 
     def _get_or_generate_shared_prompt(self, stage_id: int) -> str:
         """Get or generate the shared system prompt prefix for a specific stage using a derived stable seed."""

@@ -18,17 +18,13 @@ eviction off each HitSample's own `ts` -- so every test here drives state via
 hand-constructed HitSample timelines instead of sleep().
 """
 
-from datetime import datetime, timedelta
-
 from inference_perf.circuit_breaker.triggers import HitSample
 from inference_perf.circuit_breaker.triggers.consecutive import Consecutive
 from inference_perf.circuit_breaker.triggers.rate_over_window import RateOverWindow
 
-BASE = datetime(2026, 1, 1, 0, 0, 0)
-
 
 def _hit(hit: int) -> HitSample:
-    return HitSample(BASE, hit)
+    return HitSample(0.0, hit)
 
 
 # --- Consecutive -----------------------------------------------------------
@@ -103,9 +99,9 @@ def test_consecutive_reset_fully_clears_state() -> None:
 
 def test_rate_over_window_below_threshold_does_not_fire() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=0.75, min_samples=0)
-    trigger.update(HitSample(BASE, 0))
-    trigger.update(HitSample(BASE + timedelta(seconds=1), 0))
-    trigger.update(HitSample(BASE + timedelta(seconds=2), 1))
+    trigger.update(HitSample(0.0, 0))
+    trigger.update(HitSample(1.0, 0))
+    trigger.update(HitSample(2.0, 1))
     # 1/3 hit rate stays below 0.75 throughout.
 
     assert trigger.fired() is False
@@ -113,8 +109,8 @@ def test_rate_over_window_below_threshold_does_not_fire() -> None:
 
 def test_rate_over_window_above_threshold_fires() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=0.5, min_samples=0)
-    trigger.update(HitSample(BASE, 0))
-    trigger.update(HitSample(BASE + timedelta(seconds=1), 1))
+    trigger.update(HitSample(0.0, 0))
+    trigger.update(HitSample(1.0, 1))
     # 1/2 hit rate crosses the 0.5 threshold.
 
     assert trigger.fired() is True
@@ -122,25 +118,25 @@ def test_rate_over_window_above_threshold_fires() -> None:
 
 def test_rate_over_window_min_samples_gates_firing() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=0.5, min_samples=3)
-    trigger.update(HitSample(BASE, 1))
-    trigger.update(HitSample(BASE + timedelta(seconds=1), 1))
+    trigger.update(HitSample(0.0, 1))
+    trigger.update(HitSample(1.0, 1))
     # Rate is already 1.0, but only 2 samples so far; min_samples=3 gates it.
     assert trigger.fired() is False
 
-    trigger.update(HitSample(BASE + timedelta(seconds=2), 1))
+    trigger.update(HitSample(2.0, 1))
     assert trigger.fired() is True
 
 
 def test_rate_over_window_evicts_samples_outside_window() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=0.5, min_samples=0)
     # Two early misses keep the rate under threshold ...
-    trigger.update(HitSample(BASE, 0))
-    trigger.update(HitSample(BASE + timedelta(seconds=1), 0))
-    trigger.update(HitSample(BASE + timedelta(seconds=2), 1))
+    trigger.update(HitSample(0.0, 0))
+    trigger.update(HitSample(1.0, 0))
+    trigger.update(HitSample(2.0, 1))
     assert trigger.fired() is False
 
     # ... until they age out of the 10s window, leaving only hits behind.
-    trigger.update(HitSample(BASE + timedelta(seconds=12), 1))
+    trigger.update(HitSample(12.0, 1))
     assert trigger.fired() is True
 
 
@@ -149,15 +145,15 @@ def test_rate_over_window_threshold_zero_fires_on_first_sample() -> None:
     # has ge=0.0). Since rate >= 0.0 is always true once min_samples is satisfied, this fires
     # on the very first sample regardless of hit value. Pinned here as documented behavior.
     trigger = RateOverWindow(window_sec=10, threshold=0.0, min_samples=0)
-    trigger.update(HitSample(BASE, 0))
+    trigger.update(HitSample(0.0, 0))
 
     assert trigger.fired() is True
 
 
 def test_rate_over_window_reset_clears_state() -> None:
     trigger = RateOverWindow(window_sec=10, threshold=0.5, min_samples=0)
-    trigger.update(HitSample(BASE, 1))
-    trigger.update(HitSample(BASE + timedelta(seconds=1), 1))
+    trigger.update(HitSample(0.0, 1))
+    trigger.update(HitSample(1.0, 1))
     assert trigger.fired() is True
 
     trigger.reset()

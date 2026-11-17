@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterator, List, Sequence, Tuple
 
+from inference_perf.reportgen.base import TOOL_TOKEN_AGREEMENT_ABS_TOL, TOOL_TOKEN_AGREEMENT_REL_TOL
 from inference_perf.reportgen.validation import (
     PER_REQUEST_FILENAME,
     Check,
@@ -143,6 +144,7 @@ class PerRequestLifecycleValidator(ReportSetValidator):
     def _check_token_agreement(self, reports: ReportSet) -> List[Finding]:
         """Weak-form #630 invariant: client and server output-token counts agree."""
         bad: List[int] = []
+        bad_tools: List[int] = []
         for i, record in self._records(reports):
             if record.get("error") is not None:
                 continue
@@ -160,7 +162,14 @@ class PerRequestLifecycleValidator(ReportSetValidator):
                         break
             if not (is_number(client_tokens) and client_tokens > 0 and is_number(server_tokens) and server_tokens > 0):
                 continue
-            if abs(client_tokens - server_tokens) > _TOKEN_AGREEMENT_REL_TOL * max(client_tokens, server_tokens):
+            if response_metrics.get("has_tool_calls") is True:
+                tolerance = max(
+                    TOOL_TOKEN_AGREEMENT_ABS_TOL,
+                    TOOL_TOKEN_AGREEMENT_REL_TOL * max(client_tokens, server_tokens),
+                )
+                if abs(client_tokens - server_tokens) > tolerance:
+                    bad_tools.append(i)
+            elif abs(client_tokens - server_tokens) > _TOKEN_AGREEMENT_REL_TOL * max(client_tokens, server_tokens):
                 bad.append(i)
         return _aggregate(
             f"{self.name}.token_agreement",
@@ -168,6 +177,12 @@ class PerRequestLifecycleValidator(ReportSetValidator):
             "have client output_tokens diverging from server output count (completion_tokens / output_tokens) by more than "
             f"{_TOKEN_AGREEMENT_REL_TOL:.0%} (reasoning-channel tokens can account for some divergence)",
             bad,
+        ) + _aggregate(
+            f"{self.name}.token_agreement",
+            Severity.WARNING,
+            "have tool client output_tokens diverging from server output count (completion_tokens / output_tokens) "
+            f"beyond both {TOOL_TOKEN_AGREEMENT_ABS_TOL} tokens and {TOOL_TOKEN_AGREEMENT_REL_TOL:.0%}",
+            bad_tools,
         )
 
 

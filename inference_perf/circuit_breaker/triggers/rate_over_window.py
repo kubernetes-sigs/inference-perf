@@ -13,7 +13,6 @@
 # limitations under the License.
 from __future__ import annotations
 import collections
-import datetime
 from typing import Deque
 from .base import Trigger, HitSample
 from inference_perf.config.circuit_breaker import TriggerRateOverWindow
@@ -23,16 +22,26 @@ class RateOverWindow(Trigger, spec_cls=TriggerRateOverWindow):
     """Open when hit rate over a time window crosses threshold."""
 
     def __init__(self, window_sec: float, threshold: float, min_samples: int = 0):
-        self.size = datetime.timedelta(seconds=window_sec)
+        self.size = float(window_sec)
         self.th = threshold
         self.min = min_samples
         self.buf: Deque[HitSample] = collections.deque()
         self._fired = False
 
     def update(self, s: HitSample) -> None:
-        now = s.ts
-        self.buf.append(s)
-        cutoff = now - self.size
+        if not self.buf or s.ts >= self.buf[-1].ts:
+            self.buf.append(s)
+        else:
+            for offset, sample in enumerate(reversed(self.buf)):
+                if s.ts >= sample.ts:
+                    self.buf.insert(len(self.buf) - offset, s)
+                    break
+            else:
+                self.buf.appendleft(s)
+        # Sorted order keeps the latest time at the tail, even for stale arrivals.
+        # A nonnegative window cannot evict that tail, so it retains the latest
+        # time seen until reset clears the buffer.
+        cutoff = self.buf[-1].ts - self.size
         while self.buf and self.buf[0].ts < cutoff:
             self.buf.popleft()
         total = len(self.buf)

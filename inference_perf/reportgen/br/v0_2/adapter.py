@@ -21,13 +21,16 @@ by the user via the partial report; see ``partial_report.py``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
 from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
+from inference_perf.apis.base import is_stage_teardown_cancelled
 from inference_perf.reportgen.base import effective_output_tokens, retokenize_output_token_times
 from inference_perf.payloads import Audios, Images, Videos
+from inference_perf.client.modelserver.metrics import GaugeResult
+from inference_perf.client.server_metrics import ModelServerMetrics
 
 from .schema import (
     AggregateLatency,
@@ -35,10 +38,13 @@ from .schema import (
     AggregateRequests,
     AggregateThroughput,
     AudioPayloadStats,
+    ComponentObservability,
     ImagePayloadStats,
     MultiModalRequests,
+    Observability,
     VideoPayloadStats,
     RequestPerformance,
+    ResourceMetrics,
     Results,
     SessionPerformance,
     SessionRequests,
@@ -61,6 +67,8 @@ def build_results(
     *,
     session_metrics: Optional[List[SessionLifecycleMetric]] = None,
     sessions_not_completed: int = 0,
+    server_metrics: Optional[Mapping[str, ModelServerMetrics]] = None,
+    dropped_requests: Optional[int] = None,
 ) -> Results:
     """Build a BR0.2 ``Results`` from inference-perf request metrics.
 
@@ -84,11 +92,68 @@ def build_results(
     without them a stage cut short by ``max_stage_duration`` would report only
     the sessions that happened to finish, which reads as a clean run. Like the
     native session report, they count towards ``total`` and nothing else.
+
+    ``server_metrics`` maps a component label (the server type, e.g. ``vllm``)
+    to the stage's Prometheus summary. It fills
+    ``observability.components[].aggregate``; omitted, ``observability`` stays
+    ``None``.
+
+    ``dropped_requests`` is the stage's exact count of requests generated but
+    never dispatched. It fills ``observability.drop_rate`` as a percent of the
+    requests the stage generated: the recorded ones plus the dropped ones.
+    ``None`` (not counted, or only a lower bound) leaves it out.
     """
     return Results(
         request_performance=_build_request_performance(request_metrics, tokenizer, use_server_output_tokens),
         session_performance=_build_session_performance(session_metrics or [], sessions_not_completed),
+        observability=_build_observability(server_metrics or {}, len(request_metrics), dropped_requests),
     )
+
+
+# ---------------------------------------------------------------------------
+# Observability: the stage's Prometheus summary per component
+# ---------------------------------------------------------------------------
+
+
+def _build_observability(
+    server_metrics: Mapping[str, ModelServerMetrics], recorded: int, dropped: Optional[int]
+) -> Optional[Observability]:
+    components = [
+        ComponentObservability(component_label=label, aggregate=aggregate)
+        for label, metrics in server_metrics.items()
+        if (aggregate := _build_resource_metrics(metrics)) is not None
+    ]
+    generated = recorded + (dropped or 0)
+    drop_rate = _scalar_statistics(dropped / generated * 100, Units.PERCENT) if dropped is not None and generated else None
+    if not components and drop_rate is None:
+        return None
+    return Observability(components=components or None, drop_rate=drop_rate)
+
+
+def _build_resource_metrics(metrics: ModelServerMetrics) -> Optional[ResourceMetrics]:
+    # Only the metrics the server declares are queried. The rest keep
+    # ModelServerMetrics' 0.0 defaults, which are not measurements.
+    declared = metrics.model_fields_set
+    preemptions = metrics.num_preemptions_total.total if "num_preemptions_total" in declared else None
+    hits = metrics.prefix_cache_hits.total if "prefix_cache_hits" in declared else None
+    queries = metrics.prefix_cache_queries.total
+    aggregate = ResourceMetrics(
+        kv_cache_usage=_gauge_statistics(metrics.kv_cache_usage, Units.FRACTION) if "kv_cache_usage" in declared else None,
+        running_requests=(
+            _gauge_statistics(metrics.num_requests_running, Units.COUNT) if "num_requests_running" in declared else None
+        ),
+        waiting_requests=_gauge_statistics(metrics.queue_length, Units.COUNT) if "queue_length" in declared else None,
+        preemptions=_scalar_statistics(preemptions, Units.COUNT) if preemptions is not None else None,
+        # No cache queries (0, or the 0.0 default when undeclared) means no hit rate, rather than 0%.
+        cache_hit_rate=_scalar_statistics(hits / queries * 100, Units.PERCENT) if hits is not None and queries else None,
+    )
+    return aggregate if aggregate.model_dump(exclude_none=True) else None
+
+
+def _gauge_statistics(result: GaugeResult, units: Units) -> Optional[Statistics]:
+    if result.avg is None:
+        return None
+    return Statistics(units=units, mean=result.avg, p50=result.median, p90=result.p90, p99=result.p99)
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +248,10 @@ def _build_aggregate(
     use_server_output_tokens: bool,
 ) -> AggregateRequestPerformance:
     successful = [m for m in metrics if m.error is None]
-    failed = [m for m in metrics if m.error is not None]
+    # A request cancelled at stage teardown never got an answer, so it is incomplete rather than
+    # a failure, which the schema defines as a request that responded with an error.
+    cancelled = [m for m in metrics if is_stage_teardown_cancelled(m.error)]
+    failed = [m for m in metrics if m.error is not None and not is_stage_teardown_cancelled(m.error)]
 
     input_lengths = [float(m.info.input_tokens) for m in successful]
     # Zero is a real output length (immediate EOS, stop sequence) and stays in
@@ -198,6 +266,8 @@ def _build_aggregate(
     requests = AggregateRequests(
         total=len(metrics),
         failures=len(failed),
+        # Unset when nothing was cancelled, the way the native report omits its cancelled block.
+        incomplete=len(cancelled) or None,
         input_length=_statistics(input_lengths, Units.COUNT),
         output_length=_statistics(output_lengths, Units.COUNT),
         request_size=_statistics(
@@ -218,7 +288,9 @@ def _build_aggregate(
 
     # No successes means no measured throughput: emit absence, not zero rates,
     # so a composer can tell an unmeasured window from a measured 0.
-    total_time = _benchmark_window(metrics)
+    # The window spans the requests that got an answer, as in the native report: a cancelled request ends when it
+    # was cancelled, up to stage_teardown_grace_seconds after the stage, which would lower every rate.
+    total_time = _benchmark_window((successful + failed) or metrics)
     throughput = _build_throughput(successful, total_time, use_server_output_tokens) if successful and total_time > 0 else None
 
     return AggregateRequestPerformance(requests=requests, latency=latency, throughput=throughput)
@@ -285,9 +357,9 @@ def _build_multimodal(successful: List[RequestLifecycleMetric]) -> Optional[Mult
     if any(images):
         image = ImagePayloadStats(
             count=_statistics((group.count if group else 0 for group in images), Units.COUNT),
-            filesize=_statistics((instance.bytes for instance in all_images), Units.BYTES),
-            pixels=_statistics((instance.pixels for instance in all_images), Units.PIXELS),
-            aspect_ratio=_statistics(
+            filesize=_media_statistics((instance.bytes for instance in all_images), Units.BYTES),
+            pixels=_media_statistics((instance.pixels for instance in all_images), Units.PIXELS),
+            aspect_ratio=_media_statistics(
                 (instance.aspect_ratio for instance in all_images),
                 Units.RATIO,
             ),
@@ -296,21 +368,27 @@ def _build_multimodal(successful: List[RequestLifecycleMetric]) -> Optional[Mult
     if any(videos):
         video = VideoPayloadStats(
             count=_statistics((group.count if group else 0 for group in videos), Units.COUNT),
-            filesize=_statistics((instance.bytes for instance in all_videos), Units.BYTES),
+            filesize=_media_statistics((instance.bytes for instance in all_videos), Units.BYTES),
             # BR counts pixels across frames; native Video.pixels is per-frame.
-            pixels=_statistics((instance.pixels * instance.frames for instance in all_videos), Units.PIXELS),
-            aspect_ratio=_statistics(
+            pixels=_media_statistics(
+                (
+                    instance.pixels * instance.frames if instance.pixels is not None and instance.frames is not None else None
+                    for instance in all_videos
+                ),
+                Units.PIXELS,
+            ),
+            aspect_ratio=_media_statistics(
                 (instance.aspect_ratio for instance in all_videos),
                 Units.RATIO,
             ),
-            frames=_statistics((instance.frames for instance in all_videos), Units.COUNT),
+            frames=_media_statistics((instance.frames for instance in all_videos), Units.COUNT),
         )
     audio = None
     if any(audios):
         audio = AudioPayloadStats(
             count=_statistics((group.count if group else 0 for group in audios), Units.COUNT),
-            filesize=_statistics((instance.bytes for instance in all_audios), Units.BYTES),
-            duration=_statistics((instance.seconds for instance in all_audios), Units.S),
+            filesize=_media_statistics((instance.bytes for instance in all_audios), Units.BYTES),
+            duration=_media_statistics((instance.seconds for instance in all_audios), Units.S),
         )
     return MultiModalRequests(image=image, video=video, audio=audio)
 
@@ -346,14 +424,13 @@ def _per_request_latencies(
         # rather than folding in a fabricated 0.0.
         ntpot.append((m.end_time - m.start_time) / output_tokens if output_tokens > 0 else None)
 
-        if len(token_times) > 1:
-            ttft.append(token_times[0] - m.start_time)
+        ttft.append(token_times[0] - m.start_time if token_times else None)
+        if any(t != token_times[0] for t in token_times):
             duration = token_times[-1] - token_times[0]
             tpot.append(duration / (output_tokens - 1) if output_tokens > 1 else None)
             for a, b in zip(token_times, token_times[1:], strict=False):
                 itl.append(b - a)
         else:
-            ttft.append(None)
             tpot.append(None)
 
     return request_latency, ttft, tpot, itl, ntpot
@@ -370,7 +447,7 @@ def _resolve_token_times(
     if info.output_token_times:
         return list(info.output_token_times)
 
-    if not (info.response_chunks or info.reasoning_chunks) or tokenizer is None:
+    if not (info.response_chunks or info.reasoning_chunks or info.tool_chunks) or tokenizer is None:
         return []
 
     return retokenize_output_token_times(info, tokenizer)
@@ -394,6 +471,15 @@ def _statistics(values: Iterable[float], units: Units) -> Optional[Statistics]:
         max=float(arr.max()),
         **{key: float(p) for key, p in zip(_PERCENTILE_KEYS, pcts, strict=True)},
     )
+
+
+def _media_statistics(values: Iterable[Optional[float]], units: Units) -> Optional[Statistics]:
+    """Statistics over the media instances that measured this field.
+
+    None means the client never saw the bytes, so it stays out of the
+    distribution rather than counting as 0.
+    """
+    return _statistics((value for value in values if value is not None), units)
 
 
 def _scalar_statistics(value: float, units: Units) -> Statistics:

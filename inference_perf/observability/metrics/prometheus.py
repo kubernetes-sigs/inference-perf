@@ -21,13 +21,38 @@ endpoint. Which metrics exist is decided by
 
 from __future__ import annotations
 
+import time
 from threading import Thread
-from typing import Optional
+from typing import Callable, Optional
 from wsgiref.simple_server import WSGIServer
 
 from prometheus_client import CollectorRegistry, start_http_server
 
 DEFAULT_PORT = 9464
+
+# How often linger_until looks at its interrupt flag. A signal handler only sets
+# the flag, so this is the longest a SIGINT or SIGTERM waits before it is seen.
+LINGER_POLL_SECONDS = 0.1
+
+
+def linger_until(
+    deadline: float,
+    interrupted: Callable[[], bool],
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Block until ``clock()`` reaches ``deadline``, or until ``interrupted()`` is true.
+
+    Keeps the process, and so the ``/metrics`` endpoint, alive after the run so a
+    scraper can collect the final values. The interrupt flag is polled because the
+    load generator's SIGINT and SIGTERM handlers only set a flag; they neither
+    raise nor exit, so a plain sleep would ignore both signals.
+    """
+    while not interrupted():
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return
+        sleep(min(remaining, LINGER_POLL_SECONDS))
 
 
 class PrometheusMetricsServer:

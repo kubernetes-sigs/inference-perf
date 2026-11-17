@@ -15,6 +15,7 @@
 from typing import Callable, List, Optional, Set, Tuple
 
 import numpy as np
+from transformers import PreTrainedTokenizerBase
 
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -62,21 +63,44 @@ def random_token_ids(rng: np.random.Generator, valid_token_ids: np.ndarray, leng
     return rng.choice(valid_token_ids, size=length).tolist()  # type: ignore[no-any-return]
 
 
+def _count_tokens_batch(tokenizer: CustomTokenizer, texts: List[str]) -> List[int]:
+    """Token count of each text, without special tokens.
+
+    A Hugging Face tokenizer encodes the whole list in one call, which keeps
+    startup cheap on large vocabularies (Qwen2.5 has about 150k ids). Other
+    tokenizers, such as the lightweight fakes in tests, fall back to one
+    ``count_tokens`` call per text.
+    """
+    if not texts:
+        return []
+    hf_tokenizer = tokenizer.get_tokenizer()
+    if isinstance(hf_tokenizer, PreTrainedTokenizerBase):
+        return [len(ids) for ids in hf_tokenizer(texts, add_special_tokens=False).input_ids]
+    return [tokenizer.count_tokens(text, add_special_tokens=False) for text in texts]
+
+
 def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.ndarray) -> np.ndarray:
-    """Token IDs whose decoded form starts with whitespace.
+    """Token IDs whose decoded form starts with whitespace and re-tokenizes to one token.
 
     Used to pin the first token of a suffix when appending it to a prefix:
     a whitespace-prefixed token prevents BPE merges across the boundary,
     so ``len(decode(prefix_ids + suffix_ids))`` retokenizes exactly and the
-    prefix's server-side tokens stay stable. Falls back to the full vocab
-    when no such tokens exist.
+    prefix's server-side tokens stay stable. Ids whose decoded text comes
+    back as more than one token (e.g. gpt2 ids that decode to an incomplete
+    UTF-8 sequence) are left out: a one-token suffix starting with one of
+    them can never converge. Falls back to the full vocab when no such
+    tokens exist.
     """
     hf_tokenizer = tokenizer.get_tokenizer()
-    word_starts: List[int] = []
+    candidate_ids: List[int] = []
+    candidate_texts: List[str] = []
     for tid in valid_token_ids:
         decoded = hf_tokenizer.decode([int(tid)], skip_special_tokens=True)
-        if decoded and decoded[0].isspace():
-            word_starts.append(int(tid))
+        if isinstance(decoded, str) and decoded[:1].isspace():
+            candidate_ids.append(int(tid))
+            candidate_texts.append(decoded)
+    counts = _count_tokens_batch(tokenizer, candidate_texts)
+    word_starts = [tid for tid, count in zip(candidate_ids, counts, strict=True) if count == 1]
     if not word_starts:
         return valid_token_ids
     return np.array(word_starts, dtype=np.int64)
@@ -131,7 +155,8 @@ def converge_to_exact_length_text(
 
     raise ValueError(
         f"Could not generate a prompt of exactly {target_len} tokens after {max_iterations} "
-        f"attempts (got {last_len}). This usually means tokenizer.pretrained_model_name_or_path "
+        f"attempts (got {last_len}). The token count did not converge: either re-tokenization keeps "
+        f"merging tokens across the edited boundary, or tokenizer.pretrained_model_name_or_path "
         f"does not match the model the server is running."
     )
 
@@ -152,14 +177,25 @@ def generate_random_exact_length_text(
         return "", []
 
     initial_tokens = random_token_ids(rng, valid_token_ids, target_len)
+    seen_lens: List[int] = []
 
     def adjust_tokens(current_tokens: List[int], current_len: int, target_len: int) -> List[int]:
+        # Re-tokenizing can merge a token with its neighbour, so appending or
+        # trimming n tokens may move the count by n+1 and the loop can bounce
+        # between target-1 and target+1 forever. When a length repeats, the
+        # tail is the problem: drop it and resample fresh tokens in its place
+        # instead of appending to / trimming the same tail again.
+        stuck = current_len in seen_lens
+        seen_lens.append(current_len)
+        if stuck and current_tokens:
+            current_tokens = current_tokens[:-1]
+            current_len -= 1
         if current_len < target_len:
             current_tokens.extend(random_token_ids(rng, valid_token_ids, target_len - current_len))
             return current_tokens
         diff = current_len - target_len
         if diff < len(current_tokens):
-            return current_tokens[:-diff]
+            return current_tokens[:-diff] if diff else current_tokens
         return []
 
     return converge_to_exact_length_text(

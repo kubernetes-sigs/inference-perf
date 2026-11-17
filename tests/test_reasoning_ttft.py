@@ -32,6 +32,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import ClientResponse
+from pydantic import ValidationError
 
 from inference_perf.apis.anthropic_messages import AnthropicMessagesAPIData, parse_anthropic_thinking
 from inference_perf.apis.base import InferenceInfo, RequestLifecycleMetric, StreamedResponseMetrics, UnaryResponseMetrics
@@ -150,17 +151,19 @@ def test_first_output_token_for_records_without_chunk_times() -> None:
     assert latency["time_to_first_output_token"]["mean"] == pytest.approx(2.0)
 
 
-# One reasoning chunk at 2.0 and nothing else. TTFT and TTFO are both None.
-def test_single_generation_event_is_not_streamable() -> None:
-    """A single timestamped event is indistinguishable from a unary response,
-    matching the pre-#559 guard against single-event streams."""
+# One reasoning chunk has TTFT, but no answer text or decode interval.
+def test_single_generation_event_has_ttft_without_decode_intervals() -> None:
+    """A received stream event measures TTFT even when no decode interval exists."""
     metric = make_streamed_metric(
         start_time=1.0, end_time=4.0, output_token_times=[2.0], reasoning_chunk_times=[2.0], output_tokens=1
     )
     latency = summarize_requests([metric], [50]).successes["latency"]
 
-    assert latency["time_to_first_token"] is None
+    assert latency["time_to_first_token"]["mean"] == 1.0
     assert latency["time_to_first_output_token"] is None
+
+    assert latency["time_per_output_token"] is None
+    assert latency["inter_token_latency"] is None
 
 
 # Timeline 2.0 to 5.2 (3.2s) over 5 tokens, server completion_tokens = 5 with
@@ -533,7 +536,8 @@ def test_parse_anthropic_thinking_reads_only_thinking_blocks() -> None:
 
 # Chat stream: reasoning "a b", a chunk with choices but no delta, a chunk with
 # no choices key, then content "c". The odd chunks are skipped: output_tokens = 3
-# streamed. Non-streamed, a choice with no message gives output_tokens = 0.
+# streamed. Non-streamed, a choice with no message fails validation even though
+# the body carries usage: it used to pass as a zero-token success.
 @pytest.mark.asyncio
 async def test_chat_skips_chunks_without_choices_or_delta() -> None:
     """Servers send finish and keep-alive chunks with no delta, or no choices
@@ -553,11 +557,10 @@ async def test_chat_skips_chunks_without_choices_or_delta() -> None:
     assert isinstance(streamed.response_metrics, StreamedResponseMetrics)
     assert streamed.response_metrics.output_tokens == 3
 
-    body = {"choices": [{"index": 0, "finish_reason": "length"}]}
-    unary = await data.process_response(
-        cast(ClientResponse, FakeStreamingResponse(json_body=body)),
-        APIConfig(type=APIType.Chat, streaming=False),
-        _word_tokenizer(),
-    )
-    assert isinstance(unary.response_metrics, UnaryResponseMetrics)
-    assert unary.response_metrics.output_tokens == 0
+    body = {"choices": [{"index": 0, "finish_reason": "length"}], "usage": {"completion_tokens": 0}}
+    with pytest.raises(ValidationError, match="choices.0.message"):
+        await data.process_response(
+            cast(ClientResponse, FakeStreamingResponse(json_body=body)),
+            APIConfig(type=APIType.Chat, streaming=False),
+            _word_tokenizer(),
+        )

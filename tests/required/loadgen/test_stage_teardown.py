@@ -29,7 +29,6 @@ cancellation/rendezvous overhead.
 """
 
 import asyncio
-import multiprocessing as mp
 import os
 import signal
 import sys
@@ -59,6 +58,7 @@ from inference_perf.config import (
 from inference_perf.datagen import MockDataGenerator, SessionGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData, TeardownResult, Worker
 from inference_perf.loadgen.load_timer import LoadTimer
+from inference_perf.utils.mp_context import MP_CONTEXT
 from inference_perf.utils.request_queue import Drained, RequestQueue
 
 
@@ -208,6 +208,27 @@ class ChainedChatData(ChatCompletionAPIData):
         return True
 
 
+class FinalizingChatData(ChatCompletionAPIData):
+    finished_path: str
+
+    def on_request_finished(self) -> None:
+        with open(self.finished_path, "a") as f:
+            f.write("finished\n")
+
+
+class FinalizingDataGenerator(MockDataGenerator):
+    def __init__(self, api_config: APIConfig, config: DataConfig, finished_path: str) -> None:
+        super().__init__(api_config, config, None)
+        self.finished_path = finished_path
+
+    def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        while True:
+            yield FinalizingChatData(
+                messages=[ChatMessage(role="user", content="finalize me")],
+                finished_path=self.finished_path,
+            )
+
+
 class ChainDataGenerator(MockDataGenerator):
     """Yields alternating plain / predecessor-gated requests."""
 
@@ -321,6 +342,18 @@ class RecordingGateClient(_TestClientBase):
                 await asyncio.sleep(0.01)
 
 
+# A Worker whose _wind_down_stage waits until the file at allow_wind_down_path exists, then runs
+# the real one. Defined at module level so the forkserver child unpickles this class; a
+# monkeypatch in the parent never reaches the child.
+class _HeldWindDownWorker(Worker):
+    allow_wind_down_path = ""
+
+    async def _wind_down_stage(self, tasks: List[asyncio.Task[None]], draining: asyncio.Event) -> None:
+        while not os.path.exists(self.allow_wind_down_path):
+            await asyncio.sleep(0.01)
+        await super()._wind_down_stage(tasks, draining)
+
+
 def _line_count(path: str) -> int:
     if not os.path.exists(path):
         return 0
@@ -339,18 +372,10 @@ async def _wait_for_line(path: str, expected: str, timeout: float = 2.0) -> None
     raise AssertionError(f"{expected!r} was not dispatched within {timeout}s")
 
 
-@pytest.fixture(autouse=True)
-def _fork_start_method() -> Generator[None, None, None]:
-    # Workers must fork (matching production: Linux default, forced on macOS in
-    # main_cli) so unpicklable test state is inherited rather than pickled.
-    old = mp.get_start_method(allow_none=True)
-    if old != "fork":
-        if "fork" not in mp.get_all_start_methods():
-            pytest.skip("fork start method unavailable on this platform")
-        mp.set_start_method("fork", force=True)
-    yield
-    if old is not None and old != "fork":
-        mp.set_start_method(old, force=True)
+# How long the harness waits for a worker process to finish booting. Only a
+# guard against a wedged worker hanging the suite; a healthy forkserver
+# worker signals ready in well under a second.
+_WORKER_BOOT_TIMEOUT_SEC = 60.0
 
 
 class _Harness:
@@ -360,6 +385,7 @@ class _Harness:
         teardown_grace_seconds: float,
         datagen: Optional[MockDataGenerator | SessionGenerator] = None,
         worker_max_concurrency: int = 4,
+        hold_wind_down_until: Optional[str] = None,
     ) -> None:
         api_config = APIConfig(type=APIType.Chat)
         self.datagen = (
@@ -379,19 +405,20 @@ class _Harness:
         )
         self.loadgen = LoadGenerator(self.datagen, load_config)
         self.request_queue: RequestQueue[RequestQueueData] = RequestQueue(1)
-        self.finished_counter = mp.Value("i", 0)
-        self.active_counter = mp.Value("i", 0)
-        self.skipped_counter = mp.Value("i", 0)
-        self.request_phase = mp.Event()
-        self.stop_signal = mp.Event()
-        self.cancel_signal = mp.Event()
-        self.force_stop_signal = mp.Event()
-        self.stage_boundary_seq = mp.Value("i", 0)
+        self.finished_counter = MP_CONTEXT.Value("i", 0)
+        self.active_counter = MP_CONTEXT.Value("i", 0)
+        self.skipped_counter = MP_CONTEXT.Value("i", 0)
+        self.request_phase = MP_CONTEXT.Event()
+        self.stop_signal = MP_CONTEXT.Event()
+        self.cancel_signal = MP_CONTEXT.Event()
+        self.force_stop_signal = MP_CONTEXT.Event()
+        self.stage_boundary_seq = MP_CONTEXT.Value("i", 0)
+        self.worker_ready = MP_CONTEXT.Event()
         self.loadgen._force_stop_signal = self.force_stop_signal
         self.loadgen._stage_boundary_seq = self.stage_boundary_seq
         self.request_phase.set()
 
-        worker = Worker(
+        worker = (Worker if hold_wind_down_until is None else _HeldWindDownWorker)(
             0,
             client,
             self.request_queue.get_channel(0),
@@ -406,12 +433,29 @@ class _Harness:
             None,
             base_seed=42,
             force_stop_signal=self.force_stop_signal,
-            stage_done_counter=mp.Value("i", 0),
+            stage_done_counter=MP_CONTEXT.Value("i", 0),
             stage_boundary_seq=self.stage_boundary_seq,
             teardown_grace_seconds=teardown_grace_seconds,
+            ready_event=self.worker_ready,
         )
+        if isinstance(worker, _HeldWindDownWorker) and hold_wind_down_until is not None:
+            worker.allow_wind_down_path = hold_wind_down_until
         worker.start()
+        self._await_worker_ready()
         self.loadgen.workers = [worker]
+
+    # Blocks until the worker process has finished booting and is about to start
+    # consuming the request queue. Input: none; waits on self.worker_ready, which
+    # the worker sets once its payload is unpickled. Output: returns once it is set,
+    # or raises RuntimeError if the worker never gets there.
+    #
+    # Forkserver workers take real time to boot, unlike the forked workers these
+    # tests were first written against. The load generator keeps that startup off
+    # the stage clock (LoadGenerator._await_workers_ready); these tests must too,
+    # because their timing assertions begin when the stage does.
+    def _await_worker_ready(self) -> None:
+        if not self.worker_ready.wait(_WORKER_BOOT_TIMEOUT_SEC):
+            raise RuntimeError(f"worker did not signal ready within {_WORKER_BOOT_TIMEOUT_SEC}s")
 
     async def run_stage(self, stage_id: int, timeout: float, rate: float = 2) -> float:
         start = time.perf_counter()
@@ -473,9 +517,7 @@ async def test_dependency_wait_does_not_consume_request_concurrency(tmp_path: ob
         harness.shutdown()
 
 
-async def test_permit_released_after_teardown_does_not_dispatch_waiter(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_permit_released_after_teardown_does_not_dispatch_waiter(tmp_path: object) -> None:
     """A session request that acquires the only permit after the parent has
     signalled teardown must not be dispatched before the worker starts its
     local wind-down."""
@@ -487,27 +529,17 @@ async def test_permit_released_after_teardown_does_not_dispatch_waiter(
     with open(predecessor_done, "w") as f:
         f.write("done\n")
 
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = StubSessionGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
     # Keep the worker's local draining event clear until the waiter has reacted
     # to the released permit. This isolates the shared-signal recheck added by
     # the fix: without it, the waiter dispatches before wind-down is allowed.
-    original_wind_down = Worker._wind_down_stage
-
-    async def delayed_wind_down(worker: Worker, tasks: List[asyncio.Task[None]], draining: asyncio.Event) -> None:
-        while not os.path.exists(allow_wind_down):
-            await asyncio.sleep(0.01)
-        await original_wind_down(worker, tasks, draining)
-
-    # The autouse fixture forces fork, so the child inherits this patch. The
-    # parent-side monkeypatch cleanup is sufficient once the child exits.
-    monkeypatch.setattr(Worker, "_wind_down_stage", delayed_wind_down)
-
-    api_config = APIConfig(type=APIType.Chat)
-    datagen = StubSessionGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
     harness = _Harness(
         RecordingGateClient(dispatch_log, release_root),
         teardown_grace_seconds=2.0,
         datagen=datagen,
         worker_max_concurrency=1,
+        hold_wind_down_until=allow_wind_down,
     )
 
     now = time.perf_counter()
@@ -650,6 +682,20 @@ async def test_grace_lets_inflight_requests_complete(tmp_path: object) -> None:
         assert harness.loadgen.stage_runtime_info[0].dropped_requests == 0
         assert harness.worker_pids() == pids_before, "worker should not be respawned"
         assert harness.loadgen.workers[0].is_alive()
+    finally:
+        harness.shutdown()
+
+
+async def test_worker_finalizes_each_scheduled_request(tmp_path: object) -> None:
+    finished_path = os.path.join(str(tmp_path), "finished.log")
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = FinalizingDataGenerator(api_config, DataConfig(type=DataGenType.Mock), finished_path)
+    harness = _Harness(QuickClient(), teardown_grace_seconds=1.0, datagen=datagen)
+    try:
+        await harness.run_stage(0, timeout=5.0)
+
+        assert harness.finished_counter.value == 2
+        assert _line_count(finished_path) == 2
     finally:
         harness.shutdown()
 

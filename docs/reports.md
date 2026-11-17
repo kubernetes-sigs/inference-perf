@@ -97,16 +97,30 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 
 - **`load_summary`**: Details about the requested vs achieved load.
 - **`successes`**: Metrics for successful requests.
-- **`failures`**: Metrics for failed requests, including the per-label error breakdown.
+- **`failures`**: Metrics for failed requests, including the per-label error breakdown. A request fails on a non-200 status, on a transport error, or on a 200 whose body is not a completion: a body or stream frame carrying a top-level `error` (label `inbanderror`, `error_msg` is the JSON of that body or frame), a unary body whose `choices` or `usage` is not shaped like a completion's (label `validationerror`, for example a choice with no `message` or `text`), or one with neither completion content nor `usage` (label `emptyresponseerror`). The body is kept as `response` in the per-request report in every case.
+
+  The `by_label` keys and the `error_type` label on the runtime counter
+  `inference_perf_request_errors_total` ([runtime_metrics.md](./runtime_metrics.md)) start from
+  the same string on each failed request: the client's exception class, or `HTTP Error <status>`.
+  The counter exports that string unchanged. The report shortens it: an HTTP error becomes
+  `<code> - <label>`, with the label taken from the status code, else from patterns in the
+  message text, else `other`. A non-HTTP error becomes a short label matched from the message,
+  else the lowercased exception class. So `HTTP Error 504` on the endpoint is
+  `504 - Gateway Timeout` here, and the per-stage counts agree once the labels are mapped.
+- **`cancelled`**: (Only when present) Requests still in flight when the stage's teardown grace
+  ran out. Neither successes nor failures: `count`, `in_flight_sec` (how long each had been
+  waiting, a lower bound on its latency) and `prompt_tokens`. The llm-d benchmark report partial
+  counts them under `requests.incomplete`, not `requests.failures`. See
+  [`stage_teardown_grace_seconds`](./otel_trace_replay.md#stage-timing-max_stage_duration-and-stage_teardown_grace_seconds).
 - **`goodput_metrics`**: (Optional) Goodput statistics if constraints were configured.
 
 ### Token Counts
 
 `successes` carries both a client-side and a server-side token count, and they are not
-interchangeable: `output_len` is the client's re-tokenization of the response text,
+interchangeable: `output_len` is the client's re-tokenization of text, reasoning, tool names, and tool arguments,
 `output_tokens` is the server's own count, `prompt_tokens` is the server's count of the prompt
-with client tokenization as the fallback, and `token_count_mismatches` counts the requests
-where the two output counts disagree. Alongside it, `client_fallback_requests` says how many
+with client tokenization as the fallback, and `token_count_mismatches` counts non-tool requests
+where the per-chunk client timeline count disagrees with server output usage. Alongside it, `client_fallback_requests` says how many
 requests had no server number at all, per side. See
 [Token Accounting and Provenance](./metrics.md#token-accounting-and-provenance) for what each
 field is derived from and which one normalizes per-token latency.
@@ -164,3 +178,7 @@ from splitting into one bucket per failure.
 | `request_failed` | The request to the model server raised; `message` carries the exception type and text. |
 | `unknown` | The session failed without a more specific cause being recorded. |
 | `unreported` | The session was counted as failed but carried no error at all. Should not occur; treat as a bug. |
+
+Tool turns use a separate `tool_token_count_mismatches` counter with a 25% relative
+tolerance. See [tool-call output accounting](metrics.md#tool-call-output-accounting)
+for the counting, timing, and server-usage contract.
