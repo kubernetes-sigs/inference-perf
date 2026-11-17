@@ -126,6 +126,23 @@ class RateSchedule:
         """Average requests per second over the window, the figure reports carry."""
         return self._total / self.duration
 
+    @property
+    def is_expression(self) -> bool:
+        """True when the rate was written as an expression string, even a constant one such as ``"10"``."""
+        return isinstance(self.rate.raw, str)
+
+    def send_times(self) -> NDArray[np.float64]:
+        """Stage times of the stage's requests with no jitter: request k where the area under the rate reaches k.
+
+        One time per expected request. The last is held to the end of the
+        window, where rounding could otherwise put it a hair past.
+        """
+        count = self.expected_requests
+        if count == 0:
+            return np.empty(0, dtype=np.float64)
+        times = self.inverse(np.arange(1, count + 1, dtype=np.float64))
+        return np.asarray(np.minimum(times, self.duration), dtype=np.float64)
+
     def cumulative(self, t: Union[float, NDArray[np.float64]]) -> NDArray[np.float64]:
         """Expected requests dispatched by stage time ``t``."""
         times = np.asarray(t, dtype=np.float64)

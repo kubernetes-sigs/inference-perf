@@ -83,3 +83,29 @@ def test_random_rate_rejected() -> None:
 def test_negative_rate_rejected_on_the_grid() -> None:
     with pytest.raises(ValueError, match="negative"):
         RateSchedule(Expression("5 - t"), 10)
+
+
+# send_times places request k where the area reaches k, one time per expected request. Constant
+# rate 4 over 2s gives 0.25, 0.5, ... 2.0. The ramp rate = t over 10s gives sqrt(2k) for k = 1..50,
+# ending at 10. A zero rate gives no times.
+def test_send_times_are_where_the_area_reaches_each_request() -> None:
+    assert _schedule("4", 2).send_times() == pytest.approx([0.25 * k for k in range(1, 9)])
+    ramp = _schedule("t", 10).send_times()
+    assert len(ramp) == 50
+    assert ramp == pytest.approx([np.sqrt(2 * k) for k in range(1, 51)], abs=1e-3)
+    assert float(ramp[-1]) == 10.0
+    assert len(_schedule("0", 10).send_times()) == 0
+
+
+# The last send time never passes the window: rate 0.7 over 30s is 21 requests, and 21 / 0.7 is
+# 30.000000000000004 in floating point, so the last time is held to exactly 30.
+def test_send_times_stay_inside_the_window() -> None:
+    times = _schedule("0.7", 30).send_times()
+    assert len(times) == 21
+    assert float(times[-1]) == 30.0
+
+
+# A schedule knows whether its rate was written as an expression: "4" is one, the number 4 is not.
+def test_is_expression_reads_how_the_rate_was_written() -> None:
+    assert _schedule("4", 10).is_expression
+    assert not RateSchedule(Expression(4, allow_random=False, minimum=0, duration=10), 10).is_expression

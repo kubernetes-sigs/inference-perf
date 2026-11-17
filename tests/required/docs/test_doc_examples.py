@@ -186,6 +186,15 @@ def _check_rate(row: Row) -> None:
     assert (stage.expected_requests, round(stage.mean_rate, 2)) == (requests, mean), f"{rate} over {window}s"
 
 
+# A rate expression over a window of the given seconds must send its first three requests and its last at
+# the claimed stage seconds (3 dp), with no randomness to seed.
+def _check_send_times(row: Row) -> None:
+    rate, window, first, last = _code(row[0]), int(row[1]), [float(v) for v in row[2].split(",")], float(row[3])
+    times = StandardLoadStage(rate=rate, duration=window).rate_schedule.send_times()
+    assert [round(float(v), 3) for v in times[:3]] == first, f"{rate} over {window}s"
+    assert round(float(times[-1]), 3) == last, f"{rate} over {window}s"
+
+
 # Each example in a rejected table must raise when built the way its table says.
 def _rejects(build: Callable[[str], object]) -> Callable[[Row], None]:
     def check(row: Row) -> None:
@@ -210,6 +219,7 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Rejected expression", "Why"): _rejects(Expression),
     ("Rejected condition", "Why"): _rejects(Predicate),
     ("Rate", "Window (s)", "Requests", "Mean req/s"): _check_rate,
+    ("Rate expression", "Window (s)", "First three sends (s)", "Last send (s)"): _check_send_times,
     ("Rejected rate", "Why"): _rejects(lambda raw: StandardLoadStage(rate=raw, duration=60)),
 }
 

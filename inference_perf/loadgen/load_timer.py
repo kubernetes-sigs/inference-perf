@@ -37,21 +37,21 @@ class LoadTimer(ABC):
 class ConstantLoadTimer(LoadTimer):
     """
     A load generator that generates requests at a constant rate.
-    Introduces a small amount of random noise in timing.
+    Introduces a small amount of random noise in timing for a numeric rate.
+    A rate written as an expression is sent at exact times, with no noise.
     """
 
     def __init__(self, rate: Union[float, RateSchedule], duration: float) -> None:
-        # A time-varying rate spreads the same jittered schedule over cumulative
-        # intensity instead of time, then maps each point back to the time the
-        # rate has accumulated that many requests. A constant rate keeps the
-        # original time-space arithmetic exactly.
+        # A rate expression, constant or not, is placed exactly: request k
+        # where the area under the rate reaches k. A numeric rate keeps the
+        # original jittered time-space arithmetic.
         self._schedule: Optional[RateSchedule] = None
         if isinstance(rate, RateSchedule):
-            if rate.is_constant:
-                rate = rate.constant_rate
-            else:
+            if rate.is_expression:
                 self._schedule = rate
                 rate = rate.mean_rate
+            else:
+                rate = rate.constant_rate
         self._rate = rate
         self._duration = duration
         # TODO: Make random state a global seed
@@ -59,7 +59,9 @@ class ConstantLoadTimer(LoadTimer):
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
         if self._schedule is not None:
-            yield from self._start_varying_timer(self._schedule, initial)
+            start = time.monotonic() if initial is None else initial
+            for offset in self._schedule.send_times():
+                yield start + float(offset)
             return
 
         num_requests = int(self._rate * self._duration)
@@ -79,19 +81,6 @@ class ConstantLoadTimer(LoadTimer):
         for interval in normalized_intervals:
             next_time += interval
             yield next_time
-
-    def _start_varying_timer(self, schedule: RateSchedule, initial: Optional[float]) -> Generator[float, None, None]:
-        num_requests = schedule.expected_requests
-        if num_requests == 0:
-            return
-        intervals = self._rand.exponential(1 / self._rate, num_requests)
-        # Normalize so the last request lands where the rate has accumulated its
-        # full total, which is the end of the window.
-        counts = np.cumsum(intervals * (schedule.total / np.sum(intervals)))
-        offsets = schedule.inverse(counts)
-        start = time.monotonic() if initial is None else initial
-        for offset in offsets:
-            yield start + float(offset)
 
 
 class PoissonLoadTimer(LoadTimer):

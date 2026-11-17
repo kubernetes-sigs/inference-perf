@@ -265,7 +265,16 @@ load:
 | `Max(0, -t)` | 60 | 0 | 0.00 |
 | `2**(t/10)` | 60 | 908 | 15.15 |
 
-Requests are spread by how much the rate has built up, so they bunch where the rate is high. `load.type` is not set alongside a rate expression: leave it out. A config that sets `load.type` and gives any stage a rate expression is rejected when it loads.
+A rate expression is sent at exact times, with no randomness: request 1 goes out when the area under the rate reaches 1, request 2 when it reaches 2, and so on, so the same config gives the same send times on every run. This holds for a constant expression too: `rate: "10"` over 60 s sends at 0.1 s, 0.2 s and on to 60.0 s. A numeric rate under `load.type: constant` is different: `rate: 10` sends the same exact count, with its requests spread at random inside the window.
+
+| Rate expression | Window (s) | First three sends (s) | Last send (s) |
+| --- | --- | --- | --- |
+| `10` | 60 | 0.100, 0.200, 0.300 | 60.000 |
+| `2 + 3` | 60 | 0.200, 0.400, 0.600 | 60.000 |
+| `t` | 10 | 1.414, 2.000, 2.449 | 10.000 |
+| `5 + t/2` | 60 | 0.198, 0.392, 0.583 | 60.000 |
+
+`load.type` is not set alongside a rate expression: leave it out. A config that sets `load.type` and gives any stage a rate expression is rejected when it loads.
 
 A rate of zero is legal, as a number or as an expression. A stage whose rate is zero for the whole stage sends zero requests, lasts its `duration` or `stop_condition` and reports a count of 0, so it works as a pause between two stages. A warning says the stage sends nothing, and why, when the config loads and when the stage runs. A rate that is zero for part of the stage, such as `Max(0, 20 - t/3)`, sends nothing during that part. A rate above zero that adds up to less than one request, such as `0.1` for 5 s, is treated the same way: the stage sends nothing, lasts its window, reports a count of 0 and logs a warning. A rate that is negative anywhere in the stage is rejected.
 
