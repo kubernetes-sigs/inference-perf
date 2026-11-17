@@ -114,7 +114,8 @@ Exact dependency versions live in `pyproject.toml` (locked in `pdm.lock`); check
 | `inference_perf/analysis/`, `observability/`, `circuit_breaker/`, `mediagen/` | Plotting, OTel/Prometheus, saturation triggers, media generation. |
 | `docs/` | User-facing docs (`config.md`, `metrics.md`, `reports.md`, `design.md`, …). Update when behavior changes. |
 | `tests/` | Test suite (see [Testing](#testing)). |
-| `examples/`, `workload-catalog/`, `deploy/` | Sample configs, ready-made workloads, Kubernetes manifests. |
+| `examples/`, `deploy/` | Sample configs, Kubernetes manifests. |
+| `inference_perf/workload_catalog/` | Ready-made workloads run with `--workload`. Each entry has a `mask.yaml` marking every field locked or open. |
 | `scripts/` | Repo automation (`sync_cli_flags_doc.py`, `check_coverage_regression.py`). |
 
 ## How Features Are Wired (the core pattern)

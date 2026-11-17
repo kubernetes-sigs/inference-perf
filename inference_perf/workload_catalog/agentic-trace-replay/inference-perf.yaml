@@ -39,7 +39,7 @@ data:
     # Keep only sessions whose largest call fits the served context window.
     # Qwen2.5-72B-Instruct serves 32k natively (max_position_embeddings=32768, no
     # rope_scaling); tiered tool-call expansion adds at most 7167 tokens to the
-    # recorded input+output total, so 25000 keeps the worst case below 32k. Raise
-    # to 120000 only if you serve 128k (YaRN enabled) — check `GET /v1/models` for
-    # max_model_len.
+    # recorded input+output total, so 25000 keeps the worst case below 32k. The
+    # filter is locked, so every run of this entry replays the same sessions. A 128k
+    # server (YaRN enabled) can raise it to 120000 in its own copy of this config.
     filter: "lambda x: x.get('max_tokens', 0) < 25000"

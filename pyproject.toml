@@ -228,7 +228,7 @@ where = ["."]
 include = ["inference_perf*", "deploy*"]
 
 [tool.setuptools.package-data]
-inference_perf = ["assets/*.txt", "assets/synthetic_themes/*.json"]
+inference_perf = ["assets/*.txt", "assets/synthetic_themes/*.json", "workload_catalog/*/*.yaml"]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
@@ -281,4 +281,4 @@ do_not_mutate = ["inference_perf/datagen/synthetic_agentic/synthetic_agentic_dat
 pytest_add_cli_args = ["-p", "no:cacheprovider", "-o", "log_cli=false", "-q"]
 process_isolation = "forkserver"
 # Repo files the unit tests read at runtime, outside tests/.
-also_copy = [".github", "conftest.py", "examples", "workload-catalog", "docs", "scripts", "config.yml", "config-weka.yaml", "e2e", "tools", "deploy"]
+also_copy = [".github", "conftest.py", "examples", "docs", "scripts", "config.yml", "config-weka.yaml", "e2e", "tools", "deploy"]
