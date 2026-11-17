@@ -5,7 +5,7 @@
 groups = ["default", "analysis", "dev", "lint", "mutation", "otel", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.1"
-content_hash = "sha256:8a2eed7e5b1afb4d216a6333d854c0daa8c3be814d200f37918df44dd4a60be7"
+content_hash = "sha256:09b7516f08f1aa09f023f07efbba144543d1ed977d11a1aac0ab8a4fc0473e05"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -4005,6 +4005,7 @@ version = "0.22.1"
 requires_python = ">=3.8.1"
 summary = "Fast implementation of asyncio event loop on top of libuv"
 groups = ["default"]
+marker = "sys_platform != \"win32\""
 files = [
     {file = "uvloop-0.22.1-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:fe94b4564e865d968414598eea1a6de60adba0c040ba4ed05ac1300de402cd42"},
     {file = "uvloop-0.22.1-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:51eb9bd88391483410daad430813d982010f9c9c89512321f5b60e2cddbdddd6"},

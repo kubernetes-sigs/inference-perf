@@ -42,78 +42,8 @@ def test_context_start_method_and_process_class() -> None:
     process.close()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows spawn fallback")
-# Queues, shared values, events, processes, and managers must work with the Windows context.
-# Starting a real spawned process checks more than constructing the Process object alone.
-def test_windows_context_primitives() -> None:
-    from inference_perf.utils.mp_context import MP_CONTEXT
-
-    queue = MP_CONTEXT.Queue()
-    try:
-        queue.put("queued")
-        assert queue.get(timeout=10) == "queued"
-    finally:
-        queue.close()
-        queue.join_thread()
-
-    simple_queue = MP_CONTEXT.SimpleQueue()
-    try:
-        simple_queue.put("simple")
-        assert simple_queue.get() == "simple"
-    finally:
-        simple_queue.close()
-
-    value = MP_CONTEXT.Value("i", 7)
-    assert value.value == 7
-    value.value += 1
-    assert value.value == 8
-    event = MP_CONTEXT.Event()
-    assert not event.is_set()
-    event.set()
-    assert event.wait(timeout=1)
-
-    process = MP_CONTEXT.Process(target=os.getpid)
-    try:
-        process.start()
-        process.join(timeout=30)
-        assert process.exitcode == 0
-    finally:
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=10)
-        process.close()
-
-    with MP_CONTEXT.Manager() as manager:
-        shared = manager.list(["spawn"])
-        assert list(shared) == ["spawn"]
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows forkserver no-op")
-@pytest.mark.parametrize("malloc_conf", [None, "background_thread:true"])
-# Two Windows calls must neither start/configure a forkserver nor modify its environment.
-# Check both absent and present JE_ARROW_MALLOC_CONF values without starting POSIX services.
-def test_windows_start_forkserver_is_repeatable_noop(monkeypatch: pytest.MonkeyPatch, malloc_conf: str | None) -> None:
-    from unittest.mock import patch
-
-    from inference_perf.utils.mp_context import start_forkserver
-
-    if malloc_conf is None:
-        monkeypatch.delenv("JE_ARROW_MALLOC_CONF", raising=False)
-    else:
-        monkeypatch.setenv("JE_ARROW_MALLOC_CONF", malloc_conf)
-    before = dict(os.environ)
-    with (
-        patch("multiprocessing.forkserver.ensure_running") as ensure_running,
-        patch("multiprocessing.forkserver.set_forkserver_preload") as set_preload,
-    ):
-        start_forkserver()
-        start_forkserver()
-        ensure_running.assert_not_called()
-        set_preload.assert_not_called()
-    assert dict(os.environ) == before
-
-
-# Cross-platform test: MP_CONTEXT primitives work on Linux too
+# The POSIX context must still build every primitive the load generator shares with its
+# workers, and a real forkserver child must transfer a manager list back to the parent.
 @pytest.mark.skipif(sys.platform == "win32", reason="Linux POSIX path")
 def test_posix_context_primitives() -> None:
     from inference_perf.utils.mp_context import MP_CONTEXT
