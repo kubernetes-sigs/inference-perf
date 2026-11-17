@@ -32,6 +32,7 @@ from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, Session
 from inference_perf.apis.chat import reasoning_field
 from inference_perf.apis.response_errors import InBandError
 from inference_perf.payloads import Audios, Images, Videos
+from inference_perf.utils.numeric.expression import SERIES
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageRuntimeInfo, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
@@ -832,7 +833,9 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
 
     Uses the same formulas as the aggregation loop in summarize_requests() so
     per-request values stay consistent with the summary/per-stage reports.
-    Assumes correct_streamed_response_metrics() has already been applied.
+    The report applies correct_streamed_response_metrics() first. The runtime
+    metrics call this during the run on the raw chunk times: TTFT, TPOT and
+    NTPOT come out the same either way, ITL does not.
     """
     request_latency = m.end_time - m.start_time
     response_metrics = m.info.response_metrics
@@ -885,6 +888,27 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
     }
 
 
+def series_values(m: RequestLifecycleMetric, use_server_output_tokens: bool = False) -> dict[str, float]:
+    """One finished request's value for each expression series it has one for, by the report's formulas.
+
+    The runtime metrics read the run's results through this, so they carry the
+    numbers the report will. ``schedule_delay`` is there for every request, the
+    other series for successful ones. ``error`` is not: it is ``m.error``.
+    ``output_tokens`` is the count ``effective_output_tokens`` gives.
+    """
+    values = {"schedule_delay": m.start_time - m.scheduled_time}
+    if m.error is not None:
+        return values
+    values["prompt_tokens"] = float(m.info.request_metrics.text.input_tokens)
+    values["output_tokens"] = float(effective_output_tokens(m.info.response_metrics, use_server_output_tokens))
+    latency = compute_request_latency_metrics(m, use_server_output_tokens)
+    for name, series in SERIES.items():
+        value = latency.get(series.report_field) if series.report_field else None
+        if value is not None:
+            values[name] = float(value)
+    return values
+
+
 def summarize_requests(
     metrics: List[RequestLifecycleMetric],
     percentiles: List[float],
@@ -906,10 +930,11 @@ def summarize_requests(
     # benchmark_time_seconds and lower every *_per_sec figure compared with the same run had those requests finished
     # before the stage did. Only when every request was cancelled does the window fall back to all of them.
     answered = (all_successful + all_failed) or metrics
-    total_time = max(x.end_time for x in answered) - min(x.start_time for x in answered)
+    # A stage that sent nothing (a zero rate) has no window: both spans are 0.
+    total_time = max(x.end_time for x in answered) - min(x.start_time for x in answered) if answered else 0.0
 
     schedule_deltas = [x.start_time - x.scheduled_time for x in metrics]
-    send_duration = max(x.start_time for x in metrics) - min(x.start_time for x in metrics)
+    send_duration = max(x.start_time for x in metrics) - min(x.start_time for x in metrics) if metrics else 0.0
 
     load_summary: dict[Any, Any] = {
         "count": len(metrics),
@@ -920,6 +945,7 @@ def summarize_requests(
         # n sends span n - 1 gaps, so the sustained rate is (n - 1) / send_duration (#821).
         # Guard against zero send_duration to avoid ZeroDivisionError when all
         # requests have identical start times or there is only a single request.
+        # The same guard reports 0.0 for a stage that sent nothing.
         achieved_rate = (len(metrics) - 1) / send_duration if send_duration > 0 else 0.0
         load_summary = {
             "count": len(metrics),
@@ -1176,6 +1202,21 @@ class ReportGenerator:
 
         return CustomTokenizer(self.config.tokenizer)
 
+    @staticmethod
+    def _rate_stage_ids(runtime_parameters: PerfRuntimeParameters) -> List[int]:
+        """Stages that report even when they sent nothing, in stage order.
+
+        A stage that sent zero requests is still a stage: its rate was zero,
+        or too low to reach one request, or it ended before its first send.
+        Only a rate stage records no concurrency level. The sweep's probe is
+        stage -1 and never reports.
+        """
+        return [
+            stage_id
+            for stage_id, info in sorted(runtime_parameters.stages.items())
+            if stage_id >= 0 and info.concurrency_level is None
+        ]
+
     def generate_config_report(self) -> ReportFile:
         """
         Generates a report file containing the config.
@@ -1183,11 +1224,16 @@ class ReportGenerator:
         Credentials are masked: the report bundle is uploaded to object storage and
         passed around, so it carries the shape of the run and not the keys it used.
         """
-        return ReportFile(
-            name="config",
-            file_type="yaml",
-            contents=redact(self.config.model_dump(mode="json", by_alias=True), Config),
-        )
+        contents = redact(self.config.model_dump(mode="json", by_alias=True), Config)
+        # load.type is rejected next to a rate expression, so the user cannot
+        # have set it there, and writing out its default would save a config
+        # that does not load
+        load = contents.get("load")
+        if isinstance(load, dict):
+            stages = load.get("stages") or []
+            if any(isinstance(stage, dict) and isinstance(stage.get("rate"), str) for stage in stages):
+                load.pop("type", None)
+        return ReportFile(name="config", file_type="yaml", contents=contents)
 
     async def generate_reports(
         self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters
@@ -1225,6 +1271,10 @@ class ReportGenerator:
             for metric in request_metrics:
                 if metric.stage_id is not None:
                     stage_buckets[metric.stage_id].append(metric)
+            # No metric names a stage that sent nothing. It still gets a
+            # report, with a count of 0.
+            for stage_id in self._rate_stage_ids(runtime_parameters):
+                stage_buckets.setdefault(stage_id, [])
             for stage_id, metrics in stage_buckets.items():
                 stage_rate = runtime_parameters.stages[stage_id].rate
                 concurrency_level = runtime_parameters.stages[stage_id].concurrency_level
@@ -1347,7 +1397,9 @@ class ReportGenerator:
                 if stage_runtime_info.sessions_not_completed_active or stage_runtime_info.sessions_not_completed_pending:
                     session_stage_ids.add(stage_id)
 
-        if request_metrics or session_stage_ids:
+        # a rate stage that sent nothing gets a partial too: its window, and no results
+        rate_stage_ids = set(self._rate_stage_ids(runtime_parameters))
+        if request_metrics or session_stage_ids or rate_stage_ids:
             # Always emit the inference-perf slice of a BR0.2 report per stage,
             # alongside the native inference-perf reports. Downstream composers
             # (llm-d-benchmark CLI, wrappers, ad-hoc yq merges) layer their
@@ -1363,7 +1415,7 @@ class ReportGenerator:
             # One eid for the whole invocation: run.eid is what lets a
             # composer group the per-stage partials as a single experiment.
             br_run_eid = generate_experiment_eid()
-            for br_stage_id in sorted(set(br_stage_buckets) | session_stage_ids):
+            for br_stage_id in sorted(set(br_stage_buckets) | session_stage_ids | rate_stage_ids):
                 # run.time needs the stage's wall-clock window: the request
                 # timestamps are monotonic and can't be mapped to epoch here.
                 stage_info = runtime_parameters.stages.get(br_stage_id)

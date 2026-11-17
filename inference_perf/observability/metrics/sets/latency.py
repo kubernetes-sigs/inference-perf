@@ -11,36 +11,34 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Per-request latency histograms, observed once per successful request.
+"""Per-request histograms, one per expression series.
 
-Runtime values use the report's derivations over the same
-RequestLifecycleMetric (see reportgen/base.py): TTFT is the first entry of
-output_token_times minus request start, TPOT is (last entry - first entry)
-divided by (output tokens - 1). Both follow whatever the API layer records
-as a generated token, so they track the report if that definition changes.
-TTFT matches the report exactly. TPOT matches it only when the output counts
-agree: the runtime takes the server's count whenever one was reported (see
-core.output_tokens), while the report does so only under
-report.request_lifecycle.use_server_output_tokens, which is off by default. Inter-token latency is deliberately absent:
-the report expands chunk timestamps to per-token timestamps at report time
-(#564), and a runtime ITL over raw chunk gaps would be a second, different
-number under the same name.
+Each takes its value from series_values in reportgen/base.py, the report's own
+formulas over the same RequestLifecycleMetric, so a runtime value is the number
+the report will show. TPOT and NTPOT divide by the count the report uses under
+report.request_lifecycle.use_server_output_tokens. Inter-token latency is
+deliberately absent: it needs a timestamp per token, which only the report
+computes, after the run (#564). A runtime ITL over raw chunk gaps would be a
+second, different number under the same name.
 """
 
-from typing import Any
+from typing import Any, Callable
 
 from prometheus_client import Histogram  # noqa: TID251 (declares each spec's metric_type)
 
-from inference_perf.apis.base import RequestLifecycleMetric, StreamedResponseMetrics
 from inference_perf.config import Config
-from inference_perf.observability.metrics.registry import MetricSpec
+from inference_perf.observability.metrics.registry import MetricSpec, ObservedRequest, always
 
-from .core import output_tokens, stage_label
+from .core import stage_label
 
 # Seconds. Wide enough for interactive chat through minute-long batch requests.
 TTFT_BUCKETS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0)
 TPOT_BUCKETS = (0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0)
+# NTPOT folds TTFT in, so a short response runs well past any TPOT.
+NTPOT_BUCKETS = (0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 REQUEST_LATENCY_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0)
+# A healthy run sends within a millisecond or two of schedule. The upper buckets show a client that cannot keep up.
+SCHEDULE_DELAY_BUCKETS = (0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
 
 
 def streaming_only(config: Config) -> bool:
@@ -48,55 +46,75 @@ def streaming_only(config: Config) -> bool:
     return bool(config.api.streaming)
 
 
-def _observe_request_latency(histogram: Histogram, metric: RequestLifecycleMetric) -> None:
-    if metric.error is None:
-        histogram.labels(stage_label(metric)).observe(metric.end_time - metric.start_time)
+def _observe(series: str) -> Callable[[Histogram, ObservedRequest], None]:
+    def observe(histogram: Histogram, request: ObservedRequest) -> None:
+        value = request.series.get(series)
+        if value is not None:
+            histogram.labels(stage_label(request.metric)).observe(value)
+
+    return observe
 
 
-def _observe_ttft(histogram: Histogram, metric: RequestLifecycleMetric) -> None:
-    response = metric.info.response_metrics
-    if metric.error is None and isinstance(response, StreamedResponseMetrics) and response.output_token_times:
-        histogram.labels(stage_label(metric)).observe(response.output_token_times[0] - metric.start_time)
-
-
-def _observe_tpot(histogram: Histogram, metric: RequestLifecycleMetric) -> None:
-    response = metric.info.response_metrics
-    if metric.error is not None or not isinstance(response, StreamedResponseMetrics):
-        return
-    times = response.output_token_times
-    tokens = output_tokens(response)
-    if len(times) > 1 and tokens > 1:
-        histogram.labels(stage_label(metric)).observe((times[-1] - times[0]) / (tokens - 1))
+# Takes the series once for both the declaration and the hook, so a histogram cannot
+# declare one series while observing another.
+def _series_histogram(
+    name: str,
+    documentation: str,
+    series: str,
+    buckets: tuple[float, ...],
+    enabled: Callable[[Config], bool] = always,
+) -> MetricSpec[Histogram]:
+    return MetricSpec(
+        name=name,
+        documentation=documentation,
+        metric_type=Histogram,
+        labelnames=("stage",),
+        buckets=buckets,
+        enabled=enabled,
+        series=series,
+        on_request=_observe(series),
+    )
 
 
 LATENCY_SPECS: tuple[MetricSpec[Any], ...] = (
-    MetricSpec(
+    _series_histogram(
         name="inference_perf_request_latency_seconds",
         documentation="End-to-end latency of successful requests by stage.",
-        metric_type=Histogram,
-        labelnames=("stage",),
+        series="latency",
         buckets=REQUEST_LATENCY_BUCKETS,
-        on_request=_observe_request_latency,
     ),
-    MetricSpec(
+    _series_histogram(
         name="inference_perf_time_to_first_token_seconds",
         documentation="Time to first token of successful streaming requests by stage: first generated token minus request start.",
-        metric_type=Histogram,
-        labelnames=("stage",),
+        series="ttft",
         buckets=TTFT_BUCKETS,
         enabled=streaming_only,
-        on_request=_observe_ttft,
     ),
-    MetricSpec(
+    _series_histogram(
         name="inference_perf_time_per_output_token_seconds",
         documentation=(
             "Time per output token of successful streaming requests by stage: "
-            "(last chunk - first chunk) / (output tokens - 1), for requests with more than one output token."
+            "(last chunk - first chunk) / (output tokens - 1), for requests with more than one output token. "
+            "Output tokens are counted as the report counts them: the client-side count, or the server's "
+            "under report.request_lifecycle.use_server_output_tokens."
         ),
-        metric_type=Histogram,
-        labelnames=("stage",),
+        series="tpot",
         buckets=TPOT_BUCKETS,
         enabled=streaming_only,
-        on_request=_observe_tpot,
+    ),
+    _series_histogram(
+        name="inference_perf_normalized_time_per_output_token_seconds",
+        documentation=(
+            "Request latency over output tokens of successful requests with output tokens, by stage. "
+            "Output tokens are counted as for time per output token."
+        ),
+        series="ntpot",
+        buckets=NTPOT_BUCKETS,
+    ),
+    _series_histogram(
+        name="inference_perf_schedule_delay_seconds",
+        documentation="How late each request was sent against its schedule, by stage: request start minus scheduled time. Every request, successes and failures.",
+        series="schedule_delay",
+        buckets=SCHEDULE_DELAY_BUCKETS,
     ),
 )
