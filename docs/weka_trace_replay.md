@@ -141,6 +141,32 @@ between the two datagens, except for corpus replay.
 
 ---
 
+## Replaying through the workload record layer (alpha)
+
+The same traces are also a workload format, `format: Weka` under `data.type: workload_replay` (see [Workload replay](loadgen.md#workload-replay-alpha)). It reads a directory of trace JSON files (`trace_directory`), or trace JSON files and `.jsonl` files with one trace per line (`trace_files`).
+
+```yaml
+data:
+  type: workload_replay
+  workload:
+    format: Weka
+    trace_directory: ./traces/
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 16
+```
+
+Each trace is one session. Prompts, output lengths, subagent streams, dependencies and the recorded gaps between calls are the ones described above, and a recorded assistant turn is replaced by the live reply of the call it followed. `filter`, `num_dataset_entries`, `trace_idle_gap_cap_seconds`, `ignore_trace_delays` and the session settings (`max_wait_ms` and the rest) sit in the same block, and sessions run in a shuffle seeded by `load.base_seed`. What this spelling does not have yet: `use_think_time_only`, per-stream subagent session IDs (`separate_subagent_session_ids`) and the Hugging Face download of `traces.jsonl` (`hf_dataset_path` here reads the repo as a dataset, which is untested for Weka). Prompt text comes from the prompt corpus, so it differs from the `weka_trace_replay` generator's, while lengths and prefix reuse are the same.
+
+A reply that a round records as a tool call (`stop: tool_use`) gets an id, and the requests of a subagent listed right after that round name it as the call they carry out (`call_id` on the record).
+
+Two things this spelling reads that `weka_trace_replay` does not. A subagent that spawns subagents of its own is read to any depth, where `weka_trace_replay` refuses the trace. A trace with `hash_id_scope: global` shares its block text with every other trace of the run that says the same, and a trace that says `local` or nothing keeps its blocks to itself.
+
+`data.type: weka_trace_replay` keeps working unchanged.
+
+---
+
 ## 🏃 Running the Benchmark
 
 Run the benchmark with the following command:
