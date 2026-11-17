@@ -99,8 +99,33 @@ be less than or equal to `num_conversations`.
 
 A conversation replay stage may also leave `concurrency_level` out entirely, in which case it
 defaults to `data.conversation_replay.num_conversations`: the stage runs the whole pool, one
-active conversation per blueprint. Name the field explicitly to run a narrower slice of the pool
-than `num_conversations` provides.
+active conversation per blueprint. Naming the field explicitly runs fewer conversations at once;
+the slot rotation described below still reaches the whole pool.
+
+When concurrency is smaller than the blueprint pool, each execution slot keeps its current
+blueprint until all of that conversation's turns finish. It then takes the next available blueprint
+its worker's own token stream named and returns its previous blueprint to the back of that queue.
+Newly named blueprints enter at the front, ahead of recycled ones, so a one-turn pool can open
+every blueprint on its first pass through the token stream. A slot taking its first conversation
+keeps its own blueprint only if it is free; otherwise it takes an available one and follows that
+blueprint's system prompt. Either way the new conversation opens a fresh session with a new ID and
+no history from the slot's previous conversation. With enough completed requests, this exercises
+the whole pool rather than repeatedly replaying an initial subset. Short runs may stop before every
+blueprint completes; completion order and variable turn counts also mean blueprint request counts
+need not be equal.
+
+A worker only ever runs blueprints named by the requests routed to it, so this pool follows the
+existing `preferred_worker_id` routing rather than tracking a second, separately computed
+partition. When `num_workers` divides `num_conversations` those pools are disjoint; when it does
+not, routing itself already hands one worker tokens for more than one blueprint share, and the
+pool simply mirrors that. When every blueprint a worker can reach is already active, a completed
+slot reuses its own blueprint because nothing else is free. Each stage resets this scheduling
+state, and a blueprint first reached in a later stage picks up that stage's shared system prompt.
+Tool latency continues to occupy the conversation's slot before the next turn or rollover.
+
+For example, the `batch-summarization-rag` catalog sweep has 30 one-turn blueprints and concurrency
+6/12/18/24/30 on one worker. Every stage can exercise all 30 with sufficient requests, including
+the lower-concurrency stages; changing concurrency no longer deliberately truncates the pool.
 
 ## Configuration Guide
 
@@ -109,7 +134,7 @@ All fields live under `data.conversation_replay`:
 | Field | Type | Description |
 | :--- | :--- | :--- |
 | `seed` | int | RNG seed. Same seed → identical conversations, prompts, and turn lengths. |
-| `num_conversations` | int | Number of conversation blueprints to pre-generate. Each conversation maps to one `LocalUserSession`; concurrency is driven by the `concurrent` load type. |
+| `num_conversations` | int | Number of conversation blueprints to pre-generate and cycle through. Each active conversation has its own `LocalUserSession`; concurrency is driven by the `concurrent` load type. |
 | `shared_system_prompt_len` | int | Tokens in the fixed prefix shared across all conversations. Useful for exercising prefix caching. |
 | `dynamic_system_prompt_len` | [`Distribution`](#distribution-types) | Per-conversation suffix appended to the shared prefix. Makes each conversation's system prompt unique. |
 | `turns_per_conversation` | [`Distribution`](#distribution-types) | How many user turns each conversation will issue before being recycled. |
@@ -183,7 +208,8 @@ whole conversation on the same endpoint. See
   `preferred_worker_id`; each worker dispatches a ready conversation when capacity opens, so a
   slow conversation cannot block another ready conversation's next turn.
 - **Recycling**: when a conversation exhausts its turns, the slot resets (fresh session,
-  same blueprint) and replays from the beginning — letting a stage run as long as
+  next available worker-owned blueprint, or the same blueprint when the pool is fully active)
+  and starts from the beginning — letting a stage run as long as
   `num_requests` demands without running out of work.
 - **Safety reset**: if a session's accumulated context exceeds ~2.7 M characters (≈225 K
   tokens, near typical `max_model_len` limits), the session is reset rather than letting the
