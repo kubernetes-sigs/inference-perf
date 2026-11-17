@@ -79,6 +79,8 @@ class SympyExpr(SympyNode, Protocol):
     # substituting into an expression gives an expression, or sympy raises
     def subs(self, old: SympyNode, new: SympyNode) -> SympyExpr: ...
 
+    def xreplace(self, rule: Mapping[SympyNode, SympyNode]) -> SympyExpr: ...
+
     def __float__(self) -> float: ...
 
     def __neg__(self) -> SympyExpr: ...
@@ -87,6 +89,21 @@ class SympyExpr(SympyNode, Protocol):
     def __ge__(self, other: object) -> SympyNode: ...
 
     def __le__(self, other: object) -> SympyNode: ...
+
+
+@runtime_checkable
+class SympyRelational(SympyNode, Protocol):
+    """A comparison of two expressions, e.g. ``std > 0``. Substituting numbers into one gives ``true`` or ``false``."""
+
+    @property
+    def lhs(self) -> SympyExpr: ...
+
+    @property
+    def rhs(self) -> SympyExpr: ...
+
+    # the operator as written: '>', '>=', '<', '<=' or '=='
+    @property
+    def rel_op(self) -> str: ...
 
 
 @runtime_checkable
@@ -101,12 +118,19 @@ class SympySet(SympyNode, Protocol):
 
     def intersect(self, other: SympySet) -> SympySet: ...
 
+    # true, false, or a condition when sympy cannot decide membership
+    def contains(self, other: object) -> SympyNode: ...
+
     def is_subset(self, other: SympySet) -> Optional[bool]: ...
 
 
 class SympyDistribution(Protocol):
     @property
     def set(self) -> SympySet: ...
+
+    # the parameters in constructor order, e.g. (512, 128) for Normal(512, 128)
+    @property
+    def args(self) -> tuple[SympyExpr, ...]: ...
 
 
 class SympyProbabilitySpace(Protocol):

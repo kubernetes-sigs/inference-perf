@@ -17,7 +17,13 @@ import pytest
 import sympy
 import sympy.stats
 
-from inference_perf.utils.numeric.expression.sympy_types import SympyExpr, SympyNode, SympyRandomSymbol, SympySet
+from inference_perf.utils.numeric.expression.sympy_types import (
+    SympyExpr,
+    SympyNode,
+    SympyRandomSymbol,
+    SympyRelational,
+    SympySet,
+)
 
 _T = sympy.Symbol("t")
 
@@ -53,6 +59,33 @@ def test_sets_are_sets() -> None:
     support = sympy.stats.Normal("x", 0, 1).pspace.distribution.set
     for value in (sympy.Interval(0, 1), sympy.Interval(0, 1) | sympy.Interval(2, 3), support):
         assert isinstance(value, SympySet)
+
+
+# 't > 0', 't >= 0', 't < 5', 't <= 5' and Eq(floor(t), t) carry lhs, rhs and rel_op, and rel_op is the operator
+# as written. A sum and true are not relationals.
+@pytest.mark.parametrize(
+    ("value", "rel_op"),
+    [(_T > 0, ">"), (_T >= 0, ">="), (_T < 5, "<"), (_T <= 5, "<="), (sympy.Eq(sympy.floor(_T), _T), "==")],
+    ids=["gt", "ge", "lt", "le", "eq"],
+)
+def test_relationals(value: object, rel_op: str) -> None:
+    assert isinstance(value, SympyRelational)
+    assert value.rel_op == rel_op
+    assert not isinstance(_T + 1, SympyRelational)
+    assert not isinstance(sympy.true, SympyRelational)
+
+
+# The open interval (0, oo) answers membership: contains(1) is true and contains(0) is false.
+def test_set_membership() -> None:
+    positive: SympySet = sympy.Interval.open(0, sympy.oo)
+    assert positive.contains(sympy.Integer(1)) == sympy.true
+    assert positive.contains(sympy.Integer(0)) == sympy.false
+
+
+# Binomial(10, 1/4) keeps its arguments in constructor order, followed by sympy's own succ and fail: (10, 1/4, 1, 0).
+def test_distribution_args() -> None:
+    rv: SympyRandomSymbol = sympy.stats.Binomial("x", 10, sympy.Rational(1, 4))
+    assert rv.pspace.distribution.args == (sympy.Integer(10), sympy.Rational(1, 4), sympy.Integer(1), sympy.Integer(0))
 
 
 # Normal(512, 128) is a random symbol whose pspace.distribution.set is a SympySet. t and 5 are not random symbols.
