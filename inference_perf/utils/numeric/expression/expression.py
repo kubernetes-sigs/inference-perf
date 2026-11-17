@@ -46,12 +46,12 @@ import inspect
 import logging
 import math
 import re
-from typing import Any, Mapping, Optional, Union
+from typing import Callable, Mapping, Optional, TypeGuard, Union
 
 import numpy as np
 import sympy
 import sympy.stats
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 from sympy import AccumBounds, Interval, Symbol, oo
 from sympy.calculus.util import function_range
 from sympy.core.function import AppliedUndef
@@ -60,6 +60,7 @@ from sympy.logic.boolalg import And, Boolean, Or
 from sympy.parsing.sympy_parser import parse_expr
 
 from .measured import SERIES, SIGNALS, Term, extract_terms
+from .sympy_types import SympyDistribution, SympyExpr, SympyNode, SympyRandomSymbol, SympySet
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +83,9 @@ except Exception:  # pragma: no cover - defensive: sympy internal layout changed
 _T = Symbol("t")
 
 
-def _distribution_constructors() -> dict[str, Any]:
+def _distribution_constructors() -> dict[str, Callable[..., SympyRandomSymbol]]:
     """Collect every ``sympy.stats`` distribution constructor (name-first)."""
-    ctors: dict[str, Any] = {}
+    ctors: dict[str, Callable[..., SympyRandomSymbol]] = {}
     for name in dir(sympy.stats):
         if name.startswith("_") or not name[0].isupper():
             continue
@@ -102,7 +103,7 @@ def _distribution_constructors() -> dict[str, Any]:
 _DISTRIBUTION_CTORS = _distribution_constructors()
 
 
-def _parse_namespace(counter: list[int]) -> dict[str, Any]:
+def _parse_namespace(counter: list[int]) -> dict[str, Callable[..., SympyRandomSymbol]]:
     """A fresh distribution namespace whose constructors take no name argument.
 
     Config strings read ``Normal(512, 200)`` rather than ``Normal("x", ...)``,
@@ -112,10 +113,12 @@ def _parse_namespace(counter: list[int]) -> dict[str, Any]:
     from two independent normals) yields two independent random variables rather
     than one aliased symbol.
     """
-    namespace: dict[str, Any] = {}
+    namespace: dict[str, Callable[..., SympyRandomSymbol]] = {}
     for name, ctor in _DISTRIBUTION_CTORS.items():
 
-        def bound(*args: Any, _ctor: Any = ctor, _counter: list[int] = counter) -> Any:
+        def bound(
+            *args: object, _ctor: Callable[..., SympyRandomSymbol] = ctor, _counter: list[int] = counter
+        ) -> SympyRandomSymbol:
             _counter[0] += 1
             return _ctor(f"rv_{_counter[0]}", *args)
 
@@ -123,15 +126,25 @@ def _parse_namespace(counter: list[int]) -> dict[str, Any]:
     return namespace
 
 
-def _is_random_symbol(sym: Any) -> bool:
+def _is_random_symbol(sym: object) -> TypeGuard[SympyRandomSymbol]:
     return isinstance(sym, sympy.stats.rv.RandomSymbol)
 
 
-def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = None) -> Any:
+def _is_node(value: object) -> TypeGuard[SympyNode]:
+    return isinstance(value, sympy.Basic)
+
+
+def _is_expr(value: object) -> TypeGuard[SympyExpr]:
+    return isinstance(value, sympy.Expr)
+
+
+def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = None) -> object:
     """Parse a config value into a sympy object, shared by both grammars.
 
     ``shown`` is the text to name in a parse error when ``raw`` has been
-    rewritten from it, so the author sees their own spelling.
+    rewritten from it, so the author sees their own spelling. The result is
+    whatever ``parse_expr`` built, which is a Python bool, tuple or list for
+    input like ``True``, ``1, 2`` or ``[1]``, so callers check it.
     """
     if isinstance(raw, bool):
         raise TypeError(f"{kind} does not accept bool input.")
@@ -148,16 +161,22 @@ def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = No
     raise TypeError(f"{kind} accepts str or number, got {type(raw).__name__}.")
 
 
-def _interval(expr: Any, duration: Optional[float]) -> Optional[tuple[Any, Any]]:
+def _interval(expr: SympyNode, duration: Optional[float]) -> Optional[tuple[SympyExpr, SympyExpr]]:
     """Sound ``(lower, upper)`` sympy bounds for ``expr``, or ``None`` when undecidable."""
-    if expr.is_Number or expr.is_NumberSymbol:
+    if _is_expr(expr) and (expr.is_Number or expr.is_NumberSymbol):
         return expr, expr
     if _is_random_symbol(expr):
         support = expr.pspace.distribution.set
         try:
-            return support.inf, support.sup
+            low, high = support.inf, support.sup
         except (AttributeError, NotImplementedError):
             return None
+        # a support that moves with t, e.g. Uniform(t, t + 1), is bounded by
+        # the least its lower end and the most its upper end can be
+        lowest, highest = _interval(low, duration), _interval(high, duration)
+        if lowest is None or highest is None:
+            return None
+        return lowest[0], highest[1]
     if expr == _T:
         return sympy.S.Zero, (sympy.Float(duration) if duration is not None else oo)
     found = [_interval(arg, duration) for arg in expr.args]
@@ -181,12 +200,33 @@ def _interval(expr: Any, duration: Optional[float]) -> Optional[tuple[Any, Any]]
         return None
     if isinstance(result, AccumBounds):
         return result.min, result.max
-    if result.is_number and result.is_extended_real:
+    if _is_expr(result) and result.is_number and result.is_extended_real:
         return result, result
     return None
 
 
-def _is_condition(expr: Any) -> bool:
+# How many evenly spaced times a distribution's parameters are checked at, and
+# how many its mean is computed at when sympy has no closed form in t.
+_DRAW_GRID_POINTS = 1001
+_MEAN_GRID_POINTS = 5
+
+
+def _is_finite(value: SympyExpr) -> bool:
+    """True for a finite real number, false for an infinity, nan or a complex value."""
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _parameter_names(dist: SympyDistribution) -> list[str]:
+    """What sympy calls the distribution's parameters, e.g. ``["rate"]`` for an exponential."""
+    declared = getattr(type(dist), "_argnames", ())
+    names = [str(name) for name in declared]
+    return names if len(names) == len(dist.args) else [f"parameter {i + 1}" for i in range(len(dist.args))]
+
+
+def _is_condition(expr: object) -> bool:
     """True for a truth value or a relational/logical combination, false for a number.
 
     A bare ``isinstance(expr, Boolean)`` is not enough: sympy's ``Symbol``
@@ -196,7 +236,7 @@ def _is_condition(expr: Any) -> bool:
     return isinstance(expr, (bool, Boolean)) and not isinstance(expr, sympy.Expr)
 
 
-def _reject_unknown_functions(kind: str, raw: Any, expr: Any) -> None:
+def _reject_unknown_functions(kind: str, raw: object, expr: SympyNode) -> None:
     """Reject unknown functions, e.g. a misspelled distribution InvalidDist(10)."""
     undefined = {f.func.__name__ for f in expr.atoms(AppliedUndef)}
     if undefined:
@@ -262,7 +302,11 @@ class Expression:
         free = self._expr.free_symbols
         self._random_symbols = sorted((s for s in free if _is_random_symbol(s)), key=str)
         self._is_random = bool(self._random_symbols)
-        self._free_symbols = {str(s) for s in free if not _is_random_symbol(s)}
+        # a distribution's parameters are not among the tree's free symbols,
+        # so t inside Exponential(5 + t/10) has to be looked for there
+        in_parameters = {s for rv in self._random_symbols for s in rv.pspace.distribution.free_symbols}
+        self._time_in_parameters = _T in in_parameters
+        self._free_symbols = {str(s) for s in free | in_parameters if not _is_random_symbol(s)}
 
         if self._is_random and not allow_random:
             raise ValueError(f"Expression {raw!r} contains a random variable, which is not permitted here.")
@@ -278,7 +322,7 @@ class Expression:
         self._runtime_check = False
         self._validate_range(duration)
         self._compile_random_sampler()
-        self._evaluator: Optional[Any] = None
+        self._evaluator: Optional[Callable[[NDArray[np.float64]], ArrayLike]] = None
 
     def _compile_random_sampler(self) -> None:
         """Precompute a numpy-vectorised sampler for the random fast path.
@@ -293,8 +337,8 @@ class Expression:
         If any leaf distribution has no numpy sampler (or the sympy internal is
         unavailable) we set ``_fallback`` and keep the sympy path.
         """
-        self._random_leaves: list[tuple[Any, Any]] = []
-        self._lambdified: Optional[Any] = None
+        self._random_leaves: list[tuple[SympyNode, SympyDistribution]] = []
+        self._lambdified: Optional[Callable[..., ArrayLike]] = None
         self._fallback = False
         if not self._is_random:
             return
@@ -303,7 +347,7 @@ class Expression:
             self._fallback = True
             return
 
-        placeholders: dict[Any, Any] = {}
+        placeholders: dict[SympyNode, SympyNode] = {}
         for i, rv in enumerate(self._random_symbols):
             dist = rv.pspace.distribution
             if do_sample_numpy.dispatch(type(dist)) is _NO_NUMPY_SAMPLER:
@@ -318,10 +362,14 @@ class Expression:
         order = [ph for ph, _dist in self._random_leaves] + [_T]
         self._lambdified = sympy.lambdify(order, skeleton, "numpy")
 
-    def _parse(self, raw: Union[str, int, float]) -> Any:
+    def _parse(self, raw: Union[str, int, float]) -> SympyExpr:
         expr = _parse_raw("Expression", raw)
         if _is_condition(expr):
             raise ValueError(f"Expression {raw!r} is a condition, not a numeric value; use Predicate for conditions.")
+        if not _is_expr(expr):
+            raise ValueError(
+                f"Expression {raw!r} is not a numeric value; write a number or an expression such as '512 + 2*t'."
+            )
         return expr
 
     def _validate_range(self, duration: Optional[float]) -> None:
@@ -368,7 +416,7 @@ class Expression:
         # is_subset returned None (couldn't decide): treat as undecided.
         self._runtime_check = True
 
-    def _static_range(self, duration: Optional[float]) -> Any:
+    def _static_range(self, duration: Optional[float]) -> Optional[SympySet]:
         """Best-effort provable value range, or ``None`` when undecidable."""
         if self._is_random:
             # Only a bare random variable has a readily available support set.
@@ -383,15 +431,17 @@ class Expression:
 
         if not self._free_symbols:
             value = float(self._expr.evalf())
-            return Interval(value, value)
+            point: SympySet = Interval(value, value)
+            return point
 
         # Time-varying: the range is only knowable over a bounded t domain.
         if duration is None:
             return None
         try:
-            return function_range(self._expr, _T, Interval(0, sympy.Float(duration)))
+            values: SympySet = function_range(self._expr, _T, Interval(0, sympy.Float(duration)))
         except Exception:
             return None
+        return values
 
     @property
     def bounds(self) -> Optional[tuple[float, float]]:
@@ -425,8 +475,93 @@ class Expression:
 
     @property
     def free_symbols(self) -> set[str]:
-        """Names of non-random free symbols (a subset of ``{"t"}``)."""
+        """Names of non-random free symbols (a subset of ``{"t"}``), a distribution's parameters included."""
         return set(self._free_symbols)
+
+    @property
+    def varies_with_time(self) -> bool:
+        """True when ``t`` appears, in the arithmetic or in a distribution's parameters."""
+        return "t" in self._free_symbols
+
+    def require_valid_draws(self) -> None:
+        """Raise unless a random expression over ``t`` can be drawn from at every ``t`` in ``[0, duration]``.
+
+        Four things are required of each distribution, and how far each is
+        established differs:
+
+        * its parameters are finite: proved, by interval arithmetic over the window.
+        * its parameters are ones the distribution allows (a positive rate, say):
+          checked by sympy's own parameter check at ``_DRAW_GRID_POINTS`` evenly
+          spaced times, both ends included. A grid check, not a proof.
+        * its mean is finite: proved from sympy's closed-form mean when it has
+          one in ``t``, otherwise computed at ``_MEAN_GRID_POINTS`` times, which
+          is a grid check.
+        * the whole expression stays inside ``[minimum, maximum]``: proved, by
+          interval arithmetic.
+
+        The mean is each distribution's own, not the mean of the arithmetic
+        built on it. An error names the parameter and a ``t`` at which it fails.
+        """
+        if not self._is_random or not self.varies_with_time:
+            return
+        if self._duration is None:
+            raise ValueError(f"Expression {self.raw!r} draws from a distribution over t, which needs a duration to check.")
+        duration = self._duration
+        window = f"for every t from 0 to {duration:g}"
+        times = [duration * i / (_DRAW_GRID_POINTS - 1) for i in range(_DRAW_GRID_POINTS)]
+
+        for rv in self._random_symbols:
+            dist = rv.pspace.distribution
+            shown = type(dist).__name__.removesuffix("Distribution")
+            names = _parameter_names(dist)
+            for name, arg in zip(names, dist.args, strict=True):
+                found = _interval(arg, duration)
+                if found is None or not all(_is_finite(end) for end in found):
+                    at = next((t for t in times if not _is_finite(arg.subs(_T, sympy.Float(t)))), None)
+                    where = f"is not finite at t={at:g}" if at is not None else f"cannot be shown to be finite {window}"
+                    raise ValueError(f"Expression {self.raw!r}: the {name} of {shown}, {arg}, {where}.")
+
+            for t in times:
+                values = [arg.subs(_T, sympy.Float(t)) for arg in dist.args]
+                try:
+                    dist.check(*values)
+                except ValueError as e:
+                    given = ", ".join(f"{name} = {float(value):g}" for name, value in zip(names, values, strict=True))
+                    raise ValueError(f"Expression {self.raw!r}: {shown} is not valid at t={t:g}, where {given}: {e}") from e
+
+            where_no_mean = self._where_the_mean_is_not_finite(rv, duration)
+            if where_no_mean is not None:
+                raise ValueError(f"Expression {self.raw!r}: the mean of {shown} {where_no_mean}.")
+
+        found_bounds = self.bounds
+        if found_bounds is None or not (self._within_bounds(found_bounds[0]) and self._within_bounds(found_bounds[1])):
+            raise ValueError(
+                f"Expression {self.raw!r} cannot be shown to stay inside the permitted range "
+                f"[{self.minimum}, {self.maximum}] {window}. Keep it in range with Min(...) or Max(...)."
+            )
+
+    @staticmethod
+    def _where_the_mean_is_not_finite(rv: SympyRandomSymbol, duration: float) -> Optional[str]:
+        """Where the mean of ``rv`` fails to be finite, as words for an error, or None when it is finite."""
+        try:
+            mean: object = sympy.stats.E(rv)
+        except Exception:
+            mean = None
+        if _is_expr(mean):
+            found = _interval(mean, duration)
+            if found is not None and all(_is_finite(end) for end in found):
+                return None
+        # no closed form in t that interval arithmetic can bound, so compute
+        # the mean at a few times instead. each one is a symbolic integral.
+        for i in range(_MEAN_GRID_POINTS):
+            t = duration * i / (_MEAN_GRID_POINTS - 1)
+            try:
+                at_t: object = sympy.stats.E(rv.subs(_T, sympy.Float(t)))
+            except Exception:
+                return f"cannot be computed at t={t:g}"
+            if not (_is_expr(at_t) and _is_finite(at_t)):
+                return f"is not finite at t={t:g}"
+        return None
 
     def sample(
         self,
@@ -450,15 +585,12 @@ class Expression:
         if size < 1:
             raise ValueError(f"size must be a positive integer, got {size}.")
 
-        expr = self._expr
-        if t is not None:
-            expr = expr.subs(_T, sympy.Float(t))
-
-        remaining = {str(s) for s in expr.free_symbols if not _is_random_symbol(s)}
+        remaining = self._free_symbols - ({"t"} if t is not None else set())
         if remaining:
             raise ValueError(f"Expression {self.raw!r} requires {sorted(remaining)} but none was provided to sample().")
 
         if not self._is_random:
+            expr = self._expr if t is None else self._expr.subs(_T, sympy.Float(t))
             value = float(expr.evalf())
             if self._runtime_check and not self._within_bounds(value):
                 raise ValueError(
@@ -475,7 +607,7 @@ class Expression:
             # Some leaf distribution has no direct numpy sampler; fall back to
             # the (slower) symbolic sampler for correctness.
             draw = sympy.stats.sample(
-                expr,
+                self._expr if t is None else self._expr.subs(_T, sympy.Float(t)),
                 size=(size,) if size > 1 else (),
                 library="numpy",
                 seed=rng,
@@ -486,10 +618,16 @@ class Expression:
             # sampler (independent draws, since the shared rng advances between
             # leaves), then evaluate the lambdified deterministic skeleton over
             # the drawn arrays.
-            leaf_draws = [
-                np.asarray(do_sample_numpy(dist, (size,), rng), dtype=np.float64) for _ph, dist in self._random_leaves
-            ]
             tval = 0.0 if t is None else float(t)
+            # parameters that mention t take the value they have at this t
+            at_t = {_T: sympy.Float(tval)} if self._time_in_parameters else None
+            leaf_draws = [
+                np.asarray(
+                    do_sample_numpy(dist if at_t is None else dist.xreplace(at_t), (size,), rng),
+                    dtype=np.float64,
+                )
+                for _ph, dist in self._random_leaves
+            ]
             out = self._lambdified(*leaf_draws, tval)  # type: ignore[misc]
             samples = np.asarray(out, dtype=np.float64)
             if samples.shape == ():
@@ -566,7 +704,8 @@ class Expression:
 
 
 # The ``t`` domain a predicate is proved over: a stage runs from t = 0 onward.
-_TIME_DOMAIN = Interval(0, oo)
+_TIME_DOMAIN: SympySet = Interval(0, oo)
+_NO_TIME: SympySet = sympy.S.EmptySet
 
 
 class Predicate:
@@ -599,7 +738,8 @@ class Predicate:
     functions over finished requests (``quantile_over_time(0.99, ttft[30s])``,
     ``avg_over_last(latency, 100)``, ``avg_over_sent(ttft, 10, 30)``, see
     :mod:`.measured`) and the signals ``completed``, ``errors``, ``in_flight``
-    and ``since_last_completion``. Those are the system under test and cannot
+    and ``since_last_completion``. A count can be read by status and in the
+    past: ``completed{status="success"} offset 60s``. Those are the system under test and cannot
     be solved, so a comparison on one is evaluated as results arrive. The time
     part is still proved, twice. With every measured comparison false the
     condition must hold from some time onward on its own. That time is
@@ -616,39 +756,62 @@ class Predicate:
     Note the grammar quirk: ``&`` and ``|`` bind tighter than a comparison, so
     each comparison must be parenthesised, ``(t >= 60) & (t < 120)``.
 
+    An error names the piece at fault rather than repeating the condition: it
+    quotes at most ``_QUOTE_LIMIT`` characters of it, then the comparison or
+    name that broke the rule and the outermost ``|`` clause that holds it. So
+    the message stays the same size whether the condition has one clause or
+    fifty.
+
     Args:
         raw: The condition as a string.
+        name: What errors call the condition, e.g. the config field it came from.
     """
 
-    def __init__(self, raw: str) -> None:
+    def __init__(self, raw: str, name: str = "Predicate") -> None:
         if not isinstance(raw, str):
-            raise TypeError(f"Predicate accepts str, got {type(raw).__name__}.")
+            raise TypeError(f"{name} accepts str, got {type(raw).__name__}.")
         self.raw = raw
-        if _EQUALITY_SPELLING.search(raw):
-            raise ValueError(_equality_message(raw))
+        self._subject = subject = f"{name} {_quote(raw)}"
+        # the '=' inside a label selector, completed{status="failure"}, is not an equality.
+        # blanked rather than cut, so a match keeps its offset in raw
+        equality = _EQUALITY_SPELLING.search(re.sub(r"\{[^{}]*\}", lambda m: " " * len(m.group()), raw))
+        if equality:
+            at = equality.start()
+            raise ValueError(_equality_message(subject, _where(raw, lambda start, text: start <= at < start + len(text))))
         rewritten, self._terms = extract_terms(raw)
         try:
             expr = _parse_raw("Predicate", rewritten, shown=raw)
         except ValueError as e:
+            where = _where(raw, lambda _start, text: _parse_clause(text) is None)
+            found = f" Found{where}." if where else ""
             if "&" in raw or "|" in raw:
+                # a TypeError here is Python applying '&' or '|' to a bare number, which says nothing to a config author
+                detail = (
+                    "'&' or '|' joins a comparison that has no parentheses"
+                    if isinstance(e.__cause__, TypeError)
+                    else e.__cause__
+                )
                 raise ValueError(
-                    f"{e} Hint: '&' and '|' bind tighter than a comparison, so parenthesise each one: '(t >= 60) & (t < 120)'."
+                    f"Could not parse {subject}: {detail}. Hint: '&' and '|' bind tighter than a comparison, "
+                    f"so parenthesise each one: '(t >= 60) & (t < 120)'.{found}"
                 ) from e
-            raise
+            raise ValueError(f"Could not parse {subject}: {e.__cause__}.") from e
 
         if isinstance(expr, bool) or expr in (sympy.true, sympy.false):
-            raise ValueError(f"Predicate {raw!r} is constant ({expr!r}); a condition must vary with t, e.g. 't >= 60'.")
-        if not _is_condition(expr):
-            raise ValueError(f"Predicate {raw!r} is not a condition; use a comparison such as 't >= 60'.")
-        _reject_unknown_functions("Predicate", raw, expr)
+            raise ValueError(f"{subject} is constant ({expr!r}); a condition must vary with t, e.g. 't >= 60'.")
+        if not (_is_node(expr) and _is_condition(expr)):
+            raise ValueError(f"{subject} is not a condition; use a comparison such as 't >= 60'.")
+        undefined = sorted({f.func.__name__ for f in expr.atoms(AppliedUndef)})
+        if undefined:
+            raise ValueError(f"{subject} uses unknown function(s): {undefined}.{_found(raw, undefined[0])}")
 
         free = expr.free_symbols
         if any(_is_random_symbol(s) for s in free):
-            raise ValueError(f"Predicate {raw!r} contains a random variable; a condition must be the same on every run.")
+            raise ValueError(f"{subject} contains a random variable; a condition must be the same on every run.")
         names = {str(s) for s in free}
         disallowed = names - {"t"} - set(SIGNALS) - set(self._terms)
         if disallowed:
-            raise ValueError(_disallowed_message(raw, disallowed))
+            raise ValueError(_disallowed_message(subject, raw, disallowed))
         # sympy can fold a term away ('t + 0*avg_over_last(ttft, 5)'); a term
         # the compiled condition never reads must not be evaluated either.
         self._terms = {symbol: term for symbol, term in self._terms.items() if symbol in names}
@@ -656,11 +819,11 @@ class Predicate:
         if "t" not in names:
             if self._measured:
                 raise ValueError(
-                    f"Predicate {raw!r} can only hold on measured values; it must also hold on time alone, "
-                    f"e.g. '(t >= 600) | ({raw})'."
+                    f"{subject} can only hold on measured values; it must also hold on time alone, so that it holds "
+                    f"even if they never do. Add a time bound as one more clause: '| (t >= 600)'."
                 )
-            raise ValueError(f"Predicate {raw!r} does not depend on t; a condition must vary with t.")
-        _reject_unprovable_nodes(raw, expr)
+            raise ValueError(f"{subject} does not depend on t; a condition must vary with t.")
+        _reject_unprovable_nodes(subject, raw, expr)
 
         self._expr = expr
         self._symbols = [_T] + [Symbol(name) for name in sorted(self._measured)]
@@ -678,42 +841,44 @@ class Predicate:
         else:
             self._earliest = self._boundary
 
-    def _prove_boundary(self, on_time_alone: Any) -> float:
+    def _prove_boundary(self, on_time_alone: SympyNode) -> float:
         """Solve the condition with its measured comparisons false and require the shape ``[b, oo)`` with ``b > 0``."""
         holding = _holding_set(on_time_alone)
         if holding is None:
-            raise ValueError(f"Predicate {self.raw!r} could not be proved to hold from some time onward.")
+            raise ValueError(f"{self._subject} could not be proved to hold from some time onward.")
         if holding == sympy.S.EmptySet:
             if self._measured:
+                clauses = len(_clauses(self.raw))
+                which = f", and none of its {clauses} clauses does" if clauses > 1 else ""
                 raise ValueError(
-                    f"Predicate {self.raw!r} never holds on time alone; add a time bound so it always holds eventually, "
-                    f"e.g. '({self.raw}) | (t >= 600)'."
+                    f"{self._subject} never holds on time alone: it must hold with every measured comparison false{which}. "
+                    f"Add a time bound as one more clause: '| (t >= 600)'."
                 )
-            raise ValueError(f"Predicate {self.raw!r} never holds for t >= 0.")
+            raise ValueError(f"{self._subject} never holds for t >= 0.")
         if not isinstance(holding, Interval) or holding.sup != oo:
             raise ValueError(
-                f"Predicate {self.raw!r} holds only on {_format_time_set(holding)}; a condition must hold from some time onward "
-                f"without lapsing, e.g. 't >= 60'."
+                f"{self._subject} holds only on {_format_time_set(holding)}; a condition must keep holding once it "
+                f"starts to, as 't >= 60' does.{_cause(self.raw, _lapsing(on_time_alone))}"
             )
         if holding.inf == 0:
             raise ValueError(
-                f"Predicate {self.raw!r} already holds at (or immediately after) t=0; "
-                f"a condition must be false at t=0, e.g. 't >= 60'."
+                f"{self._subject} already holds at (or immediately after) t=0, before anything has run; "
+                f"a condition must be false at t=0, e.g. 't >= 60'.{_cause(self.raw, _holding_at_start(on_time_alone))}"
             )
         boundary = float(holding.inf)
         if not math.isfinite(boundary):
-            raise ValueError(f"Predicate {self.raw!r} holds only from t = {holding.inf}, which is too large for a float.")
+            raise ValueError(f"{self._subject} holds only from t = {holding.inf}, which is too large for a float.")
         return boundary
 
-    def _prove_earliest(self, at_the_earliest: Any) -> float:
+    def _prove_earliest(self, at_the_earliest: SympyNode) -> float:
         """Solve the condition with its measured comparisons true and require the shape ``[b, oo)``, ``b >= 0``."""
         holding = _holding_set(at_the_earliest)
         if holding is None:
-            raise ValueError(f"Predicate {self.raw!r} could not be proved to hold from some time onward.")
+            raise ValueError(f"{self._subject} could not be proved to hold from some time onward.")
         if not isinstance(holding, Interval) or holding.sup != oo:
             raise ValueError(
-                f"Predicate {self.raw!r} holds only on {_format_time_set(holding)} once its measured values hold; "
-                f"a condition must hold from some time onward without lapsing."
+                f"{self._subject} holds only on {_format_time_set(holding)} once its measured values hold; a condition "
+                f"must keep holding once it starts to, as 't >= 60' does.{_cause(self.raw, _lapsing(at_the_earliest))}"
             )
         return float(holding.inf)
 
@@ -729,7 +894,7 @@ class Predicate:
 
     @property
     def terms(self) -> Mapping[str, Term]:
-        """The window functions the condition reads, keyed by the symbol each stands for in :attr:`measured_symbols`."""
+        """The window functions and selected or offset signals the condition reads, keyed by their symbol in :attr:`measured_symbols`."""
         return self._terms
 
     @property
@@ -792,7 +957,7 @@ _PREDICATE_NODES: tuple[type, ...] = (
 )
 
 
-def _format_time_set(s: Any) -> str:
+def _format_time_set(s: SympySet) -> str:
     """Render a solved set of times in interval notation, e.g. ``[0, 60)`` or ``[0, 30) or [60, infinity)``.
 
     sympy's own repr (``Interval.Ropen(0, 60)``) is exact but reads as code in
@@ -802,7 +967,7 @@ def _format_time_set(s: Any) -> str:
         return " or ".join(_format_time_set(part) for part in s.args)
     if isinstance(s, Interval):
 
-        def end(x: Any) -> str:
+        def end(x: SympyExpr) -> str:
             if x == oo:
                 return "infinity"
             return str(x) if x.is_Integer else format(float(x), "g")
@@ -811,11 +976,12 @@ def _format_time_set(s: Any) -> str:
     return str(s)
 
 
-def _disallowed_message(raw: str, disallowed: set[str]) -> str:
+def _disallowed_message(subject: str, raw: str, disallowed: set[str]) -> str:
     names = sorted(disallowed)
     message = (
-        f"Predicate {raw!r} uses disallowed symbol(s) {names}; permitted: t, the signals {sorted(SIGNALS)}, "
+        f"{subject} uses disallowed symbol(s) {names}; permitted: t, the signals {sorted(SIGNALS)}, "
         f"and window functions such as 'quantile_over_time(0.99, ttft[30s])' or 'avg_over_last(latency, 100)'."
+        f"{_found(raw, names[0])}"
     )
     series = [name for name in names if name in SERIES]
     if series:
@@ -827,35 +993,144 @@ def _disallowed_message(raw: str, disallowed: set[str]) -> str:
     return message
 
 
-def _equality_message(raw: str) -> str:
+def _equality_message(subject: str, where: str) -> str:
     return (
-        f"Predicate {raw!r} uses equality; a condition must be an inequality such as 't >= 60'. "
+        f"{subject} uses equality{where}; a condition must be an inequality such as 't >= 60'. "
         f"Equality holds at a single instant, which a check at discrete instants can miss."
     )
 
 
-def _reject_unprovable_nodes(raw: str, expr: Any) -> None:
+def _reject_unprovable_nodes(subject: str, raw: str, expr: SympyNode) -> None:
     """Reject any node outside ``_PREDICATE_NODES``, naming it."""
     for node in sympy.preorder_traversal(expr):
         if isinstance(node, (sympy.Eq, sympy.Ne)):
-            raise ValueError(_equality_message(raw))
+            # sympy calls these Equality and Unequality; the config spells them Eq and Ne
+            raise ValueError(_equality_message(subject, _where_named(raw, "Eq" if isinstance(node, sympy.Eq) else "Ne")))
         if isinstance(node, sympy.Pow):
             base, exponent = node.args
             # t**2, sqrt(t), 1/t (constant exponent) and 2**t (positive constant base) only.
             if exponent.free_symbols and not (base.is_number and base.is_positive):
-                raise ValueError(
-                    f"Predicate {raw!r} uses {node}; a power needs a constant exponent or a positive constant base."
-                )
+                raise ValueError(f"{subject} uses {node}; a power needs a constant exponent or a positive constant base.")
             continue
         if not isinstance(node, _PREDICATE_NODES):
             name = node.func.__name__
             raise ValueError(
-                f"Predicate {raw!r} uses {name!r}, which is not allowed in a condition; "
-                f"permitted: + - * / **, sqrt, exp, log, Min, Max, and > >= < <= combined with & and |."
+                f"{subject} uses {name!r}, which is not allowed in a condition; "
+                f"permitted: + - * / **, sqrt, exp, log, Min, Max, and > >= < <= combined with & and |. "
+                f"These are the ones a condition can be proved to keep holding with.{_found(raw, name)}"
             )
 
 
-def _holding_set(expr: Any) -> Any:
+# The most of a condition an error quotes. Past it the message relies on the
+# comparison and clause it names, so its size does not grow with the condition.
+_QUOTE_LIMIT = 80
+
+
+def _quote(raw: str) -> str:
+    """``raw`` in quotes, cut at ``_QUOTE_LIMIT`` characters with its full length noted."""
+    if len(raw) <= _QUOTE_LIMIT:
+        return repr(raw)
+    return f"{raw[:_QUOTE_LIMIT]!r}... ({len(raw)} characters)"
+
+
+def _clauses(raw: str) -> list[tuple[int, str]]:
+    """The pieces of ``raw`` between its outermost ``|``, each with the offset it starts at."""
+    pieces: list[tuple[int, str]] = []
+    depth = start = 0
+    for i, ch in enumerate(raw):
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            pieces.append((start, raw[start:i]))
+            start = i + 1
+    pieces.append((start, raw[start:]))
+    return pieces
+
+
+def _where(raw: str, at_fault: Callable[[int, str], bool]) -> str:
+    """Name the first outermost ``|`` clause ``at_fault`` picks: `` in clause 37 of 50, '(t >= 60) & (t < 120)'``.
+
+    ``at_fault`` gets each clause's offset and text. Empty when the condition
+    is a single clause, where the quoted condition already is the clause, or
+    when no clause is picked.
+    """
+    pieces = _clauses(raw)
+    if len(pieces) < 2:
+        return ""
+    hits = [(n, text.strip()) for n, (start, text) in enumerate(pieces, 1) if at_fault(start, text)]
+    if not hits:
+        return ""
+    n, text = hits[0]
+    more = f" and {len(hits) - 1} more" if len(hits) > 1 else ""
+    return f" in clause {n} of {len(pieces)}, {_quote(text)}{more}"
+
+
+def _mentions(text: str, name: str) -> bool:
+    """Whether ``name`` appears in ``text`` as a whole word."""
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text) is not None
+
+
+def _where_named(raw: str, name: str) -> str:
+    """Name the first clause that mentions ``name``."""
+    return _where(raw, lambda _start, text: _mentions(text, name))
+
+
+def _found(raw: str, name: str) -> str:
+    """A sentence placing ``name`` in its clause, or nothing when there is one clause."""
+    where = _where_named(raw, name)
+    return f" Found{where}." if where else ""
+
+
+def _parse_clause(text: str) -> object:
+    """One clause parsed on its own, or ``None`` when it does not parse."""
+    try:
+        return _parse_raw("Predicate", extract_terms(text)[0])
+    except (ValueError, TypeError):
+        return None
+
+
+def _where_compared(raw: str, comparison: SympyNode) -> str:
+    """Name the first clause that contains ``comparison``."""
+
+    def contains(_start: int, text: str) -> bool:
+        parsed = _parse_clause(text)
+        return _is_node(parsed) and comparison in parsed.atoms(Relational)
+
+    return _where(raw, contains)
+
+
+def _cause(raw: str, comparisons: list[SympyNode]) -> str:
+    """A sentence naming up to three comparisons at fault and the clause each sits in; empty when there are none."""
+    if not comparisons:
+        return ""
+    shown = "; ".join(f"'{c}'{_where_compared(raw, c)}" for c in comparisons[:3])
+    more = f"; and {len(comparisons) - 3} more" if len(comparisons) > 3 else ""
+    return f" Cause: {shown}{more}."
+
+
+def _time_comparisons(expr: SympyNode) -> list[tuple[SympyNode, SympySet]]:
+    """Each comparison in a condition over ``t`` alone with the times it holds on, skipping any that never holds."""
+    solved = [(c, _holding_set(c)) for c in sorted(expr.atoms(Relational), key=str)]
+    return [(c, s) for c, s in solved if s is not None and s != sympy.S.EmptySet]
+
+
+def _lapsing(expr: SympyNode) -> list[SympyNode]:
+    """The comparisons that stop holding as ``t`` grows, e.g. ``t < 120``.
+
+    ``&`` and ``|`` of comparisons that each keep holding keep holding, so a
+    condition that lapses always has one of these in it.
+    """
+    return [c for c, s in _time_comparisons(expr) if not (isinstance(s, Interval) and s.sup == oo)]
+
+
+def _holding_at_start(expr: SympyNode) -> list[SympyNode]:
+    """The comparisons that already hold at ``t = 0``, e.g. ``t >= 0``."""
+    return [c for c, s in _time_comparisons(expr) if s.inf == sympy.S.Zero]
+
+
+def _holding_set(expr: SympyNode) -> Optional[SympySet]:
     """The set of ``t >= 0`` where ``expr`` holds, or ``None`` when not provable.
 
     Leaves are solved by sympy, and ``&``/``|`` are folded as set
@@ -866,20 +1141,22 @@ def _holding_set(expr: Any) -> Any:
     if expr is sympy.true:
         return _TIME_DOMAIN
     if expr is sympy.false:
-        return sympy.S.EmptySet
+        return _NO_TIME
     if isinstance(expr, And):
         sets = [_holding_set(arg) for arg in expr.args]
         if any(s is None for s in sets):
             return None
-        return sympy.Intersection(*sets)
+        both: SympySet = sympy.Intersection(*sets)
+        return both
     if isinstance(expr, Or):
         sets = [_holding_set(arg) for arg in expr.args]
         if any(s is None for s in sets):
             return None
-        return sympy.Union(*sets)
+        either: SympySet = sympy.Union(*sets)
+        return either
     if isinstance(expr, Relational):
         try:
-            solved = sympy.solveset(expr, _T, _TIME_DOMAIN)
+            solved: SympySet = sympy.solveset(expr, _T, _TIME_DOMAIN)
         except Exception:
             return None
         return None if solved.has(sympy.ConditionSet) else solved

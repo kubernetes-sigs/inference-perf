@@ -13,8 +13,10 @@
 # limitations under the License.
 import time
 from abc import ABC, abstractmethod
-from typing import Generator, Optional, Tuple
+from typing import Generator, Optional, Tuple, Union
 import numpy as np
+from inference_perf.utils.numeric.request_schedule import RequestSchedule
+from inference_perf.utils.numeric.rate_schedule import RateSchedule
 from inference_perf.utils.trace_reader import TraceReader
 from pathlib import Path
 
@@ -39,13 +41,28 @@ class ConstantLoadTimer(LoadTimer):
     Introduces a small amount of random noise in timing.
     """
 
-    def __init__(self, rate: float, duration: float) -> None:
+    def __init__(self, rate: Union[float, RateSchedule], duration: float) -> None:
+        # A time-varying rate spreads the same jittered schedule over cumulative
+        # intensity instead of time, then maps each point back to the time the
+        # rate has accumulated that many requests. A constant rate keeps the
+        # original time-space arithmetic exactly.
+        self._schedule: Optional[RateSchedule] = None
+        if isinstance(rate, RateSchedule):
+            if rate.is_constant:
+                rate = rate.constant_rate
+            else:
+                self._schedule = rate
+                rate = rate.mean_rate
         self._rate = rate
         self._duration = duration
         # TODO: Make random state a global seed
         self._rand = np.random.default_rng()
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        if self._schedule is not None:
+            yield from self._start_varying_timer(self._schedule, initial)
+            return
+
         num_requests = int(self._rate * self._duration)
         if num_requests == 0:
             return
@@ -64,18 +81,39 @@ class ConstantLoadTimer(LoadTimer):
             next_time += interval
             yield next_time
 
+    def _start_varying_timer(self, schedule: RateSchedule, initial: Optional[float]) -> Generator[float, None, None]:
+        num_requests = schedule.expected_requests
+        if num_requests == 0:
+            return
+        intervals = self._rand.exponential(1 / self._rate, num_requests)
+        # Normalize so the last request lands where the rate has accumulated its
+        # full total, which is the end of the window.
+        counts = np.cumsum(intervals * (schedule.total / np.sum(intervals)))
+        offsets = schedule.inverse(counts)
+        start = time.monotonic() if initial is None else initial
+        for offset in offsets:
+            yield start + float(offset)
+
 
 class PoissonLoadTimer(LoadTimer):
     """
     A load generator that generates requests based on a Poisson distribution.
     """
 
-    def __init__(self, rate: float, duration: float) -> None:
+    def __init__(self, rate: Union[float, RateSchedule], duration: float) -> None:
+        if isinstance(rate, RateSchedule):
+            # load.type is rejected next to a rate expression, so only a
+            # constant schedule gets here
+            rate = rate.constant_rate
         self._rate = rate
         self._duration = duration
         self._rand = np.random.default_rng()
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        # a zero rate never draws a request, so the loop below would never yield
+        if self._rate == 0:
+            return
+
         # Set start time
         next_time = time.perf_counter() if initial is None else initial
 
@@ -95,6 +133,22 @@ class PoissonLoadTimer(LoadTimer):
             for _ in range(req_count):
                 next_time = next(time_generator)
                 yield next_time
+
+
+class RequestIntervalLoadTimer(LoadTimer):
+    """
+    A load generator that sends each request at the time its stage's
+    request_interval gaps put it. The gaps are already drawn, so the timer is
+    finite: it yields one time per scheduled request and stops.
+    """
+
+    def __init__(self, schedule: RequestSchedule) -> None:
+        self._schedule = schedule
+
+    def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        start = time.perf_counter() if initial is None else initial
+        for offset in self._schedule.offsets:
+            yield start + float(offset)
 
 
 class TraceReplayLoadTimer(LoadTimer):
