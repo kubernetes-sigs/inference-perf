@@ -112,7 +112,9 @@ class TraceFormat(ABC):
 
 
 # name -> where the class lives, so naming a format does not import the others
-_BUILT_IN: Dict[str, str] = {}
+_BUILT_IN: Dict[str, str] = {
+    "AzurePublicDataset": "inference_perf.workload.formats.azure:AzurePublicDatasetFormat",
+}
 _REGISTERED: Dict[str, Type[TraceFormat]] = {}
 
 
