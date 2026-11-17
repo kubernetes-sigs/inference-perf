@@ -23,6 +23,7 @@ import numpy as np
 from aiohttp import ClientResponse
 from pydantic import BaseModel, field_validator
 
+from inference_perf.apis.unary_response import ChatCompletionResponse
 from inference_perf.apis.tool_output import chat_tool_calls, count_tool_tokens, message_tool_texts
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
 from inference_perf.payloads import (
@@ -566,29 +567,34 @@ class ChatCompletionAPIData(InferenceAPIData):
                 extra_info={"raw_response": parsed.raw_content},
             )
 
-        data = await response.json()
+        body = await response.json()
         # A 200 whose body is an error payload is that error, not a success.
-        if (error_payload := in_band_error(data)) is not None:
+        if (error_payload := in_band_error(body)) is not None:
             raise InBandError(error_payload)
-        server_usage = data.get("usage")
-        choices = data.get("choices", [])
+        # A body without the completion shape fails here instead of reading as an
+        # empty response.
+        data = ChatCompletionResponse.model_validate(body)
+        server_usage = data.usage
         # A reasoning-only message (max_tokens ran out mid-reasoning) has content null.
-        output_text = "".join(choice.get("message", {}).get("content") or "" for choice in choices)
-        reasoning_text = "".join(reasoning_field(choice.get("message", {})) or "" for choice in choices)
+        output_text = "".join(choice.message.content or "" for choice in data.choices)
+        # The reasoning and tool helpers read plain dicts. The body just validated,
+        # so its messages go to them as they are.
+        messages = [choice["message"] for choice in body.get("choices", [])]
+        reasoning_text = "".join(reasoning_field(message) or "" for message in messages)
         # A tool-only reply has content null, so the tool call is what makes the body
         # a completion.
-        has_tool_calls = any(chat_tool_calls(choice.get("message")) for choice in choices)
+        has_tool_calls = any(chat_tool_calls(message) for message in messages)
         # No generated text, no tool call and no usage means the body is not a completion at all.
         if not output_text and not reasoning_text and not has_tool_calls and server_usage is None:
             raise EmptyResponseError()
         prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
-        if len(choices) == 0:
+        if len(data.choices) == 0:
             return InferenceInfo(
                 request_metrics=self._build_request_metrics(prompt_len, 0),
                 lora_adapter=lora_adapter,
             )
         output_len = _count_generated_tokens(tokenizer, output_text, reasoning_text)
-        output_len += sum(count_tool_tokens(tokenizer, message_tool_texts(choice.get("message"))) for choice in choices)
+        output_len += sum(count_tool_tokens(tokenizer, message_tool_texts(message)) for message in messages)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
             response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
