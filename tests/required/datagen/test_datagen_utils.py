@@ -289,3 +289,30 @@ def test_build_word_start_token_ids_bert_fallback_excludes_split_ids() -> None:
     pool = build_word_start_token_ids(tokenizer, valid_token_ids)
 
     assert pool.tolist() == [1996]
+
+
+# Real gpt2 tokenizer: the word-start candidates are re-tokenized in one batched call,
+# never one count_tokens call per id, and the pool on the first 3000 ids matches the
+# per-id round trip that build_word_start_token_ids used before.
+def test_build_word_start_token_ids_gpt2_retokenizes_in_one_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="gpt2"))
+    hf_tokenizer = tokenizer.get_tokenizer()
+    valid_token_ids = np.arange(3000, dtype=np.int64)
+    expected: List[int] = []
+    for tid in range(3000):
+        decoded = hf_tokenizer.decode([tid], skip_special_tokens=True)
+        if (
+            isinstance(decoded, str)
+            and decoded[:1].isspace()
+            and tokenizer.count_tokens(decoded, add_special_tokens=False) == 1
+        ):
+            expected.append(tid)
+
+    def fail_count_tokens(text: str, add_special_tokens: bool = True) -> int:
+        raise AssertionError("count_tokens called per id")
+
+    monkeypatch.setattr(tokenizer, "count_tokens", fail_count_tokens)
+    pool = build_word_start_token_ids(tokenizer, valid_token_ids)
+
+    assert pool.tolist() == expected
+    assert len(expected) > 0

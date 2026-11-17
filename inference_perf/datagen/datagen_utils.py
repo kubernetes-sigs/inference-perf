@@ -15,6 +15,7 @@
 from typing import Callable, List, Optional, Set, Tuple
 
 import numpy as np
+from transformers import PreTrainedTokenizerBase
 
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -62,6 +63,22 @@ def random_token_ids(rng: np.random.Generator, valid_token_ids: np.ndarray, leng
     return rng.choice(valid_token_ids, size=length).tolist()  # type: ignore[no-any-return]
 
 
+def _count_tokens_batch(tokenizer: CustomTokenizer, texts: List[str]) -> List[int]:
+    """Token count of each text, without special tokens.
+
+    A Hugging Face tokenizer encodes the whole list in one call, which keeps
+    startup cheap on large vocabularies (Qwen2.5 has about 150k ids). Other
+    tokenizers, such as the lightweight fakes in tests, fall back to one
+    ``count_tokens`` call per text.
+    """
+    if not texts:
+        return []
+    hf_tokenizer = tokenizer.get_tokenizer()
+    if isinstance(hf_tokenizer, PreTrainedTokenizerBase):
+        return [len(ids) for ids in hf_tokenizer(texts, add_special_tokens=False).input_ids]
+    return [tokenizer.count_tokens(text, add_special_tokens=False) for text in texts]
+
+
 def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.ndarray) -> np.ndarray:
     """Token IDs whose decoded form starts with whitespace and re-tokenizes to one token.
 
@@ -81,19 +98,22 @@ def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.n
         ValueError: If no valid id decodes to text that re-tokenizes to one token.
     """
     hf_tokenizer = tokenizer.get_tokenizer()
-    decoded_ids: List[Tuple[int, str]] = []
+    decoded_ids: List[int] = []
+    decoded_texts: List[str] = []
     for tid in valid_token_ids:
         decoded = hf_tokenizer.decode([int(tid)], skip_special_tokens=True)
         if isinstance(decoded, str):
-            decoded_ids.append((int(tid), decoded))
+            decoded_ids.append(int(tid))
+            decoded_texts.append(decoded)
 
-    def is_one_token(text: str) -> bool:
-        return tokenizer.count_tokens(text, add_special_tokens=False) == 1
-
-    word_starts = [tid for tid, text in decoded_ids if text[:1].isspace() and is_one_token(text)]
+    word_start_ids = [tid for tid, text in zip(decoded_ids, decoded_texts, strict=True) if text[:1].isspace()]
+    word_start_texts = [text for text in decoded_texts if text[:1].isspace()]
+    counts = _count_tokens_batch(tokenizer, word_start_texts)
+    word_starts = [tid for tid, count in zip(word_start_ids, counts, strict=True) if count == 1]
     if word_starts:
         return np.array(word_starts, dtype=np.int64)
-    single_tokens = [tid for tid, text in decoded_ids if is_one_token(text)]
+    counts = _count_tokens_batch(tokenizer, decoded_texts)
+    single_tokens = [tid for tid, count in zip(decoded_ids, counts, strict=True) if count == 1]
     if single_tokens:
         return np.array(single_tokens, dtype=np.int64)
     name = getattr(hf_tokenizer, "name_or_path", "") or type(hf_tokenizer).__name__
