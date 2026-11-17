@@ -80,6 +80,13 @@ class TestVariablePermissions:
         with pytest.raises((ValueError, TypeError)):
             Expression("10 +* 2")
 
+    # '1, 2' parses to a Python tuple and '[1]' to a list. Both are rejected as not a numeric value,
+    # where they used to fail with AttributeError: 'tuple' object has no attribute 'atoms'.
+    @pytest.mark.parametrize("raw", ["1, 2", "[1]"])
+    def test_tuple_or_list_rejected(self, raw: str) -> None:
+        with pytest.raises(ValueError, match="is not a numeric value"):
+            Expression(raw)
+
 
 class TestRandom:
     def test_normal_returns_float(self) -> None:
@@ -116,15 +123,10 @@ class TestRandom:
         assert isinstance(expr.sample(t=5, rng=np.random.default_rng(0)), float)
 
     def test_distribution_beyond_legacy_fast_path(self) -> None:
-        # Rayleigh was never in the hand-written sampler table; it is served by
-        # sympy's own numpy dispatcher on the fast path (not the slow fallback)
-        # and its draws stay within the [0, oo) support.
-        expr = Expression("Rayleigh(2)")
-        assert expr.is_random
-        assert not expr._fallback
-        result = expr.sample(size=200, rng=np.random.default_rng(7))
-        assert isinstance(result, np.ndarray)
-        assert result.min() >= 0
+        # Rayleigh has no row in the distribution table, so it is rejected by
+        # name when parsed. It used to be served by sympy's numpy dispatcher.
+        with pytest.raises(ValueError, match="Distribution 'Rayleigh' is not supported"):
+            Expression("Rayleigh(2)")
 
 
 class TestRangeValidation:
@@ -223,19 +225,16 @@ class TestClipPolicy:
 class TestSympyInternalsFence:
     """Fail loudly if a sympy upgrade breaks the internals the fast path leans on.
 
-    Both fences guard silent degradation: if sympy moves ``do_sample_numpy``
-    or reshapes its distribution constructors, Expression would still work but
-    every random draw would take the slow symbolic path.
+    The first fence guards the compiled skeleton every random draw goes
+    through. The second guards constructor discovery: if sympy reshapes its
+    distribution constructors, a supported distribution would stop parsing.
     """
 
     def test_numpy_fast_path_compiled(self) -> None:
-        from inference_perf.utils.numeric.expression import expression as mod
-
-        # getattr rather than attribute access: do_sample_numpy is an import,
-        # not a definition, so mypy --strict flags cross-module access to it.
-        assert getattr(mod, "do_sample_numpy", None) is not None
+        # sampling no longer imports sympy's do_sample_numpy and has no symbolic
+        # fallback, so the fence is the compiled skeleton and one leaf per draw.
         expr = Expression("Normal(0, 1) + Uniform(0, 1) + t")
-        assert not expr._fallback
+        assert len(expr._random_leaves) == 2
         assert expr._lambdified is not None
 
     def test_distribution_constructors_discovered(self) -> None:
@@ -324,3 +323,58 @@ def test_bounds_contain_samples(raw: str) -> None:
     lo, hi = expr.bounds
     samples = np.asarray(expr.sample(rng=np.random.default_rng(0), size=20000))
     assert lo <= samples.min() and samples.max() <= hi
+
+
+# is_integer_valued, one case per branch: a whole constant, a fractional constant, an integer-support variable
+# (Poisson), a finite-set variable (Binomial), a real-support variable (Normal), and floor() over one.
+# Expected: True, False, True, True, False, True.
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("512", True),
+        ("512.5", False),
+        ("Poisson(2)", True),
+        ("Binomial(10, 1/2)", True),
+        ("Normal(512, 128)", False),
+        ("floor(Normal(512, 128))", True),
+    ],
+)
+def test_is_integer_valued(raw: str, expected: bool) -> None:
+    assert Expression(raw).is_integer_valued is expected
+
+
+# Arithmetic keeps or loses integrality the way it should. Poisson(2) + 1 and Min(Poisson(2), 20) stay whole,
+# Poisson(2) / 2 and Poisson(2) * 1.5 do not. Expected: True, True, False, False.
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("Poisson(2) + 1", True), ("Min(Poisson(2), 20)", True), ("Poisson(2) / 2", False), ("Poisson(2) * 1.5", False)],
+)
+def test_is_integer_valued_through_arithmetic(raw: str, expected: bool) -> None:
+    assert Expression(raw).is_integer_valued is expected
+
+
+# bounds read through floor/ceiling and a finite support: floor(Uniform(10, 90)) -> (10, 90),
+# ceiling(Uniform(0, 2)) -> (0, 2), Binomial(10, 1/2) -> (0, 10).
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("floor(Uniform(10, 90))", (10.0, 90.0)), ("ceiling(Uniform(0, 2))", (0.0, 2.0)), ("Binomial(10, 1/2)", (0.0, 10.0))],
+)
+def test_bounds_through_rounding_and_finite_support(raw: str, expected: tuple[float, float]) -> None:
+    assert Expression(raw).bounds == expected
+
+
+# is_within against [1, 100], one case per way to fail: inside, below, above, an open side, and no
+# provable bounds. floor(Uniform(1, 100)) -> True; Min(Poisson(3), 50) -> False (can be 0); Uniform(50, 200) ->
+# False; Min(Poisson(3), 100) with only a maximum -> True; a Piecewise mixture -> False (nothing proven).
+@pytest.mark.parametrize(
+    ("raw", "minimum", "maximum", "expected"),
+    [
+        ("floor(Uniform(1, 100))", 1, 100, True),
+        ("Min(Poisson(3), 50)", 1, 100, False),
+        ("Uniform(50, 200)", 1, 100, False),
+        ("Min(Poisson(3), 100)", None, 100, True),
+        ("Piecewise((Poisson(2), Uniform(0, 1) < 0.5), (Poisson(9), True))", 0, None, False),
+    ],
+)
+def test_is_within(raw: str, minimum: float | None, maximum: float | None, expected: bool) -> None:
+    assert Expression(raw).is_within(minimum, maximum) is expected
