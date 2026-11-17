@@ -14,9 +14,9 @@
 from enum import Enum
 from typing import List, Optional, Union
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
-from inference_perf.config.common import Distribution, InsertionPoint, StrictBaseModel
+from inference_perf.config.common import InsertionPoint, LengthValue, StrictBaseModel, check_whole_number
 from inference_perf.payloads import ImageRepresentation, VideoRepresentation
 
 
@@ -67,13 +67,24 @@ class WeightedDuration(StrictBaseModel):
 
 # --- Modality-Specific Request Configs ---
 class MediaDatagenConfig(StrictBaseModel):
-    count: Optional[Distribution] = Field(
-        default=None, description="Distribution of the number of media items to generate per request."
+    count: Optional[LengthValue] = Field(
+        default=None,
+        description="Number of media items to generate per request: a fixed value or an expression string like 'Poisson(2)'."
+        " At least 0.",
     )
     insertion_point: InsertionPoint = Field(
         default=None,
-        description="Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from.",
+        description=(
+            "Placement of media within the text prompt. Float (0=start, 1=end) or an expression "
+            "string like 'Beta(2, 5)'. Within [0, 1]."
+        ),
     )
+
+    @field_validator("count", mode="after")
+    @classmethod
+    def validate_count_expression(cls, value: Optional[Union[int, str]]) -> Optional[Union[int, str]]:
+        check_whole_number(value, 0)
+        return value
 
 
 class ImageDatagenConfig(MediaDatagenConfig):

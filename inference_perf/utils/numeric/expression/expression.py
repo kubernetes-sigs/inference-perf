@@ -46,12 +46,12 @@ import inspect
 import logging
 import math
 import re
-from typing import Any, Mapping, Optional, Union
+from typing import Callable, Mapping, Optional, TypeGuard, Union
 
 import numpy as np
 import sympy
 import sympy.stats
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 from sympy import AccumBounds, Interval, Symbol, oo
 from sympy.calculus.util import function_range
 from sympy.core.function import AppliedUndef
@@ -60,6 +60,7 @@ from sympy.logic.boolalg import And, Boolean, Or
 from sympy.parsing.sympy_parser import parse_expr
 
 from .measured import SERIES, SIGNALS, Term, extract_terms
+from .sympy_types import SympyDistribution, SympyExpr, SympyNode, SympyRandomSymbol, SympySet
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +83,9 @@ except Exception:  # pragma: no cover - defensive: sympy internal layout changed
 _T = Symbol("t")
 
 
-def _distribution_constructors() -> dict[str, Any]:
+def _distribution_constructors() -> dict[str, Callable[..., SympyRandomSymbol]]:
     """Collect every ``sympy.stats`` distribution constructor (name-first)."""
-    ctors: dict[str, Any] = {}
+    ctors: dict[str, Callable[..., SympyRandomSymbol]] = {}
     for name in dir(sympy.stats):
         if name.startswith("_") or not name[0].isupper():
             continue
@@ -102,7 +103,7 @@ def _distribution_constructors() -> dict[str, Any]:
 _DISTRIBUTION_CTORS = _distribution_constructors()
 
 
-def _parse_namespace(counter: list[int]) -> dict[str, Any]:
+def _parse_namespace(counter: list[int]) -> dict[str, Callable[..., SympyRandomSymbol]]:
     """A fresh distribution namespace whose constructors take no name argument.
 
     Config strings read ``Normal(512, 200)`` rather than ``Normal("x", ...)``,
@@ -112,10 +113,12 @@ def _parse_namespace(counter: list[int]) -> dict[str, Any]:
     from two independent normals) yields two independent random variables rather
     than one aliased symbol.
     """
-    namespace: dict[str, Any] = {}
+    namespace: dict[str, Callable[..., SympyRandomSymbol]] = {}
     for name, ctor in _DISTRIBUTION_CTORS.items():
 
-        def bound(*args: Any, _ctor: Any = ctor, _counter: list[int] = counter) -> Any:
+        def bound(
+            *args: object, _ctor: Callable[..., SympyRandomSymbol] = ctor, _counter: list[int] = counter
+        ) -> SympyRandomSymbol:
             _counter[0] += 1
             return _ctor(f"rv_{_counter[0]}", *args)
 
@@ -123,15 +126,43 @@ def _parse_namespace(counter: list[int]) -> dict[str, Any]:
     return namespace
 
 
-def _is_random_symbol(sym: Any) -> bool:
+def _is_random_symbol(sym: object) -> TypeGuard[SympyRandomSymbol]:
     return isinstance(sym, sympy.stats.rv.RandomSymbol)
 
 
-def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = None) -> Any:
+def _is_node(value: object) -> TypeGuard[SympyNode]:
+    return isinstance(value, sympy.Basic)
+
+
+def _is_expr(value: object) -> TypeGuard[SympyExpr]:
+    return isinstance(value, sympy.Expr)
+
+
+def _finite_values(support: object) -> Optional[list[SympyExpr]]:
+    # a finite distribution (Binomial, Die) gives a Python set of its values, not a sympy Set
+    if not isinstance(support, (set, frozenset)):
+        return None
+    values = [sympy.sympify(value) for value in support]
+    return values if all(_is_expr(value) for value in values) else None
+
+
+def _support_is_integer(support: object) -> bool:
+    finite = _finite_values(support)
+    if finite is not None:
+        return all(value.is_integer is True for value in finite)
+    try:
+        return bool(sympy.S.Integers.is_superset(support))
+    except (AttributeError, TypeError, NotImplementedError):
+        return False
+
+
+def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = None) -> object:
     """Parse a config value into a sympy object, shared by both grammars.
 
     ``shown`` is the text to name in a parse error when ``raw`` has been
-    rewritten from it, so the author sees their own spelling.
+    rewritten from it, so the author sees their own spelling. The result is
+    whatever ``parse_expr`` built, which is a Python bool, tuple or list for
+    input like ``True``, ``1, 2`` or ``[1]``, so callers check it.
     """
     if isinstance(raw, bool):
         raise TypeError(f"{kind} does not accept bool input.")
@@ -148,12 +179,15 @@ def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = No
     raise TypeError(f"{kind} accepts str or number, got {type(raw).__name__}.")
 
 
-def _interval(expr: Any, duration: Optional[float]) -> Optional[tuple[Any, Any]]:
+def _interval(expr: SympyNode, duration: Optional[float]) -> Optional[tuple[SympyExpr, SympyExpr]]:
     """Sound ``(lower, upper)`` sympy bounds for ``expr``, or ``None`` when undecidable."""
-    if expr.is_Number or expr.is_NumberSymbol:
+    if _is_expr(expr) and (expr.is_Number or expr.is_NumberSymbol):
         return expr, expr
     if _is_random_symbol(expr):
         support = expr.pspace.distribution.set
+        finite = _finite_values(support)
+        if finite is not None:
+            return sympy.Min(*finite), sympy.Max(*finite)
         try:
             return support.inf, support.sup
         except (AttributeError, NotImplementedError):
@@ -175,18 +209,23 @@ def _interval(expr: Any, duration: Optional[float]) -> Optional[tuple[Any, Any]]
         # Min/Max are monotone in every argument, and AccumBounds does not
         # reduce them, so combine the endpoints directly.
         return expr.func(*(lo for lo, _hi in parts)), expr.func(*(hi for _lo, hi in parts))
+    if isinstance(expr, (sympy.floor, sympy.ceiling)):
+        # monotone, so the endpoints map straight through; AccumBounds has no rule for them
+        lo, hi = parts[0]
+        rounding = sympy.floor if isinstance(expr, sympy.floor) else sympy.ceiling
+        return rounding(lo), rounding(hi)
     try:
         result = expr.func(*(lo if lo == hi else AccumBounds(lo, hi) for lo, hi in parts))
     except (TypeError, ValueError, NotImplementedError):
         return None
     if isinstance(result, AccumBounds):
         return result.min, result.max
-    if result.is_number and result.is_extended_real:
+    if _is_expr(result) and result.is_number and result.is_extended_real:
         return result, result
     return None
 
 
-def _is_condition(expr: Any) -> bool:
+def _is_condition(expr: object) -> bool:
     """True for a truth value or a relational/logical combination, false for a number.
 
     A bare ``isinstance(expr, Boolean)`` is not enough: sympy's ``Symbol``
@@ -196,7 +235,7 @@ def _is_condition(expr: Any) -> bool:
     return isinstance(expr, (bool, Boolean)) and not isinstance(expr, sympy.Expr)
 
 
-def _reject_unknown_functions(kind: str, raw: Any, expr: Any) -> None:
+def _reject_unknown_functions(kind: str, raw: object, expr: SympyNode) -> None:
     """Reject unknown functions, e.g. a misspelled distribution InvalidDist(10)."""
     undefined = {f.func.__name__ for f in expr.atoms(AppliedUndef)}
     if undefined:
@@ -278,7 +317,7 @@ class Expression:
         self._runtime_check = False
         self._validate_range(duration)
         self._compile_random_sampler()
-        self._evaluator: Optional[Any] = None
+        self._evaluator: Optional[Callable[[NDArray[np.float64]], ArrayLike]] = None
 
     def _compile_random_sampler(self) -> None:
         """Precompute a numpy-vectorised sampler for the random fast path.
@@ -293,8 +332,8 @@ class Expression:
         If any leaf distribution has no numpy sampler (or the sympy internal is
         unavailable) we set ``_fallback`` and keep the sympy path.
         """
-        self._random_leaves: list[tuple[Any, Any]] = []
-        self._lambdified: Optional[Any] = None
+        self._random_leaves: list[tuple[SympyNode, SympyDistribution]] = []
+        self._lambdified: Optional[Callable[..., ArrayLike]] = None
         self._fallback = False
         if not self._is_random:
             return
@@ -303,7 +342,7 @@ class Expression:
             self._fallback = True
             return
 
-        placeholders: dict[Any, Any] = {}
+        placeholders: dict[SympyNode, SympyNode] = {}
         for i, rv in enumerate(self._random_symbols):
             dist = rv.pspace.distribution
             if do_sample_numpy.dispatch(type(dist)) is _NO_NUMPY_SAMPLER:
@@ -318,10 +357,14 @@ class Expression:
         order = [ph for ph, _dist in self._random_leaves] + [_T]
         self._lambdified = sympy.lambdify(order, skeleton, "numpy")
 
-    def _parse(self, raw: Union[str, int, float]) -> Any:
+    def _parse(self, raw: Union[str, int, float]) -> SympyExpr:
         expr = _parse_raw("Expression", raw)
         if _is_condition(expr):
             raise ValueError(f"Expression {raw!r} is a condition, not a numeric value; use Predicate for conditions.")
+        if not _is_expr(expr):
+            raise ValueError(
+                f"Expression {raw!r} is not a numeric value; write a number or an expression such as '512 + 2*t'."
+            )
         return expr
 
     def _validate_range(self, duration: Optional[float]) -> None:
@@ -368,7 +411,7 @@ class Expression:
         # is_subset returned None (couldn't decide): treat as undecided.
         self._runtime_check = True
 
-    def _static_range(self, duration: Optional[float]) -> Any:
+    def _static_range(self, duration: Optional[float]) -> Optional[SympySet]:
         """Best-effort provable value range, or ``None`` when undecidable."""
         if self._is_random:
             # Only a bare random variable has a readily available support set.
@@ -383,15 +426,17 @@ class Expression:
 
         if not self._free_symbols:
             value = float(self._expr.evalf())
-            return Interval(value, value)
+            point: SympySet = Interval(value, value)
+            return point
 
         # Time-varying: the range is only knowable over a bounded t domain.
         if duration is None:
             return None
         try:
-            return function_range(self._expr, _T, Interval(0, sympy.Float(duration)))
+            values: SympySet = function_range(self._expr, _T, Interval(0, sympy.Float(duration)))
         except Exception:
             return None
+        return values
 
     @property
     def bounds(self) -> Optional[tuple[float, float]]:
@@ -412,6 +457,38 @@ class Expression:
         if found is None:
             return None
         return float(found[0]), float(found[1])
+
+    def is_within(self, minimum: Optional[float] = None, maximum: Optional[float] = None) -> bool:
+        """True when :attr:`bounds` proves every value lies in ``[minimum, maximum]``.
+
+        A side left as ``None`` is open. An expression with no provable bounds
+        is never within, so a field that must stay in range rejects it rather
+        than finding out while sampling.
+        """
+        found = self.bounds
+        if found is None:
+            return False
+        lower, upper = found
+        return (minimum is None or lower >= minimum) and (maximum is None or upper <= maximum)
+
+    @property
+    def is_integer_valued(self) -> bool:
+        """True when every value the expression can take is provably an integer.
+
+        sympy does not know a discrete random variable is integer-valued, so each
+        one is stood in for by an integer symbol when its support is a subset of
+        the integers, and by a real symbol otherwise. ``Poisson(2) + 1`` and
+        ``floor(Normal(512, 128))`` prove, ``Normal(512, 128)`` and
+        ``Poisson(2) / 2`` do not.
+        """
+        if _is_expr(self._expr) and self._expr.is_number:
+            return float(self._expr).is_integer()
+        stand_ins: dict[SympyNode, SympyNode] = {
+            rv: sympy.Dummy(integer=True) if _support_is_integer(rv.pspace.distribution.set) else sympy.Dummy(real=True)
+            for rv in self._expr.atoms(sympy.stats.rv.RandomSymbol)
+            if _is_random_symbol(rv)
+        }
+        return self._expr.xreplace(stand_ins).is_integer is True
 
     @property
     def is_constant(self) -> bool:
@@ -566,7 +643,8 @@ class Expression:
 
 
 # The ``t`` domain a predicate is proved over: a stage runs from t = 0 onward.
-_TIME_DOMAIN = Interval(0, oo)
+_TIME_DOMAIN: SympySet = Interval(0, oo)
+_NO_TIME: SympySet = sympy.S.EmptySet
 
 
 class Predicate:
@@ -638,7 +716,7 @@ class Predicate:
 
         if isinstance(expr, bool) or expr in (sympy.true, sympy.false):
             raise ValueError(f"Predicate {raw!r} is constant ({expr!r}); a condition must vary with t, e.g. 't >= 60'.")
-        if not _is_condition(expr):
+        if not (_is_node(expr) and _is_condition(expr)):
             raise ValueError(f"Predicate {raw!r} is not a condition; use a comparison such as 't >= 60'.")
         _reject_unknown_functions("Predicate", raw, expr)
 
@@ -678,7 +756,7 @@ class Predicate:
         else:
             self._earliest = self._boundary
 
-    def _prove_boundary(self, on_time_alone: Any) -> float:
+    def _prove_boundary(self, on_time_alone: SympyNode) -> float:
         """Solve the condition with its measured comparisons false and require the shape ``[b, oo)`` with ``b > 0``."""
         holding = _holding_set(on_time_alone)
         if holding is None:
@@ -705,7 +783,7 @@ class Predicate:
             raise ValueError(f"Predicate {self.raw!r} holds only from t = {holding.inf}, which is too large for a float.")
         return boundary
 
-    def _prove_earliest(self, at_the_earliest: Any) -> float:
+    def _prove_earliest(self, at_the_earliest: SympyNode) -> float:
         """Solve the condition with its measured comparisons true and require the shape ``[b, oo)``, ``b >= 0``."""
         holding = _holding_set(at_the_earliest)
         if holding is None:
@@ -792,7 +870,7 @@ _PREDICATE_NODES: tuple[type, ...] = (
 )
 
 
-def _format_time_set(s: Any) -> str:
+def _format_time_set(s: SympySet) -> str:
     """Render a solved set of times in interval notation, e.g. ``[0, 60)`` or ``[0, 30) or [60, infinity)``.
 
     sympy's own repr (``Interval.Ropen(0, 60)``) is exact but reads as code in
@@ -802,7 +880,7 @@ def _format_time_set(s: Any) -> str:
         return " or ".join(_format_time_set(part) for part in s.args)
     if isinstance(s, Interval):
 
-        def end(x: Any) -> str:
+        def end(x: SympyExpr) -> str:
             if x == oo:
                 return "infinity"
             return str(x) if x.is_Integer else format(float(x), "g")
@@ -834,7 +912,7 @@ def _equality_message(raw: str) -> str:
     )
 
 
-def _reject_unprovable_nodes(raw: str, expr: Any) -> None:
+def _reject_unprovable_nodes(raw: str, expr: SympyNode) -> None:
     """Reject any node outside ``_PREDICATE_NODES``, naming it."""
     for node in sympy.preorder_traversal(expr):
         if isinstance(node, (sympy.Eq, sympy.Ne)):
@@ -855,7 +933,7 @@ def _reject_unprovable_nodes(raw: str, expr: Any) -> None:
             )
 
 
-def _holding_set(expr: Any) -> Any:
+def _holding_set(expr: SympyNode) -> Optional[SympySet]:
     """The set of ``t >= 0`` where ``expr`` holds, or ``None`` when not provable.
 
     Leaves are solved by sympy, and ``&``/``|`` are folded as set
@@ -866,20 +944,22 @@ def _holding_set(expr: Any) -> Any:
     if expr is sympy.true:
         return _TIME_DOMAIN
     if expr is sympy.false:
-        return sympy.S.EmptySet
+        return _NO_TIME
     if isinstance(expr, And):
         sets = [_holding_set(arg) for arg in expr.args]
         if any(s is None for s in sets):
             return None
-        return sympy.Intersection(*sets)
+        both: SympySet = sympy.Intersection(*sets)
+        return both
     if isinstance(expr, Or):
         sets = [_holding_set(arg) for arg in expr.args]
         if any(s is None for s in sets):
             return None
-        return sympy.Union(*sets)
+        either: SympySet = sympy.Union(*sets)
+        return either
     if isinstance(expr, Relational):
         try:
-            solved = sympy.solveset(expr, _T, _TIME_DOMAIN)
+            solved: SympySet = sympy.solveset(expr, _T, _TIME_DOMAIN)
         except Exception:
             return None
         return None if solved.has(sympy.ConditionSet) else solved
