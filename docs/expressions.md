@@ -12,7 +12,7 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 | --- | --- | --- | --- |
 | [`load.stages[].rate`](./config.md#rate-expressions) | yes | no | Nonnegative over the stage. Zero for the whole stage sends nothing. Set with no `load.type`. |
 | [`load.stages[].stop_condition`](./config.md#stop-conditions) (constant, poisson) | yes | no | A [condition](#conditions). |
-| [`load.stages[].request_interval`](./config.md#request-interval) | no | yes | Nonnegative; set instead of `rate`, with no `load.type`. |
+| [`load.stages[].request_interval`](./config.md#request-interval) | yes | yes | Positive. Set instead of `rate`, with no `load.type`. Not random, it is the rate `1 / request_interval`. |
 
 ## Grammar
 
@@ -35,7 +35,7 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 
 ## Random variables
 
-A random variable is one of the distributions in the table below. Any other distribution is rejected when the config loads, with an error that names it and lists these. Call one with constant arguments in the order shown: `Normal(512, 128)`.
+A random variable is one of the distributions in the table below. Any other distribution is rejected when the config loads, with an error that names it and lists these. Call one with constant arguments in the order shown: `Normal(512, 128)`. A stage's `request_interval` is the one field where an argument may also be an expression of `t`, such as `Exponential(5 + t/10)`: every `Requires` condition is then proved over the whole stage when the config loads.
 
 | Distribution | Requires | Lowest | Highest | Whole numbers | Mean |
 | --- | --- | --- | --- | --- | --- |

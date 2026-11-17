@@ -48,7 +48,7 @@ import logging
 import math
 import re
 from tokenize import TokenError
-from typing import Callable, Iterator, Mapping, NoReturn, Optional, TypeGuard, Union
+from typing import Callable, Iterator, Mapping, NoReturn, Optional, Sequence, TypeGuard, Union
 
 import numpy as np
 import sympy
@@ -63,7 +63,7 @@ from sympy.parsing.sympy_parser import parse_expr
 
 from .distributions import DISTRIBUTIONS, Distribution, DistributionUse, lookup, render_condition, unsupported_message
 from .measured import SERIES, SIGNALS, Term, extract_terms
-from .sympy_types import SympyExpr, SympyNode, SympyRandomSymbol, SympySet
+from .sympy_types import SympyExpr, SympyNode, SympyRandomSymbol, SympyRelational, SympySet
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,21 @@ def _unsupported(name: str) -> Callable[..., NoReturn]:
     return reject
 
 
-def _parse_namespace(counter: list[int]) -> dict[str, Callable[..., SympyRandomSymbol]]:
+def _require_constant_or_time(use: DistributionUse) -> None:
+    """Raise ``ValueError`` unless every argument is a constant or an expression of ``t`` alone.
+
+    A use with no ``t`` is checked in full here. One with ``t`` has its
+    conditions proved over the stage window by :func:`prove_parameter_conditions`.
+    """
+    if use.row.takes_list or all(arg.is_number for arg in use.args):
+        use.require_constant()
+        return
+    for parameter, arg in zip(use.row.parameters, use.args, strict=True):
+        if any(symbol != _T for symbol in arg.free_symbols):
+            raise ValueError(f"{use}: {parameter} must be a constant or an expression of t, got {arg}.")
+
+
+def _parse_namespace(counter: list[int], time_in_parameters: bool = False) -> dict[str, Callable[..., SympyRandomSymbol]]:
     """A fresh distribution namespace whose constructors take no name argument.
 
     Config strings read ``Normal(512, 200)`` rather than ``Normal("x", ...)``,
@@ -112,7 +126,8 @@ def _parse_namespace(counter: list[int]) -> dict[str, Callable[..., SympyRandomS
 
     A constructor is callable only when its distribution has a row in
     ``DISTRIBUTIONS``, and then only with constant arguments that meet the
-    row's conditions. Every other ``sympy.stats`` name raises.
+    row's conditions. Every other ``sympy.stats`` name raises. With
+    ``time_in_parameters`` an argument may also be an expression of ``t``.
     """
     namespace: dict[str, Callable[..., SympyRandomSymbol]] = {name: _unsupported(name) for name in _DISTRIBUTION_CTORS}
     for name, row in DISTRIBUTIONS.items():
@@ -124,7 +139,10 @@ def _parse_namespace(counter: list[int]) -> dict[str, Callable[..., SympyRandomS
             _counter: list[int] = counter,
         ) -> SympyRandomSymbol:
             use = _row.use(args)
-            use.require_constant()
+            if time_in_parameters:
+                _require_constant_or_time(use)
+            else:
+                use.require_constant()
             _counter[0] += 1
             return _ctor(f"rv_{_counter[0]}", *use.constructor_args)
 
@@ -158,7 +176,9 @@ def _is_expr(value: object) -> TypeGuard[SympyExpr]:
     return isinstance(value, sympy.Expr)
 
 
-def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = None) -> object:
+def _parse_raw(
+    kind: str, raw: Union[str, int, float], shown: Optional[str] = None, time_in_parameters: bool = False
+) -> object:
     """Parse a config value into a sympy object, shared by both grammars.
 
     ``shown`` is the text to name in a parse error when ``raw`` has been
@@ -175,7 +195,7 @@ def _parse_raw(kind: str, raw: Union[str, int, float], shown: Optional[str] = No
         # expression is only as trustworthy as the config it came from.
         # These strings are config-author input, never end-user input.
         try:
-            return parse_expr(raw, local_dict=_parse_namespace([0]))
+            return parse_expr(raw, local_dict=_parse_namespace([0], time_in_parameters))
         except (SyntaxError, TypeError, AttributeError, sympy.SympifyError) as e:
             raise ValueError(f"Could not parse {kind.lower()} {shown if shown is not None else raw!r}: {e}") from e
     raise TypeError(f"{kind} accepts str or number, got {type(raw).__name__}.")
@@ -187,7 +207,12 @@ def _interval(expr: SympyNode, duration: Optional[float]) -> Optional[tuple[Symp
         return expr, expr
     if _is_random_symbol(expr):
         use = _use_of(expr)
-        return use.lower, use.upper
+        # a support that moves with t, e.g. Uniform(t, t + 1), is bounded by
+        # the least its lower end and the most its upper end can be
+        lowest, highest = _interval(use.lower, duration), _interval(use.upper, duration)
+        if lowest is None or highest is None:
+            return None
+        return lowest[0], highest[1]
     if expr == _T:
         return sympy.S.Zero, (sympy.Float(duration) if duration is not None else oo)
     found = [_interval(arg, duration) for arg in expr.args]
@@ -293,6 +318,7 @@ class Expression:
         maximum: Optional[float] = None,
         clip: bool = False,
         duration: Optional[float] = None,
+        time_in_parameters: bool = False,
     ) -> None:
         if minimum is not None and maximum is not None and minimum > maximum:
             raise ValueError(f"minimum ({minimum}) cannot be greater than maximum ({maximum}).")
@@ -304,6 +330,7 @@ class Expression:
         self.maximum = maximum
         self.clip = clip
         self._duration = duration
+        self._allow_time_in_parameters = time_in_parameters
         self._expr = self._parse(raw)
         _reject_unknown_functions("Expression", raw, self._expr)
 
@@ -312,7 +339,11 @@ class Expression:
         # every random variable must have a row: this raises for one that does not
         self._uses = {rv: _use_of(rv) for rv in self._random_symbols}
         self._is_random = bool(self._random_symbols)
-        self._free_symbols = {str(s) for s in free if not _is_random_symbol(s)}
+        # a distribution's parameters are not among the tree's free symbols,
+        # so t inside Exponential(5 + t/10) has to be looked for there
+        in_parameters = {s for use in self._uses.values() for arg in use.args for s in arg.free_symbols}
+        self._time_in_parameters = _T in in_parameters
+        self._free_symbols = {str(s) for s in free | in_parameters if not _is_random_symbol(s)}
 
         if self._is_random and not allow_random:
             raise ValueError(f"Expression {raw!r} contains a random variable, which is not permitted here.")
@@ -343,6 +374,8 @@ class Expression:
         ``Piecewise`` mixtures, which lambdify to a numpy select.
         """
         self._random_leaves: list[tuple[SympyNode, DistributionUse]] = []
+        # per leaf, its parameters as floats at a given t, or None where they are constants
+        self._leaf_parameters: list[Optional[Callable[[float], Sequence[float]]]] = []
         self._lambdified: Optional[Callable[..., ArrayLike]] = None
         if not self._is_random:
             return
@@ -351,14 +384,18 @@ class Expression:
         for i, rv in enumerate(self._random_symbols):
             placeholder = Symbol(f"_leaf_{i}")
             placeholders[rv] = placeholder
-            self._random_leaves.append((placeholder, self._uses[rv]))
+            use = self._uses[rv]
+            self._random_leaves.append((placeholder, use))
+            over_time = any(arg.free_symbols for arg in use.args)
+            # compiled once: substituting t symbolically on every draw is what made a gap-by-gap draw slow
+            self._leaf_parameters.append(sympy.lambdify(_T, list(use.args), "math") if over_time else None)
 
         skeleton = self._expr.xreplace(placeholders)
         order = [ph for ph, _use in self._random_leaves] + [_T]
         self._lambdified = sympy.lambdify(order, skeleton, "numpy")
 
     def _parse(self, raw: Union[str, int, float]) -> SympyExpr:
-        expr = _parse_raw("Expression", raw)
+        expr = _parse_raw("Expression", raw, time_in_parameters=self._allow_time_in_parameters)
         if _is_condition(expr):
             raise ValueError(f"Expression {raw!r} is a condition, not a numeric value; use Predicate for conditions.")
         if not _is_expr(expr):
@@ -417,7 +454,7 @@ class Expression:
             # Only a bare random variable has a readily available support set.
             # Transformed/mixed random expressions are left for the sample-time
             # clamp.
-            if _is_random_symbol(self._expr):
+            if _is_random_symbol(self._expr) and not self._time_in_parameters:
                 return _support(self._uses[self._expr])
             return None
 
@@ -499,12 +536,17 @@ class Expression:
         Args:
             t: Stage time in seconds, substituted for ``t`` when present.
         """
-        expr = self._expr
-        if t is not None:
-            expr = expr.subs(_T, sympy.Float(t))
-        remaining = {str(s) for s in expr.free_symbols if not _is_random_symbol(s)}
+        remaining = self._free_symbols - ({"t"} if t is not None else set())
         if remaining:
             raise ValueError(f"Expression {self.raw!r} requires {sorted(remaining)} but none was provided to mean().")
+        at: dict[SympyNode, SympyNode] = {} if t is None else {_T: sympy.Float(t)}
+        expr = self._expr
+        uses = self._uses
+        if self._time_in_parameters:
+            # substituting t into the tree would rebuild each random variable, so read each mean at t instead
+            uses = {rv: use.substitute(at) for rv, use in self._uses.items()}
+        elif t is not None:
+            expr = expr.subs(_T, sympy.Float(t))
         present = [rv for rv in self._random_symbols if expr.has(rv)]
         if present:
             try:
@@ -513,8 +555,8 @@ class Expression:
                 return None
             if degree > 1:
                 return None
-        means: dict[SympyNode, SympyNode] = {rv: self._uses[rv].mean for rv in present}
-        value = float(expr.xreplace(means))
+        means: dict[SympyNode, SympyNode] = {rv: uses[rv].mean for rv in present}
+        value = float(expr.xreplace(means).xreplace(at))
         return None if math.isnan(value) else value
 
     @property
@@ -529,8 +571,50 @@ class Expression:
 
     @property
     def free_symbols(self) -> set[str]:
-        """Names of non-random free symbols (a subset of ``{"t"}``)."""
+        """Names of non-random free symbols (a subset of ``{"t"}``), a distribution's parameters included."""
         return set(self._free_symbols)
+
+    @property
+    def varies_with_time(self) -> bool:
+        """True when ``t`` appears, in the arithmetic or in a distribution's parameters."""
+        return "t" in self._free_symbols
+
+    def require_valid_draws(self) -> None:
+        """Raise unless a random expression over ``t`` can be drawn from at every ``t`` in ``[0, duration]``.
+
+        Three things are proved over the window, none of them sampled:
+
+        * each distribution's parameters are finite and meet its row's
+          conditions (a positive rate, say), by :func:`prove_parameter_conditions`.
+        * each distribution's mean is finite, from the row's mean and the
+          conditions the row puts on it.
+        * the whole expression stays inside ``[minimum, maximum]``, by
+          interval arithmetic.
+
+        The mean is each distribution's own, not the mean of the arithmetic
+        built on it. An error names the parameter and, when one is found, a
+        ``t`` at which it fails.
+        """
+        if not self._is_random or not self.varies_with_time:
+            return
+        if self._duration is None:
+            raise ValueError(f"Expression {self.raw!r} draws from a distribution over t, which needs a duration to check.")
+        duration = self._duration
+        window = f"for every t from 0 to {duration:g}"
+
+        for use in self._uses.values():
+            try:
+                prove_parameter_conditions(use, duration)
+                _prove_finite_mean(use, duration)
+            except ParameterConditionError as e:
+                raise ValueError(f"Expression {self.raw!r}: {e}") from e
+
+        found_bounds = self.bounds
+        if found_bounds is None or not (self._within_bounds(found_bounds[0]) and self._within_bounds(found_bounds[1])):
+            raise ValueError(
+                f"Expression {self.raw!r} cannot be shown to stay inside the permitted range "
+                f"[{self.minimum}, {self.maximum}] {window}. Keep it in range with Min(...) or Max(...)."
+            )
 
     def sample(
         self,
@@ -554,15 +638,12 @@ class Expression:
         if size < 1:
             raise ValueError(f"size must be a positive integer, got {size}.")
 
-        expr = self._expr
-        if t is not None:
-            expr = expr.subs(_T, sympy.Float(t))
-
-        remaining = {str(s) for s in expr.free_symbols if not _is_random_symbol(s)}
+        remaining = self._free_symbols - ({"t"} if t is not None else set())
         if remaining:
             raise ValueError(f"Expression {self.raw!r} requires {sorted(remaining)} but none was provided to sample().")
 
         if not self._is_random:
+            expr = self._expr if t is None else self._expr.subs(_T, sympy.Float(t))
             value = float(expr.evalf())
             if self._runtime_check and not self._within_bounds(value):
                 raise ValueError(
@@ -579,8 +660,11 @@ class Expression:
         # since the shared rng advances between leaves), then evaluate the
         # lambdified deterministic skeleton over the drawn arrays.
         assert self._lambdified is not None
-        leaf_draws = [use.sample(rng, size) for _ph, use in self._random_leaves]
         tval = 0.0 if t is None else float(t)
+        leaf_draws = [
+            use.sample(rng, size) if parameters is None else use.row.sampler(rng, parameters(tval), size)
+            for (_ph, use), parameters in zip(self._random_leaves, self._leaf_parameters, strict=True)
+        ]
         samples = np.asarray(self._lambdified(*leaf_draws, tval), dtype=np.float64)
         if samples.shape == ():
             samples = np.full(size, float(samples), dtype=np.float64)
@@ -1202,7 +1286,15 @@ def prove_parameter_conditions(use: DistributionUse, duration: float) -> None:
         failing = _time_outside(arg, duration, sympy.S.Reals)
         if failing is not None or not any(_is_bounded(values) for values in _ranges(arg, duration)):
             raise ParameterConditionError(use, (parameter,), f"{parameter} is a finite real", duration, failing)
-    for condition in use.row.conditions:
+    _prove_conditions(use, use.row.conditions, duration)
+
+
+def _prove_conditions(use: DistributionUse, conditions: Sequence[SympyRelational], duration: float, purpose: str = "") -> None:
+    """Prove each of ``conditions`` for these arguments over ``[0, duration]``, or raise for the first that is not.
+
+    ``purpose`` is appended to the condition in the error, e.g. ``" for a finite mean"``.
+    """
+    for condition in conditions:
         gap = use.bind(sympy.Add(condition.lhs, -condition.rhs))
         holding = _HOLDING_GAPS[condition.rel_op]
         if not any(values.is_subset(holding) is True for values in _ranges(gap, duration)):
@@ -1210,7 +1302,22 @@ def prove_parameter_conditions(use: DistributionUse, duration: float) -> None:
                 name for name, symbol in zip(use.row.parameters, use.row.symbols, strict=True) if condition.has(symbol)
             )
             failing = _time_outside(gap, duration, holding)
-            raise ParameterConditionError(use, parameters, render_condition(condition), duration, failing)
+            raise ParameterConditionError(use, parameters, render_condition(condition) + purpose, duration, failing)
+
+
+def _prove_finite_mean(use: DistributionUse, duration: float) -> None:
+    """Prove the mean of ``use`` is finite for all ``t`` in ``[0, duration]``, e.g. ``alpha > 1`` for a Pareto.
+
+    Raises:
+        ParameterConditionError: when a condition the row puts on its mean is
+            not proved, or the mean itself cannot be bounded.
+    """
+    if use.row.takes_list:
+        return
+    _prove_conditions(use, use.row.mean_finite_when, duration, " for a finite mean")
+    mean = use.bind(use.row.mean)
+    if not any(_is_bounded(values) for values in _ranges(mean, duration)):
+        raise ParameterConditionError(use, use.row.parameters, f"a finite mean, {use.row.mean}", duration, None)
 
 
 def _ranges(expr: SympyExpr, duration: float) -> Iterator[SympySet]:

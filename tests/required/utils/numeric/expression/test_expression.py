@@ -378,3 +378,97 @@ def test_bounds_through_rounding_and_finite_support(raw: str, expected: tuple[fl
 )
 def test_is_within(raw: str, minimum: float | None, maximum: float | None, expected: bool) -> None:
     assert Expression(raw).is_within(minimum, maximum) is expected
+
+
+# An Expression that may take t in a distribution's parameters, as request_interval does.
+def _over_time(raw: str, minimum: float | None = None, duration: float | None = None) -> Expression:
+    return Expression(raw, minimum=minimum, duration=duration, time_in_parameters=True)
+
+
+# t inside a distribution's parameters is opt-in and then counts as t: "Exponential(5 + t/10)" varies with time
+# and lists t among its symbols, "Exponential(5)" does not. Without the opt-in the parameter must be a constant,
+# and a parameter may read t only, not another draw.
+def test_time_in_a_distribution_parameter_is_seen() -> None:
+    assert _over_time("Exponential(5 + t/10)").varies_with_time
+    assert _over_time("Exponential(5 + t/10)").free_symbols == {"t"}
+    assert not _over_time("Exponential(5)").varies_with_time
+    assert _over_time("t + Exponential(5)").varies_with_time
+    with pytest.raises(ValueError, match="rate must be a finite constant, got t/10 \\+ 5"):
+        Expression("Exponential(5 + t/10)")
+    with pytest.raises(ValueError, match="disallowed symbol"):
+        Expression("Normal(t, 1)", allow_time=False, time_in_parameters=True)
+    with pytest.raises(ValueError, match="mean must be a constant or an expression of t"):
+        _over_time("Normal(Uniform(0, 1) + t, 1)")
+    with pytest.raises(ValueError, match="requires std > 0, got std = 0"):
+        _over_time("Normal(512, 0)")
+
+
+# A draw uses the parameters as they stand at the given t: 2000 seeded draws of "Exponential(10 + t)"
+# average 0.1 at t=0 and 0.01 at t=90 (within 10%), which is also what mean(t) gives. Drawing without a t is an error.
+def test_draw_uses_the_parameters_at_t() -> None:
+    expression = _over_time("Exponential(10 + t)")
+    assert expression.mean(0.0) == pytest.approx(0.1) and expression.mean(90.0) == pytest.approx(0.01)
+    for t, mean in ((0.0, 0.1), (90.0, 0.01)):
+        draws = np.asarray(expression.sample(t, rng=np.random.default_rng(0), size=2000))
+        assert float(draws.mean()) == pytest.approx(mean, rel=0.1)
+    with pytest.raises(ValueError, match="requires \\['t'\\]"):
+        expression.sample(rng=np.random.default_rng(0))
+
+
+# A support that moves with t is bounded over the window: "Uniform(t, t + 1)" over 60s lies in [0, 61],
+# and "0.05 + Exponential(20 + t)" is at least 0.05.
+def test_bounds_of_a_support_that_moves_with_time() -> None:
+    assert _over_time("Uniform(t, t + 1)", duration=60).bounds == (0.0, 61.0)
+    assert _over_time("0.05 + Exponential(20 + t)", duration=60).bounds == (0.05, float("inf"))
+
+
+# Random expressions over t that can be drawn from at every t in a 60s window pass the check, and so
+# do expressions the check does not apply to. A LogNormal passes with or without t, since its mean comes
+# from the table, and a gap with t and no distribution passes although its bounds are undecidable.
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Exponential(5 + t/10)",
+        "Exponential(0.1 + t)",
+        "Gamma(2, 0.1 + t)",
+        "Uniform(t, t + 1)",
+        "0.05 + Exponential(20 + t)",
+        "Max(0, Normal(1 + t, 0.1))",
+        "Exponential(10)",
+        "LogNormal(-2.55, 0.7)",
+        "LogNormal(-2.55 + t/100, 0.7)",
+        "Pareto(1 + t, 2)",
+        "DiscreteUniform([0.1, 0.2]) + t/100",
+        "1/t",
+        "Piecewise((oo, t < 5), (0.1, True))",
+    ],
+)
+def test_valid_draws_over_time_are_accepted(raw: str) -> None:
+    _over_time(raw, minimum=0, duration=60).require_valid_draws()
+
+
+# Over a 60s window each of these is rejected, naming the condition and a t where one is found: a rate of 0 at
+# t=0, a rate that reaches 0 at t=10, a rate with a pole at t=5 that cannot be shown finite, a rate that is
+# infinite at t=0, a distribution with no row, a Pareto with no finite mean, and a gap that cannot be shown to
+# stay at or above 0.
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ("Exponential(t)", "Exponential\\(rate\\) requires 'rate > 0', which fails at t = 0 over \\[0, 60\\]"),
+        ("Exponential(10 - t)", "Exponential\\(rate\\) requires 'rate > 0', which fails at t = 10 over \\[0, 60\\]"),
+        ("Exponential(1/(t - 5))", "requires 'rate is a finite real', which could not be proved over \\[0, 60\\]"),
+        ("Exponential(1/t)", "requires 'rate is a finite real', which fails at t = 0 over \\[0, 60\\]"),
+        ("Abs(Cauchy(1 + t, 1))", "Distribution 'Cauchy' is not supported"),
+        ("Pareto(1 + t, 1)", "requires 'alpha > 1 for a finite mean', which fails at t = 0 over \\[0, 60\\]"),
+        ("Exponential(5 + t) - 0.01", "cannot be shown to stay inside the permitted range"),
+    ],
+)
+def test_invalid_draws_over_time_are_rejected(raw: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        _over_time(raw, minimum=0, duration=60).require_valid_draws()
+
+
+# The check needs a window: a random expression over t built with no duration is refused.
+def test_valid_draws_need_a_duration() -> None:
+    with pytest.raises(ValueError, match="needs a duration"):
+        _over_time("Exponential(5 + t)", minimum=0).require_valid_draws()

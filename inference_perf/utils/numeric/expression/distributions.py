@@ -150,6 +150,10 @@ class DistributionUse:
         """Substitute the arguments into an expression of the parameters, e.g. the row's mean."""
         return expr.xreplace(self._binding)
 
+    def substitute(self, rule: Mapping[SympyNode, SympyNode]) -> DistributionUse:
+        """The same use with ``rule`` applied to every argument, e.g. ``{t: 3.0}`` for the use as it stands at 3s."""
+        return DistributionUse(self.row, tuple(arg.xreplace(rule) for arg in self.args))
+
     def holds(self, condition: SympyRelational) -> bool:
         """True when the condition is decided and true for these arguments."""
         return bool(condition.xreplace(self._binding) == sympy.true)

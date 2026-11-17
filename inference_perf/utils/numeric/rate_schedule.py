@@ -46,6 +46,12 @@ _GRID_STEP = 0.01
 _MAX_GRID_POINTS = 1_000_000
 
 
+def integration_grid(duration: float) -> NDArray[np.float64]:
+    """The stage times a time-varying rate is evaluated at, from 0 to ``duration`` inclusive."""
+    points = min(max(math.ceil(duration / _GRID_STEP), 1) + 1, _MAX_GRID_POINTS)
+    return np.linspace(0.0, duration, points)
+
+
 class RateSchedule:
     """Cumulative request intensity of a rate expression over ``[0, duration]``.
 
@@ -73,8 +79,7 @@ class RateSchedule:
             self._total = self._constant * self.duration
             return
 
-        points = min(max(math.ceil(self.duration / _GRID_STEP), 1) + 1, _MAX_GRID_POINTS)
-        self._grid = np.linspace(0.0, self.duration, points)
+        self._grid = integration_grid(self.duration)
         values = rate.evaluate(self._grid)
         if bool(np.any(values < 0)):
             index = int(np.argmax(values < 0))

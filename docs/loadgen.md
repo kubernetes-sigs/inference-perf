@@ -105,7 +105,7 @@ load:
 
 ### Generate a specific arrival pattern
 
-Set `request_interval` instead of `rate` to choose how requests are spaced: a number sends them exactly that many seconds apart, and a distribution draws each gap. `request_interval: "Exponential(r)"` is a Poisson process at `r` requests per second; a gamma gap with shape below 1 sends the same average load in bursts. Leave `load.type` out, since the gap distribution is the arrival process. See [Request interval](./config.md#request-interval) for the forms accepted.
+Set `request_interval` instead of `rate` to choose how requests are spaced: a number sends them exactly that many seconds apart, and a distribution draws each gap. Either may vary with stage time `t`. `request_interval: "Exponential(r)"` is a Poisson process at `r` requests per second; a gamma gap with shape below 1 sends the same average load in bursts. Leave `load.type` out, since the gap distribution is the arrival process. See [Request interval](./config.md#request-interval) for the forms accepted.
 
 ```yaml
 load:

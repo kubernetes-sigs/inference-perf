@@ -43,6 +43,7 @@ from inference_perf.observability.metrics.registry import exposition_name
 from inference_perf.observability.metrics.sets import ALL_SPECS
 from inference_perf.utils.numeric.expression import DISTRIBUTIONS, SERIES, SIGNALS, Expression, Predicate
 from inference_perf.utils.numeric.expression.distributions import DOCS_HEADER, docs_rows
+from inference_perf.utils.numeric.request_schedule import RequestSchedule
 from inference_perf.utils.numeric.expression.measured import AGGREGATES, SIGNAL_LABELS, WINDOWS
 
 DOCS = sorted((Path(__file__).resolve().parents[3] / "docs").glob("*.md"))
@@ -199,11 +200,33 @@ def _check_send_times(row: Row) -> None:
 # claimed spread-to-mean ratio (within 0.03). A number has no spread.
 def _check_request_interval(row: Row) -> None:
     expr, mean, ratio = _code(row[0]), float(row[1]), float(row[2])
-    draws = np.asarray(Expression(expr, allow_time=False, minimum=0).sample(rng=np.random.default_rng(0), size=20000))
+    draws = np.asarray(Expression(expr, minimum=0).sample(rng=np.random.default_rng(0), size=20000))
     assert math.isclose(float(draws.mean()), mean, rel_tol=0.02), f"{expr}: mean {draws.mean():.4f}, doc says {mean}"
     assert math.isclose(float(draws.std() / draws.mean()), ratio, abs_tol=0.03), (
         f"{expr}: ratio {draws.std() / draws.mean():.3f}"
     )
+
+
+# A request_interval that is not random, over a window of the given seconds, must send exactly the claimed
+# requests, the first within 10ms of the claimed second, or 'none' when it sends nothing.
+def _check_request_interval_over_time(row: Row) -> None:
+    request_interval, window, requests, first = _code(row[0]), int(row[1]), int(row[2]), row[3]
+    offsets = StandardLoadStage(request_interval=request_interval, duration=window).request_schedule.offsets
+    assert len(offsets) == requests, f"{request_interval} over {window}s"
+    if requests == 0:
+        assert first == "none", f"{request_interval} over {window}s"
+    else:
+        assert abs(float(offsets[0]) - float(first)) <= 0.01, f"{request_interval} over {window}s: first at {offsets[0]}"
+
+
+# A random request_interval over t must send the claimed mean requests (within 10%, over 200 seeded
+# schedules), and the area under the named curve over the window must be the claimed area (nearest whole).
+def _check_random_request_interval_over_time(row: Row) -> None:
+    request_interval, curve, window, mean, area = _code(row[0]), _code(row[1]), int(row[2]), float(row[3]), int(row[4])
+    expression = Expression(request_interval, minimum=0, duration=window, time_in_parameters=True)
+    counts = [len(RequestSchedule(expression, window, np.random.default_rng(seed)).offsets) for seed in range(200)]
+    assert math.isclose(sum(counts) / len(counts), mean, rel_tol=0.1), f"{request_interval}: mean {sum(counts) / len(counts)}"
+    assert round(StandardLoadStage(rate=curve, duration=window).rate_schedule.total) == area, f"{curve} over {window}s"
 
 
 # Each example in a rejected table must raise when built the way its table says.
@@ -233,6 +256,14 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Rate expression", "Window (s)", "First three sends (s)", "Last send (s)"): _check_send_times,
     ("Rejected rate", "Why"): _rejects(lambda raw: StandardLoadStage(rate=raw, duration=60)),
     ("Request interval", "Mean gap (s)", "Spread / mean", "Arrivals"): _check_request_interval,
+    ("Request interval over t", "Window (s)", "Requests", "First request (s)"): _check_request_interval_over_time,
+    (
+        "Random request interval over t",
+        "Curve (req/s)",
+        "Window (s)",
+        "Mean requests",
+        "Area under the curve",
+    ): _check_random_request_interval_over_time,
     ("Rejected request_interval", "Why"): _rejects(lambda raw: StandardLoadStage(request_interval=raw, duration=60)),
 }
 

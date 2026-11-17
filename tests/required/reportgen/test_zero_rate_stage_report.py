@@ -41,12 +41,15 @@ def _request_metric(stage_id: int, start: float) -> RequestLifecycleMetric:
     )
 
 
-# What a run recorded about one stage: its rate, a 3s window, and for a concurrent or
-# session stage its concurrency level.
-def _stage_info(stage_id: int, rate: float, concurrency_level: int | None = None) -> StageRuntimeInfo:
+# What a run recorded about one stage: its rate or its request_interval, a 3s window, and for
+# a concurrent or session stage its concurrency level.
+def _stage_info(
+    stage_id: int, rate: float | None, concurrency_level: int | None = None, request_interval: str | None = None
+) -> StageRuntimeInfo:
     return StageRuntimeInfo(
         stage_id=stage_id,
         rate=rate,
+        request_interval=request_interval,
         start_time=3.0 * stage_id,
         end_time=3.0 * stage_id + 3.0,
         status=StageStatus.COMPLETED,
@@ -171,3 +174,15 @@ async def test_run_of_only_a_zero_rate_stage() -> None:
     assert reports["stage_0_lifecycle_metrics"].get_contents()["load_summary"]["count"] == 0
     assert "summary_lifecycle_metrics" not in reports
     assert reports["inference-perf.partial.stage_0"].get_contents()["results"] == {}
+
+
+# A request_interval stage that sent nothing reports too. Stages at rate 4, request_interval "oo", rate 4
+# with two requests in each of stages 0 and 2: stage 1 reports count 0 and carries its request_interval
+# in place of a requested rate.
+async def test_request_interval_stage_that_sent_nothing_reports_a_count_of_zero() -> None:
+    stages = {0: _stage_info(0, 4.0), 1: _stage_info(1, None, request_interval="oo"), 2: _stage_info(2, 4.0)}
+    reports = await _reports(stages, [0, 2])
+    idle = reports["stage_1_lifecycle_metrics"].get_contents()["load_summary"]
+    assert (idle["count"], idle["request_interval"], idle["achieved_rate"]) == (0, "oo", 0.0)
+    assert "requested_rate" not in idle
+    assert reports["validation"].get_contents()["global"]["errors"] == []

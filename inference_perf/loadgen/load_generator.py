@@ -1786,7 +1786,7 @@ class LoadGenerator:
         # A stage that sends nothing has no request to wait on, so it holds its
         # window open instead and still ends at its duration or stop condition.
         idle_until: Optional[float] = None
-        zero_requests_reason = rate.zero_requests_reason if isinstance(rate, RateSchedule) else None
+        zero_requests_reason = None if isinstance(rate, (float, int)) else rate.zero_requests_reason
         if num_requests == 0 and zero_requests_reason is not None:
             idle_until = start_time + duration
             logger.warning("Stage %d sends zero requests: %s.", stage_id, zero_requests_reason)
