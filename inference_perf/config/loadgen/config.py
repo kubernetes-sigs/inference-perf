@@ -67,12 +67,12 @@ class StandardLoadStage(LoadStage):
     stage early on what it observes.
     """
 
-    rate: Union[Annotated[float, Field(gt=0)], str] = Field(
+    rate: Union[Annotated[float, Field(ge=0)], str] = Field(
         ...,
         description=(
-            "Request rate (QPS): a positive number, or an expression over stage time t (seconds) such as "
+            "Request rate (QPS): a nonnegative number, or an expression over stage time t (seconds) such as "
             "'10 + 5*sin(2*pi*t/60)' or 'Min(5 + t/2, 40)'. An expression is never random, need not mention t, "
-            "and must be nonnegative over the stage."
+            "and must be nonnegative over the stage. A rate that is zero for the whole stage sends zero requests."
         ),
     )
     duration: Optional[int] = Field(
@@ -110,8 +110,6 @@ class StandardLoadStage(LoadStage):
         predicate = self.predicate
         # Same for the rate, which is integrated over the window the predicate
         # just fixed.
-        if self.rate_schedule.total <= 0:
-            raise ValueError(f"rate {self.rate!r} is zero over the whole stage, so the stage would send nothing")
         sends = self.expected_requests
         for term in predicate.terms.values():
             if term.sent_stop is not None and term.sent_stop > sends:
@@ -179,6 +177,11 @@ class StandardLoadStage(LoadStage):
     def mean_rate(self) -> float:
         """Average rate over the window; equals ``rate`` when the rate is a number."""
         return self.rate_schedule.mean_rate
+
+    @property
+    def rate_is_zero(self) -> bool:
+        """True when the rate is zero for the whole stage, so the stage sends zero requests."""
+        return self.rate_schedule.total <= 0
 
 
 class ConcurrentLoadStage(LoadStage):
@@ -461,6 +464,9 @@ class LoadConfig(StrictBaseModel):
                         f"Stage {i}: a rate expression has no effect under TRACE_REPLAY, "
                         "where the trace sets when each request is sent. Use a number."
                     )
+                # legal, since a stage may idle between two others, but worth saying out loud
+                if self.type != LoadType.TRACE_REPLAY and stage.rate_is_zero:
+                    logger.warning("Stage %d will send zero requests: its rate %r is zero for the whole stage.", i, stage.rate)
 
         # Validate multilora traffic split adds up to 1.0 if present
         if self.lora_traffic_split is not None:

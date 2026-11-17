@@ -70,17 +70,14 @@ def test_rate_forms_accepted() -> None:
 
 
 # Config rejections, each at load time: a rate that goes negative inside the window
-# ("10 - t" over 60s), a random rate, a symbol other than t, a rate that is zero over the
-# whole stage, and a nonpositive number (the existing gt=0 rule).
+# ("10 - t" over 60s), a random rate, a symbol other than t, and a negative number.
 @pytest.mark.parametrize(
     ("rate", "message"),
     [
         ("10 - t", "outside the permitted range"),
         ("Uniform(1, 5)", "never random"),
         ("requests/10", "disallowed symbol"),
-        ("0*t", "zero over the whole stage"),
-        (0, "greater than 0"),
-        (-1, "greater than 0"),
+        (-1, "greater than or equal to 0"),
     ],
 )
 def test_bad_rates_rejected(rate: object, message: str) -> None:
