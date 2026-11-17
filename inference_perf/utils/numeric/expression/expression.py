@@ -732,6 +732,9 @@ class Predicate:
         try:
             expr = _parse_raw("Predicate", rewritten, shown=raw)
         except ValueError as e:
+            if not isinstance(e.__cause__, (SyntaxError, TypeError, AttributeError, sympy.SympifyError)):
+                # not a parse failure: a distribution the table refuses already says what is wrong
+                raise
             where = _where(raw, lambda _start, text: _parse_clause(text) is None)
             found = f" Found{where}." if where else ""
             if "&" in raw or "|" in raw:
