@@ -17,6 +17,10 @@ adds `request_session_id` for the wire identity sent through
 `api.session_id_header_key`. Parent requests omit `request_session_id` because their
 wire identity is already the enclosing `session_id`.
 
+For runs that replay a trace through the workload record layer, each per-request entry
+adds `record_id`, the id of the record the request was sent from. A record that is sent
+more than once (a replayed or duplicated session) appears on more than one entry.
+
 ## Understanding the Report Structure
 
 Here is an example snippet from a `summary_lifecycle_metrics.json` report:

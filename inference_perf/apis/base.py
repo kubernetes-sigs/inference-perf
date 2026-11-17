@@ -157,6 +157,9 @@ class RequestLifecycleMetric(BaseModel):
     stage_id: Optional[int] = None
     session_id: Optional[str] = None
     request_session_id: Optional[str] = None
+    # The workload record this request was sent from, when it had one. A
+    # record can be sent more than once, so several metrics may name it.
+    record_id: Optional[str] = None
     scheduled_time: float
     start_time: float
     end_time: float
@@ -251,6 +254,8 @@ class InferenceAPIData(BaseModel):
     # session. session_id remains the scheduler/reporting identity.
     request_session_id: Optional[str] = None
     graph_event_id: Optional[str] = None
+    # set by a generator that sends workload records, carried to the request's metric
+    record_id: Optional[str] = None
     otel_context: Optional[dict[str, str]] = None  # OTEL trace context for distributed tracing
     stage_id: int = 0  # stage id
     headers: Optional[dict[str, str]] = None
