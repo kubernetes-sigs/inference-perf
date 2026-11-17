@@ -99,7 +99,7 @@ tools:
     arrival: constant     # rate mode: how this tool spaces requests (sets its tolerance)
   vllm-bench:
     arrival: poisson
-    leading_extra_requests: 1   # vllm bench sends one warmup request first
+    leading_extra_requests: 1   # warmup requests the tool sends first (vllm v0.10.0 sent 1)
     prompt_outlier_frac: 0.01   # share of prompts allowed outside prompt_tokens_rel_tol
 ```
 
@@ -109,9 +109,9 @@ value here, that is itself a difference between the tools, and it stays
 written down in the case file on purpose.
 
 `prompt_outlier_frac` (default 0) is the share of a tool's prompts, rounded
-up, allowed outside `prompt_tokens_rel_tol`. The vllm leg needs it, see
-"Prompt length is approximate" below. A tool that declares none must land
-every prompt in range.
+up, allowed outside `prompt_tokens_rel_tol`. The vllm leg needed it at
+v0.10.0, see "Prompt length is approximate" below. A tool that declares none
+must land every prompt in range.
 
 `arrival` is required in rate mode and is either `constant` or `poisson`.
 Both draw random gaps between requests. `constant` then scales its gaps to add
@@ -135,23 +135,26 @@ tighten a case is to raise `num_requests`, never to edit a number.
 - **Prompt length is approximate.** Both tools aim for `prompt_tokens` under
   the same tokenizer, but text built from random token ids does not always
   tokenize back to the same count. Hence `prompt_tokens_rel_tol` instead of an
-  exact match. vllm bench builds each prompt from consecutive token ids, and
-  a few id ranges in the gemma tokenizer collapse to far fewer tokens when
-  decoded and re-encoded (down to 17 from 127). About 0.2% of its prompts land
-  there, so its leg also declares `prompt_outlier_frac: 0.01`.
+  exact match. vllm bench builds each prompt from consecutive token ids. At
+  v0.10.0 a few id ranges in the gemma tokenizer collapsed to far fewer tokens
+  when decoded and re-encoded (down to 17 from 127), so its leg declared
+  `prompt_outlier_frac: 0.01`. The pinned version pads or trims each prompt
+  until it re-encodes to the target count, so its leg declares none.
 - **vllm flags change meaning between versions.** The args files are written
   for the vllm version pinned in `e2e/utils/vllm_bench.py` (`VLLM_PINNED_REF`),
   and every flag was checked against that version's
-  `vllm/benchmarks/serve.py` and `vllm/benchmarks/datasets.py`. In particular
-  `--random-range-ratio 0` means "fixed lengths" at this pin, but it has meant
-  "anywhere from 0 to the full length" in other versions. That mix-up is what
-  motivated #481. Re-check both files when bumping the pin.
+  `vllm/benchmarks/serve.py` and `vllm/benchmarks/datasets/datasets.py`. In
+  particular `--random-range-ratio 0` means "fixed lengths" at this pin, but
+  it has meant "anywhere from 0 to the full length" in other versions. That
+  mix-up is what motivated #481. Re-check both files when bumping the pin.
 - **Some things cannot be said on both sides.** The pinned vllm always sends
   `stream: true` on the completions endpoint, so a `stream: false` case cannot
-  be written for the vllm leg today. vllm also subtracts the tokenizer's
-  special-token count from `--random-input-len` before sampling, so a tokenizer
-  that adds a BOS token ends up sending `len-1` prompt tokens. That is another
-  reason `prompt_tokens_rel_tol` exists.
+  be written for the vllm leg today. It also sets `ignore_eos: true` on every
+  random-dataset request, with or without `--ignore-eos`, so neither can an
+  `ignore_eos: false` case. vllm also subtracts the tokenizer's special-token
+  count from `--random-input-len` before sampling, so a tokenizer that adds a
+  BOS token ends up sending `len-1` prompt tokens. That is another reason
+  `prompt_tokens_rel_tol` exists.
 
 ## Running
 
@@ -172,7 +175,5 @@ runs in CI's merge-blocking `e2e-tests` job. There the inference-perf side runs
 and gates. No CI job sets `$VLLM_BENCH_BIN`, so the vllm side and the
 tool-against-tool comparison skip and never gate.
 
-The vllm side has not been run yet. The args files and
-`leading_extra_requests` were worked out by reading the pinned vllm source, not
-by running it. Treat the first real vllm run as the thing that checks this
-directory, not as a regression check.
+No CI job runs the vllm side, so run it locally with `$VLLM_REQUIRED=1` on
+every pin bump. At v0.32.0 both cases pass that way.

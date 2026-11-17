@@ -101,26 +101,26 @@ batching, which shows up as a client-side latency difference that no client caus
 
 ## Flag and setting map
 
-**Checked on 2026-08-21 against `vllm bench serve` from vLLM v0.10.0 and `aiperf profile` from
-AIPerf v0.12.0.** Both tools have changed what these flags mean between releases, so
-treat a row as unverified against any other version and re-read the tool's own `--help` before
+**Checked against `vllm bench serve` from vLLM v0.32.0 on 2026-11-02 and `aiperf profile` from
+AIPerf v0.12.0 on 2026-08-21.** Both tools have changed what these flags mean between releases,
+so treat a row as unverified against any other version and re-read the tool's own `--help` before
 relying on it. The version of vLLM the parity harness (#481) pins is the one these rows were
 read from.
 
-| What you are pinning | inference-perf | `vllm bench serve` v0.10.0 | `aiperf profile` v0.12.0 |
+| What you are pinning | inference-perf | `vllm bench serve` v0.32.0 | `aiperf profile` v0.12.0 |
 | :--- | :--- | :--- | :---
-| Evenly spaced arrivals at a rate | `load.type: constant`, `stages[].rate` | `--request-rate` with `--burstiness` above 1 (approximate) | `--request-rate` with `--arrival-pattern constant` |
+| Evenly spaced arrivals at a rate | `load.type: constant`, `stages[].rate` | `--request-rate` with `--burstiness inf` | `--request-rate` with `--arrival-pattern constant` |
 | Poisson arrivals at a rate | `load.type: poisson`, `stages[].rate` | `--request-rate` (default `--burstiness 1.0`) | `--request-rate` (default `--arrival-pattern poisson`) |
 | Fixed requests in flight | `load.type: concurrent`, `stages[].concurrency_level` | `--max-concurrency` | `--concurrency` |
 | How much load to send | `stages[].duration`, or `num_requests` under `concurrent` | `--num-prompts` | `--request-count`, or `--benchmark-duration` |
-| Input length | `data.input_distribution` (`type: fixed`, `mean`) | `--random-input-len` with `--random-range-ratio 0` | `--isl` with `--isl-stddev 0` |
-| Output length | `data.output_distribution` (`type: fixed`, `mean`) | `--random-output-len` with `--random-range-ratio 0` | `--osl` with `--osl-stddev 0` |
-| Generate to the length cap | `server.ignore_eos: true` | `--ignore-eos` | `--extra-inputs ignore_eos:true` |
+| Input length | `data.input_distribution` (`type: fixed`, `mean`) | `--random-input-len` (or `--input-len`) with `--random-range-ratio 0` | `--isl` with `--isl-stddev 0` |
+| Output length | `data.output_distribution` (`type: fixed`, `mean`) | `--random-output-len` (or `--output-len`) with `--random-range-ratio 0` | `--osl` with `--osl-stddev 0` |
+| Generate to the length cap | `server.ignore_eos: true` | `--ignore-eos` (always on with `--dataset-name random`) | `--extra-inputs ignore_eos:true` |
 | Streaming | `api.streaming` | fixed by the endpoint, no flag | `--streaming` |
 | Tokenizer | `tokenizer.pretrained_model_name_or_path` | `--tokenizer` | `--tokenizer` |
 | Reproducible prompts | `load.base_seed` (default current time), except `shared_prefix`, which reads `data.shared_prefix.seed` (default unseeded) | `--seed` (default `0`) | `--random-seed` |
-| Excluded warmup | no equivalent | no equivalent | `--warmup-request-count`, `--warmup-duration` |
-| Sampling parameters | no equivalent for synthetic data | `--temperature`, `--top-p`, `--top-k`, `--min-p` | `--extra-inputs temperature:0` and similar |
+| Excluded warmup | no equivalent | `--num-warmups`, `--ready-check-timeout-sec` (both default `0`) | `--warmup-request-count`, `--warmup-duration` |
+| Sampling parameters | no equivalent for synthetic data | `--temperature`, `--top-p`, `--top-k`, `--min-p`, `--frequency-penalty`, `--presence-penalty`, `--repetition-penalty` | `--extra-inputs temperature:0` and similar |
 
 ### Where the map breaks
 
@@ -130,8 +130,9 @@ a converted config still needs reading:
 - **Arrival spacing defaults disagree.** Both peers default to Poisson at a given rate
   (`--burstiness 1.0`, `--arrival-pattern poisson`), so "rate 40" on either side is not the
   evenly spaced stimulus `load.type: constant` produces. Set the pattern explicitly on both
-  sides or compare only average offered rate. vLLM has no exactly even setting: burstiness
-  above 1 draws intervals from a gamma distribution that only approaches even spacing.
+  sides or compare only average offered rate. At v0.32.0 `--burstiness inf` spaces requests
+  exactly `1/rate` apart; a finite burstiness above 1 draws gamma intervals that only approach
+  even spacing.
 - **vLLM sends everything at once unless you ask otherwise.** `--request-rate` defaults to
   `inf`, which also disables `--burstiness`, so the default run offers all `--num-prompts`
   immediately. The nearest inference-perf equivalent is `load.type: concurrent` with
@@ -143,28 +144,50 @@ a converted config still needs reading:
   tokens first (`real_input_len = input_len - num_special_tokens_to_add()`), so a
   BOS-prepending tokenizer sends one token fewer than requested. Expect a small fixed offset
   rather than an exact match on input tokens.
-- **One range ratio covers both directions.** `--random-range-ratio` widens input and output
-  together, while inference-perf configures each distribution separately. At v0.10.0 the range
-  is `[len * (1 - r), len * (1 + r)]` and the tool asserts `r < 1.0`, so the pre-v0.8.4
-  fixed-length recipe of `1.0` now fails loudly instead of silently producing a different
-  workload.
+- **One range ratio covers both directions by default.** A single `--random-range-ratio` value
+  widens input and output together, while inference-perf configures each distribution
+  separately. At v0.32.0 `'{"input": a, "output": b}'` sets the two apart. The range is
+  `[floor(len * (1 - r)), ceil(len * (1 + r))]`, the output never drops below 1 token, and the
+  tool requires `0 <= r < 1`, so the pre-v0.8.4 fixed-length recipe of `1.0` fails loudly
+  instead of silently producing a different workload.
 - **Nobody's defaults agree.** inference-perf distributions default to `type: normal` with a
   nonzero `std_dev`, AIPerf's `--isl-stddev` and `--osl-stddev` default to `0` (fixed) with
   `--isl` defaulting to 550, and vLLM's range ratio defaults to `0` (fixed) at this version.
   A comparison of two default configs compares three different workloads.
-- **Only AIPerf can exclude a warmup.** Its warmup requests are sent and dropped; inference-perf
-  measures everything it sends. See the warmup section above for the workaround.
+- **Only the peers can exclude a warmup.** AIPerf's warmup requests and vLLM's `--num-warmups`
+  are sent and dropped; inference-perf measures everything it sends. See the warmup section above
+  for the workaround.
 - **Sampling parameters are not configurable here** for synthetic workloads, so runs take the
   server's defaults while both peers can pin greedy decoding. Pin the peer to whatever the
   server defaults to, and say which that was.
 
 ### Converting a run automatically
 
-There is no converter today, and the rows above are the mapping in the meantime. One is tracked
-in #755, outside this release. The parity harness in #481 carries worked examples of the
-mapping, a `vllm bench` argument file and the inference-perf config that matches it, kept in
-sync by a test; a converter would be built and tested on those pairs, and would have to refuse
-or annotate every break listed above rather than translate silently.
+`inference-perf-convert` (#755) turns a `vllm bench serve` or `aiperf profile` argument list into
+a config. The peer version is an argument, and only versions whose flag surface was verified
+against source convert: `vllm bench serve` v0.10.0 and v0.32.0 and `aiperf profile` v0.12.0
+today. Everything after `--` is the peer's own argument list, verbatim.
+
+```bash
+inference-perf-convert vllm-bench --peer-version v0.32.0 -o config.yaml -- \
+    --model m --dataset-name random --num-prompts 600 --request-rate 40 --ignore-eos
+inference-perf-convert aiperf-profile --peer-version v0.12.0 -o config.yaml -- \
+    --model m --endpoint-type completions --streaming --osl 64 --concurrency 8 --request-count 48
+```
+
+The emitted file starts with a comment block recording the source argv, every assumption made and
+every workload-neutral flag dropped. Each break listed above either refuses with a named reason or
+is recorded as an assumption (the warmup window, for one); nothing is translated silently. A
+refusal exits 2 and writes nothing, so a config that looks converted but changes the workload
+cannot come out of it; an argument list the peer itself would reject exits 1. Two AIPerf defaults
+refuse on their own: an unset `--osl` (AIPerf then sends no `max_tokens`) and a
+`--num-dataset-entries` pool smaller than the request count (prompt reuse). A comma-separated
+value such as `--concurrency 8,16` is an AIPerf parameter sweep, one run per value, and refuses as
+well. `--api-key` is never written into the file, which is meant to be checked in, and neither is a
+`--header` whose name carries a credential (the `CREDENTIAL_HEADER_FRAGMENTS` rule in
+`inference_perf/config/redaction.py`); set `server.api_key` or the header under `api.headers` on
+the run host instead. The parity cases in #736 are the converter's acceptance
+oracle: converting each case's peer arguments must reproduce its checked-in config.
 
 ## Verify before comparing
 
