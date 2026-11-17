@@ -1226,11 +1226,16 @@ class ReportGenerator:
         Credentials are masked: the report bundle is uploaded to object storage and
         passed around, so it carries the shape of the run and not the keys it used.
         """
-        return ReportFile(
-            name="config",
-            file_type="yaml",
-            contents=redact(self.config.model_dump(mode="json", by_alias=True), Config),
-        )
+        contents = redact(self.config.model_dump(mode="json", by_alias=True), Config)
+        # load.type is rejected next to a rate expression, so the user cannot
+        # have set it there, and writing out its default would save a config
+        # that does not load
+        load = contents.get("load")
+        if isinstance(load, dict):
+            stages = load.get("stages") or []
+            if any(isinstance(stage, dict) and isinstance(stage.get("rate"), str) for stage in stages):
+                load.pop("type", None)
+        return ReportFile(name="config", file_type="yaml", contents=contents)
 
     async def generate_reports(
         self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters

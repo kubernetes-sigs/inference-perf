@@ -19,6 +19,7 @@ integral's worth of requests, and the timers spread them by the rate.
 """
 
 import os
+import pathlib
 import tempfile
 import unittest.mock
 
@@ -31,6 +32,7 @@ from inference_perf.client.modelserver import MockModelServerClient
 from inference_perf.config import (
     APIConfig,
     APIType,
+    Config,
     DataConfig,
     DataGenType,
     LoadConfig,
@@ -43,6 +45,7 @@ from inference_perf.datagen.synthetic.mock_datagen import MockDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.loadgen.load_timer import ConstantLoadTimer, LoadTimer, PoissonLoadTimer
 from inference_perf.metrics.request_collector.local import LocalRequestMetricCollector
+from inference_perf.reportgen.base import ReportGenerator
 
 
 # Builds a LoadGenerator with no load.type around a mocked datagen, with the circuit-breaker lookup patched out.
@@ -227,3 +230,42 @@ async def test_in_process_run_reports_mean_rate() -> None:
     assert info.status.name == "COMPLETED"
     assert info.rate == pytest.approx(2.0)
     assert len(collector.get_metrics()) in (1, 2)
+
+
+# The config a report saves loads again. A file with rate "t" for 10s and rate 4 for 10s and no
+# load.type is loaded, its report config is written out the way a run writes it, and that file is
+# loaded: load.type is not in it, and the stages come back the same.
+def test_report_config_with_a_rate_expression_loads_again(tmp_path: pathlib.Path) -> None:
+    source = tmp_path / "config.yaml"
+    source.write_text(
+        yaml.dump({"data": {"type": "mock"}, "load": {"stages": [{"rate": "t", "duration": 10}, {"rate": 4, "duration": 10}]}})
+    )
+    config = read_config(str(source))
+    saved = ReportGenerator(None, unittest.mock.Mock(), config).generate_config_report()
+    assert "type" not in saved.get_contents()["load"]
+
+    written = tmp_path / saved.get_filename()
+    with open(written, "w") as f:
+        yaml.dump(saved.get_contents(), f, sort_keys=False, default_flow_style=False)
+    again = read_config(str(written))
+    assert [stage.model_dump() for stage in again.load.stages] == [stage.model_dump() for stage in config.load.stages]
+    assert again.load.type == LoadType.CONSTANT
+
+
+# load.type stays in the saved config when it is legal there: a file with numeric rates keeps
+# the merged-in default, constant, and one that writes load.type: poisson keeps poisson.
+# So does a config built in code with a numeric rate and no load.type.
+def test_report_config_keeps_a_legal_load_type(tmp_path: pathlib.Path) -> None:
+    built = Config(load=LoadConfig(stages=[StandardLoadStage(rate=4, duration=10)]))
+    assert (
+        ReportGenerator(None, unittest.mock.Mock(), built).generate_config_report().get_contents()["load"]["type"]
+        == "constant"
+    )
+    for load_type, saved_type in ((None, "constant"), ("poisson", "poisson")):
+        load: dict[str, object] = {"stages": [{"rate": 4, "duration": 10}]}
+        if load_type is not None:
+            load["type"] = load_type
+        source = tmp_path / "config.yaml"
+        source.write_text(yaml.dump({"data": {"type": "mock"}, "load": load}))
+        saved = ReportGenerator(None, unittest.mock.Mock(), read_config(str(source))).generate_config_report()
+        assert saved.get_contents()["load"]["type"] == saved_type
