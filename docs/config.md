@@ -213,7 +213,7 @@ load:
   type: constant|poisson|concurrent|trace_session_replay # Load pattern type
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
-    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS); a number, or an expression over stage seconds t such as "10 + 5*sin(2*pi*t/60)" (the stage sends the rate integrated over its window, and reports carry the mean; leave load.type out with an expression)
+    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS); a number, or an expression over stage seconds t such as "10 + 5*sin(2*pi*t/60)" (the stage sends the rate integrated over its window, and reports carry the mean), with load.type left out for an expression
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
       stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds; may read measured terms, see Stop Conditions (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS, defaults to num_conversations for conversation_replay)
@@ -236,7 +236,7 @@ load:
 
 #### Rate Expressions
 
-A stage's `rate` is a number, spaced as `load.type` says (constant or poisson), or an [expression](./expressions.md), set with no `load.type`. An expression may vary with stage time `t` and need not mention it: `"2 + 3"` is a rate of 5. The stage sends the rate integrated over its window, and reports carry the mean rate. A number schedules exactly as it always has.
+A stage's `rate` is a number, spaced as `load.type` says (constant or poisson), or an [expression](./expressions.md), set with no `load.type`. An expression may vary with stage time `t` and need not mention it: `"2 + 3"` is a rate of 5. The stage sends the rate integrated over its window, and reports carry the mean rate. The request count is the area under the rate over the stage, rounded down, with a small tolerance so that a ramp whose area works out to 50 sends 50 and not 49. A number schedules exactly as it always has.
 
 <!-- checked-example -->
 ```yaml
