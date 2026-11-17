@@ -251,6 +251,19 @@ def test_per_request_fields_omit_session_ids_when_absent() -> None:
     assert "request_session_id" not in entry
 
 
+# A metric sent from the record "T/parent_turn_2" writes record_id into its
+# entry, with every optional section switched off. One sent from no record
+# writes no record_id key at all.
+def test_per_request_fields_include_the_record_id_when_set() -> None:
+    metric = _metric()
+    metric.record_id = "T/parent_turn_2"
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(request=False, response=False, info=False))
+
+    assert entry["record_id"] == "T/parent_turn_2"
+    assert "record_id" not in build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig())
+
+
 @pytest.mark.parametrize("include_raw", [True, False])
 @pytest.mark.parametrize("failed", [True, False])
 def test_per_request_entries_preserve_stage_and_schedule(include_raw: bool, failed: bool) -> None:
