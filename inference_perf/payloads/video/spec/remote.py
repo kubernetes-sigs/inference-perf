@@ -17,7 +17,7 @@ Stub: in :data:`VideoSpecUnion` (construction works) but not yet wired into
 the chat.py materializer — passing one through ``to_request_body`` raises
 ``TypeError`` until that branch lands. The materializer will emit the URL verbatim
 in a single ``video_url`` wire block (whatever the URL points to — MP4 is the
-usual case) and record ``bytes=0`` on the realized metric. Per-frame remote
+usual case) and record nothing measured on the realized metric. Per-frame remote
 URLs are intentionally not supported; that use case fits
 :class:`PreEncodedFramesVideoSpec` after a local fetch. Private buckets are
 expected to use signed URLs — no auth-headers field on the spec.
@@ -38,8 +38,8 @@ class RemoteVideoSpec(VideoSpec):
     def get_metrics(self, wire_bytes: int) -> Video:
         # We sent a URL, not pixels. Geometry/frames on the spec are
         # unverified caller hints, deliberately not surfaced as
-        # measurements. Returning zeros makes "remote means no measurement"
-        # visible in aggregate reports rather than silently faking signal.
+        # measurements. Every field stays None, so reports leave the instance
+        # out of the size distributions instead of averaging in a fake zero.
         return Video()
 
 

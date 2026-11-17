@@ -15,6 +15,10 @@
 
 from unittest.mock import Mock
 
+import pytest
+from pydantic import ValidationError
+
+from inference_perf.apis.unary_response import CompletionResponse
 from inference_perf.apis.base import (
     ErrorResponseInfo,
     RequestLifecycleMetric,
@@ -143,6 +147,24 @@ class TestRequestFailuresByLabel:
         assert summary.cancelled["in_flight_sec"]["mean"] == 1.0
         assert "latency" not in summary.cancelled
 
+    # Two successes in the first second and one request cancelled at stage teardown
+    # 120 s after it was sent (the default grace). Expects benchmark_time_seconds 1.0
+    # and requests_per_sec 2.0: the throughput window spans the answered requests,
+    # not the cancellation time, which would read 0.017 req/s.
+    def test_stage_teardown_cancellations_do_not_stretch_the_throughput_window(self) -> None:
+        cancelled = _req(error=stage_teardown_cancelled_error()).model_copy(update={"start_time": 0.9, "end_time": 120.9})
+        second = _req().model_copy(update={"start_time": 0.5, "end_time": 1.0})
+        summary = summarize_requests([_req(), second, cancelled], PERCENTILES)
+        assert summary.benchmark_time_seconds == 1.0
+        assert summary.successes["throughput"]["requests_per_sec"] == 2.0
+
+    # Every request cancelled: the window falls back to all of them, so the report
+    # still has a positive benchmark_time_seconds.
+    def test_all_cancelled_keeps_a_window(self) -> None:
+        cancelled = _req(error=stage_teardown_cancelled_error())
+        summary = summarize_requests([cancelled, cancelled], PERCENTILES)
+        assert summary.benchmark_time_seconds == 1.0
+
     def test_session_id_attached_to_messages(self) -> None:
         err = ErrorResponseInfo(error_type="HTTP Error 500", error_msg="boom")
         summary = summarize_requests([_req(error=err, session_id="s7")], PERCENTILES)
@@ -172,6 +194,17 @@ class TestRequestFailuresByLabel:
         assert by_label["inbanderror"]["count"] == 1
         assert by_label["inbanderror"]["messages"][0]["message"] == "upstream connect error"
         assert by_label["Connection Error"]["count"] == 1
+
+    # A unary 200 whose body {"choices": [{"text": ["could not connect upstream"]}]} has a
+    # list where the text belongs. pydantic quotes the input in the message, so it carries
+    # "connect". The failure must stay under "validationerror", not land in "Connection Error".
+    def test_schema_validation_error_keeps_its_label_when_the_body_matches_a_pattern(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            CompletionResponse.model_validate({"choices": [{"text": ["could not connect upstream"]}]})
+        assert "connect" in str(exc_info.value)
+        err = ErrorResponseInfo(error_type=type(exc_info.value).__name__, error_msg=str(exc_info.value))
+        summary = summarize_requests([_req(error=err)], PERCENTILES)
+        assert list(summary.failures["by_label"]) == ["validationerror"]
 
 
 # ---------------------------------------------------------------------------

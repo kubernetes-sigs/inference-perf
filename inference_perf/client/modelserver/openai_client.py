@@ -14,7 +14,7 @@
 
 from abc import abstractmethod
 from inference_perf.metrics.request_collector import RequestMetricCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig, WaitFor
 from inference_perf.apis import (
     InferenceAPIData,
     InferenceInfo,
@@ -120,6 +120,7 @@ class openAIModelServerClient(ModelServerClient):
         lora_config: Optional[List[MultiLoRAConfig]] = None,
         request_retries: int = 0,
         request_retry_backoff_sec: float = 0.5,
+        wait_for: WaitFor = WaitFor.READY,
     ) -> None:
         super().__init__(
             api_config,
@@ -148,8 +149,16 @@ class openAIModelServerClient(ModelServerClient):
         self.tokenizer_config = tokenizer_config
 
         # Before the /v1/models probe below, so a server still loading its weights is
-        # waited for instead of failing model auto-detection.
-        self.wait_until_ready()
+        # waited for instead of failing model auto-detection. With 'reachable' or 'none'
+        # nothing may be serving yet (a gateway in front of a pool scaled to zero), so the
+        # client asks the server nothing before the run: no model, tokenizer or LoRA lookup.
+        queries_server = wait_for == WaitFor.READY
+        if queries_server:
+            self.wait_until_ready()
+        elif model_name is None:
+            raise ValueError(f"wait_for {wait_for.value} requires model_name: an unset name is read from /v1/models")
+        elif wait_for == WaitFor.REACHABLE:
+            self.wait_until_reachable()
 
         supported_models: Optional[List[dict[str, Any]]] = None
         inferred_entry: Optional[dict[str, Any]] = None
@@ -172,9 +181,9 @@ class openAIModelServerClient(ModelServerClient):
             # Deferred, not probed here: a name that loads its own tokenizer never needs
             # the entry, and probing first would cost every pinned-name run one request
             # (and one timeout against a server that has no /v1/models at all).
-            probe_for_root = not tokenizer_config.pretrained_model_name_or_path
+            probe_for_root = queries_server and not tokenizer_config.pretrained_model_name_or_path
 
-        if self.lora_config is not None:
+        if self.lora_config is not None and queries_server:
             if supported_models is None:
                 supported_models = self.get_supported_models()
             supported_model_names = set()
@@ -184,6 +193,8 @@ class openAIModelServerClient(ModelServerClient):
             for adapter in lora_adapters:
                 if adapter not in supported_model_names:
                     raise ValueError(f"LoRA adapter {adapter} not found in model server's available models")
+        elif self.lora_config is not None:
+            logger.info(f"wait_for {wait_for.value}: LoRA adapter names are not checked against /v1/models")
 
         if tokenizer_config.pretrained_model_name_or_path:
             self.tokenizer = CustomTokenizer(tokenizer_config)
@@ -284,13 +295,15 @@ class openAIModelServerClient(ModelServerClient):
     def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         raise NotImplementedError
 
-    def wait_until_ready(self) -> None:
-        """Poll the server's readiness route until it answers 200.
+    def wait_until_reachable(self) -> None:
+        """Poll the server's readiness route until it gives any HTTP response.
 
-        A profile without a readiness route probes ``/v1/models`` instead. A 404 means the
-        route is not served here, so the run carries on without waiting. Any other status
-        and any transport error count as not ready yet, for at most
-        ``readiness_timeout_sec``; the error raised at the deadline names the last one seen.
+        For a server that answers 503 until the run's first requests bring a backend up, such
+        as a gateway in front of a pool scaled to zero. A refused connection, a DNS failure
+        and a connect timeout keep polling, for at most ``readiness_timeout_sec``. A probe
+        that connects and then gets no response in time also counts as reachable: that is a
+        gateway holding the request until a backend exists. The first failed probe is logged
+        at info, the rest at debug.
         """
         route = self.readiness_route if self.readiness_route is not None else _READINESS_FALLBACK_ROUTE
         url = f"{self.uri}{route}"
@@ -299,6 +312,45 @@ class openAIModelServerClient(ModelServerClient):
         timeout = self.readiness_timeout_sec
         deadline = time.monotonic() + timeout
         last_seen = "no response"
+        announced = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Exception(f"Server not reachable: {url} gave no HTTP response within {timeout}s (last: {last_seen})")
+            try:
+                response = requests.get(url, headers=headers, timeout=min(remaining, _READINESS_PROBE_TIMEOUT_SEC), cert=cert)
+                logger.info(f"Server reachable: {url} answered HTTP {response.status_code}")
+                return
+            except requests.ReadTimeout:
+                logger.info(f"Server reachable: {url} accepted the connection and holds the request")
+                return
+            except requests.RequestException as e:
+                last_seen = f"{type(e).__name__}: {e}"
+            if announced:
+                logger.debug(f"Waiting for {url}: {last_seen}")
+            else:
+                logger.info(f"Waiting up to {timeout}s for {url} to give any HTTP response (last: {last_seen})")
+                announced = True
+            time.sleep(min(_READINESS_POLL_INTERVAL_SEC, max(0.0, deadline - time.monotonic())))
+
+    def wait_until_ready(self) -> None:
+        """Poll the server's readiness route until it answers 200.
+
+        A profile without a readiness route probes ``/v1/models`` instead. A 404 means the
+        route is not served here, so the run carries on without waiting. A 401 or 403 means the
+        credentials are wrong and will not fix themselves, so it raises at once. Any other status
+        and any transport error count as not ready yet, for at most
+        ``readiness_timeout_sec``; the first of them is logged at info, the rest at debug, and
+        the error raised at the deadline names the last one seen.
+        """
+        route = self.readiness_route if self.readiness_route is not None else _READINESS_FALLBACK_ROUTE
+        url = f"{self.uri}{route}"
+        headers = _build_request_headers(self.api_config, self.api_key)
+        cert = (self.cert_path, self.key_path) if self.cert_path and self.key_path else None
+        timeout = self.readiness_timeout_sec
+        deadline = time.monotonic() + timeout
+        last_seen = "no response"
+        announced = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -311,10 +363,20 @@ class openAIModelServerClient(ModelServerClient):
                 if response.status_code == 404:
                     logger.info(f"Server does not serve {url}, starting without waiting for it")
                     return
+                if response.status_code in (401, 403):
+                    raise Exception(
+                        f"Server refused the readiness probe: {url} answered HTTP {response.status_code}; "
+                        "check the api_key and any auth headers"
+                    )
                 last_seen = f"HTTP {response.status_code}"
             except requests.RequestException as e:
                 last_seen = f"{type(e).__name__}: {e}"
-            logger.debug(f"Waiting for {url}: {last_seen}")
+            if announced:
+                logger.debug(f"Waiting for {url}: {last_seen}")
+            else:
+                # The first failed probe is logged at info so a wrong base_url shows before the deadline.
+                logger.info(f"Waiting up to {timeout}s for {url} to answer 200 (last: {last_seen})")
+                announced = True
             time.sleep(min(_READINESS_POLL_INTERVAL_SEC, max(0.0, deadline - time.monotonic())))
 
     async def count_missing_input_tokens(self, metrics: List[RequestLifecycleMetric]) -> None:

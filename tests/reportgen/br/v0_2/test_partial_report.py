@@ -262,6 +262,23 @@ def test_partial_omits_incomplete_when_nothing_was_cancelled() -> None:
     assert "incomplete" not in requests
 
 
+# Two successes spanning 1 s, and one request cancelled at stage teardown 120 s
+# after it was sent (the default grace). Expects request_rate 2/s: the window
+# covers the answered requests only, not the cancellation time.
+def test_partial_throughput_window_excludes_a_teardown_cancel() -> None:
+    now = time.time()
+    first = _metric(now, now + 0.5)
+    second = _metric(now + 0.5, now + 1.0)
+    cancelled = _metric(now + 0.9, now + 120.9).model_copy(update={"error": stage_teardown_cancelled_error()})
+
+    partial = build_partial_report(
+        [first, second, cancelled], tokenizer=None, run_uid="uid", stage_start=now, stage_end=now + 1.0
+    )
+
+    throughput = partial["results"]["request_performance"]["aggregate"]["throughput"]
+    assert abs(throughput["request_rate"]["mean"] - 2.0) < 1e-6
+
+
 def _session_metric(session_id: str, start: float, duration: float = 1.0) -> SessionLifecycleMetric:
     return SessionLifecycleMetric(
         session_id=session_id,

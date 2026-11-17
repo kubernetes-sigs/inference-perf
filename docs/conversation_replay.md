@@ -97,6 +97,11 @@ requests currently on the wire. A conversation keeps its slot while simulated to
 its next turn is dispatched as soon as that delay finishes. Every stage's `concurrency_level` must
 be less than or equal to `num_conversations`.
 
+A conversation replay stage may also leave `concurrency_level` out entirely, in which case it
+defaults to `data.conversation_replay.num_conversations`: the stage runs the whole pool, one
+active conversation per blueprint. Name the field explicitly to run a narrower slice of the pool
+than `num_conversations` provides.
+
 ## Configuration Guide
 
 All fields live under `data.conversation_replay`:

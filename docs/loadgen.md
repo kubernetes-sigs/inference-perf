@@ -124,7 +124,9 @@ load:
 - Workers are dynamically allocated based on concurrency requirements
 
 **Configuration validation:**
-- `concurrent` load type requires `num_requests` and `concurrency_level` for each stage
+- `concurrent` load type requires `num_requests` and `concurrency_level` for each stage, except
+  under `data.type: conversation_replay`, where an omitted `concurrency_level` defaults to
+  `data.conversation_replay.num_conversations`
 - `rate` and `duration` are not allowed and will cause validation errors
 - `sweep` configuration is incompatible with concurrent load type
 
@@ -340,7 +342,7 @@ load:
     },
     "send_duration": 29.60411316808313,
     "requested_rate": 1.0,
-    "achieved_rate": 1.0133726968840155
+    "achieved_rate": 0.9795936069878817
   },
 ```
 

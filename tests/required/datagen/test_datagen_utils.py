@@ -1,7 +1,23 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import numpy as np
 import pytest
 from typing import Any, List
+from inference_perf.config import CustomTokenizerConfig
 from inference_perf.datagen.datagen_utils import (
+    build_word_start_token_ids,
     converge_to_exact_length_text,
     generate_random_exact_length_text,
     random_token_ids,
@@ -20,7 +36,7 @@ class DummyTokenizer:
         except ValueError:
             return [4, 5, 6]
 
-    def decode(self, tokens: list[int], **kwargs: Any) -> str:
+    def decode(self, tokens: list[int], **kwargs: object) -> str:
         return " ".join(str(t) for t in tokens)
 
 
@@ -161,3 +177,81 @@ def test_sample_suffix_ids_escapes_merge_oscillation(seed: int) -> None:
     assert tokenizer.count_tokens(" ".join(str(i) for i in ids)) == target_len
     assert ids[0] == first_id
     assert ids[: target_len - 3] == initial[: target_len - 3]
+
+
+# Fake tokenizer: every id decodes to " <id>" (a word start) and counts one token per
+# whitespace-separated word, except id 13, which decodes to " 13 x" and so re-tokenizes to
+# two tokens, like a gpt2 id that decodes to an incomplete UTF-8 sequence.
+class SplittingTokenizer:
+    def decode(self, tokens: list[int], **kwargs: object) -> str:
+        return "".join(" 13 x" if t == 13 else f" {t}" for t in tokens)
+
+
+class SplittingCustomTokenizer(DummyCustomTokenizer):
+    def get_tokenizer(self) -> Any:
+        return SplittingTokenizer()
+
+
+# valid ids [12, 13, 14]: all three decode with a leading space, but " 13 x" counts 2 tokens.
+# The word-start pool is [12, 14]; before the fix it also held 13.
+def test_build_word_start_token_ids_drops_ids_that_split_on_retokenize() -> None:
+    pool = build_word_start_token_ids(SplittingCustomTokenizer(), np.array([12, 13, 14]))
+
+    assert pool.tolist() == [12, 14]
+
+
+# valid ids [13, 14] and a length-1 suffix: with 13 in the word-start pool the sampler
+# draws it for seed 1, the suffix counts 2 tokens and the loop raises ValueError after
+# 20 attempts. With the pool built by build_word_start_token_ids only 14 is left, so the
+# suffix is [14] and counts exactly 1 token.
+def test_sample_suffix_ids_length_one_converges_with_built_pool() -> None:
+    tokenizer = SplittingCustomTokenizer()
+    generator = object.__new__(SharedPrefixDataGenerator)
+    generator.rng = np.random.default_rng(1)
+    generator.tokenizer = tokenizer
+    generator.valid_token_ids = np.array([13, 14])
+    generator.word_start_token_ids = build_word_start_token_ids(tokenizer, generator.valid_token_ids)
+
+    ids = generator._sample_suffix_ids(1)
+
+    assert ids == [14]
+    assert tokenizer.count_tokens(tokenizer.get_tokenizer().decode(ids)) == 1
+
+
+# Real gpt2 tokenizer (#1093): ids 20174 and 34504 decode to " 裏" plus an incomplete UTF-8
+# byte and re-tokenize to [6438, 4210], two tokens. They must not be in the word-start pool,
+# while an ordinary word start such as 262 (" the") stays in it.
+def test_build_word_start_token_ids_gpt2_excludes_split_ids() -> None:
+    tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="gpt2"))
+    valid_token_ids = np.array([262, 20174, 34504], dtype=np.int64)
+
+    pool = build_word_start_token_ids(tokenizer, valid_token_ids)
+
+    assert pool.tolist() == [262]
+
+
+# Real gpt2 tokenizer: the word-start candidates are re-tokenized in one batched call,
+# never one count_tokens call per id, and the pool on the first 3000 ids matches the
+# per-id round trip that build_word_start_token_ids used before.
+def test_build_word_start_token_ids_gpt2_retokenizes_in_one_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="gpt2"))
+    hf_tokenizer = tokenizer.get_tokenizer()
+    valid_token_ids = np.arange(3000, dtype=np.int64)
+    expected: List[int] = []
+    for tid in range(3000):
+        decoded = hf_tokenizer.decode([tid], skip_special_tokens=True)
+        if (
+            isinstance(decoded, str)
+            and decoded[:1].isspace()
+            and tokenizer.count_tokens(decoded, add_special_tokens=False) == 1
+        ):
+            expected.append(tid)
+
+    def fail_count_tokens(text: str, add_special_tokens: bool = True) -> int:
+        raise AssertionError("count_tokens called per id")
+
+    monkeypatch.setattr(tokenizer, "count_tokens", fail_count_tokens)
+    pool = build_word_start_token_ids(tokenizer, valid_token_ids)
+
+    assert pool.tolist() == expected
+    assert len(expected) > 0

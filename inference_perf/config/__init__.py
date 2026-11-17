@@ -36,6 +36,7 @@ from inference_perf.config.client.filestorage import (
 from inference_perf.config.client.modelserver import (
     ModelServerClientConfig,
     ModelServerType,
+    WaitFor,
 )
 from inference_perf.config.client.server_metrics import PrometheusClientConfig
 from inference_perf.config.common import Distribution, DistributionType
@@ -57,6 +58,7 @@ from inference_perf.config.datagen import (
     SyntheticMultimodalDatagenConfig,
     TraceConfig,
     TraceFormat,
+    TraceLabTraceReplayConfig,
     VideoDatagenConfig,
     VideoProfile,
     VisionArenaConfig,
@@ -148,6 +150,7 @@ __all__ = [
     "SyntheticMultimodalDatagenConfig",
     "TraceConfig",
     "TraceFormat",
+    "TraceLabTraceReplayConfig",
     "TraceSessionReplayLoadStage",
     "TriggerConsecutive",
     "TriggerRateOverWindow",
@@ -155,6 +158,7 @@ __all__ = [
     "VideoDatagenConfig",
     "VideoProfile",
     "VisionArenaConfig",
+    "WaitFor",
     "WeightedDuration",
     "WeightedResolution",
     "WeightedVideoProfile",
