@@ -1774,6 +1774,12 @@ class LoadGenerator:
             num_requests = rate.expected_requests if isinstance(rate, RateSchedule) else int(rate * duration)
         # Reports carry one rate per stage; a time-varying rate reports its mean.
         report_rate = rate.mean_rate if isinstance(rate, RateSchedule) else rate
+        # A zero-rate stage has no request to wait on, so it holds its window
+        # open instead and still ends at its duration or stop condition.
+        idle_until: Optional[float] = None
+        if num_requests == 0 and isinstance(rate, RateSchedule) and rate.total <= 0:
+            idle_until = start_time + duration
+            logger.warning("Stage %d sends zero requests: its rate %r is zero for the whole stage.", stage_id, rate.rate.raw)
 
         stage_status = StageStatus.RUNNING
         # Reported from here, not from the driver loop, because the planned
@@ -1828,7 +1834,7 @@ class LoadGenerator:
             stage_task = progress_ctx.open(STAGE_REQUESTS_BAR, stage=str(stage_id))
 
         stage_status = StageStatus.RUNNING
-        while finished_requests_counter.value < num_requests:
+        while finished_requests_counter.value < num_requests or (idle_until is not None and time.perf_counter() < idle_until):
             if self._stop_condition_held(stage_id, stop_monitor):
                 break
             if timeout and start_time + timeout < time.perf_counter():
@@ -1852,7 +1858,7 @@ class LoadGenerator:
                     logger.error("A worker process died unexpectedly and left no exit status behind!")
                 stage_status = StageStatus.FAILED  # Trigger cleanup
                 break
-            await sleep(1)
+            await sleep(1 if idle_until is None else min(1.0, max(idle_until - time.perf_counter(), 0.0)))
             if progress_ctx:
                 progress_ctx.refresh()
 
@@ -2245,6 +2251,8 @@ class LoadGenerator:
             self._stop_monitor = stop_monitor
         stage_status = StageStatus.RUNNING
         logger.info("Stage %d - run started", stage_id)
+        if stage.rate_is_zero:
+            logger.warning("Stage %d sends zero requests: its rate %r is zero for the whole stage.", stage_id, stage.rate)
 
         # This path has no worker processes to sample, so it counts its
         # own completions; reset per stage like the shared counters are.
@@ -2294,6 +2302,17 @@ class LoadGenerator:
                     continue
                 else:
                     break
+
+        # A zero-rate stage has no request to wait on, so it holds its window
+        # open instead and still ends at its duration or stop condition.
+        while stage.rate_is_zero and time.perf_counter() < end_time:
+            if self.interrupt_sig:
+                logger.info("Loadgen interrupted by a signal")
+                stage_status = StageStatus.INTERRUPTED
+                break
+            if self._stop_condition_held(stage_id, stop_monitor):
+                break
+            await sleep(min(1.0, max(end_time - time.perf_counter(), 0.0)))
 
         progress.refresh(force=True)
         stage_task.close()  # Clean up after completion

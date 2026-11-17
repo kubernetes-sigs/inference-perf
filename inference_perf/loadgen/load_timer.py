@@ -116,6 +116,10 @@ class PoissonLoadTimer(LoadTimer):
             yield from self._start_varying_timer(self._schedule, initial)
             return
 
+        # a zero rate never draws a request, so the loop below would never yield
+        if self._rate == 0:
+            return
+
         # Set start time
         next_time = time.perf_counter() if initial is None else initial
 

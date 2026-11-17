@@ -53,11 +53,13 @@ def test_standard_load_stage_rejects_concurrency_level() -> None:
         StandardLoadStage(rate=10, duration=60, concurrency_level=5)
 
 
-def test_standard_load_stage_requires_positive_rate_and_duration() -> None:
+# rate=-1 with duration=60 is rejected, and so is rate=10 with duration=0. rate=0 is legal: the stage sends nothing.
+def test_standard_load_stage_requires_nonnegative_rate_and_positive_duration() -> None:
     with pytest.raises(ValidationError):
-        StandardLoadStage(rate=0, duration=60)
+        StandardLoadStage(rate=-1, duration=60)
     with pytest.raises(ValidationError):
         StandardLoadStage(rate=10, duration=0)
+    assert StandardLoadStage(rate=0, duration=60).expected_requests == 0
 
 
 # --- ConcurrentLoadStage -------------------------------------------------

@@ -262,16 +262,20 @@ load:
 | `Piecewise((2, t < 30), (20, True))` | 60 | 660 | 11.00 |
 | `40*exp(-t/30)` | 90 | 1140 | 12.67 |
 | `Max(0, 20 - t/3)` | 90 | 600 | 6.67 |
+| `0` | 60 | 0 | 0.00 |
+| `Max(0, -t)` | 60 | 0 | 0.00 |
 | `2**(t/10)` | 60 | 908 | 15.15 |
 
 The constant load type spreads requests by how much the rate has built up, so they bunch where the rate is high. The Poisson load type draws each second's count from the rate over that second. A Poisson stage can run past its window, since its counts are random; past the window it holds the window's mean rate.
+
+A rate of zero is legal, as a number or as an expression. A stage whose rate is zero for the whole stage sends zero requests, lasts its `duration` or `stop_condition` and reports a count of 0, so it works as a pause between two stages. A warning says the stage sends nothing, and why, when the config loads and when the stage runs. A rate that is zero for part of the stage, such as `Max(0, 20 - t/3)`, sends nothing during that part. A rate that is negative anywhere in the stage is rejected.
 
 | Rejected rate | Why |
 | --- | --- |
 | `10 - t` | Goes negative during a 60s stage. |
 | `Normal(10, 1)` | Random. A rate is never random. |
 | `requests/10` | `requests` is not a known symbol. |
-| `0*t` | Zero over the whole stage, so the stage would send nothing. |
+| `-1` | Negative. |
 
 Under `load.type: trace_replay` the trace sets when each request is sent, so a rate expression is rejected there.
 

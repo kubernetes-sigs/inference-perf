@@ -933,10 +933,11 @@ def summarize_requests(
     # benchmark_time_seconds and lower every *_per_sec figure compared with the same run had those requests finished
     # before the stage did. Only when every request was cancelled does the window fall back to all of them.
     answered = (all_successful + all_failed) or metrics
-    total_time = max(x.end_time for x in answered) - min(x.start_time for x in answered)
+    # A stage that sent nothing (a zero rate) has no window: both spans are 0.
+    total_time = max(x.end_time for x in answered) - min(x.start_time for x in answered) if answered else 0.0
 
     schedule_deltas = [x.start_time - x.scheduled_time for x in metrics]
-    send_duration = max(x.start_time for x in metrics) - min(x.start_time for x in metrics)
+    send_duration = max(x.start_time for x in metrics) - min(x.start_time for x in metrics) if metrics else 0.0
 
     load_summary: dict[Any, Any] = {
         "count": len(metrics),
@@ -947,6 +948,7 @@ def summarize_requests(
         # n sends span n - 1 gaps, so the sustained rate is (n - 1) / send_duration (#821).
         # Guard against zero send_duration to avoid ZeroDivisionError when all
         # requests have identical start times or there is only a single request.
+        # The same guard reports 0.0 for a stage that sent nothing.
         achieved_rate = (len(metrics) - 1) / send_duration if send_duration > 0 else 0.0
         load_summary = {
             "count": len(metrics),
@@ -1203,6 +1205,20 @@ class ReportGenerator:
 
         return CustomTokenizer(self.config.tokenizer)
 
+    @staticmethod
+    def _zero_rate_stage_ids(runtime_parameters: PerfRuntimeParameters) -> List[int]:
+        """Stages that ran with a rate of zero for the whole stage, in stage order.
+
+        Only a rate stage records a rate with no concurrency level, and its
+        recorded rate is the mean over the stage, which is 0 only when the rate
+        never left 0.
+        """
+        return [
+            stage_id
+            for stage_id, info in sorted(runtime_parameters.stages.items())
+            if stage_id >= 0 and info.rate == 0 and info.concurrency_level is None
+        ]
+
     def generate_config_report(self) -> ReportFile:
         """
         Generates a report file containing the config.
@@ -1252,6 +1268,10 @@ class ReportGenerator:
             for metric in request_metrics:
                 if metric.stage_id is not None:
                     stage_buckets[metric.stage_id].append(metric)
+            # A zero-rate stage sent nothing, so no metric names it. It still
+            # gets a report, with a count of 0.
+            for stage_id in self._zero_rate_stage_ids(runtime_parameters):
+                stage_buckets.setdefault(stage_id, [])
             for stage_id, metrics in stage_buckets.items():
                 stage_rate = runtime_parameters.stages[stage_id].rate
                 concurrency_level = runtime_parameters.stages[stage_id].concurrency_level
