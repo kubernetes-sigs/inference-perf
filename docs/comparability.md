@@ -142,10 +142,11 @@ a converted config still needs reading:
 - **Count against duration.** `--num-prompts` and `--request-count` are counts; a `constant`
   inference-perf stage is a rate for a duration, so the count is `rate * duration` and only
   matches when the rate is actually achieved.
-- **`--random-input-len` is not the prompt length.** vLLM subtracts the tokenizer's special
-  tokens first (`real_input_len = input_len - num_special_tokens_to_add()`), so a
-  BOS-prepending tokenizer sends one token fewer than requested. Expect a small fixed offset
-  rather than an exact match on input tokens.
+- **Special tokens count differently in AIPerf.** vLLM subtracts the tokenizer's special
+  tokens before constructing the prompt, and inference-perf counts them inside the input
+  length too, so their realized lengths match after the server adds BOS. AIPerf's `--isl`
+  counts content tokens; a BOS-prepending server reads one more, so the converted AIPerf
+  prompts run one token shorter on such servers.
 - **One range ratio covers both directions.** `--random-range-ratio` widens input and output
   together, while inference-perf configures each distribution separately. At v0.10.0 the range
   is `[len * (1 - r), len * (1 + r)]` and the tool asserts `r < 1.0`, so the pre-v0.8.4
@@ -186,7 +187,14 @@ sends no `max_tokens`), and an entry pool smaller than the converted request cou
 AIPerf sizes the pool to an explicit `--request-count`, so this trips on `--num-dataset-entries`
 set low or on a `--benchmark-duration` run past the default pool of 100). A comma-separated
 value such as `--concurrency 8,16` is an AIPerf parameter sweep, one run per value, and refuses as
-well. `--api-key` is never written into the file, which is meant to be checked in, and neither is a
+well. Media input flags also refuse: the random completions generator sends only text and
+does not read `data.multimodal`. `--apply-chat-template` refuses because AIPerf compensates
+synthetic lengths for template overhead while sending a bare completions prompt;
+inference-perf's `data.use_chat_template` instead wraps the prompt on the wire. With warmup,
+AIPerf's phases share a sampler, so entries can repeat after warmup even when the pool covers
+the measured request count; warmup prompts carry a prefix.
+
+`--api-key` is never written into the file, which is meant to be checked in, and neither is a
 `--header` whose name carries a credential (the `CREDENTIAL_HEADER_FRAGMENTS` rule in
 `inference_perf/config/redaction.py`); set `server.api_key` or the header under `api.headers` on
 the run host instead. The parity cases in #736 are the converter's acceptance

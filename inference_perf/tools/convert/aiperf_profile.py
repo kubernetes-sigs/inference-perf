@@ -76,9 +76,16 @@ Verified v0.12.0 behavior the rows rely on:
   serves only the completions path (``RandomDataGenerator`` refuses any other
   API type at load), so chat and messages conversions refuse rather than
   emit a config inference-perf cannot run.
+- Media input flags refuse: the emitted random completions generator sends
+  only text and does not read ``data.multimodal``. The multimodal generator
+  requires the synthetic data type and the chat path.
+- ``--apply-chat-template`` compensates synthetic lengths for template
+  overhead in ``dataset/composer/base.py`` but leaves the completions wire
+  prompt bare. It refuses because ``data.use_chat_template`` wraps the wire
+  prompt instead of reproducing that length compensation.
 - ``--isl`` is content tokens on the wire and a BOS-prepending server reads
-  one more; inference-perf counts the BOS inside the input length, the same
-  one-token skew the vllm converter records on ``--random-input-len``.
+  one more; inference-perf counts the BOS inside the input length, so the
+  converted prompts run one token shorter on such servers.
 
 Whole subsystems inference-perf does not have (multi-run sweeps and searches,
 accuracy evaluation, trace and file datasets, rankings endpoints, agentic
@@ -90,19 +97,17 @@ annotation instead, since an inert flag cannot change the offered workload.
 import json
 import math
 import re
-from typing import Any, Callable, Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple, Union
+from typing import Callable, Dict, FrozenSet, List, NamedTuple, Optional, Set, Tuple, Union
 
 from inference_perf.config import (
     APIConfig,
     APIType,
-    AudioDatagenConfig,
     Config,
     CustomTokenizerConfig,
     DataConfig,
     DataGenType,
     Distribution,
     GoodputConfig,
-    ImageDatagenConfig,
     LoadConfig,
     LoadType,
     MetricsClientConfig,
@@ -111,17 +116,12 @@ from inference_perf.config import (
     PrometheusClientConfig,
     ReportConfig,
     RequestLifecycleMetricsReportConfig,
-    Resolution,
     StandardLoadStage,
     ConcurrentLoadStage,
     StorageConfig,
     StorageConfigBase,
-    SyntheticMultimodalDatagenConfig,
-    VideoDatagenConfig,
-    VideoProfile,
 )
 from inference_perf.config.redaction import CREDENTIAL_HEADER_FRAGMENTS
-from inference_perf.payloads import ImageRepresentation, VideoRepresentation
 from inference_perf.tools.convert.model import (
     REDACTED,
     Conversion,
@@ -755,6 +755,12 @@ _GROUP_REFUSALS: Dict[str, str] = {
     "USER_CENTRIC": "per-user gap pacing with blocking turns is a load model outside constant/poisson/concurrent stages",
     "REQUEST_CANCELLATION": "deliberate mid-flight cancellations are part of the offered workload and are not expressible",
     "RANKINGS": "rankings endpoints have no API type",
+    "AUDIO_INPUT": "audio media cannot run on data.type random: the completions generator sends only text;"
+    " multimodal generation requires data.type synthetic on the chat path",
+    "IMAGE_INPUT": "image media cannot run on data.type random: the completions generator sends only text;"
+    " multimodal generation requires data.type synthetic on the chat path",
+    "VIDEO_INPUT": "video media cannot run on data.type random: the completions generator sends only text;"
+    " multimodal generation requires data.type synthetic on the chat path",
 }
 
 _ANNOTATE_GROUPS: Set[str] = {
@@ -839,33 +845,6 @@ _BESPOKE: Set[str] = {
     "prompt_sequence_distribution",
     "prompt_output_tokens_mean",
     "prompt_output_tokens_stddev",
-    "audio_batch_size",
-    "audio_length_mean",
-    "audio_length_stddev",
-    "audio_format",
-    "audio_depths",
-    "audio_sample_rates",
-    "audio_num_channels",
-    "image_width_mean",
-    "image_width_stddev",
-    "image_height_mean",
-    "image_height_stddev",
-    "image_batch_size",
-    "image_format",
-    "image_source",
-    "image_source_sampling",
-    "video_batch_size",
-    "video_duration",
-    "video_fps",
-    "video_width",
-    "video_height",
-    "video_synth_type",
-    "video_format",
-    "video_codec",
-    "video_audio_sample_rate",
-    "video_audio_channels",
-    "video_audio_codec",
-    "video_audio_depth",
     "benchmark_duration",
     "benchmark_grace_period",
     "concurrency",
@@ -1130,7 +1109,7 @@ def _convert_api_type(conversion: Conversion, parsed: _Parsed, facts: AiperfProf
     if endpoint in facts.endpoint_types:
         conversion.refuse(
             "--endpoint-type",
-            f"endpoint type '{endpoint}' has no API type (completions, chat and messages convert)",
+            f"endpoint type '{endpoint}' has no API type (only completions converts with random data)",
         )
     else:
         conversion.refuse("--endpoint-type", f"'{endpoint}' is not in the verified v0.12.0 endpoint registry")
@@ -1176,7 +1155,7 @@ def _is_credential_header(name: str) -> bool:
     return any(fragment in lowered for fragment in CREDENTIAL_HEADER_FRAGMENTS)
 
 
-def _header_pairs(entry: str, occurrence: int) -> Tuple[bool, List[Tuple[str, Any]]]:
+def _header_pairs(entry: str, occurrence: int) -> Tuple[bool, List[Tuple[str, object]]]:
     """One ``--header`` occurrence as AIPerf's ``_parse_str_as_tuple_list`` reads it.
 
     Returns whether the entry was a JSON object and its (name, value) pairs.
@@ -1192,7 +1171,7 @@ def _header_pairs(entry: str, occurrence: int) -> Tuple[bool, List[Tuple[str, An
         except json.JSONDecodeError as exc:
             raise PeerUsageError(f"--header #{occurrence} must be a valid JSON string") from exc
         return True, [(str(name), value) for name, value in loaded.items()]
-    pairs: List[Tuple[str, Any]] = []
+    pairs: List[Tuple[str, object]] = []
     for item in entry.split(","):
         name, sep, value = item.partition(":")
         if not sep:
@@ -1261,7 +1240,11 @@ def _convert_headers(conversion: Conversion, parsed: _Parsed) -> Optional[Dict[s
                     " key:value item puts the name before its first colon",
                 )
                 return None
-            coerced = type(value).__name__ if not isinstance(value, str) else (None if is_json else _coerced_type(value))
+            if not isinstance(value, str):
+                raise PeerUsageError(
+                    f"--header {name}: aiperf reads this value as {type(value).__name__} and its headers map takes strings"
+                )
+            coerced = None if is_json else _coerced_type(value)
             if coerced is not None:
                 raise PeerUsageError(
                     f"--header {name}: aiperf reads this value as {coerced} and its headers map takes strings"
@@ -1486,8 +1469,7 @@ def _convert_data(
     conversion.assume(
         f"--isl {isl_mean:g}: aiperf puts that many content tokens on the wire and a BOS-prepending server"
         " reads one more, while inference-perf counts the BOS inside the input length, so the converted"
-        " prompts run one token shorter on such servers; mapped verbatim, the same skew the vllm converter"
-        " records on --random-input-len"
+        " prompts run one token shorter on such servers; mapped verbatim"
     )
     if isl_stddev <= 0:
         input_dist = fixed_dist(int(round(isl_mean)))
@@ -1498,158 +1480,6 @@ def _convert_data(
     else:
         output_dist = _positive_normal(conversion, "--osl-stddev", osl_mean, osl_stddev)
     return input_dist, output_dist
-
-
-def _convert_multimodal(conversion: Conversion, parsed: _Parsed) -> Optional[SyntheticMultimodalDatagenConfig]:
-    kwargs: Dict[str, Any] = {}
-
-    audio_mean = parsed.floating("audio_length_mean", "--audio-length-mean") or 0.0
-    audio_present = {
-        f
-        for f in (
-            "audio_length_stddev",
-            "audio_format",
-            "audio_depths",
-            "audio_sample_rates",
-            "audio_num_channels",
-            "audio_batch_size",
-        )
-        if parsed.present(f)
-    }
-    if audio_mean > 0:
-        refusals_before = len(conversion.refusals)
-        stddev = parsed.floating("audio_length_stddev", "--audio-length-stddev") or 0.0
-        if stddev > 0:
-            conversion.refuse(
-                "--audio-length-stddev", "a continuous duration distribution has no equivalent (weighted list only)"
-            )
-        if parsed.present("audio_format") and _norm(parsed.raw("audio_format")) != "wav":
-            conversion.refuse("--audio-format", "the audio wire encoding is not configurable")
-        for field, flag in (("audio_depths", "--audio-depths"), ("audio_sample_rates", "--audio-sample-rates")):
-            if parsed.present(field):
-                conversion.refuse(flag, "no audio bit-depth or sample-rate knob exists")
-        if parsed.present("audio_num_channels") and parsed.integer("audio_num_channels", "--audio-num-channels") != 1:
-            conversion.refuse("--audio-num-channels", "no audio channel knob exists")
-        batch = parsed.integer("audio_batch_size", "--audio-batch-size")
-        if batch is not None and batch != 1:
-            conversion.refuse("--audio-batch-size", "the per-request audio count mapping is unverified")
-        if len(conversion.refusals) == refusals_before:
-            conversion.assume("audio durations map to a single fixed duration; generator content equivalence is assumed")
-            kwargs["audio"] = AudioDatagenConfig(durations=audio_mean)
-    elif audio_present:
-        conversion.drop("audio flags (inert: --audio-length-mean is 0, audio input disabled)")
-
-    width = parsed.floating("image_width_mean", "--image-width-mean") or 0.0
-    height = parsed.floating("image_height_mean", "--image-height-mean") or 0.0
-    image_present = {
-        f
-        for f in (
-            "image_width_mean",
-            "image_height_mean",
-            "image_width_stddev",
-            "image_height_stddev",
-            "image_batch_size",
-            "image_format",
-            "image_source",
-            "image_source_sampling",
-        )
-        if parsed.present(f)
-    }
-    if width > 0 or height > 0:
-        refusals_before = len(conversion.refusals)
-        if width <= 0 or height <= 0:
-            conversion.refuse("--image-width-mean/--image-height-mean", "image input needs both width and height means")
-        for field, flag in (("image_width_stddev", "--image-width-stddev"), ("image_height_stddev", "--image-height-stddev")):
-            value = parsed.floating(field, flag) or 0.0
-            if value > 0:
-                conversion.refuse(flag, "continuous image dimension sampling is not expressible (weighted resolutions only)")
-        source = _norm(parsed.raw("image_source")) if parsed.present("image_source") else "noise"
-        if source != "noise":
-            conversion.refuse("--image-source", "external image pools have no equivalent (synthetic noise converts)")
-        elif parsed.present("image_source_sampling"):
-            conversion.drop("--image-source-sampling (inert with the noise image source)")
-        image_format = _norm(parsed.raw("image_format")) if parsed.present("image_format") else "png"
-        if image_format not in ("png", "jpeg"):
-            conversion.refuse("--image-format", f"image format '{image_format}' has no representation (png and jpeg exist)")
-        if len(conversion.refusals) == refusals_before:
-            conversion.assume(
-                "aiperf noise images map to synthetic image generation; generator content equivalence is assumed"
-            )
-            image_kwargs: Dict[str, Any] = {
-                "resolutions": Resolution(width=int(width), height=int(height)),
-                "representation": ImageRepresentation(image_format),
-            }
-            batch = parsed.integer("image_batch_size", "--image-batch-size")
-            if batch is not None and batch != 1:
-                image_kwargs["count"] = fixed_dist(batch)
-            kwargs["image"] = ImageDatagenConfig(**image_kwargs)
-    elif image_present:
-        conversion.drop("image flags (inert: image means are 0, image input disabled)")
-
-    video_width = parsed.integer("video_width", "--video-width")
-    video_height = parsed.integer("video_height", "--video-height")
-    video_present = {
-        f
-        for f in (
-            "video_batch_size",
-            "video_duration",
-            "video_fps",
-            "video_width",
-            "video_height",
-            "video_synth_type",
-            "video_format",
-            "video_codec",
-            "video_audio_sample_rate",
-            "video_audio_channels",
-            "video_audio_codec",
-            "video_audio_depth",
-        )
-        if parsed.present(f)
-    }
-    if video_width is not None or video_height is not None:
-        refusals_before = len(conversion.refusals)
-        if video_width is None or video_height is None:
-            conversion.refuse("--video-width/--video-height", "video input needs both width and height")
-        video_format = _norm(parsed.raw("video_format")) if parsed.present("video_format") else "webm"
-        if video_format != "mp4":
-            conversion.refuse(
-                "--video-format",
-                f"video format '{video_format}' (the aiperf default is webm) has no representation;"
-                " mp4, png_frames and jpeg_frames exist, and transcoding assumptions are refused",
-            )
-        if parsed.present("video_synth_type") and _norm(parsed.raw("video_synth_type")) != "moving_shapes":
-            conversion.refuse("--video-synth-type", "video generator content semantics are unverified")
-        if parsed.present("video_codec") and parsed.raw("video_codec") != "libvpx-vp9":
-            conversion.refuse("--video-codec", "no video codec knob exists")
-        for field, flag in (
-            ("video_audio_sample_rate", "--video-audio-sample-rate"),
-            ("video_audio_channels", "--video-audio-num-channels"),
-            ("video_audio_codec", "--video-audio-codec"),
-            ("video_audio_depth", "--video-audio-depth"),
-        ):
-            if parsed.present(field):
-                conversion.refuse(flag, "generated video has no audio track configuration")
-        if len(conversion.refusals) == refusals_before and video_width is not None and video_height is not None:
-            duration = parsed.floating("video_duration", "--video-duration")
-            fps = parsed.integer("video_fps", "--video-fps")
-            duration = 5.0 if duration is None else duration
-            fps = 4 if fps is None else fps
-            frames = int(duration * fps)
-            conversion.assume(f"video profiles.frames = --video-duration {duration:g} x --video-fps {fps} = {frames}")
-            video_kwargs: Dict[str, Any] = {
-                "profiles": VideoProfile(resolution=Resolution(width=video_width, height=video_height), frames=frames),
-                "representation": VideoRepresentation("mp4"),
-            }
-            batch = parsed.integer("video_batch_size", "--video-batch-size")
-            if batch is not None and batch != 1:
-                video_kwargs["count"] = fixed_dist(batch)
-            kwargs["video"] = VideoDatagenConfig(**video_kwargs)
-    elif video_present:
-        conversion.drop("video flags (inert: no --video-width/--video-height, video input disabled)")
-
-    if not kwargs:
-        return None
-    return SyntheticMultimodalDatagenConfig(**kwargs)
 
 
 def _apply_group_defaults(conversion: Conversion, parsed: _Parsed) -> None:
@@ -1848,11 +1678,11 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
             "no tokenizer revision field exists, and a different revision changes synthetic prompt construction",
         )
     if parsed.flag("apply_chat_template"):
-        if api_type is not None and api_type != APIType.Completion:
-            conversion.refuse(
-                "--apply-chat-template",
-                "data.use_chat_template is only supported on the completions path with random data",
-            )
+        conversion.refuse(
+            "--apply-chat-template",
+            "aiperf applies template length compensation to synthetic prompts but sends bare text on the"
+            " completions path; data.use_chat_template wraps the prompt on the wire instead, so it is not equivalent",
+        )
 
     ignore_eos = _convert_extra_inputs(conversion, parsed)
     if ignore_eos is None:
@@ -1865,7 +1695,6 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
 
     load_shape = _convert_load(conversion, parsed, facts)
     input_dist, output_dist = _convert_data(conversion, parsed, facts, api_type)
-    multimodal = _convert_multimodal(conversion, parsed)
 
     # The dataset-entry pool must cover the converted request count, since the
     # generated data pool is unique per request and never reused. aiperf sizes
@@ -1886,8 +1715,9 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
         if entries is None and explicit_count is not None:
             conversion.assume(
                 f"--request-count {explicit_count} sizes aiperf's synthetic entry pool to itself when"
-                " --num-dataset-entries is not set (_resolve_entries in _converter_dataset.py), so every"
-                " request reads a unique entry on both sides"
+                " --num-dataset-entries is not set (_resolve_entries in _converter_dataset.py), so measured"
+                " requests read unique entries; entries can repeat after warmup because the phases share"
+                " a sampler, with a prefix added to warmup prompts"
             )
         if pool_size < load_shape.request_count:
             default_note = (
@@ -1900,7 +1730,7 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
                 " pre-generates at least one unique prompt per request",
             )
         elif entries is not None:
-            conversion.drop("--num-dataset-entries (inert: the pool covers the request count, so no entry is reused)")
+            conversion.drop("--num-dataset-entries (inert: the pool covers the measured request count)")
 
     # Session headers ride the multi-turn path; note the default either way.
     if parsed.present("session_header"):
@@ -1983,23 +1813,19 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
     assert api_type is not None and load_shape is not None
     assert input_dist is not None and output_dist is not None and model_name is not None
 
-    api_kwargs: Dict[str, Any] = {"type": api_type, "streaming": streaming}
+    api_kwargs: Dict[str, object] = {"type": api_type, "streaming": streaming}
     if headers is not None:
         api_kwargs["headers"] = headers
     if parsed.present("session_header"):
         api_kwargs["session_id_header_key"] = parsed.raw("session_header")
 
-    data_kwargs: Dict[str, Any] = {
+    data_kwargs: Dict[str, object] = {
         "type": DataGenType.Random,
         "input_distribution": input_dist,
         "output_distribution": output_dist,
     }
-    if parsed.flag("apply_chat_template"):
-        data_kwargs["use_chat_template"] = True
-    if multimodal is not None:
-        data_kwargs["multimodal"] = multimodal
 
-    load_kwargs: Dict[str, Any] = {"type": load_shape.load_type, "stages": [load_shape.stage]}
+    load_kwargs: Dict[str, object] = {"type": load_shape.load_type, "stages": [load_shape.stage]}
     if seed is not None:
         load_kwargs["base_seed"] = seed
     timeout = parsed.floating("timeout_seconds", "--request-timeout-seconds")
@@ -2010,20 +1836,20 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
     if workers is not None:
         load_kwargs["num_workers"] = workers
 
-    server_kwargs: Dict[str, Any] = {
+    server_kwargs: Dict[str, object] = {
         "base_url": base_url,
         "model_name": model_name,
         "ignore_eos": bool(ignore_eos) if ignore_eos is not None else False,
     }
 
-    tokenizer_kwargs: Dict[str, Any] = {
+    tokenizer_kwargs: Dict[str, object] = {
         "pretrained_model_name_or_path": tokenizer_id if tokenizer_id is not None else model_name
     }
     if parsed.flag("trust_remote_code"):
         tokenizer_kwargs["trust_remote_code"] = True
 
     report: Optional[ReportConfig] = None
-    report_kwargs: Dict[str, Any] = {}
+    report_kwargs: Dict[str, object] = {}
     if parsed.flag("use_server_token_count"):
         conversion.assume(
             "--use-server-token-count maps to report.request_lifecycle.use_server_output_tokens, the"
@@ -2033,14 +1859,14 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
     if goodput is not None:
         report_kwargs["goodput"] = goodput
     if report_kwargs:
-        report = ReportConfig(**report_kwargs)
+        report = ReportConfig.model_validate(report_kwargs)
 
-    config_kwargs: Dict[str, Any] = {
-        "api": APIConfig(**api_kwargs),
-        "data": DataConfig(**data_kwargs),
-        "load": LoadConfig(**load_kwargs),
-        "server": ModelServerClientConfig(**server_kwargs),
-        "tokenizer": CustomTokenizerConfig(**tokenizer_kwargs),
+    config_kwargs: Dict[str, object] = {
+        "api": APIConfig.model_validate(api_kwargs),
+        "data": DataConfig.model_validate(data_kwargs),
+        "load": LoadConfig.model_validate(load_kwargs),
+        "server": ModelServerClientConfig.model_validate(server_kwargs),
+        "tokenizer": CustomTokenizerConfig.model_validate(tokenizer_kwargs),
     }
     if report is not None:
         config_kwargs["report"] = report
@@ -2048,5 +1874,5 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
         config_kwargs["storage"] = storage
     if metrics is not None:
         config_kwargs["metrics"] = metrics
-    conversion.config = Config(**config_kwargs)
+    conversion.config = Config.model_validate(config_kwargs)
     return conversion

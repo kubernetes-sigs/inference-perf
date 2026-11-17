@@ -420,8 +420,7 @@ def test_normal_isl_gets_wide_clamps_and_assumption() -> None:
 
 # At v0.12.0 --isl is content tokens on the wire and the server's BOS rides on
 # top, while inference-perf counts BOS inside the input length; the one-token
-# skew is recorded as an assumption, mirroring the vllm converter's
-# --random-input-len note.
+# skew is recorded as an assumption.
 def test_isl_bos_accounting_assumption_is_recorded() -> None:
     argv = ["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--isl", "128"]
     conversion = convert(argv)
@@ -560,8 +559,8 @@ def test_reporting_flags_drop_without_aborting() -> None:
         (["--model", "m", "--osl", "64", "--accuracy-benchmark", "mmlu"], "no inference-perf counterpart"),
         (["--model", "m", "--osl", "64", "--synthesis-max-isl", "4096"], "agentic trace synthesis"),
         (["--model", "m", "--osl", "64", "--rankings-passages-mean", "10"], "rankings"),
-        (["--model", "m", "--osl", "64", "--video-width", "640", "--video-height", "360"], "webm"),
-        (["--model", "m", "--osl", "64", "--audio-length-mean", "5", "--audio-length-stddev", "2"], "weighted list"),
+        (["--model", "m", "--osl", "64", "--video-width", "640", "--video-height", "360"], "video media"),
+        (["--model", "m", "--osl", "64", "--audio-length-mean", "5", "--audio-length-stddev", "2"], "audio media"),
         (["--model", "m", "--osl", "64", "--not-an-aiperf-flag", "x"], "not in the verified"),
     ],
 )
@@ -572,7 +571,9 @@ def test_refusals_carry_named_reasons(argv: List[str], reason_fragment: str) -> 
     assert any(reason_fragment in refusal for refusal in conversion.refusals), conversion.refusals
 
 
-def test_multimodal_image_maps_when_pointlike() -> None:
+# Even fixed 512x512 JPEG images would be ignored by the random completions
+# generator. Refuse the conversion instead of emitting an unused media block.
+def test_multimodal_image_refuses_on_completions() -> None:
     argv = [
         "--model",
         "m",
@@ -590,17 +591,13 @@ def test_multimodal_image_maps_when_pointlike() -> None:
         "2",
     ]
     conversion = convert(argv)
-    assert conversion.refusals == []
-    config = conversion.config
-    assert config is not None
-    assert config.data.multimodal is not None
-    image = config.data.multimodal.image
-    assert image is not None
-    assert image.count is not None and image.count.mean == 2
-    assert image.resolutions is not None
+    assert conversion.config is None
+    assert any("--image-width-mean:" in refusal and "media" in refusal for refusal in conversion.refusals)
 
 
-def test_video_mp4_maps_with_frame_derivation() -> None:
+# A fixed MP4 video has a representable profile but the random completions
+# generator cannot send it, so conversion must refuse.
+def test_video_mp4_refuses_on_completions() -> None:
     argv = [
         "--model",
         "m",
@@ -620,13 +617,27 @@ def test_video_mp4_maps_with_frame_derivation() -> None:
         "4",
     ]
     conversion = convert(argv)
+    assert conversion.config is None
+    assert any("--video-width:" in refusal and "media" in refusal for refusal in conversion.refusals)
+
+
+@pytest.mark.parametrize("template_flag", ["--apply-chat-template", "--apply-chat-template=true"])
+# AIPerf compensates the synthetic length without wrapping the wire prompt;
+# inference-perf's use_chat_template wraps it, so neither true spelling maps.
+def test_apply_chat_template_refuses_on_completions(template_flag: str) -> None:
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", template_flag])
+    assert conversion.config is None
+    assert any(
+        refusal.startswith("--apply-chat-template:") and "length compensation" in refusal for refusal in conversion.refusals
+    )
+
+
+# Explicitly disabling the template preserves a plain completions prompt.
+def test_disabled_chat_template_keeps_plain_completions() -> None:
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--osl", "64", "--apply-chat-template=false"])
     assert conversion.refusals == []
-    config = conversion.config
-    assert config is not None
-    assert config.data.multimodal is not None
-    video = config.data.multimodal.video
-    assert video is not None
-    assert any("profiles.frames" in item and "20" in item for item in conversion.assumptions)
+    assert conversion.config is not None
+    assert conversion.config.data.use_chat_template is False
 
 
 def test_unverified_version_refuses() -> None:

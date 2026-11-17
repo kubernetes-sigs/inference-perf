@@ -35,7 +35,7 @@ Verified v0.10.0 behavior the rows below rely on:
 
 import argparse
 import math
-from typing import Any, Dict, List, NoReturn, Optional, Set, Tuple
+from typing import Callable, Dict, List, NoReturn, Optional, Set, Tuple, TypedDict, Union, Unpack
 
 from inference_perf.config import (
     APIConfig,
@@ -112,6 +112,18 @@ class _MirrorParser(argparse.ArgumentParser):
         raise PeerUsageError(f"invalid {TOOL_NAME} arguments: {message}")
 
 
+class _ArgumentOptions(TypedDict, total=False):
+    """The argparse options used by the pinned flag surface."""
+
+    type: Callable[[str], object]
+    default: object
+    choices: List[str]
+    action: str
+    required: bool
+    metavar: str
+    nargs: str
+
+
 class _Mirror:
     """The pinned argparse surface plus a flag registry for presence checks."""
 
@@ -121,7 +133,7 @@ class _Mirror:
         self.dest_to_flag: Dict[str, str] = {}
         self._build()
 
-    def _add(self, *names: str, **kwargs: Any) -> None:
+    def _add(self, *names: str, **kwargs: Unpack[_ArgumentOptions]) -> None:
         action = self.parser.add_argument(*names, **kwargs)
         for name in names:
             self.alias_to_dest[name] = action.dest
@@ -310,7 +322,8 @@ def _convert_data(conversion: Conversion, ns: argparse.Namespace, present: Set[s
         return None
     conversion.assume(
         f"--random-input-len {input_len}: vllm subtracts the tokenizer's special tokens before sampling,"
-        " so its realized prompts run about one token short for BOS-prepending tokenizers; mapped verbatim"
+        " inference-perf also counts those tokens inside the input length, so the realized lengths match"
+        " after the server adds BOS; mapped verbatim"
     )
     if ratio == 0.0:
         input_dist = fixed_dist(input_len)
@@ -504,30 +517,30 @@ def convert_vllm_bench(argv: List[str], peer_version: str) -> Conversion:
         conversion.assume("--served-model-name sets the payload model name; --model keeps only the tokenizer role")
 
     if standard_stage is not None:
-        stages: List[Any] = [standard_stage]
+        stages: List[Union[StandardLoadStage, ConcurrentLoadStage]] = [standard_stage]
     else:
         assert concurrent_stage is not None
         stages = [concurrent_stage]
-    load_kwargs: Dict[str, Any] = {"type": load_type, "stages": stages, "base_seed": ns.seed}
+    load_kwargs: Dict[str, object] = {"type": load_type, "stages": stages, "base_seed": ns.seed}
     if lora is not None:
         load_kwargs["lora_traffic_split"] = lora
-    load = LoadConfig(**load_kwargs)
+    load = LoadConfig.model_validate(load_kwargs)
 
     server = ModelServerClientConfig(base_url=base_url, model_name=model_name, ignore_eos=bool(ns.ignore_eos))
     tokenizer_id: str = ns.tokenizer if ns.tokenizer is not None else ns.model
-    tokenizer_kwargs: Dict[str, Any] = {"pretrained_model_name_or_path": tokenizer_id}
+    tokenizer_kwargs: Dict[str, object] = {"pretrained_model_name_or_path": tokenizer_id}
     if ns.trust_remote_code:
         tokenizer_kwargs["trust_remote_code"] = True
-    tokenizer = CustomTokenizerConfig(**tokenizer_kwargs)
+    tokenizer = CustomTokenizerConfig.model_validate(tokenizer_kwargs)
 
     report: Optional[ReportConfig] = None
     if goodput is not None or percentiles is not None:
-        report_kwargs: Dict[str, Any] = {}
+        report_kwargs: Dict[str, object] = {}
         if percentiles is not None:
             report_kwargs["request_lifecycle"] = RequestLifecycleMetricsReportConfig(percentiles=percentiles)
         if goodput is not None:
             report_kwargs["goodput"] = goodput
-        report = ReportConfig(**report_kwargs)
+        report = ReportConfig.model_validate(report_kwargs)
 
     storage: Optional[StorageConfig] = None
     if ns.result_dir is not None:
@@ -537,10 +550,10 @@ def convert_vllm_bench(argv: List[str], peer_version: str) -> Conversion:
         )
         storage = StorageConfig(local_storage=StorageConfigBase(path=ns.result_dir))
 
-    kwargs: Dict[str, Any] = {"api": api, "data": data, "load": load, "server": server, "tokenizer": tokenizer}
+    kwargs: Dict[str, object] = {"api": api, "data": data, "load": load, "server": server, "tokenizer": tokenizer}
     if report is not None:
         kwargs["report"] = report
     if storage is not None:
         kwargs["storage"] = storage
-    conversion.config = Config(**kwargs)
+    conversion.config = Config.model_validate(kwargs)
     return conversion

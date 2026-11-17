@@ -31,7 +31,7 @@ Harness-owned fields (fixture values the peer args cannot produce):
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import pytest
 
@@ -85,8 +85,8 @@ def _read_args(path: Path) -> List[str]:
     return args
 
 
-def _prune(tree: Dict[str, Any], path: Tuple[str, ...]) -> None:
-    node: Any = tree
+def _prune(tree: Dict[str, object], path: Tuple[str, ...]) -> None:
+    node: object = tree
     for key in path[:-1]:
         if not isinstance(node, dict) or key not in node:
             return

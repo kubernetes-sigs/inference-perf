@@ -18,11 +18,42 @@ no config written, 1 usage error. The emitted file must load back through
 """
 
 from pathlib import Path
+from typing import List
 
 import pytest
 
 from inference_perf.config import read_config
 from inference_perf.tools.convert import run
+
+
+@pytest.mark.parametrize(
+    "peer_args",
+    [
+        ["--image-width-mean", "512", "--image-height-mean", "512"],
+        ["--audio-length-mean", "5"],
+        ["--video-width", "640", "--video-height", "360", "--video-format", "mp4"],
+        ["--apply-chat-template"],
+    ],
+)
+@pytest.mark.parametrize("existing_output", [False, True])
+# Media and template-length compensation cannot be represented by random
+# completions. Exit 2, print no config and leave even an existing file intact.
+def test_aiperf_unrepresentable_payload_writes_nothing(
+    peer_args: List[str], existing_output: bool, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "converted.yaml"
+    if existing_output:
+        out.write_text("existing config\n")
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "-o", str(out), "--"]
+    argv += ["--model", "m", "--endpoint-type", "completions", "--osl", "64"] + peer_args
+    assert run(argv) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"REFUSE {peer_args[0]}:" in captured.err
+    if existing_output:
+        assert out.read_text() == "existing config\n"
+    else:
+        assert not out.exists()
 
 
 def test_convert_writes_a_loadable_config(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
