@@ -331,3 +331,34 @@ def test_gap_longer_than_the_stage_warns_fixed_or_random(caplog: pytest.LogCaptu
         "Stage 0 will send zero requests: no gap of its request_interval 100.0 fits in the stage.",
         "Stage 1 will send zero requests: no gap of its request_interval 'Uniform(100, 200)' fits in the stage.",
     ]
+
+
+# A gap that is not random and its rate are the same schedule. rate "t" and request_interval "1/t" over
+# 10s give identical send times, all 50 of them. rate "10" and request_interval 0.1 over 60s give the
+# same 600 times, 0.1s apart. Pairs with other shapes agree too.
+@pytest.mark.parametrize(
+    ("rate", "request_interval", "duration", "count"),
+    [
+        ("t", "1/t", 10, 50),
+        ("10", 0.1, 60, 600),
+        ("10 + 5*sin(2*pi*t/60)", "1/(10 + 5*sin(2*pi*t/60))", 60, 600),
+        ("Piecewise((0, t < 5), (10, True))", "Piecewise((oo, t < 5), (0.1, True))", 10, 50),
+    ],
+)
+def test_rate_and_its_request_interval_send_at_the_same_times(
+    rate: str, request_interval: str | float, duration: int, count: int
+) -> None:
+    by_rate = StandardLoadStage(rate=rate, duration=duration)
+    by_gap = StandardLoadStage(request_interval=request_interval, duration=duration)
+    rate_times = list(ConstantLoadTimer(by_rate.rate_schedule, float(duration)).start_timer(initial=0.0))
+    gap_times = list(RequestIntervalLoadTimer(by_gap.request_schedule).start_timer(initial=0.0))
+    assert len(rate_times) == len(gap_times) == count
+    assert rate_times == pytest.approx(gap_times, abs=1e-9)
+
+
+# For the pair the ruling names the times are not just close but the same numbers: rate "t" and
+# request_interval "1/t" over 10s go through one placement, so their 50 offsets are equal exactly.
+def test_rate_t_and_request_interval_one_over_t_are_identical() -> None:
+    by_rate = StandardLoadStage(rate="t", duration=10).rate_schedule.send_times()
+    by_gap = StandardLoadStage(request_interval="1/t", duration=10).request_schedule.offsets
+    assert np.array_equal(by_rate, by_gap)

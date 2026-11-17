@@ -266,7 +266,7 @@ load:
 | `Max(0, -t)` | 60 | 0 | 0.00 |
 | `2**(t/10)` | 60 | 908 | 15.15 |
 
-A rate expression is sent at exact times, with no randomness: request 1 goes out when the area under the rate reaches 1, request 2 when it reaches 2, and so on, so the same config gives the same send times on every run. This holds for a constant expression too: `rate: "10"` over 60 s sends at 0.1 s, 0.2 s and on to 60.0 s. A numeric rate under `load.type: constant` is different: `rate: 10` sends the same exact count, with its requests spread at random inside the window.
+A rate expression is sent at exact times, with no randomness: request 1 goes out when the area under the rate reaches 1, request 2 when it reaches 2, and so on, so the same config gives the same send times on every run. This holds for a constant expression too: `rate: "10"` over 60 s sends at 0.1 s, 0.2 s and on to 60.0 s. A numeric rate under `load.type: constant` is different: `rate: 10` sends the same exact count, with its requests spread at random inside the window. Random arrivals are written with [`request_interval`](#request-interval).
 
 | Rate expression | Window (s) | First three sends (s) | Last send (s) |
 | --- | --- | --- | --- |
@@ -347,7 +347,7 @@ A `request_interval` with no distribution in it is the rate `1 / request_interva
 
 An infinite gap (`oo`) is a rate of zero and is legal anywhere in the stage, so `Piecewise((oo, t < 5), (0.1, True))` pauses for 5 s and then sends every 100 ms. A stage that sends nothing, because its gap is infinite for the whole stage or longer than the stage, loads, lasts its `duration` or `stop_condition`, reports a count of 0 and logs a warning that says why, as a [rate of zero](#rate-expressions) does. A gap that is zero or negative anywhere in the stage is rejected. Zero is looked for at the times the rate is added up at, every 10 ms, so a gap that touches zero only between two of them is not caught.
 
-`request_interval: 0.1` and `rate: 10` under `load.type: constant` send the same count but not at the same times: the first is evenly spaced, the second adds random jitter to its spacing.
+A rate expression is placed the same way, so `request_interval: "1/t"` and `rate: "t"` send at the same times, and so do `request_interval: 0.1` and `rate: "10"`. The numeric `rate: 10` under `load.type: constant` sends the same count but not at the same times: it adds random jitter to its spacing.
 
 ##### A random gap that varies with t
 

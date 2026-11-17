@@ -105,9 +105,9 @@ class RequestSchedule:
                     )
             schedule = RateSchedule(rate, self.duration)
         self._never_sends = schedule.total <= 0
-        count = schedule.expected_requests
-        self._check_count(count)
-        return schedule.inverse(np.arange(1, count + 1, dtype=np.float64))
+        self._check_count(schedule.expected_requests)
+        # the same placement a rate expression gets, so "1/t" sends when the rate "t" does
+        return schedule.send_times()
 
     def _check_count(self, count: int) -> None:
         if count > _MAX_ARRIVALS:
