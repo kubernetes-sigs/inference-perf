@@ -49,8 +49,9 @@ A random variable is one of the distributions in the table below. Any other dist
 | `Poisson(mean)` | `mean > 0` | `0` | `inf` | yes | `mean` |
 | `Binomial(n, p)` | `n >= 0`, `floor(n) == n`, `p >= 0`, `p <= 1` | `0` | `n` | yes | `n*p` |
 | `Geometric(p)` | `p > 0`, `p <= 1` | `1` | `inf` | yes | `1/p` |
+| `DiscreteUniform([values])` | at least one value, none repeated | `min(values)` | `max(values)` | when every value is | `mean(values)` |
 
-Each row is everything the grammar knows about a distribution. `Requires` is checked when the config loads, so `Normal(512, 0)` is rejected there. `Lowest` and `Highest` are the smallest and largest value a draw can take. The definitions are SymPy's, which do not always match the usual ones: check the parameter order here before porting a distribution from another tool. This table is generated from the code and compared against it by a test.
+Each row is everything the grammar knows about a distribution. `Requires` is checked when the config loads, so `Normal(512, 0)` is rejected there. `Lowest` and `Highest` are the smallest and largest value a draw can take. `DiscreteUniform` takes a list and picks each value equally often: `DiscreteUniform([128, 256, 512])`. The definitions are SymPy's, which do not always match the usual ones: check the parameter order here before porting a distribution from another tool. This table is generated from the code and compared against it by a test.
 
 Worked examples, with arithmetic around a draw:
 

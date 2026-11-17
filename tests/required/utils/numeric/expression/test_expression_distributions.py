@@ -31,7 +31,7 @@ from inference_perf.utils.numeric.expression import (
 )
 from inference_perf.utils.numeric.expression import expression as expression_module
 
-_SUPPORTED = "Supported distributions: Normal, LogNormal, Exponential, Gamma, Uniform, Beta, Weibull, Pareto, Poisson, Binomial, Geometric."
+_SUPPORTED = "Supported distributions: Normal, LogNormal, Exponential, Gamma, Uniform, Beta, Weibull, Pareto, Poisson, Binomial, Geometric, DiscreteUniform."
 
 
 # A sympy.stats distribution with no row is rejected when parsed, alone or inside arithmetic. The message names it
@@ -43,7 +43,6 @@ _SUPPORTED = "Supported distributions: Normal, LogNormal, Exponential, Gamma, Un
         ("Bernoulli(0.5)", "Bernoulli"),
         ("Cauchy(0, 1)", "Cauchy"),
         ("Triangular(0, 2, 1)", "Triangular"),
-        ("DiscreteUniform([1, 2, 3])", "DiscreteUniform"),
         ("Die(6)", "Die"),
         ("floor(Min(Laplace(0, 1), 10)) + Normal(0, 1)", "Laplace"),
     ],
@@ -123,6 +122,7 @@ _BARE_DRAWS: list[tuple[str, str, list[float]]] = [
     ("Poisson(4)", "Poisson", [4.0]),
     ("Binomial(10, 1/4)", "Binomial", [10.0, 0.25]),
     ("Geometric(1/4)", "Geometric", [0.25]),
+    ("DiscreteUniform([128, 256, 512])", "DiscreteUniform", [128.0, 256.0, 512.0]),
 ]
 
 
@@ -405,3 +405,30 @@ def test_parse_distribution_use_binds_arguments() -> None:
     assert use.row is DISTRIBUTIONS["Normal"]
     assert use.args == (sympy.Integer(10), 2 - sympy.Symbol("t"))
     assert str(use) == "Normal(10, 2 - t)"
+
+
+# DiscreteUniform takes a list. "DiscreteUniform([128, 256, 512])" draws only those three values, is bounded
+# 128 to 512 with mean 896/3 and is whole-number. Arithmetic carries through: 2*DiscreteUniform([1, 3]) + 1 -> 3 or 7.
+def test_discrete_uniform_in_an_expression() -> None:
+    picks = Expression("DiscreteUniform([128, 256, 512])")
+    draws = np.asarray(picks.sample(rng=np.random.default_rng(0), size=2000))
+    assert set(draws.tolist()) == {128.0, 256.0, 512.0}
+    assert picks.bounds == (128.0, 512.0)
+    assert picks.mean() == pytest.approx(896 / 3)
+    assert picks.is_integer_valued
+    scaled = Expression("2*DiscreteUniform([1, 3]) + 1")
+    assert set(np.asarray(scaled.sample(rng=np.random.default_rng(0), size=2000)).tolist()) == {3.0, 7.0}
+    assert not Expression("DiscreteUniform([0.5, 2])").is_integer_valued
+
+
+# A range check reads the listed values, not the span between them: [128, 256, 512] with minimum=200 is rejected
+# naming the values, and a list is refused when a value depends on t, both in an expression and in the proof.
+def test_discrete_uniform_range_and_time() -> None:
+    with pytest.raises(ValueError, match=r"can evaluate to \{128, 256, 512\}"):
+        Expression("DiscreteUniform([128, 256, 512])", minimum=200)
+    Expression("DiscreteUniform([128, 256, 512])", minimum=128, maximum=512)
+    with pytest.raises(ValueError, match=r"values\[0\] must be a finite constant, got t"):
+        Expression("DiscreteUniform([t, 2])")
+    prove_parameter_conditions(parse_distribution_use("DiscreteUniform([1, 2.5])"), 10)
+    with pytest.raises(ValueError, match=r"values\[0\] must be a finite constant, got t"):
+        prove_parameter_conditions(parse_distribution_use("DiscreteUniform([t, 2])"), 10)

@@ -126,7 +126,7 @@ def _parse_namespace(counter: list[int]) -> dict[str, Callable[..., SympyRandomS
             use = _row.use(args)
             use.require_constant()
             _counter[0] += 1
-            return _ctor(f"rv_{_counter[0]}", *use.args)
+            return _ctor(f"rv_{_counter[0]}", *use.constructor_args)
 
         namespace[name] = bound
     return namespace
@@ -143,8 +143,7 @@ def _use_of(rv: SympyRandomSymbol) -> DistributionUse:
     row = lookup(distribution)
     if row is None:
         raise ValueError(unsupported_message(type(distribution).__name__.removesuffix("Distribution")))
-    # sympy appends arguments of its own to some distributions, e.g. Binomial's succ and fail
-    return row.use(distribution.args[: len(row.parameters)])
+    return row.use_of_sympy(distribution.args)
 
 
 def _is_random_symbol(sym: object) -> TypeGuard[SympyRandomSymbol]:
@@ -224,6 +223,9 @@ def _interval(expr: SympyNode, duration: Optional[float]) -> Optional[tuple[Symp
 
 def _support(use: DistributionUse) -> SympySet:
     """The values a draw can take: the whole numbers or the reals from the row's lowest to its highest."""
+    if use.row.takes_list:
+        listed: SympySet = sympy.FiniteSet(*use.args)
+        return listed
     lower, upper = use.lower, use.upper
     if use.row.integer:
         whole: SympySet = sympy.Range(sympy.ceiling(lower), upper if upper == oo else sympy.Add(sympy.floor(upper), 1))
@@ -479,7 +481,7 @@ class Expression:
         if _is_expr(self._expr) and self._expr.is_number:
             return float(self._expr).is_integer()
         stand_ins: dict[SympyNode, SympyNode] = {
-            rv: sympy.Dummy(integer=True) if use.row.integer else sympy.Dummy(real=True) for rv, use in self._uses.items()
+            rv: sympy.Dummy(integer=True) if use.integer else sympy.Dummy(real=True) for rv, use in self._uses.items()
         }
         return self._expr.xreplace(stand_ins).is_integer is True
 
@@ -1052,6 +1054,10 @@ def prove_parameter_conditions(use: DistributionUse, duration: float) -> None:
     """
     if not (math.isfinite(duration) and duration >= 0):
         raise ValueError(f"duration must be a finite non-negative number, got {duration}.")
+    if use.row.takes_list:
+        # a list of values has no condition to prove over time: the values are constants or it is refused
+        use.require_constant()
+        return
     for parameter, arg in zip(use.row.parameters, use.args, strict=True):
         # evaluated as well as proved: the range machinery assumes a real value, which sqrt(t - 5) is not at t = 0
         failing = _time_outside(arg, duration, sympy.S.Reals)
