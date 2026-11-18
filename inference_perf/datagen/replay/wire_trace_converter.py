@@ -41,7 +41,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 from types import ModuleType
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, TextIO, Tuple, Type, TypeVar
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, TextIO, Tuple, Type, TypeVar
 
 from inference_perf.apis.image_parts import anthropic_image_to_part, is_image_part, openai_image_to_part
 
@@ -199,7 +199,7 @@ def detect_trace_format(path: Path) -> str:
     return detect_trace_format_from_record(_probe_file(path), path)
 
 
-def detect_trace_format_from_record(first: Optional[Dict[str, Any]], path: PurePath) -> str:
+def detect_trace_format_from_record(first: Optional[Mapping[str, object]], path: PurePath) -> str:
     """Detect a trace's format from its first record (see detect_trace_format).
 
     ``path`` supplies the suffix (.json vs .jsonl) and the name used in errors; it need not
@@ -1240,7 +1240,7 @@ def derive_trace_id(path: Path) -> str:
     return trace_id_from_record(first, str(path.resolve()))
 
 
-def trace_id_from_record(first: Optional[Dict[str, Any]], fallback_key: str) -> str:
+def trace_id_from_record(first: Optional[Mapping[str, object]], fallback_key: str) -> str:
     """Return the session-id header of ``first``, else a hash of ``fallback_key``.
 
     The fallback key is the resolved local path, or the object URI for a remote trace, so
