@@ -636,3 +636,168 @@ def test_config_rejects_s3_uri_without_bucket() -> None:
     with pytest.raises(ValidationError, match="missing a bucket"):
         OTelTraceReplayConfig(trace_directory="s3://")
     assert OTelTraceReplayConfig(trace_files=["s3://b/k/*.jsonl"]).remote_cache_max_gb == 10.0
+
+
+# --------------------------------------------------------------------------------------
+# Review fixes
+# --------------------------------------------------------------------------------------
+
+
+def _materialize_in_thread(store: RemoteTraceStore, o: RemoteObject, timeout: float = 5.0) -> object:
+    import threading
+
+    box: Dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            box["result"] = store.materialize(o)
+        except Exception as e:
+            box["result"] = e
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    assert not worker.is_alive(), "materialize hung"
+    return box["result"]
+
+
+def test_prefetch_into_an_unwritable_cache_does_not_hang(tmp_path: Path) -> None:
+    import threading
+
+    fake = FakeS3({"a.jsonl": b"a"})
+    blocker = tmp_path / "cache"
+    blocker.write_text("a file where the cache directory should be")
+    store = RemoteTraceStore(blocker, 10**6, client_factory=lambda: fake)
+    done = threading.Event()
+
+    def start_prefetch() -> None:
+        store.prefetch([obj(fake, "a.jsonl")])
+        done.set()
+
+    threading.Thread(target=start_prefetch, daemon=True).start()
+    assert done.wait(5), "prefetch hung"
+    assert isinstance(_materialize_in_thread(store, obj(fake, "a.jsonl")), RemoteReadError)
+
+
+def test_a_failed_prefetch_is_retried_by_the_load_that_needs_it(tmp_path: Path) -> None:
+    class FlakyOnce(FakeS3):
+        failed = False
+
+        def get_object(self, Bucket: str, Key: str, IfMatch: Optional[str] = None) -> GetObjectOutput:
+            if not self.failed:
+                self.failed = True
+                raise ClientError({"Error": {"Code": "InternalError", "Message": "reset"}}, "GetObject")
+            return super().get_object(Bucket, Key, IfMatch)
+
+    fake = FlakyOnce({"a.jsonl": b"a"})
+    store = make_store(tmp_path, fake)
+    store.prefetch([obj(fake, "a.jsonl")])
+    result = _materialize_in_thread(store, obj(fake, "a.jsonl"))
+    assert isinstance(result, Path) and result.read_bytes() == b"a"
+
+
+def test_exit_does_not_wait_for_queued_prefetches(tmp_path: Path) -> None:
+    import subprocess
+    import time
+
+    script = f"""
+import sys, time
+sys.path.insert(0, {str(Path(__file__).parent)!r})
+from pathlib import Path
+from test_remote_trace_store import FakeS3, RemoteObject, RemoteTraceStore, GetObjectOutput
+
+class Slow(FakeS3):
+    def get_object(self, Bucket, Key, IfMatch=None):
+        time.sleep(0.5)
+        return super().get_object(Bucket, Key, IfMatch)
+
+fake = Slow({{f"k{{i}}.jsonl": b"x" for i in range(32)}})
+store = RemoteTraceStore(Path({str(tmp_path / "cache")!r}), 10**6, client_factory=lambda: fake)
+store.prefetch([RemoteObject("bkt", k, fake.etag(k), 1) for k in fake.objects])
+print("main done", flush=True)
+"""
+    started = time.monotonic()
+    subprocess.run([sys.executable, "-c", script], check=True, capture_output=True, timeout=30)
+    assert time.monotonic() - started < 4.0  # 32 x 0.5s over 8 threads would be ~2s after "main done"
+
+
+def test_cached_objects_of_the_current_set_are_not_evicted_by_its_own_download(tmp_path: Path) -> None:
+    objects = {f"a{i}.jsonl": b"a" * 150 for i in range(4)}
+    objects.update({f"b{i}.jsonl": b"b" * 200 for i in range(2)})
+    objects.update({f"c{i}.jsonl": b"c" * 100 for i in range(4)})
+    fake = FakeS3(objects)
+    store = make_store(tmp_path, fake, max_bytes=1000)
+    a = [obj(fake, f"a{i}.jsonl") for i in range(4)]
+    b = [obj(fake, f"b{i}.jsonl") for i in range(2)]
+    c = [obj(fake, f"c{i}.jsonl") for i in range(4)]
+    store.download_all(a)  # an earlier run
+    time_after_a = max(store.cache_path(o).stat().st_mtime for o in a)
+    for o in b:
+        store.download_all([o])
+        os.utime(store.cache_path(o), (time_after_a + 10, time_after_a + 10))
+    store.download_all(a + c)  # this run: 1000 bytes, fits the cap
+    assert all(store.cache_path(o).exists() for o in a + c)
+
+
+def test_wrong_credentials_get_the_same_hint(tmp_path: Path) -> None:
+    class BadKey(FakeS3):
+        def paginate(self, Bucket: str, Prefix: str = "") -> Iterator[ListPage]:
+            raise ClientError({"Error": {"Code": "InvalidAccessKeyId", "Message": "no such key"}}, "ListObjectsV2")
+
+    with pytest.raises(ValueError, match=r"InvalidAccessKeyId.*AWS_ACCESS_KEY_ID"):
+        make_store(tmp_path, BadKey({})).resolve(f"s3://{BUCKET}/*.jsonl")
+
+
+def test_default_client_pool_covers_the_download_threads(monkeypatch: pytest.MonkeyPatch) -> None:
+    import boto3
+
+    import inference_perf.datagen.replay.remote_trace_store as remote_module
+
+    seen: Dict[str, object] = {}
+    monkeypatch.setattr(boto3, "client", lambda service, **kwargs: seen.update(service=service, **kwargs))
+    remote_module.default_client()
+    from botocore.config import Config
+
+    config = seen["config"]
+    assert seen["service"] == "s3" and isinstance(config, Config)
+    assert config.max_pool_connections >= 16 + 8
+
+
+def test_remote_otel_objects_download_concurrently_at_indexing(tmp_path: Path) -> None:
+    import time
+
+    class Slow(FakeS3):
+        def get_object(self, Bucket: str, Key: str, IfMatch: Optional[str] = None) -> GetObjectOutput:
+            time.sleep(0.2)
+            return super().get_object(Bucket, Key, IfMatch)
+
+    fake = Slow({f"d/t{i}.json": json.dumps(otel_doc(f"t{i}")).encode() for i in range(8)})
+    store = make_store(tmp_path, fake)
+    objs = store.resolve(f"s3://{BUCKET}/d/*.json")
+    started = time.monotonic()
+    assert len(remote_source(store, objs).list_records()) == 8
+    assert time.monotonic() - started < 1.0  # 8 x 0.2s one at a time would be 1.6s
+
+
+def test_no_download_ahead_once_everything_was_pre_downloaded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    gen = make_generator(monkeypatch, corpus(3), tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"])
+    store, _ = remote_parts(gen)
+    calls: List[int] = []
+    monkeypatch.setattr(store, "prefetch", lambda objs: calls.append(len(objs)))
+    for i in range(3):
+        gen.is_session_buildable(i)
+    assert calls == []
+
+
+def test_warm_run_reports_nothing_to_download(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    fake = corpus(3)
+    make_generator(monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"])
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        make_generator(monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"])
+    assert "All 3 remote traces are already cached" in caplog.text
+    assert "Downloading" not in caplog.text
