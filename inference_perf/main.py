@@ -16,7 +16,7 @@ import logging
 from argparse import ArgumentParser
 
 import yaml
-from inference_perf.analysis.analyze import analyze_reports
+from inference_perf.analysis.analyze import AnalysisOptionError, analyze_reports
 from inference_perf.utils.mp_context import MP_CONTEXT, start_forkserver
 from typing import Callable, List, Optional
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
@@ -185,7 +185,16 @@ def main_cli() -> None:
     setup_logging(args.log_level)
 
     if args.analyze and len(args.analyze) > 0:
-        analyze_reports(args.analyze, args.unified_analysis_dir)
+        try:
+            analyze_reports(
+                args.analyze,
+                args.unified_analysis_dir,
+                labels=args.analyze_labels,
+                rate=args.analyze_rate,
+                latency_stat=args.analyze_latency_stat,
+            )
+        except AnalysisOptionError as e:
+            parser.error(str(e))
         return
 
     cli_overrides_flat = {k: v for k, v in vars(args).items() if k not in base_args}
