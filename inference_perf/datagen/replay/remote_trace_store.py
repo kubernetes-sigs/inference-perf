@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple, TypedDict, Union
 
 from inference_perf.datagen.replay.wire_trace_converter import _zstd
 
@@ -131,10 +131,47 @@ class RemoteObject:
         return self.key.rsplit("/", 1)[-1]
 
 
-def default_client() -> Any:
+# The slice of a boto3 S3 client this module uses. boto3 ships no types, so this states
+# the contract instead; any S3-compatible client (or a test fake) satisfying it works.
+class ListedObject(TypedDict):
+    Key: str
+    ETag: str
+    Size: int
+
+
+class ListPage(TypedDict, total=False):
+    Contents: List[ListedObject]
+
+
+class ObjectBody(Protocol):
+    def read(self, amt: Optional[int] = None) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+class GetObjectOutput(TypedDict):
+    Body: ObjectBody
+
+
+class ListPaginator(Protocol):
+    def paginate(self, *, Bucket: str, Prefix: str) -> Iterable[ListPage]: ...
+
+
+class S3Client(Protocol):
+    def get_paginator(self, operation_name: str, /) -> ListPaginator: ...
+
+    def get_object(self, *, Bucket: str, Key: str, IfMatch: str) -> GetObjectOutput: ...
+
+
+# A first record, passed through untouched: callers inspect it, nothing here does.
+TraceRecord = Dict[str, object]
+
+
+def default_client() -> S3Client:
     import boto3
 
-    return boto3.client("s3")
+    client: S3Client = boto3.client("s3")
+    return client
 
 
 class RemoteTraceStore:
@@ -144,7 +181,7 @@ class RemoteTraceStore:
     client lazily and never prefetches: only the parent knows the play order.
     """
 
-    def __init__(self, cache_dir: Path, max_bytes: int, client_factory: Optional[Callable[[], Any]] = None) -> None:
+    def __init__(self, cache_dir: Path, max_bytes: int, client_factory: Optional[Callable[[], S3Client]] = None) -> None:
         self.cache_dir = cache_dir
         self.max_bytes = max_bytes
         # None looks default_client up at first use, so a replacement installed later applies.
@@ -157,18 +194,18 @@ class RemoteTraceStore:
         self._init_runtime()
 
     def _init_runtime(self) -> None:
-        self._client: Any = None
+        self._client: Optional[S3Client] = None
         self._lock = threading.Lock()
         self._inflight: Dict[str, Future[Path]] = {}
         self._pool: Optional[ThreadPoolExecutor] = None
 
-    def __getstate__(self) -> Dict[str, Any]:
+    def __getstate__(self) -> Dict[str, object]:
         state = dict(self.__dict__)
         for name in ("_client", "_lock", "_inflight", "_pool"):
             state.pop(name, None)
         return state
 
-    def __setstate__(self, state: Dict[str, Any]) -> None:
+    def __setstate__(self, state: Dict[str, object]) -> None:
         self.__dict__.update(state)
         self._init_runtime()
         self.prefetch_enabled = False
@@ -176,7 +213,7 @@ class RemoteTraceStore:
         self.sync_wait_s = 0.0
 
     @property
-    def client(self) -> Any:
+    def client(self) -> S3Client:
         with self._lock:
             if self._client is None:
                 self._client = (self.client_factory or default_client)()
@@ -233,7 +270,7 @@ class RemoteTraceStore:
     # Reads
     # ----------------------------------------------------------------------------------
 
-    def _open(self, obj: RemoteObject) -> Any:
+    def _open(self, obj: RemoteObject) -> ObjectBody:
         from botocore.exceptions import BotoCoreError, ClientError
 
         try:
@@ -246,7 +283,7 @@ class RemoteTraceStore:
         except BotoCoreError as e:
             raise RemoteReadError(f"{obj.uri}: {e}") from e
 
-    def first_record(self, obj: RemoteObject) -> Optional[Dict[str, Any]]:
+    def first_record(self, obj: RemoteObject) -> Optional[TraceRecord]:
         """Return the first non-blank line of a line-delimited object as a dict, reading only that far."""
         body = self._open(obj)
         zstd = _zstd() if obj.name.endswith(".zst") else None
@@ -277,10 +314,10 @@ class RemoteTraceStore:
         finally:
             body.close()
 
-    def first_records(self, objs: Sequence[RemoteObject]) -> List[Union[Dict[str, Any], None, Exception]]:
+    def first_records(self, objs: Sequence[RemoteObject]) -> List[Union[TraceRecord, None, Exception]]:
         """first_record for each object, concurrently; a failure is returned in its slot."""
 
-        def probe(o: RemoteObject) -> Union[Dict[str, Any], None, Exception]:
+        def probe(o: RemoteObject) -> Union[TraceRecord, None, Exception]:
             try:
                 return self.first_record(o)
             except Exception as e:
@@ -412,7 +449,7 @@ class RemoteTraceStore:
             list(pool.map(fetch, todo))
 
 
-def _parse_first(line: bytes, obj: RemoteObject) -> Dict[str, Any]:
+def _parse_first(line: bytes, obj: RemoteObject) -> TraceRecord:
     try:
         parsed = json.loads(line)
     except (json.JSONDecodeError, UnicodeDecodeError) as e:

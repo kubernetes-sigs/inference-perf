@@ -27,14 +27,18 @@ import os
 import pickle
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import pytest
 from botocore.exceptions import ClientError, NoCredentialsError
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+from inference_perf.datagen.replay.trace_source import LocalTraceSource
 from inference_perf.datagen.replay.remote_trace_store import (
+    GetObjectOutput,
+    ListPage,
     RemoteObject,
     RemoteReadError,
     RemoteTraceStore,
@@ -81,7 +85,7 @@ class FakeS3:
         assert name == "list_objects_v2"
         return self
 
-    def paginate(self, Bucket: str, Prefix: str = "") -> Iterator[Dict[str, Any]]:
+    def paginate(self, Bucket: str, Prefix: str = "") -> Iterator[ListPage]:
         assert Bucket == BUCKET
         keys = sorted(k for k in self.objects if k.startswith(Prefix))
         for i in range(0, len(keys), self.page_size):
@@ -90,7 +94,7 @@ class FakeS3:
         if not keys:
             yield {}
 
-    def get_object(self, Bucket: str, Key: str, IfMatch: Optional[str] = None) -> Dict[str, Any]:
+    def get_object(self, Bucket: str, Key: str, IfMatch: Optional[str] = None) -> GetObjectOutput:
         self.gets.append(Key)
         if Key not in self.objects:
             raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "missing"}}, "GetObject")
@@ -99,7 +103,7 @@ class FakeS3:
         return {"Body": FakeBody(self.objects[Key], self)}
 
 
-def wire_record(i: int, session: str = "") -> Dict[str, Any]:
+def wire_record(i: int, session: str = "") -> Dict[str, object]:
     headers = {"session_id": session} if session else {}
     return {
         "path": "/v1/chat/completions",
@@ -217,7 +221,7 @@ def test_resolve_pattern_without_matches_is_empty(tmp_path: Path) -> None:
 
 def test_resolve_without_credentials_names_bucket_and_env_vars(tmp_path: Path) -> None:
     class NoCreds(FakeS3):
-        def paginate(self, Bucket: str, Prefix: str = "") -> Iterator[Dict[str, Any]]:
+        def paginate(self, Bucket: str, Prefix: str = "") -> Iterator[ListPage]:
             raise NoCredentialsError()
 
     with pytest.raises(ValueError, match=r"s3://bkt.*AWS_ACCESS_KEY_ID.*AWS_ENDPOINT_URL_S3"):
@@ -390,7 +394,7 @@ def test_waiting_on_an_unfinished_prefetch_is_counted(tmp_path: Path) -> None:
     release = threading.Event()
 
     class Slow(FakeS3):
-        def get_object(self, Bucket: str, Key: str, IfMatch: Optional[str] = None) -> Dict[str, Any]:
+        def get_object(self, Bucket: str, Key: str, IfMatch: Optional[str] = None) -> GetObjectOutput:
             release.wait(5)
             return super().get_object(Bucket, Key, IfMatch)
 
@@ -408,9 +412,10 @@ def test_waiting_on_an_unfinished_prefetch_is_counted(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def remote_source(store: RemoteTraceStore, entries: List[Any], skip_invalid: bool = False) -> Any:
+def remote_source(
+    store: RemoteTraceStore, entries: Sequence[Union[Path, RemoteObject]], skip_invalid: bool = False
+) -> LocalTraceSource:
     from inference_perf.datagen.replay.otel_trace_replay_datagen import _normalize_file_trace
-    from inference_perf.datagen.replay.trace_source import LocalTraceSource
 
     return LocalTraceSource(entries, skip_invalid, _normalize_file_trace, remote=store)
 
@@ -444,7 +449,7 @@ def test_remote_ids_do_not_depend_on_the_cache_dir(tmp_path: Path) -> None:
     assert ids[0] == ids[1]
 
 
-def otel_doc(trace_id: str) -> Dict[str, Any]:
+def otel_doc(trace_id: str) -> Dict[str, object]:
     return {"trace_id": trace_id, "spans": []}
 
 
@@ -506,18 +511,34 @@ def test_local_and_remote_entries_mix(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def make_generator(monkeypatch: pytest.MonkeyPatch, fake: FakeS3, tmp_path: Path, **replay: Any) -> Any:
+def make_generator(
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakeS3,
+    tmp_path: Path,
+    trace_files: Optional[List[str]] = None,
+    trace_directory: Optional[str] = None,
+    remote_cache_max_gb: float = 10.0,
+) -> OTelTraceReplayDataGenerator:
     import inference_perf.datagen.replay.remote_trace_store as remote_module
     from inference_perf.config import APIConfig, APIType, DataConfig, OTelTraceReplayConfig
-    from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 
     _SHARED["fake"] = fake
     monkeypatch.setattr(remote_module, "default_client", _shared_client)
-    replay.setdefault("remote_cache_dir", str(tmp_path / "cache"))
-    config = DataConfig(type="otel_trace_replay", otel_trace_replay=OTelTraceReplayConfig(**replay))
+    replay = OTelTraceReplayConfig(
+        trace_files=trace_files,
+        trace_directory=trace_directory,
+        remote_cache_dir=str(tmp_path / "cache"),
+        remote_cache_max_gb=remote_cache_max_gb,
+    )
+    config = DataConfig(type="otel_trace_replay", otel_trace_replay=replay)
     return OTelTraceReplayDataGenerator(
         api_config=APIConfig(type=APIType.Chat, streaming=False), config=config, tokenizer=None, num_workers=1
     )
+
+
+def remote_parts(gen: OTelTraceReplayDataGenerator) -> Tuple[RemoteTraceStore, LocalTraceSource]:
+    assert gen._remote_store is not None and isinstance(gen._trace_source, LocalTraceSource)
+    return gen._remote_store, gen._trace_source
 
 
 def corpus(n: int) -> FakeS3:
@@ -548,7 +569,7 @@ def test_each_object_is_downloaded_once_across_parent_worker_and_cycling(
         worker._ensure_session_built(i)
     gen._ensure_session_built(3)  # corpus cycling replays slot 0
     assert len(fake.gets) == 6
-    assert gen._remote_store.sync_downloads == 0 and worker._remote_store.sync_downloads == 0
+    assert remote_parts(gen)[0].sync_downloads == 0 and remote_parts(worker)[0].sync_downloads == 0
 
 
 def test_set_larger_than_the_cache_is_downloaded_ahead_in_play_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -557,9 +578,9 @@ def test_set_larger_than_the_cache_is_downloaded_ahead_in_play_order(monkeypatch
     gen = make_generator(
         monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"], remote_cache_max_gb=(4.5 * size) / 1e9
     )
-    store = gen._remote_store
-    play = [gen._trace_source.records[row].remote.uri for row in gen._row_order]
-    by_uri = {r.remote.uri: r.remote for r in gen._trace_source.records}
+    store, source = remote_parts(gen)
+    play = [source.records[row].source_id for row in gen._row_order]
+    by_uri = {r.remote.uri: r.remote for r in source.records if r.remote is not None}
     cached = [uri for uri in play if store.cache_path(by_uri[uri]).exists()]
     # Warm-up covers half the cap: the first two sessions in play order, not more.
     assert cached == play[:2]

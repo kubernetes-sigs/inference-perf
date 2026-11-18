@@ -40,7 +40,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tupl
 
 from datasets import Dataset
 
-from inference_perf.datagen.replay.remote_trace_store import RemoteObject, RemoteTraceStore
+from inference_perf.datagen.replay.remote_trace_store import RemoteObject, RemoteTraceStore, TraceRecord
 from inference_perf.datagen.replay.wire_trace_converter import (
     FORMAT_OTEL_JSONL,
     WIRE_FORMATS,
@@ -294,7 +294,7 @@ class LocalTraceSource:
             raise ValueError("Remote trace entries need a RemoteTraceStore")
         return self._remote
 
-    def _index_remote(self, obj: RemoteObject, first: Union[Dict[str, Any], None, Exception]) -> List[LocalTraceRecord]:
+    def _index_remote(self, obj: RemoteObject, first: Union[TraceRecord, None, Exception]) -> List[LocalTraceRecord]:
         """Index one remote object: probe-only for wire captures, cached and indexed for OTel."""
         if isinstance(first, OSError):
             raise TraceReadError(str(first)) from first
@@ -432,7 +432,7 @@ class LocalTraceSource:
         validate_record_schema(normalized, where)
         return normalized
 
-    def _read_remote(self, record: LocalTraceRecord) -> Dict[str, Any]:
+    def _read_remote(self, record: LocalTraceRecord) -> Dict[str, object]:
         """Read a remote record from its cached copy, fetching it if needed."""
         assert record.remote is not None
         for attempt in (1, 2):
