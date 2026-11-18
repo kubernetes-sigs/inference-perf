@@ -207,6 +207,49 @@ def goodput_findings(filename: str, contents: Any, check: str) -> List[Finding]:
     if is_number(total) and is_number(successes_count) and total != successes_count:
         findings.append(_error(check, filename, f"goodput total_requests ({total}) != successes.count ({successes_count})"))
 
+    submitted = goodput.get("submitted_requests")
+    load_count = _get(contents, "load_summary", "count")
+    if is_number(submitted):
+        if is_number(total) and submitted < total:
+            findings.append(_error(check, filename, f"goodput submitted_requests ({submitted}) < total_requests ({total})"))
+        if is_number(load_count) and submitted != load_count:
+            findings.append(
+                _error(
+                    check,
+                    filename,
+                    f"goodput submitted_requests ({submitted}) != load_summary.count ({load_count})",
+                )
+            )
+
+    goodput_pct = goodput.get("goodput_percentage")
+    submitted_att_pct = goodput.get("submitted_attainment_percentage")
+    if (
+        is_number(total)
+        and total > 0
+        and is_number(goodput_pct)
+        and is_number(submitted_att_pct)
+        and not approx_le(submitted_att_pct, goodput_pct)
+    ):
+        findings.append(
+            _error(
+                check,
+                filename,
+                f"goodput submitted_attainment_percentage ({submitted_att_pct}) exceeds goodput_percentage ({goodput_pct})",
+            )
+        )
+
+    throughput = _get(contents, "successes", "throughput")
+    if isinstance(throughput, dict):
+        for gp_key, tp_key in (
+            ("request_goodput", "requests_per_sec"),
+            ("output_token_goodput", "output_tokens_per_sec"),
+            ("token_goodput", "total_tokens_per_sec"),
+        ):
+            gp_val = goodput.get(gp_key)
+            tp_val = throughput.get(tp_key)
+            if is_number(gp_val) and is_number(tp_val) and not approx_le(gp_val, tp_val):
+                findings.append(_error(check, filename, f"goodput {gp_key} ({gp_val}) exceeds throughput.{tp_key} ({tp_val})"))
+
     for key, value in goodput.items():
         if key.endswith("percentage") and is_number(value) and not (0 <= value <= 100 + 1e-9):
             findings.append(_error(check, filename, f"goodput {key} outside [0, 100]: {value}"))
