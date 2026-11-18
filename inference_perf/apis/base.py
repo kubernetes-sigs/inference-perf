@@ -167,6 +167,7 @@ class RequestLifecycleMetric(BaseModel):
 
     ttft_slo_sec: Optional[float] = None
     tpot_slo_sec: Optional[float] = None
+    request_latency_slo_sec: Optional[float] = None
 
 
 class SessionLifecycleMetric(BaseModel):

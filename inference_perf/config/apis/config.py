@@ -132,6 +132,10 @@ class APIConfig(StrictBaseModel):
         default=None,
         description="Request header carrying the per-request TTFT SLO threshold. Defaults to 'x-slo-ttft-<slo_unit>'.",
     )
+    slo_request_latency_header: Optional[str] = Field(
+        default=None,
+        description="Request header carrying the per-request end-to-end latency or deadline SLO threshold. Defaults to 'x-slo-request-latency-<slo_unit>'.",
+    )
     response_format: Optional[ResponseFormat] = Field(
         default=None, description="Structured output settings sent as the 'response_format' request parameter."
     )

@@ -17,6 +17,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.slo_unit` | str | Time unit for SLO header values: 's', 'ms' or 'us'. Defaults to 'ms'. |
 | `--api.slo_tpot_header` | str | Request header carrying the per-request TPOT SLO threshold. Defaults to 'x-slo-tpot-<slo_unit>'. |
 | `--api.slo_ttft_header` | str | Request header carrying the per-request TTFT SLO threshold. Defaults to 'x-slo-ttft-<slo_unit>'. |
+| `--api.slo_request_latency_header` | str | Request header carrying the per-request end-to-end latency or deadline SLO threshold. Defaults to 'x-slo-request-latency-<slo_unit>'. |
 | `--api.response_format.type` | Enum (json_schema, json_object) | Structured output mode: a full JSON schema or any JSON object. |
 | `--api.response_format.name` | str | Name given to the JSON schema in the request payload. |
 | `--api.response_format.json_schema` | JSON | JSON schema the model output must conform to when type is 'json_schema'. |
