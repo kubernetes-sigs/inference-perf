@@ -31,8 +31,6 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import pytest
 from botocore.exceptions import ClientError, NoCredentialsError
-from hypothesis import HealthCheck, given, settings
-from hypothesis import strategies as st
 
 from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 from inference_perf.datagen.replay.trace_source import LocalTraceRecord, LocalTraceSource
@@ -171,17 +169,18 @@ def test_match_key_cases(pattern: str, key: str, expected: bool) -> None:
     assert match_key(pattern, key) is expected
 
 
-_SEGMENTS = st.sampled_from(["a", "b", "ab", ".h"])
-_FILES = st.lists(st.lists(_SEGMENTS, min_size=1, max_size=3), min_size=1, max_size=6)
-_PATTERN_SEGMENTS = st.sampled_from(["a", "b", "*", "**", "?", "a*", "[ab]", ".*", "*b"])
+_SEGMENTS = ["a", "b", "ab", ".h"]
+_PATTERN_SEGMENTS = ["a", "b", "*", "**", "?", "a*", "[ab]", ".*", "*b"]
 
 
-@settings(max_examples=150, suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
-@given(files=_FILES, pattern=st.lists(_PATTERN_SEGMENTS, min_size=1, max_size=3))
-def test_match_key_parity_with_glob(
-    tmp_path_factory: pytest.TempPathFactory, files: List[List[str]], pattern: List[str]
-) -> None:
-    root = tmp_path_factory.mktemp("tree")
+@pytest.mark.parametrize("seed", range(400))
+def test_match_key_parity_with_glob(tmp_path: Path, seed: int) -> None:
+    import random
+
+    rng = random.Random(seed)
+    files = [[rng.choice(_SEGMENTS) for _ in range(rng.randint(1, 3))] for _ in range(rng.randint(1, 6))]
+    pattern = [rng.choice(_PATTERN_SEGMENTS) for _ in range(rng.randint(1, 3))]
+    root = tmp_path / "tree"
     keys = set()
     for segments in files:
         # A file name is also a directory name elsewhere in the tree only when the shapes allow.
