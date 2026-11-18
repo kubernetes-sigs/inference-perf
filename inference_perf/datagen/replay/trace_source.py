@@ -40,7 +40,12 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tupl
 
 from datasets import Dataset
 
-from inference_perf.datagen.replay.remote_trace_store import RemoteObject, RemoteTraceStore, TraceRecord
+from inference_perf.datagen.replay.remote_trace_store import (
+    RemoteObject,
+    RemoteTraceStore,
+    TraceRecord,
+    check_not_all_denied,
+)
 from inference_perf.datagen.replay.wire_trace_converter import (
     FORMAT_OTEL_JSONL,
     WIRE_FORMATS,
@@ -276,7 +281,9 @@ class LocalTraceSource:
             if probe_targets
             else {}
         )
-        # OTel objects are indexed from the whole file, so fetch them together too.
+        check_not_all_denied(list(probes.values()))
+        # OTel objects are indexed from the whole file, so fetch them together too. Not pinned:
+        # a set larger than the cache is evicted as it goes and refetched while indexing.
         whole = [f for f in files if isinstance(f, RemoteObject) and (f.uri not in probes or _is_otel_probe(probes[f.uri]))]
         if whole:
             self._store().download_all(whole)
@@ -305,13 +312,21 @@ class LocalTraceSource:
         if isinstance(first, Exception):
             raise InvalidTraceError(str(first)) from first
         name = PurePosixPath(obj.key)
-        if trace_suffix(name) == ".json" or (first is not None and "spans" in first):
+        if trace_suffix(name) == ".json" or _is_otel_probe(first):
             # OTel identity and .jsonl row offsets need the whole file, so read it like a local one.
             path = self._materialize(obj)
-            return [
-                replace(r, remote=obj, source_id=r.source_id.replace(str(path), obj.uri, 1)) for r in self._index_one(path)
-            ]
-        if detect_trace_format_from_record(first, name) not in WIRE_FORMATS:
+            try:
+                indexed = self._index_one(path)
+            except TraceSourceError as e:
+                raise type(e)(str(e).replace(str(path), obj.uri)) from e
+            except ValueError as e:
+                raise InvalidTraceError(str(e).replace(str(path), obj.uri)) from e
+            return [replace(r, remote=obj, source_id=r.source_id.replace(str(path), obj.uri, 1)) for r in indexed]
+        try:
+            trace_format = detect_trace_format_from_record(first, name)
+        except ValueError as e:
+            raise InvalidTraceError(str(e).replace(str(name), obj.uri, 1)) from e
+        if trace_format not in WIRE_FORMATS:
             raise UnsupportedTraceFormatError(f"{obj.uri}: not a wire capture")
         # Validation would download the whole object; a broken one surfaces when it's loaded.
         return [
