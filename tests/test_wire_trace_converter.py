@@ -1476,12 +1476,3 @@ def test_trace_id_from_record_header_and_fallback() -> None:
     expected = hashlib.sha256(b"s3://b/k").hexdigest()[:32]
     assert trace_id_from_record({"headers": {}}, "s3://b/k") == expected
     assert trace_id_from_record(None, "s3://b/k") == expected
-
-
-def test_drop_compressed_duplicates_pure_paths() -> None:
-    from pathlib import PurePosixPath
-
-    from inference_perf.datagen.replay.wire_trace_converter import drop_compressed_duplicates
-
-    keys = [PurePosixPath("d/a.jsonl"), PurePosixPath("d/a.jsonl.zst"), PurePosixPath("d/b.jsonl.zst")]
-    assert drop_compressed_duplicates(keys) == [PurePosixPath("d/a.jsonl"), PurePosixPath("d/b.jsonl.zst")]

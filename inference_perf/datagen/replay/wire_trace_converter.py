@@ -41,7 +41,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 from types import ModuleType
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, TextIO, Tuple, Type, TypeVar
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, TextIO, Tuple, Type
 
 from inference_perf.apis.image_parts import anthropic_image_to_part, is_image_part, openai_image_to_part
 
@@ -101,10 +101,7 @@ def open_trace_text(path: Path) -> TextIO:
     return _zstd().open(path, "rt", encoding="utf-8") if path.suffix == ".zst" else path.open(encoding="utf-8")
 
 
-_P = TypeVar("_P", bound=PurePath)
-
-
-def drop_compressed_duplicates(files: Iterable[_P]) -> List[_P]:
+def drop_compressed_duplicates(files: Iterable[Path]) -> List[Path]:
     """Drop each ``x.zst`` whose uncompressed ``x`` is also listed, warning for each.
 
     Compressing a trace directory in place (the zstd CLI keeps the original)
@@ -113,7 +110,7 @@ def drop_compressed_duplicates(files: Iterable[_P]) -> List[_P]:
     """
     listed = list(files)
     present = set(listed)
-    kept: List[_P] = []
+    kept: List[Path] = []
     for path in listed:
         if path.suffix == ".zst" and path.with_suffix("") in present:
             logger.warning(f"Skipping {path}: {path.with_suffix('').name} is also listed and would replay the trace twice")

@@ -59,12 +59,15 @@ SessionChatCompletionAPIData holds refs to WorkerSessionTracker and completion_q
 import glob
 import json
 import logging
+import os
+import getpass
 import random
 import tempfile
+from collections import deque
 from functools import partial
 from multiprocessing.managers import SyncManager
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Dict, List, Optional, Sequence, Union, cast
+from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 from datasets import Dataset, load_dataset
 
@@ -171,6 +174,15 @@ def _validate_dataset_schema(dataset: Any, dataset_path: str) -> None:
         raise ValueError(f"Dataset '{dataset_path}' is missing the required 'spans' field.")
 
     logger.info(f"Schema validation passed for dataset '{dataset_path}'")
+
+
+def _default_remote_cache_dir() -> Path:
+    """A cache under the system temp dir, per user so a directory another user created never blocks it."""
+    try:
+        owner = getpass.getuser()
+    except (KeyError, OSError):  # no passwd entry, as in some containers
+        owner = str(os.getuid()) if hasattr(os, "getuid") else "default"
+    return Path(tempfile.gettempdir()) / f"inference-perf-{owner}" / "trace-cache"
 
 
 def _normalize_file_trace(
@@ -405,6 +417,11 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
     _remote_store: Optional[RemoteTraceStore] = None
     # Whether sessions download the traces that follow them; off once every trace is cached.
     _download_ahead: bool = False
+    # The download-ahead window: (session index, object) in play order, the next index to
+    # consider, and the window's size in bytes.
+    _ahead: Deque[Tuple[int, RemoteObject]]
+    _ahead_next: int = 0
+    _ahead_bytes: int = 0
 
     def __init__(
         self,
@@ -447,7 +464,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         source_label: str
         if self.otel_config.trace_directory and is_remote(self.otel_config.trace_directory):
             # Same rule as a local directory: direct children named *.json*, filtered to trace suffixes.
-            listed = self._resolve_remote([self.otel_config.trace_directory.rstrip("/") + "/*.json*"], strict_suffix=False)
+            listed = self._resolve_remote([self.otel_config.trace_directory], strict_suffix=False, directory=True)
             if not listed:
                 raise ValueError(f"No .json or .jsonl files (optionally .zst) found in {self.otel_config.trace_directory}")
             source_label = self.otel_config.trace_directory
@@ -577,7 +594,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             self._warm_remote_cache()
             self._remote_store.report_waits = True
 
-    def _resolve_remote(self, entries: Sequence[str], strict_suffix: bool) -> List[RemoteObject]:
+    def _resolve_remote(self, entries: Sequence[str], strict_suffix: bool, directory: bool = False) -> List[RemoteObject]:
         """Resolve s3:// entries to objects, applying the rules local trace files follow.
 
         ``strict_suffix`` mirrors trace_files (a match without a trace suffix is an error);
@@ -585,25 +602,29 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         """
         if not entries:
             return []
-        if self._remote_store is None:
+        store = self._remote_store
+        if store is None:
             cfg = self.otel_config
-            cache_dir = (
-                Path(cfg.remote_cache_dir)
-                if cfg.remote_cache_dir
-                else Path(tempfile.gettempdir()) / "inference-perf" / "trace-cache"
-            )
-            self._remote_store = RemoteTraceStore(cache_dir, int(cfg.remote_cache_max_gb * 1e9))
-            self._remote_store.report_waits = False
+            cache_dir = Path(cfg.remote_cache_dir) if cfg.remote_cache_dir else _default_remote_cache_dir()
+            store = self._remote_store = RemoteTraceStore(cache_dir, int(cfg.remote_cache_max_gb * 1e9))
+            store.check_writable()
+            store.report_waits = False
         found: Dict[str, RemoteObject] = {}
         for entry in entries:
-            for obj in self._remote_store.resolve(entry):
+            for obj in store.list_directory(entry) if directory else store.resolve(entry):
                 if trace_suffix(PurePosixPath(obj.name)) not in TRACE_FILE_SUFFIXES:
                     if strict_suffix:
                         raise ValueError(f"Trace file must be a .json or .jsonl file, optionally .zst: {obj.uri}")
                     continue
                 found[obj.uri] = obj
-        by_path = {PurePosixPath(obj.bucket, obj.key): obj for obj in sorted(found.values(), key=lambda o: o.uri)}
-        return [by_path[p] for p in drop_compressed_duplicates(list(by_path))]
+        # Keyed by URI: keys that differ only in a doubled or dotted segment are distinct objects.
+        kept: List[RemoteObject] = []
+        for uri in sorted(found):
+            if uri.endswith(".zst") and uri[: -len(".zst")] in found:
+                logger.warning(f"Skipping {uri}: {uri[: -len('.zst')]} is also listed and would replay the trace twice")
+                continue
+            kept.append(found[uri])
+        return kept
 
     def _record_for_index(self, session_index: int) -> Optional[LocalTraceRecord]:
         """The trace record session_index will replay, by the same arithmetic as _build_session and cycling."""
@@ -617,31 +638,44 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             return None
         return self._trace_source.records[self._row_order[slot]]
 
-    def _remote_window(self, after: int) -> List[RemoteObject]:
-        """Remote objects of the sessions following ``after`` in play order, up to half the cache.
+    def _advance_download_ahead(self, after: int) -> List[RemoteObject]:
+        """Slide the download-ahead window past session ``after``; return the objects that entered it.
 
-        Half, so what is downloaded ahead is never evicted before its session uses it.
+        The window holds the sessions following ``after`` in play order, up to half the cache,
+        so what is downloaded ahead is never evicted before its session uses it. It always
+        holds at least the next session, even one larger than that. Only the new end of the
+        window is examined, so each dispatch costs the few sessions it adds, not the window.
         """
-        assert self._remote_store is not None
-        budget = self._remote_store.max_bytes / 2
-        window: Dict[str, RemoteObject] = {}
-        total = 0
-        for index in range(after + 1, after + 1 + max(self._corpus_session_count, 1)):
+        store = self._remote_store
+        assert store is not None
+        released: List[RemoteObject] = []
+        while self._ahead and self._ahead[0][0] <= after:
+            _, done = self._ahead.popleft()
+            self._ahead_bytes -= done.size
+            released.append(done)
+        added: List[RemoteObject] = []
+        index = max(self._ahead_next, after + 1)
+        horizon = after + 1 + max(self._corpus_session_count, 1)
+        while index < horizon:
             record = self._record_for_index(index)
-            if record is None or record.remote is None or record.remote.uri in window:
-                continue
-            if total + record.remote.size > budget:
-                break
-            window[record.remote.uri] = record.remote
-            total += record.remote.size
-        return list(window.values())
+            if record is not None and record.remote is not None:
+                if self._ahead and self._ahead_bytes + record.remote.size > store.max_bytes / 2:
+                    break
+                self._ahead.append((index, record.remote))
+                self._ahead_bytes += record.remote.size
+                added.append(record.remote)
+            index += 1
+        self._ahead_next = index
+        store.pin(added)
+        store.unpin(released)
+        return added
 
     def _warm_remote_cache(self) -> None:
         """Download every remote trace before the run if they all fit the cache, else the first window."""
         assert self._remote_store is not None and isinstance(self._trace_source, LocalTraceSource)
         store = self._remote_store
         objects = list({r.remote.uri: r.remote for r in self._trace_source.records if r.remote is not None}.values())
-        if not objects:
+        if not objects or store.max_bytes == 0:
             return
         total = sum(o.size for o in objects)
         if total <= store.max_bytes:
@@ -653,9 +687,13 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 )
             else:
                 logger.info(f"All {len(objects)} remote traces are already cached")
+            store.pin(objects)
             store.download_all(objects)
             return
-        window = self._remote_window(-1)
+        self._ahead = deque()
+        self._ahead_next = 0
+        self._ahead_bytes = 0
+        window = self._advance_download_ahead(-1)
         logger.info(
             f"Remote traces ({total / 1e6:.1f} MB) exceed remote_cache_max_gb; downloading ahead "
             f"of sessions, starting with {len(window)}"
@@ -716,7 +754,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         identical; the _dup suffix drives random-string injection in _build_session_schedule).
         """
         if self._download_ahead and self._remote_store is not None and self._remote_store.prefetch_enabled:
-            self._remote_store.prefetch(self._remote_window(session_index))
+            self._remote_store.prefetch(self._advance_download_ahead(session_index))
         source_idx = self._source_indices[session_index]
         slot = source_idx if source_idx is not None else session_index
         row_index = self._row_order[slot]

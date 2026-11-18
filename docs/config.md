@@ -702,8 +702,8 @@ data:
       - "path/to/trace2.json"
     trace_directory: "path/to/traces/"            # OR: all .json files in directory
     # Either may be s3:// (e.g. "s3://bucket/runs/*/*-calls.jsonl.zst"); credentials come from AWS_* env vars or a profile
-    remote_cache_dir: "/scratch/trace-cache"      # Cache for s3:// traces (default: <temp dir>/inference-perf/trace-cache)
-    remote_cache_max_gb: 10                       # Cache disk budget; 0 keeps no cache
+    remote_cache_dir: "/scratch/trace-cache"      # Cache for s3:// traces (default: <temp dir>/inference-perf-<user>/trace-cache)
+    remote_cache_max_gb: 10                       # Cache disk budget; 0 keeps only the latest trace
 
     # Model configuration
     use_static_model: true                        # Override recorded model names

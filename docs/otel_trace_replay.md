@@ -132,8 +132,8 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | `filter` | string | No | Lambda expression applied to each trace record before replay. Evaluated via `eval()` — use only with trusted inputs. Example: `"lambda x: x['benchmark'] == 'gsm8k'"`. Applies uniformly across all three trace sources |
 | `bad_tool_call_handling` | enum | No (default: `none`) | How to handle tool_calls whose `function.arguments` is not valid JSON. `none`: no mitigation (upstream behavior). `use_recorded`: substitute the recorded assistant message at the affected slot. See [Bad tool-call handling](#bad-tool-call-handling) |
 | `tool_choice_mode` | enum | No (default: `force_recorded`) | Whether to inject a `tool_choice` on recorded tool-call turns. `force_recorded`: force the recorded function, or `"required"` when that isn't possible (upstream behavior). `as_recorded`: inject nothing, leaving the choice to the model. See [Forced `tool_choice` and Token Budget](#forced-tool_choice-and-token-budget) |
-| `remote_cache_dir` | string | No (default: `<system temp dir>/inference-perf/trace-cache`) | Local cache for traces read from `s3://` entries. In Kubernetes, point it at an `emptyDir` |
-| `remote_cache_max_gb` | float | No (default: `10.0`) | Disk budget for `remote_cache_dir`, least-recently-used eviction. `0` keeps no cache |
+| `remote_cache_dir` | string | No (default: `<system temp dir>/inference-perf-<user>/trace-cache`) | Local cache for traces read from `s3://` entries. In Kubernetes, point it at an `emptyDir` |
+| `remote_cache_max_gb` | float | No (default: `10.0`) | Disk budget for `remote_cache_dir`, least-recently-used eviction. `0` downloads each trace when it is read and keeps only the latest one |
 | `disable_output_substitution` | boolean | No (default: `false`) | When `true`, replay each call with its recorded assistant output (text and tool calls) instead of substituting the live output from predecessor calls. Predecessor wait timing is still enforced. Cannot be combined with `inject_random_session_id` or `duplicate_sessions_target` (those trigger substitution and would contradict this flag — config validation rejects the combination) |
 
 **Examples:**
@@ -183,9 +183,11 @@ data:
 ### Reading traces from object storage
 
 `trace_files` entries and `trace_directory` may be `s3://` URIs on any S3-compatible store. Patterns follow the
-same rules as local paths: `*` and `?` match within one folder, `**` matches any number of folders, an entry
-without `*` or `?` names one object (and the run fails if it does not exist), and every format a local file may
-use works the same from a bucket.
+same rules as local paths: `*` and `?` match within one folder, `**` matches any number of folders, `[...]`
+matches one character from a set (only inside an entry that also has `*` or `?`; otherwise the brackets are part
+of the name), an entry without `*` or `?` names one object (and the run fails if it does not exist), and every
+format a local file may use works the same from a bucket. A `trace_directory` URI is a literal prefix: its direct
+children named `*.json*` are replayed.
 
 ```yaml
 data:
@@ -208,11 +210,31 @@ S3-compatible store:
 | Kubernetes | A Secret exposed as env vars `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_ENDPOINT_URL_S3` |
 
 Leave the endpoint unset for AWS S3 itself. Stores that need path-style addressing set `addressing_style = path`
-under `s3 =` in the profile.
+under `s3 =` in the profile. In Kubernetes:
+
+```yaml
+# kubectl create secret generic trace-store --from-literal=AWS_ACCESS_KEY_ID=... \
+#   --from-literal=AWS_SECRET_ACCESS_KEY=... --from-literal=AWS_ENDPOINT_URL_S3=https://<your-s3-endpoint>
+containers:
+  - name: inference-perf
+    envFrom:
+      - secretRef:
+          name: trace-store
+    volumeMounts:
+      - name: trace-cache
+        mountPath: /scratch/trace-cache   # remote_cache_dir
+volumes:
+  - name: trace-cache
+    emptyDir:
+      sizeLimit: 12Gi                     # above remote_cache_max_gb
+```
+
+A cache directory that cannot be written fails the run at startup.
 
 **How objects are read.** At startup each wire capture is probed for its first record only, which gives its format
 and session id; OTel `.json` / `.jsonl` objects are downloaded whole, because their identity and row offsets need
-the full file. Objects land in `remote_cache_dir`, compressed as stored and pinned to the version listed at
+the full file (within `remote_cache_max_gb`: a larger OTel set is evicted as it is indexed and downloaded again
+when its sessions run). Transient read errors (throttling, server errors, dropped connections) are retried. Objects land in `remote_cache_dir`, compressed as stored and pinned to the version listed at
 startup; an object that changes during the run fails its session. If every matched object fits
 `remote_cache_max_gb`, all of them are downloaded before the first stage, so no download happens while measuring.
 Otherwise the upcoming sessions are downloaded ahead, up to half the cache. Any session that still has to wait for

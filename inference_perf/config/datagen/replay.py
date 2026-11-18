@@ -256,7 +256,7 @@ class OTelTraceReplayConfig(SessionReplayConfig):
         None,
         description=(
             "Local directory caching traces read from s3:// entries (compressed, as stored). "
-            "Defaults to <system temp dir>/inference-perf/trace-cache; in Kubernetes, point it at an emptyDir."
+            "Defaults to <system temp dir>/inference-perf-<user>/trace-cache; in Kubernetes, point it at an emptyDir."
         ),
     )
     remote_cache_max_gb: float = Field(
@@ -265,7 +265,7 @@ class OTelTraceReplayConfig(SessionReplayConfig):
         description=(
             "Disk budget in GB for remote_cache_dir, enforced by least-recently-used eviction. When every "
             "matched object fits, all are downloaded before the run; otherwise upcoming sessions are "
-            "downloaded ahead. 0 keeps no cache."
+            "downloaded ahead. 0 downloads each trace when it is read and keeps only the latest one."
         ),
     )
 
