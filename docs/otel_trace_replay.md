@@ -229,7 +229,9 @@ volumes:
       sizeLimit: 12Gi                     # above remote_cache_max_gb
 ```
 
-A cache directory that cannot be written fails the run at startup.
+A cache directory that cannot be written fails the run at startup. The default directory is created owner-only,
+and refused if it is a symlink, owned by another user, or writable by others. Only the cache's own entries are
+ever evicted, so other files in `remote_cache_dir` are left alone.
 
 **How objects are read.** At startup each wire capture is probed for its first record only, which gives its format
 and session id; OTel `.json` / `.jsonl` objects are downloaded whole, because their identity and row offsets need

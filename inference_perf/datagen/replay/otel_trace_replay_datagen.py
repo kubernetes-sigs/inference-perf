@@ -63,7 +63,7 @@ import os
 import getpass
 import random
 import tempfile
-from collections import deque
+from collections import Counter, deque
 from functools import partial
 from multiprocessing.managers import SyncManager
 from pathlib import Path, PurePosixPath
@@ -92,7 +92,7 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     trace_stem,
     trace_suffix,
 )
-from inference_perf.datagen.replay.remote_trace_store import RemoteObject, RemoteTraceStore, is_remote
+from inference_perf.datagen.replay.remote_trace_store import RemoteObject, RemoteTraceStore, is_remote, prepare_private_dir
 from inference_perf.datagen.replay.trace_source import (
     HFDatasetTraceSource,
     LocalTraceRecord,
@@ -177,12 +177,18 @@ def _validate_dataset_schema(dataset: Any, dataset_path: str) -> None:
 
 
 def _default_remote_cache_dir() -> Path:
-    """A cache under the system temp dir, per user so a directory another user created never blocks it."""
+    """A cache in a private per-user directory under the system temp dir.
+
+    The name is predictable, so another user could create it first; prepare_private_dir
+    refuses it unless it is a real directory this user owns that others cannot write.
+    """
     try:
         owner = getpass.getuser()
     except (KeyError, OSError):  # no passwd entry, as in some containers
         owner = str(os.getuid()) if hasattr(os, "getuid") else "default"
-    return Path(tempfile.gettempdir()) / f"inference-perf-{owner}" / "trace-cache"
+    base = Path(tempfile.gettempdir()) / f"inference-perf-{owner}"
+    prepare_private_dir(base)
+    return base / "trace-cache"
 
 
 def _normalize_file_trace(
@@ -421,6 +427,8 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
     # consider, and the window's size in bytes.
     _ahead: Deque[Tuple[int, RemoteObject]]
     _ahead_reading: List[RemoteObject]
+    # How many sessions in the window use each file, by URI.
+    _ahead_uses: "Counter[str]"
     _ahead_next: int = 0
     _ahead_bytes: int = 0
 
@@ -643,30 +651,37 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         """Slide the download-ahead window past session ``after``; return the objects that entered it.
 
         The window holds the sessions following ``after`` in play order, up to half the cache,
-        so what is downloaded ahead is never evicted before its session uses it. It always
-        holds at least the next session, even one larger than that. Only the new end of the
-        window is examined, so each dispatch costs the few sessions it adds, not the window.
+        so what is downloaded ahead is never evicted before its session uses it. A file shared
+        by several sessions (rows of one .jsonl, duplicates) is charged and queued once. The
+        window always holds at least the next session, even one larger than that. Only its new
+        end is examined, so each dispatch costs the few sessions it adds, not the window.
         """
         store = self._remote_store
         assert store is not None
-        # Session ``after`` leaves the window but stays pinned until the next dispatch: it is
-        # about to be read, and a download this call queues could otherwise evict it first.
+        # Session ``after`` leaves the window but its file stays pinned until the next dispatch:
+        # it is about to be read, and a download this call queues could otherwise evict it first.
         released, self._ahead_reading = self._ahead_reading, []
         while self._ahead and self._ahead[0][0] <= after:
             index, done = self._ahead.popleft()
-            self._ahead_bytes -= done.size
-            (self._ahead_reading if index == after else released).append(done)
+            self._ahead_uses[done.uri] -= 1
+            if self._ahead_uses[done.uri] == 0:
+                del self._ahead_uses[done.uri]
+                self._ahead_bytes -= done.size
+                (self._ahead_reading if index == after else released).append(done)
         added: List[RemoteObject] = []
         index = max(self._ahead_next, after + 1)
         horizon = after + 1 + max(self._corpus_session_count, 1)
         while index < horizon:
             record = self._record_for_index(index)
             if record is not None and record.remote is not None:
-                if self._ahead and self._ahead_bytes + record.remote.size > store.max_bytes / 2:
-                    break
+                new_file = record.remote.uri not in self._ahead_uses
+                if new_file:
+                    if self._ahead and self._ahead_bytes + record.remote.size > store.max_bytes / 2:
+                        break
+                    self._ahead_bytes += record.remote.size
+                    added.append(record.remote)
                 self._ahead.append((index, record.remote))
-                self._ahead_bytes += record.remote.size
-                added.append(record.remote)
+                self._ahead_uses[record.remote.uri] += 1
             index += 1
         self._ahead_next = index
         store.pin(added)
@@ -694,6 +709,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             store.download_all(objects)
             return
         self._ahead = deque()
+        self._ahead_uses = Counter()
         self._ahead_reading = []
         self._ahead_next = 0
         self._ahead_bytes = 0
@@ -746,7 +762,10 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         """
         while len(self._source_indices) <= session_index:
             self._source_indices.append(None)
-        self._source_indices[session_index] = source_slot
+        # source_slot can itself be a duplicate (duplicate_sessions_target pads past the corpus);
+        # point at the trace it copies, or _build_session would index past _row_order.
+        original = self._source_indices[source_slot] if source_slot < len(self._source_indices) else None
+        self._source_indices[session_index] = original if original is not None else source_slot
 
     def _build_session(self, session_index: int) -> Optional[ReplaySession]:
         """Build one session's graph on demand (called by _ensure_session_built).

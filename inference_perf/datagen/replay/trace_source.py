@@ -282,16 +282,16 @@ class LocalTraceSource:
             else {}
         )
         check_not_all_denied(list(probes.values()))
-        # OTel objects are indexed from the whole file, so fetch them together too. Not pinned:
-        # a set larger than the cache is evicted as it goes and refetched while indexing.
         whole = [f for f in files if isinstance(f, RemoteObject) and (f.uri not in probes or _is_otel_probe(probes[f.uri]))]
-        if whole:
-            self._store().download_all(whole)
+        indexed_whole = self._index_whole(whole, probes) if whole else {}
         records: List[LocalTraceRecord] = []
         for entry in files:
             try:
                 if isinstance(entry, RemoteObject):
-                    records.extend(self._index_remote(entry, probes.get(entry.uri)))
+                    result = indexed_whole.get(entry.uri)
+                    if isinstance(result, Exception):
+                        raise result
+                    records.extend(result if result is not None else self._index_remote(entry, probes.get(entry.uri)))
                 else:
                     records.extend(self._index_one(entry))
             except Exception as e:
@@ -299,6 +299,35 @@ class LocalTraceSource:
                 if not self._skip_invalid:
                     raise
         return records
+
+    def _index_whole(
+        self, objs: Sequence[RemoteObject], probes: Dict[str, Union[TraceRecord, None, Exception]]
+    ) -> Dict[str, Union[List[LocalTraceRecord], Exception]]:
+        """Index the objects read in full (OTel), in pinned batches that fit half the cache.
+
+        Downloading a batch concurrently and indexing it before the next keeps each object
+        on disk until it is read, so none is downloaded twice, and the cap still holds.
+        """
+        store = self._store()
+        results: Dict[str, Union[List[LocalTraceRecord], Exception]] = {}
+        for batch in _fitting_batches(objs, store.max_bytes / 2):
+            store.pin(batch)
+            try:
+                failures = store.download_all(batch)
+                if len(failures) == len(batch):
+                    check_not_all_denied(list(failures.values()))
+                for o in batch:
+                    failure = failures.get(o.uri)
+                    if failure is not None:
+                        results[o.uri] = TraceReadError(str(failure))
+                        continue
+                    try:
+                        results[o.uri] = self._index_remote(o, probes.get(o.uri))
+                    except Exception as e:
+                        results[o.uri] = e
+            finally:
+                store.unpin(batch)
+        return results
 
     def _store(self) -> RemoteTraceStore:
         if self._remote is None:
@@ -316,7 +345,7 @@ class LocalTraceSource:
             # OTel identity and .jsonl row offsets need the whole file, so read it like a local one.
             path = self._materialize(obj)
             try:
-                indexed = self._index_one(path)
+                indexed = self._index_one(path, identity=obj.uri)
             except TraceSourceError as e:
                 raise type(e)(str(e).replace(str(path), obj.uri)) from e
             except ValueError as e:
@@ -347,7 +376,8 @@ class LocalTraceSource:
         except OSError as e:
             raise TraceReadError(str(e)) from e
 
-    def _index_one(self, path: Path) -> List[LocalTraceRecord]:
+    def _index_one(self, path: Path, identity: Optional[str] = None) -> List[LocalTraceRecord]:
+        """Index one local file. ``identity`` replaces the path in fallback ids (a remote object's URI)."""
         try:
             first = _probe_file(path)
             trace_format = detect_trace_format_from_record(first, path)
@@ -386,7 +416,7 @@ class LocalTraceSource:
             # the converter, which prefers a recorded session-id header and falls
             # back to a path hash -- capture files are commonly all named
             # calls.jsonl, so a bare stem would collide across sessions.
-            trace_id = trace_id_from_record(first, str(path.resolve()))
+            trace_id = trace_id_from_record(first, identity or str(path.resolve()))
             if self._validate_at_startup:
                 _validate_wire_convertible(path, trace_id)
             return [
@@ -506,6 +536,20 @@ class LocalTraceSource:
             raise InvalidTraceError(f"{path}: not valid JSON: {e}") from e
         except trace_read_errors() as e:
             raise TraceReadError(f"{path}: {e}") from e
+
+
+def _fitting_batches(objs: Sequence[RemoteObject], budget: float) -> List[List[RemoteObject]]:
+    """Split ``objs`` in order into batches whose sizes sum to at most ``budget`` (at least one object each)."""
+    batches: List[List[RemoteObject]] = []
+    total = 0
+    for o in objs:
+        if batches and total + o.size <= budget:
+            batches[-1].append(o)
+            total += o.size
+        else:
+            batches.append([o])
+            total = o.size
+    return batches
 
 
 def _is_otel_probe(first: Union[TraceRecord, None, Exception]) -> bool:
