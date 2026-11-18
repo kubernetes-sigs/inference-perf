@@ -35,14 +35,14 @@ import json
 import logging
 import os
 import re
+import queue
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
-from functools import partial
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple, TypedDict, Union
+from typing import Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Set, Tuple, TypedDict, Union
 
 from inference_perf.datagen.replay.wire_trace_converter import _zstd
 
@@ -53,6 +53,14 @@ _PROBE_CHUNK = 64 * 1024
 _DOWNLOAD_CHUNK = 1024 * 1024
 _PROBE_THREADS = 16
 _PREFETCH_THREADS = 8
+# Wrong keys come back as these codes rather than as a missing-credentials error.
+_CREDENTIAL_ERROR_CODES = frozenset(
+    {"InvalidAccessKeyId", "SignatureDoesNotMatch", "AccessDenied", "ExpiredToken", "InvalidToken"}
+)
+_CREDENTIALS_HINT = (
+    "set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (plus AWS_ENDPOINT_URL_S3 for a store other than "
+    "AWS S3), or select a profile with AWS_PROFILE"
+)
 
 
 class RemoteReadError(OSError):
@@ -169,8 +177,10 @@ TraceRecord = Dict[str, object]
 
 def default_client() -> S3Client:
     import boto3
+    from botocore.config import Config
 
-    client: S3Client = boto3.client("s3")
+    # One pooled connection per thread that may download at once, or urllib3 discards and reopens them.
+    client: S3Client = boto3.client("s3", config=Config(max_pool_connections=_PROBE_THREADS + _PREFETCH_THREADS + 8))
     return client
 
 
@@ -196,12 +206,15 @@ class RemoteTraceStore:
     def _init_runtime(self) -> None:
         self._client: Optional[S3Client] = None
         self._lock = threading.Lock()
-        self._inflight: Dict[str, Future[Path]] = {}
-        self._pool: Optional[ThreadPoolExecutor] = None
+        # uri -> set once its background download ends, whether or not it succeeded.
+        self._inflight: Dict[str, threading.Event] = {}
+        self._queue: Optional[queue.SimpleQueue[RemoteObject]] = None
+        # Files eviction must keep: the set being pre-downloaded, or the current download-ahead window.
+        self._pinned: Set[Path] = set()
 
     def __getstate__(self) -> Dict[str, object]:
         state = dict(self.__dict__)
-        for name in ("_client", "_lock", "_inflight", "_pool"):
+        for name in ("_client", "_lock", "_inflight", "_queue", "_pinned"):
             state.pop(name, None)
         return state
 
@@ -256,13 +269,11 @@ class RemoteTraceStore:
                         objects.append(RemoteObject(bucket, item["Key"], item["ETag"], int(item["Size"])))
             return objects
         except (NoCredentialsError, PartialCredentialsError) as e:
-            raise ValueError(
-                f"No credentials to list {where}: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY "
-                "(plus AWS_ENDPOINT_URL_S3 for a store other than AWS S3), or select a profile with AWS_PROFILE"
-            ) from e
+            raise ValueError(f"No credentials to list {where}: {_CREDENTIALS_HINT}") from e
         except ClientError as e:
             error = e.response.get("Error", {})
-            raise ValueError(f"Cannot list {where}: {error.get('Code')} {error.get('Message')}") from e
+            hint = f"; {_CREDENTIALS_HINT}" if error.get("Code") in _CREDENTIAL_ERROR_CODES else ""
+            raise ValueError(f"Cannot list {where}: {error.get('Code')} {error.get('Message')}{hint}") from e
         except BotoCoreError as e:
             raise ValueError(f"Cannot list {where}: {e}. Check AWS_ENDPOINT_URL_S3 or the profile's endpoint_url") from e
 
@@ -338,26 +349,23 @@ class RemoteTraceStore:
         """Return a local path holding the object, downloading it if it isn't cached.
 
         A download here blocks the caller, so each one is counted and logged: during a run
-        it means the trace was not prefetched in time.
+        it means the trace was not downloaded ahead in time. A background download that
+        failed is retried here once, so a transient error costs a wait, not a session.
         """
         with self._lock:
             pending = self._inflight.get(obj.uri)
         path = self.cache_path(obj)
-        if pending is None and path.exists():
-            try:
-                os.utime(path)
-                return path
-            except FileNotFoundError:
-                pass  # evicted by another process just now
+        if pending is None and _touch(path):
+            return path
         started = time.perf_counter()
+        reason = "it was not downloaded ahead"
         if pending is not None:
-            if pending.done():
-                return pending.result()
-            pending.result()
-            reason = "its prefetch had not finished"
-        else:
+            pending.wait()
+            reason = "its download ahead had not finished"
+        if pending is None or not _touch(path):
+            if pending is not None:
+                reason = "its download ahead failed"
             self._fetch(obj)
-            reason = "it was not prefetched"
         waited = time.perf_counter() - started
         if self.report_waits:
             self.sync_downloads += 1
@@ -367,7 +375,10 @@ class RemoteTraceStore:
 
     def _fetch(self, obj: RemoteObject) -> Path:
         path = self.cache_path(obj)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise RemoteReadError(f"{obj.uri}: cannot write to the cache: {e}") from e
         tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.part")
         body = self._open(obj)
         try:
@@ -375,13 +386,14 @@ class RemoteTraceStore:
                 while chunk := body.read(_DOWNLOAD_CHUNK):
                     out.write(chunk)
             os.replace(tmp, path)
-        except RemoteReadError:
-            raise
         except Exception as e:
             raise RemoteReadError(f"{obj.uri}: download failed: {e}") from e
         finally:
             body.close()
-            tmp.unlink(missing_ok=True)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
         self._evict(keep=path)
         return path
 
@@ -389,7 +401,7 @@ class RemoteTraceStore:
         """Delete least-recently-used cached files until the cache fits max_bytes (never ``keep``)."""
         files = []
         for p in self.cache_dir.glob("*/*"):
-            if p.name.endswith(".part") or p == keep:
+            if p.name.endswith(".part") or p == keep or p in self._pinned:
                 continue
             try:
                 st = p.stat()
@@ -415,29 +427,49 @@ class RemoteTraceStore:
     # ----------------------------------------------------------------------------------
 
     def prefetch(self, objs: Sequence[RemoteObject]) -> None:
-        """Start background downloads of objects that are neither cached nor in flight."""
+        """Download objects that are neither cached nor in flight, in the background.
+
+        ``objs`` becomes the set eviction keeps. The threads are daemons, so exiting never
+        waits for downloads nobody needs any more; a download cut short leaves only a .part file.
+        """
         if not self.prefetch_enabled:
             return
         with self._lock:
-            if self._pool is None:
-                self._pool = ThreadPoolExecutor(_PREFETCH_THREADS, thread_name_prefix="trace-prefetch")
+            self._pinned = {self.cache_path(o) for o in objs}
+            if self._queue is None:
+                self._queue = queue.SimpleQueue()
+                for i in range(_PREFETCH_THREADS):
+                    threading.Thread(target=self._prefetch_loop, name=f"trace-prefetch-{i}", daemon=True).start()
             for o in objs:
-                if o.uri in self._inflight or self.cache_path(o).exists():
+                if o.uri in self._inflight or _touch(self.cache_path(o)):
                     continue
-                future = self._pool.submit(self._fetch, o)
-                self._inflight[o.uri] = future
-                future.add_done_callback(partial(self._prefetch_done, o.uri))
+                self._inflight[o.uri] = threading.Event()
+                self._queue.put(o)
 
-    def _prefetch_done(self, uri: str, future: Future[Path]) -> None:
-        with self._lock:
-            self._inflight.pop(uri, None)
-        if future.exception() is not None:
-            # Not fatal here: the load that needs this object retries and reports it.
-            logger.debug(f"Prefetch of {uri} failed: {future.exception()}")
+    def _prefetch_loop(self) -> None:
+        assert self._queue is not None
+        while True:
+            o = self._queue.get()
+            try:
+                self._fetch(o)
+            except Exception as e:
+                # Not fatal: the load that needs this object downloads it itself.
+                logger.debug(f"Download ahead of {o.uri} failed: {e}")
+            finally:
+                with self._lock:
+                    done = self._inflight.pop(o.uri, None)
+                if done is not None:
+                    done.set()
 
     def download_all(self, objs: Sequence[RemoteObject]) -> None:
-        """Download every object not yet cached, concurrently, and wait for all of them."""
-        todo = [o for o in objs if not self.cache_path(o).exists()]
+        """Download every object not yet cached, concurrently, and wait for all of them.
+
+        Cached ones are touched, and the whole set is kept from eviction meanwhile, so the
+        set never evicts its own members in favour of stale files from other corpora.
+        """
+        with self._lock:
+            self._pinned = {self.cache_path(o) for o in objs}
+        todo = [o for o in objs if not _touch(self.cache_path(o))]
 
         def fetch(o: RemoteObject) -> None:
             try:
@@ -447,6 +479,15 @@ class RemoteTraceStore:
 
         with ThreadPoolExecutor(_PROBE_THREADS, thread_name_prefix="trace-download") as pool:
             list(pool.map(fetch, todo))
+
+
+def _touch(path: Path) -> bool:
+    """Mark a cached file as just used; False when it isn't cached."""
+    try:
+        os.utime(path)
+        return True
+    except OSError:  # missing, or the cache directory itself is unusable
+        return False
 
 
 def _parse_first(line: bytes, obj: RemoteObject) -> TraceRecord:

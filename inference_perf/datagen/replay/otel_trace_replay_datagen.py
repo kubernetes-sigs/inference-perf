@@ -403,6 +403,8 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
     # Set by _resolve_remote when any trace entry is an s3:// URI.
     _remote_store: Optional[RemoteTraceStore] = None
+    # Whether sessions download the traces that follow them; off once every trace is cached.
+    _download_ahead: bool = False
 
     def __init__(
         self,
@@ -637,18 +639,29 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
     def _warm_remote_cache(self) -> None:
         """Download every remote trace before the run if they all fit the cache, else the first window."""
         assert self._remote_store is not None and isinstance(self._trace_source, LocalTraceSource)
+        store = self._remote_store
         objects = list({r.remote.uri: r.remote for r in self._trace_source.records if r.remote is not None}.values())
+        if not objects:
+            return
         total = sum(o.size for o in objects)
-        if objects and total <= self._remote_store.max_bytes:
-            logger.info(f"Downloading {len(objects)} remote traces ({total / 1e6:.1f} MB) before the run")
-            self._remote_store.download_all(objects)
+        if total <= store.max_bytes:
+            missing = [o for o in objects if not store.cache_path(o).exists()]
+            if missing:
+                logger.info(
+                    f"Downloading {len(missing)} of {len(objects)} remote traces "
+                    f"({sum(o.size for o in missing) / 1e6:.1f} MB) before the run"
+                )
+            else:
+                logger.info(f"All {len(objects)} remote traces are already cached")
+            store.download_all(objects)
             return
         window = self._remote_window(-1)
         logger.info(
             f"Remote traces ({total / 1e6:.1f} MB) exceed remote_cache_max_gb; downloading ahead "
             f"of sessions, starting with {len(window)}"
         )
-        self._remote_store.download_all(window)
+        store.download_all(window)
+        self._download_ahead = True
 
     def _filter_source(self, filter_func: Callable[..., Any]) -> None:
         """Apply the configured filter to the trace source in place.
@@ -702,7 +715,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         source slot's record and relabels with the duplicate's session_id (graph content
         identical; the _dup suffix drives random-string injection in _build_session_schedule).
         """
-        if self._remote_store is not None and self._remote_store.prefetch_enabled:
+        if self._download_ahead and self._remote_store is not None and self._remote_store.prefetch_enabled:
             self._remote_store.prefetch(self._remote_window(session_index))
         source_idx = self._source_indices[session_index]
         slot = source_idx if source_idx is not None else session_index

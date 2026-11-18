@@ -1444,7 +1444,9 @@ def test_flatten_output_name_joins_nested_path(tmp_path: Path) -> None:
         ({"spans": []}, "t.json", FORMAT_OTEL_JSON),
     ],
 )
-def test_detect_from_record_matches_file_detection(tmp_path: Path, record: Dict[str, object], name: str, expected: str) -> None:
+def test_detect_from_record_matches_file_detection(
+    tmp_path: Path, record: Dict[str, object], name: str, expected: str
+) -> None:
     from pathlib import PurePosixPath
 
     from inference_perf.datagen.replay.wire_trace_converter import detect_trace_format_from_record

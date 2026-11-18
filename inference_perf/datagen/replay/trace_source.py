@@ -276,6 +276,10 @@ class LocalTraceSource:
             if probe_targets
             else {}
         )
+        # OTel objects are indexed from the whole file, so fetch them together too.
+        whole = [f for f in files if isinstance(f, RemoteObject) and (f.uri not in probes or _is_otel_probe(probes[f.uri]))]
+        if whole:
+            self._store().download_all(whole)
         records: List[LocalTraceRecord] = []
         for entry in files:
             try:
@@ -487,6 +491,10 @@ class LocalTraceSource:
             raise InvalidTraceError(f"{path}: not valid JSON: {e}") from e
         except trace_read_errors() as e:
             raise TraceReadError(f"{path}: {e}") from e
+
+
+def _is_otel_probe(first: Union[TraceRecord, None, Exception]) -> bool:
+    return isinstance(first, dict) and "spans" in first
 
 
 def _otel_session_id(document: Dict[str, Any], fallback: str) -> str:
