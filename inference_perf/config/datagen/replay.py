@@ -252,6 +252,29 @@ class OTelTraceReplayConfig(SessionReplayConfig):
     attribute_to_label_map: Optional[Dict[str, str]] = Field(
         None, description="Map OTel span attributes to metrics reporting labels"
     )
+    remote_cache_dir: Optional[str] = Field(
+        None,
+        description=(
+            "Local directory caching traces read from s3:// entries (compressed, as stored). "
+            "Defaults to <system temp dir>/inference-perf/trace-cache; in Kubernetes, point it at an emptyDir."
+        ),
+    )
+    remote_cache_max_gb: float = Field(
+        10.0,
+        ge=0,
+        description=(
+            "Disk budget in GB for remote_cache_dir, enforced by least-recently-used eviction. When every "
+            "matched object fits, all are downloaded before the run; otherwise upcoming sessions are "
+            "downloaded ahead. 0 keeps no cache."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_remote_entries(self) -> "OTelTraceReplayConfig":
+        for entry in [self.trace_directory or "", *(self.trace_files or [])]:
+            if entry.startswith("s3://") and not entry[len("s3://") :].split("/", 1)[0]:
+                raise ValueError(f"S3 URI is missing a bucket: {entry}")
+        return self
 
     @model_validator(mode="after")
     def validate_trace_sources(self) -> "OTelTraceReplayConfig":
