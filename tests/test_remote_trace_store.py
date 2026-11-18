@@ -1137,3 +1137,22 @@ def test_listing_is_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> 
     with caplog.at_level(logging.INFO):
         make_store(tmp_path, FakeS3({"d/a.jsonl": b""})).resolve(f"s3://{BUCKET}/d/*.jsonl")
     assert f"Listing s3://{BUCKET}/d/" in caplog.text
+
+
+def test_the_session_being_built_keeps_its_file_while_the_window_moves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    objects = {f"m/run/task{i}-calls.jsonl.zst": wire_bytes(2, session=f"s{i}") for i in range(4)}
+    objects["m/run/task9-calls.jsonl.zst"] = wire_bytes(60, session="big")
+    fake = FakeS3(objects)
+    big = len(objects["m/run/task9-calls.jsonl.zst"])
+    gen = make_generator(
+        monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"], remote_cache_max_gb=1.2 * big / 1e9
+    )
+    store, _ = remote_parts(gen)
+    # Download ahead synchronously, so its evictions land before the session is read: the
+    # worst case of the race between background downloads and the build that queued them.
+    monkeypatch.setattr(store, "prefetch", store.download_all)
+    for i in range(5):
+        assert gen.is_session_buildable(i)
+    assert store.sync_downloads == 0

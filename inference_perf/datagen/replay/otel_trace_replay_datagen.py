@@ -420,6 +420,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
     # The download-ahead window: (session index, object) in play order, the next index to
     # consider, and the window's size in bytes.
     _ahead: Deque[Tuple[int, RemoteObject]]
+    _ahead_reading: List[RemoteObject]
     _ahead_next: int = 0
     _ahead_bytes: int = 0
 
@@ -648,11 +649,13 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         """
         store = self._remote_store
         assert store is not None
-        released: List[RemoteObject] = []
+        # Session ``after`` leaves the window but stays pinned until the next dispatch: it is
+        # about to be read, and a download this call queues could otherwise evict it first.
+        released, self._ahead_reading = self._ahead_reading, []
         while self._ahead and self._ahead[0][0] <= after:
-            _, done = self._ahead.popleft()
+            index, done = self._ahead.popleft()
             self._ahead_bytes -= done.size
-            released.append(done)
+            (self._ahead_reading if index == after else released).append(done)
         added: List[RemoteObject] = []
         index = max(self._ahead_next, after + 1)
         horizon = after + 1 + max(self._corpus_session_count, 1)
@@ -691,6 +694,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             store.download_all(objects)
             return
         self._ahead = deque()
+        self._ahead_reading = []
         self._ahead_next = 0
         self._ahead_bytes = 0
         window = self._advance_download_ahead(-1)
