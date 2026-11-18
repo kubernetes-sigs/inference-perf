@@ -39,9 +39,9 @@ import logging
 import sys
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 from types import ModuleType
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, TextIO, Tuple, Type
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, TextIO, Tuple, Type, TypeVar
 
 from inference_perf.apis.image_parts import anthropic_image_to_part, is_image_part, openai_image_to_part
 
@@ -61,12 +61,12 @@ _STATUS_ERROR = 2
 logger = logging.getLogger(__name__)
 
 
-def trace_suffix(path: Path) -> str:
+def trace_suffix(path: PurePath) -> str:
     """The suffix of the trace a file holds: ".jsonl" for both calls.jsonl and calls.jsonl.zst."""
     return path.with_suffix("").suffix if path.suffix == ".zst" else path.suffix
 
 
-def trace_stem(path: Path) -> str:
+def trace_stem(path: PurePath) -> str:
     """The stem of the trace a file holds: "a" for both a.json and a.json.zst."""
     return path.with_suffix("").stem if path.suffix == ".zst" else path.stem
 
@@ -101,7 +101,10 @@ def open_trace_text(path: Path) -> TextIO:
     return _zstd().open(path, "rt", encoding="utf-8") if path.suffix == ".zst" else path.open(encoding="utf-8")
 
 
-def drop_compressed_duplicates(files: Iterable[Path]) -> List[Path]:
+_P = TypeVar("_P", bound=PurePath)
+
+
+def drop_compressed_duplicates(files: Iterable[_P]) -> List[_P]:
     """Drop each ``x.zst`` whose uncompressed ``x`` is also listed, warning for each.
 
     Compressing a trace directory in place (the zstd CLI keeps the original)
@@ -110,7 +113,7 @@ def drop_compressed_duplicates(files: Iterable[Path]) -> List[Path]:
     """
     listed = list(files)
     present = set(listed)
-    kept: List[Path] = []
+    kept: List[_P] = []
     for path in listed:
         if path.suffix == ".zst" and path.with_suffix("") in present:
             logger.warning(f"Skipping {path}: {path.with_suffix('').name} is also listed and would replay the trace twice")
@@ -193,7 +196,15 @@ def detect_trace_format(path: Path) -> str:
 
     Raises ValueError naming the file when the shape is empty or unrecognizable.
     """
-    first = _probe_file(path)
+    return detect_trace_format_from_record(_probe_file(path), path)
+
+
+def detect_trace_format_from_record(first: Optional[Dict[str, Any]], path: PurePath) -> str:
+    """Detect a trace's format from its first record (see detect_trace_format).
+
+    ``path`` supplies the suffix (.json vs .jsonl) and the name used in errors; it need not
+    exist locally, so a remote object can be classified from a probed first record.
+    """
     if first is None:
         raise ValueError(f"{path}: file is empty")
 
@@ -1226,6 +1237,15 @@ def derive_trace_id(path: Path) -> str:
         first = _probe_file(path)
     except ValueError:
         first = None
+    return trace_id_from_record(first, str(path.resolve()))
+
+
+def trace_id_from_record(first: Optional[Dict[str, Any]], fallback_key: str) -> str:
+    """Return the session-id header of ``first``, else a hash of ``fallback_key``.
+
+    The fallback key is the resolved local path, or the object URI for a remote trace, so
+    the id never depends on where a cached copy happens to live.
+    """
     if first:
         headers = first.get("headers") or {}
         if isinstance(headers, dict):
@@ -1233,7 +1253,7 @@ def derive_trace_id(path: Path) -> str:
                 sid = headers.get(header)
                 if isinstance(sid, str) and sid:
                     return sid.replace("-", "")[:32]
-    return hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:32]
+    return hashlib.sha256(fallback_key.encode("utf-8")).hexdigest()[:32]
 
 
 def iter_wire_spans(path: Path, trace_id: str) -> Iterator[Dict[str, Any]]:
