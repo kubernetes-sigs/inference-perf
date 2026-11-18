@@ -401,3 +401,101 @@ def test_waiting_on_an_unfinished_prefetch_is_counted(tmp_path: Path) -> None:
     assert store.materialize(obj(fake, "a.jsonl")).read_bytes() == b"a"
     assert fake.gets == ["a.jsonl"]
     assert store.sync_downloads == 1 and store.sync_wait_s >= 0.1
+
+
+# --------------------------------------------------------------------------------------
+# LocalTraceSource over remote objects
+# --------------------------------------------------------------------------------------
+
+
+def remote_source(store: RemoteTraceStore, entries: List[Any], skip_invalid: bool = False) -> Any:
+    from inference_perf.datagen.replay.otel_trace_replay_datagen import _normalize_file_trace
+    from inference_perf.datagen.replay.trace_source import LocalTraceSource
+
+    return LocalTraceSource(entries, skip_invalid, _normalize_file_trace, remote=store)
+
+
+def test_remote_wire_is_indexed_by_probe_and_loaded_from_cache(tmp_path: Path) -> None:
+    fake = FakeS3({"m/r/a-calls.jsonl.zst": wire_bytes(3), "m/r/b-calls.jsonl.zst": wire_bytes(2, session="sess-1")})
+    store = make_store(tmp_path, fake)
+    objs = store.resolve(f"s3://{BUCKET}/m/*/*.jsonl.zst")
+    source = remote_source(store, objs)
+    records = source.list_records()
+    uri_a = f"s3://{BUCKET}/m/r/a-calls.jsonl.zst"
+    assert [r.source_id for r in records] == [uri_a, f"s3://{BUCKET}/m/r/b-calls.jsonl.zst"]
+    assert records[0].session_id_suffix == hashlib.sha256(uri_a.encode()).hexdigest()[:32]
+    assert records[1].session_id_suffix == "sess1"
+    assert sorted(fake.gets) == sorted(o.key for o in objs)  # one probe each, no full download
+    assert not list((tmp_path / "cache").rglob("*.zst"))
+    loaded = source.load_record(0)
+    assert len(loaded["spans"]) == 3 and loaded["source_id"] == uri_a
+    assert loaded["trace_id"] == records[0].session_id_suffix
+    source.load_record(0)
+    assert fake.gets.count("m/r/a-calls.jsonl.zst") == 2  # probe + one download
+
+
+def test_remote_ids_do_not_depend_on_the_cache_dir(tmp_path: Path) -> None:
+    fake = FakeS3({"k/a.jsonl.zst": wire_bytes()})
+    ids = []
+    for sub in ("one", "two"):
+        store = RemoteTraceStore(tmp_path / sub, 10**9, client_factory=lambda: fake)
+        source = remote_source(store, store.resolve(f"s3://{BUCKET}/k/*.jsonl.zst"))
+        ids.append((source.list_records(), source.load_record(0)["spans"][0]["trace_id"]))
+    assert ids[0] == ids[1]
+
+
+def otel_doc(trace_id: str) -> Dict[str, Any]:
+    return {"trace_id": trace_id, "spans": []}
+
+
+def test_remote_otel_jsonl_rows_are_addressed_by_uri(tmp_path: Path) -> None:
+    body = (json.dumps(otel_doc("t0")) + "\n" + json.dumps(otel_doc("t1")) + "\n").encode()
+    fake = FakeS3({"d/traces.jsonl": body})
+    store = make_store(tmp_path, fake)
+    source = remote_source(store, store.resolve(f"s3://{BUCKET}/d/*.jsonl"))
+    uri = f"s3://{BUCKET}/d/traces.jsonl"
+    assert [(r.source_id, r.session_id_suffix) for r in source.list_records()] == [(f"{uri}#0", "t0"), (f"{uri}#1", "t1")]
+    assert source.load_record(1)["trace_id"] == "t1"
+
+
+def test_remote_otel_json_document(tmp_path: Path) -> None:
+    fake = FakeS3({"d/one.json": json.dumps(otel_doc("solo"), indent=2).encode()})
+    store = make_store(tmp_path, fake)
+    source = remote_source(store, store.resolve(f"s3://{BUCKET}/d/*.json"))
+    [record] = source.list_records()
+    assert (record.source_id, record.session_id_suffix) == (f"s3://{BUCKET}/d/one.json", "solo")
+    assert source.load_record(0)["source_id"] == f"s3://{BUCKET}/d/one.json"
+
+
+def test_broken_remote_wire_surfaces_at_load_naming_the_uri(tmp_path: Path) -> None:
+    from inference_perf.datagen.replay.trace_source import InvalidTraceError
+
+    good = json.dumps(wire_record(0)) + "\n{broken\n"
+    fake = FakeS3({"k/bad.jsonl": good.encode()})
+    store = make_store(tmp_path, fake)
+    source = remote_source(store, store.resolve(f"s3://{BUCKET}/k/*.jsonl"))
+    assert len(source.list_records()) == 1  # the probe only sees line 1
+    with pytest.raises(InvalidTraceError, match=f"s3://{BUCKET}/k/bad.jsonl"):
+        source.load_record(0)
+
+
+def test_unreadable_remote_object_is_skipped_or_fatal(tmp_path: Path) -> None:
+    from inference_perf.datagen.replay.trace_source import TraceReadError
+
+    fake = FakeS3({"k/a.jsonl": wire_bytes(compress=False), "k/b.jsonl": wire_bytes(compress=False)})
+    store = make_store(tmp_path, fake)
+    objs = store.resolve(f"s3://{BUCKET}/k/*.jsonl")
+    fake.objects["k/a.jsonl"] += b"\n"  # changed after listing
+    assert [r.source_id for r in remote_source(store, objs, skip_invalid=True).list_records()] == [objs[1].uri]
+    with pytest.raises(TraceReadError, match="changed since it was listed"):
+        remote_source(store, objs, skip_invalid=False)
+
+
+def test_local_and_remote_entries_mix(tmp_path: Path) -> None:
+    local = tmp_path / "local-calls.jsonl"
+    local.write_bytes(wire_bytes(compress=False))
+    fake = FakeS3({"k/r.jsonl": wire_bytes(compress=False)})
+    store = make_store(tmp_path, fake)
+    source = remote_source(store, [local, *store.resolve(f"s3://{BUCKET}/k/*.jsonl")])
+    assert [r.source_id for r in source.list_records()] == [str(local), f"s3://{BUCKET}/k/r.jsonl"]
+    assert len(source.load_record(0)["spans"]) == 2 and len(source.load_record(1)["spans"]) == 2
