@@ -144,11 +144,14 @@ class RemoteTraceStore:
     client lazily and never prefetches: only the parent knows the play order.
     """
 
-    def __init__(self, cache_dir: Path, max_bytes: int, client_factory: Callable[[], Any] = default_client) -> None:
+    def __init__(self, cache_dir: Path, max_bytes: int, client_factory: Optional[Callable[[], Any]] = None) -> None:
         self.cache_dir = cache_dir
         self.max_bytes = max_bytes
+        # None looks default_client up at first use, so a replacement installed later applies.
         self.client_factory = client_factory
         self.prefetch_enabled = True
+        # Off while the run is still being prepared, when downloads are expected rather than stalls.
+        self.report_waits = True
         self.sync_downloads = 0
         self.sync_wait_s = 0.0
         self._init_runtime()
@@ -176,7 +179,7 @@ class RemoteTraceStore:
     def client(self) -> Any:
         with self._lock:
             if self._client is None:
-                self._client = self.client_factory()
+                self._client = (self.client_factory or default_client)()
             return self._client
 
     # ----------------------------------------------------------------------------------
@@ -319,9 +322,10 @@ class RemoteTraceStore:
             self._fetch(obj)
             reason = "it was not prefetched"
         waited = time.perf_counter() - started
-        self.sync_downloads += 1
-        self.sync_wait_s += waited
-        logger.warning(f"Waited {waited:.2f}s for {obj.uri} ({obj.size} bytes): {reason}")
+        if self.report_waits:
+            self.sync_downloads += 1
+            self.sync_wait_s += waited
+            logger.warning(f"Waited {waited:.2f}s for {obj.uri} ({obj.size} bytes): {reason}")
         return path
 
     def _fetch(self, obj: RemoteObject) -> Path:

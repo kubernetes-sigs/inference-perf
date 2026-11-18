@@ -499,3 +499,119 @@ def test_local_and_remote_entries_mix(tmp_path: Path) -> None:
     source = remote_source(store, [local, *store.resolve(f"s3://{BUCKET}/k/*.jsonl")])
     assert [r.source_id for r in source.list_records()] == [str(local), f"s3://{BUCKET}/k/r.jsonl"]
     assert len(source.load_record(0)["spans"]) == 2 and len(source.load_record(1)["spans"]) == 2
+
+
+# --------------------------------------------------------------------------------------
+# OTelTraceReplayDataGenerator over s3:// entries
+# --------------------------------------------------------------------------------------
+
+
+def make_generator(monkeypatch: pytest.MonkeyPatch, fake: FakeS3, tmp_path: Path, **replay: Any) -> Any:
+    import inference_perf.datagen.replay.remote_trace_store as remote_module
+    from inference_perf.config import APIConfig, APIType, DataConfig, OTelTraceReplayConfig
+    from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+
+    _SHARED["fake"] = fake
+    monkeypatch.setattr(remote_module, "default_client", _shared_client)
+    replay.setdefault("remote_cache_dir", str(tmp_path / "cache"))
+    config = DataConfig(type="otel_trace_replay", otel_trace_replay=OTelTraceReplayConfig(**replay))
+    return OTelTraceReplayDataGenerator(
+        api_config=APIConfig(type=APIType.Chat, streaming=False), config=config, tokenizer=None, num_workers=1
+    )
+
+
+def corpus(n: int) -> FakeS3:
+    return FakeS3({f"m/run/task{i}-calls.jsonl.zst": wire_bytes(2, session=f"s{i}") for i in range(n)})
+
+
+def test_generator_replays_remote_sessions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    gen = make_generator(monkeypatch, corpus(3), tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*-calls.jsonl.zst"])
+    assert gen.get_session_count() == 3
+    for i in range(3):
+        assert gen.is_session_buildable(i)
+    assert {s.source_id for s in gen.sessions if s is not None} == {
+        f"s3://{BUCKET}/m/run/task{i}-calls.jsonl.zst" for i in range(3)
+    }
+
+
+def test_each_object_is_downloaded_once_across_parent_worker_and_cycling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = corpus(3)
+    gen = make_generator(monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/**/*.jsonl.zst"])
+    # Fits the cache: probe + pre-download, before any session is built.
+    assert sorted(fake.gets) == sorted(list(fake.objects) * 2)
+    for i in range(3):
+        gen.is_session_buildable(i)
+    worker = pickle.loads(pickle.dumps(gen))
+    for i in range(3):
+        worker._ensure_session_built(i)
+    gen._ensure_session_built(3)  # corpus cycling replays slot 0
+    assert len(fake.gets) == 6
+    assert gen._remote_store.sync_downloads == 0 and worker._remote_store.sync_downloads == 0
+
+
+def test_set_larger_than_the_cache_is_downloaded_ahead_in_play_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = corpus(6)
+    size = len(next(iter(fake.objects.values())))
+    gen = make_generator(
+        monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"], remote_cache_max_gb=(4.5 * size) / 1e9
+    )
+    store = gen._remote_store
+    play = [gen._trace_source.records[row].remote.uri for row in gen._row_order]
+    by_uri = {r.remote.uri: r.remote for r in gen._trace_source.records}
+    cached = [uri for uri in play if store.cache_path(by_uri[uri]).exists()]
+    # Warm-up covers half the cap: the first two sessions in play order, not more.
+    assert cached == play[:2]
+    for i in range(6):
+        gen.is_session_buildable(i)
+        wait_until_cached(store, [])
+    assert store.sync_downloads <= 1  # at most the one session the window could not cover
+    assert sum(p.stat().st_size for p in (tmp_path / "cache").rglob("*.zst")) <= 4.5 * size + size
+
+
+def test_worker_copy_never_prefetches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = corpus(6)
+    size = len(next(iter(fake.objects.values())))
+    gen = make_generator(
+        monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"], remote_cache_max_gb=(3.5 * size) / 1e9
+    )
+    worker = pickle.loads(pickle.dumps(gen))
+    before = len(fake.gets)
+    worker._ensure_session_built(0)  # already warmed: a cache hit, and no prefetch of what follows
+    assert len(fake.gets) == before
+
+
+def test_remote_trace_directory_lists_direct_children_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeS3({"d/a.jsonl": wire_bytes(compress=False), "d/sub/b.jsonl": wire_bytes(compress=False), "d/notes.txt": b"x"})
+    gen = make_generator(monkeypatch, fake, tmp_path, trace_directory=f"s3://{BUCKET}/d/")
+    assert gen.get_session_count() == 1
+
+
+def test_remote_match_without_trace_suffix_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeS3({"d/a.jsonl": wire_bytes(compress=False), "d/notes.txt": b"x"})
+    with pytest.raises(ValueError, match=r"must be a \.json or \.jsonl file.*s3://bkt/d/notes\.txt"):
+        make_generator(monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/d/*"])
+
+
+def test_remote_compressed_duplicate_is_dropped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeS3({"d/a.jsonl": wire_bytes(compress=False), "d/a.jsonl.zst": wire_bytes()})
+    gen = make_generator(monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/d/*.jsonl*"])
+    assert gen.get_session_count() == 1
+
+
+def test_remote_pattern_with_no_matches_fails_like_local(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="No trace files resolved"):
+        make_generator(monkeypatch, corpus(1), tmp_path, trace_files=[f"s3://{BUCKET}/nope/*.jsonl.zst"])
+
+
+def test_config_rejects_s3_uri_without_bucket() -> None:
+    from pydantic import ValidationError
+
+    from inference_perf.config import OTelTraceReplayConfig
+
+    with pytest.raises(ValidationError, match="missing a bucket"):
+        OTelTraceReplayConfig(trace_files=["s3:///k/*.jsonl"])
+    with pytest.raises(ValidationError, match="missing a bucket"):
+        OTelTraceReplayConfig(trace_directory="s3://")
+    assert OTelTraceReplayConfig(trace_files=["s3://b/k/*.jsonl"]).remote_cache_max_gb == 10.0

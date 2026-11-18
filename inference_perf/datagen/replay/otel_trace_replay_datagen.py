@@ -60,10 +60,11 @@ import glob
 import json
 import logging
 import random
+import tempfile
 from functools import partial
 from multiprocessing.managers import SyncManager
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union, cast
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union, cast
 
 from datasets import Dataset, load_dataset
 
@@ -88,8 +89,10 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     trace_stem,
     trace_suffix,
 )
+from inference_perf.datagen.replay.remote_trace_store import RemoteObject, RemoteTraceStore, is_remote
 from inference_perf.datagen.replay.trace_source import (
     HFDatasetTraceSource,
+    LocalTraceRecord,
     LocalTraceSource,
     TraceSource,
     TraceSourceError,
@@ -398,6 +401,9 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
       for growing-context patterns (multi-turn, agent chains)
     """
 
+    # Set by _resolve_remote when any trace entry is an s3:// URI.
+    _remote_store: Optional[RemoteTraceStore] = None
+
     def __init__(
         self,
         api_config: APIConfig,
@@ -437,7 +443,17 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         # latter can exceed Arrow's 32-bit offsets and fail outright during fingerprinting
         # with "offset overflow while concatenating arrays".
         source_label: str
-        if self.otel_config.trace_directory:
+        if self.otel_config.trace_directory and is_remote(self.otel_config.trace_directory):
+            # Same rule as a local directory: direct children named *.json*, filtered to trace suffixes.
+            listed = self._resolve_remote([self.otel_config.trace_directory.rstrip("/") + "/*.json*"], strict_suffix=False)
+            if not listed:
+                raise ValueError(f"No .json or .jsonl files (optionally .zst) found in {self.otel_config.trace_directory}")
+            source_label = self.otel_config.trace_directory
+            self._trace_source: TraceSource = LocalTraceSource(
+                listed, self.otel_config.skip_invalid_files, _normalize_file_trace, remote=self._remote_store
+            )
+
+        elif self.otel_config.trace_directory:
             trace_dir = Path(self.otel_config.trace_directory)
             if not trace_dir.exists():
                 raise ValueError(f"Trace directory does not exist: {trace_dir}")
@@ -451,7 +467,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 raise ValueError(f"No .json or .jsonl files (optionally .zst) found in {trace_dir}")
 
             source_label = self.otel_config.trace_directory
-            self._trace_source: TraceSource = LocalTraceSource(
+            self._trace_source = LocalTraceSource(
                 trace_files,
                 self.otel_config.skip_invalid_files,
                 _normalize_file_trace,
@@ -459,13 +475,17 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
         elif self.otel_config.trace_files:
             # Multiple files mode
-            for path in self.otel_config.trace_files:
+            local_entries = [p for p in self.otel_config.trace_files if not is_remote(p)]
+            for path in local_entries:
                 if "*" not in path and "?" not in path:
                     if not Path(path).is_file():
                         raise ValueError(f"Trace file does not exist: {path}")
 
-            trace_files = drop_compressed_duplicates(resolve_trace_files(self.otel_config.trace_files))
-            if not trace_files:
+            trace_files = drop_compressed_duplicates(resolve_trace_files(local_entries)) if local_entries else []
+            remote_objects = self._resolve_remote(
+                [p for p in self.otel_config.trace_files if is_remote(p)], strict_suffix=True
+            )
+            if not trace_files and not remote_objects:
                 raise ValueError(f"No trace files resolved from {self.otel_config.trace_files}")
 
             for trace_file in trace_files:
@@ -478,9 +498,10 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
             source_label = str(self.otel_config.trace_files)
             self._trace_source = LocalTraceSource(
-                trace_files,
+                [*trace_files, *remote_objects],
                 self.otel_config.skip_invalid_files,
                 _normalize_file_trace,
+                remote=self._remote_store,
             )
 
         elif self.otel_config.hf_dataset_path:
@@ -550,6 +571,84 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             logger.info(f"Session corpus sufficient: {len(base_ids)} sessions available (target: {target})")
 
         self.initialize_sessions_lazy(session_ids)
+        if self._remote_store is not None:
+            self._warm_remote_cache()
+            self._remote_store.report_waits = True
+
+    def _resolve_remote(self, entries: Sequence[str], strict_suffix: bool) -> List[RemoteObject]:
+        """Resolve s3:// entries to objects, applying the rules local trace files follow.
+
+        ``strict_suffix`` mirrors trace_files (a match without a trace suffix is an error);
+        trace_directory instead keeps only trace suffixes, as a local directory listing does.
+        """
+        if not entries:
+            return []
+        if self._remote_store is None:
+            cfg = self.otel_config
+            cache_dir = (
+                Path(cfg.remote_cache_dir)
+                if cfg.remote_cache_dir
+                else Path(tempfile.gettempdir()) / "inference-perf" / "trace-cache"
+            )
+            self._remote_store = RemoteTraceStore(cache_dir, int(cfg.remote_cache_max_gb * 1e9))
+            self._remote_store.report_waits = False
+        found: Dict[str, RemoteObject] = {}
+        for entry in entries:
+            for obj in self._remote_store.resolve(entry):
+                if trace_suffix(PurePosixPath(obj.name)) not in TRACE_FILE_SUFFIXES:
+                    if strict_suffix:
+                        raise ValueError(f"Trace file must be a .json or .jsonl file, optionally .zst: {obj.uri}")
+                    continue
+                found[obj.uri] = obj
+        by_path = {PurePosixPath(obj.bucket, obj.key): obj for obj in sorted(found.values(), key=lambda o: o.uri)}
+        return [by_path[p] for p in drop_compressed_duplicates(list(by_path))]
+
+    def _record_for_index(self, session_index: int) -> Optional[LocalTraceRecord]:
+        """The trace record session_index will replay, by the same arithmetic as _build_session and cycling."""
+        count = self._corpus_session_count or len(self._source_indices)
+        if not count or not isinstance(self._trace_source, LocalTraceSource):
+            return None
+        index = session_index % count
+        source = self._source_indices[index] if index < len(self._source_indices) else None
+        slot = source if source is not None else index
+        if slot >= len(self._row_order):
+            return None
+        return self._trace_source.records[self._row_order[slot]]
+
+    def _remote_window(self, after: int) -> List[RemoteObject]:
+        """Remote objects of the sessions following ``after`` in play order, up to half the cache.
+
+        Half, so what is downloaded ahead is never evicted before its session uses it.
+        """
+        assert self._remote_store is not None
+        budget = self._remote_store.max_bytes / 2
+        window: Dict[str, RemoteObject] = {}
+        total = 0
+        for index in range(after + 1, after + 1 + max(self._corpus_session_count, 1)):
+            record = self._record_for_index(index)
+            if record is None or record.remote is None or record.remote.uri in window:
+                continue
+            if total + record.remote.size > budget:
+                break
+            window[record.remote.uri] = record.remote
+            total += record.remote.size
+        return list(window.values())
+
+    def _warm_remote_cache(self) -> None:
+        """Download every remote trace before the run if they all fit the cache, else the first window."""
+        assert self._remote_store is not None and isinstance(self._trace_source, LocalTraceSource)
+        objects = list({r.remote.uri: r.remote for r in self._trace_source.records if r.remote is not None}.values())
+        total = sum(o.size for o in objects)
+        if objects and total <= self._remote_store.max_bytes:
+            logger.info(f"Downloading {len(objects)} remote traces ({total / 1e6:.1f} MB) before the run")
+            self._remote_store.download_all(objects)
+            return
+        window = self._remote_window(-1)
+        logger.info(
+            f"Remote traces ({total / 1e6:.1f} MB) exceed remote_cache_max_gb; downloading ahead "
+            f"of sessions, starting with {len(window)}"
+        )
+        self._remote_store.download_all(window)
 
     def _filter_source(self, filter_func: Callable[..., Any]) -> None:
         """Apply the configured filter to the trace source in place.
@@ -603,6 +702,8 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         source slot's record and relabels with the duplicate's session_id (graph content
         identical; the _dup suffix drives random-string injection in _build_session_schedule).
         """
+        if self._remote_store is not None and self._remote_store.prefetch_enabled:
+            self._remote_store.prefetch(self._remote_window(session_index))
         source_idx = self._source_indices[session_index]
         slot = source_idx if source_idx is not None else session_index
         row_index = self._row_order[slot]
