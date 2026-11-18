@@ -300,6 +300,35 @@ For example:
 
 The trace reader normalizes timestamps to start from 0, so only the relative timing between requests matters.
 
+### Workload replay (alpha)
+
+Other recorded traces go through the workload record layer: a trace format says what the rows of one session mean, and reading, selecting, ordering and sending the sessions is shared by every format. The schema is alpha and may change between minor releases.
+
+```yaml
+data:
+  type: workload_replay
+  workload:
+    format: <format name>    # built in, or package.module:Class for a format of your own
+    trace_files:             # or trace_directory, or hf_dataset_path
+      - ./traces/trace.jsonl
+    block_size: 512          # optional, the format's own size by default
+    filter: "lambda x: x['session_id'] != 'warmup'"   # optional, over the format's session summary
+    num_dataset_entries: 100 # optional, stop reading once this many sessions are kept
+    trace_idle_gap_cap_seconds: 60   # optional, cap on recorded waits inside a session
+    max_wait_ms: 15000       # optional, the session settings sit beside the rest
+```
+
+Which load type to use follows from what the format records. Independent timestamped requests run with `load.type: trace_replay` and no `load.trace` block, since the send times come from the records, and the earliest request is sent at zero. Sessions run with `load.type: trace_session_replay`, in a shuffle of their ids seeded by `load.base_seed`; the generator refuses the other combination. Prompts for formats that recorded lengths rather than text are built from the prompt corpus (`data.corpus_file_path`) and seeded by `load.base_seed`, so requests that recorded a shared prefix are sent with the same leading text on every worker.
+
+#### Mooncake
+
+[Mooncake FAST'25 traces](https://github.com/kvcache-ai/Mooncake/tree/main/FAST25-release) are JSONL, one request per line:
+```
+{"timestamp": 27482, "input_length": 6955, "output_length": 52, "hash_ids": [46, 47, 48, 2353]}
+{"timestamp": 30535, "input_length": 6472, "output_length": 26, "hash_ids": [46, 47, 48, 2366]}
+```
+
+`timestamp` is milliseconds from the start of the trace. `hash_ids` name the request's prefix blocks, 512 tokens each: the two requests above share their first three ids, so they are sent with the same first 1536 tokens and the second can hit the server's prefix cache the way the original did. Requests are independent, so use `format: Mooncake` with `load.type: trace_replay`.
 ## Troubleshooting
 
 You can observe how accurate the tool is generating your desired load by looking at few things:

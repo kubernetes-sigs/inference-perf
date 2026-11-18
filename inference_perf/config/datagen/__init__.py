@@ -38,9 +38,11 @@ from inference_perf.config.datagen.replay import (
     TraceConfig,
     TraceFormat,
     TraceLabTraceReplayConfig,
+    TraceReplayConfig,
     WekaTraceReplayConfig,
 )
 from inference_perf.config.datagen.visionarena import VisionArenaConfig
+from inference_perf.config.datagen.workload import WorkloadReplayConfig
 
 __all__ = [
     "AnyResolution",
@@ -61,7 +63,9 @@ __all__ = [
     "TraceConfig",
     "TraceFormat",
     "TraceLabTraceReplayConfig",
+    "TraceReplayConfig",
     "WekaTraceReplayConfig",
+    "WorkloadReplayConfig",
     "VideoDatagenConfig",
     "VideoProfile",
     "WeightedDuration",
