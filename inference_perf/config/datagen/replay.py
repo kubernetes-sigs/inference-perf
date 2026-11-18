@@ -217,6 +217,73 @@ class SessionReplayConfig(StrictBaseModel):
         return self
 
 
+class TraceReplayConfig(SessionReplayConfig):
+    """What every recorded trace takes, whatever its format: where the rows
+    are, which sessions are kept, and how recorded gaps are replayed. A
+    format's own block extends this with the settings only it has."""
+
+    trace_directory: Optional[str] = Field(None, description="Directory containing the trace files")
+    trace_files: Optional[List[str]] = Field(None, description="List of paths to specific trace files")
+    hf_dataset_path: Optional[Union[str, Dict[str, object]]] = Field(
+        None,
+        description=(
+            "HuggingFace dataset path. Can be:\n"
+            "  - String: 'username/dataset-name'\n"
+            "  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}\n"
+            "Any extra keys in the dict are passed as kwargs to datasets.load_dataset()."
+        ),
+    )
+    filter: Optional[str] = Field(
+        None,
+        description=(
+            "Lambda expression to filter sessions. Applied uniformly to all data sources.\n"
+            "Receives the session's summary as a dict: its session_id plus the aggregates\n"
+            "the format derives (for TraceLab: max_tokens, total_tokens and num_rounds).\n"
+            "Example: \"lambda x: x['max_tokens'] < 262144\"\n"
+            "Security: Filter expressions use eval() and should only contain trusted input."
+        ),
+    )
+    num_dataset_entries: Optional[int] = Field(
+        None,
+        description=(
+            "Max number of sessions to load, applied to every source. Reading stops once this many "
+            "sessions pass the filter. Null loads every session."
+        ),
+    )
+    trace_idle_gap_cap_seconds: Optional[float] = Field(
+        None,
+        description=(
+            "Cap recorded gaps between the requests of a session, in seconds. Null or <= 0 leaves them to max_wait_ms alone."
+        ),
+    )
+    ignore_trace_delays: bool = Field(
+        False,
+        description=(
+            "Ignore delays from original trace and run back-to-back. Overrides "
+            "trace_idle_gap_cap_seconds: every inter-round gap is set to zero."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_trace_sources(self) -> "TraceReplayConfig":
+        # Validate that exactly one of trace_directory, trace_files, or hf_dataset_path is provided
+        sources_provided = sum(
+            [
+                self.trace_directory is not None,
+                self.trace_files is not None,
+                self.hf_dataset_path is not None,
+            ]
+        )
+
+        if sources_provided == 0:
+            raise ValueError("Either trace_directory, trace_files, or hf_dataset_path must be provided")
+        if sources_provided > 1:
+            raise ValueError(
+                "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
+            )
+        return self
+
+
 class OTelTraceReplayConfig(SessionReplayConfig):
     """Configuration for OTel trace replay data generator."""
 
@@ -371,7 +438,7 @@ class WekaTraceReplayConfig(SessionReplayConfig):
         return self
 
 
-class TraceLabTraceReplayConfig(SessionReplayConfig):
+class TraceLabTraceReplayConfig(TraceReplayConfig):
     """Configuration for TraceLab trace replay data generator.
 
     Replays UW TraceLab coding-agent traces (Claude Code / Codex), where each
@@ -381,28 +448,7 @@ class TraceLabTraceReplayConfig(SessionReplayConfig):
     https://tracelab.cs.washington.edu and https://arxiv.org/abs/2606.30560.
     """
 
-    trace_directory: Optional[str] = Field(None, description="Directory containing TraceLab JSONL trace files")
-    trace_files: Optional[List[str]] = Field(None, description="List of paths to specific TraceLab JSONL trace files")
-    hf_dataset_path: Optional[Union[str, Dict[str, object]]] = Field(
-        None,
-        description=(
-            "HuggingFace dataset path. Can be:\n"
-            "  - String: 'username/dataset-name'\n"
-            "  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}\n"
-            "Any extra keys in the dict are passed as kwargs to datasets.load_dataset()."
-        ),
-    )
-    filter: Optional[str] = Field(
-        None,
-        description=(
-            "Lambda expression to filter sessions. Applied uniformly to all data sources.\n"
-            "Receives the session dict plus derived aggregates: max_tokens (largest\n"
-            "single-round input+output), total_tokens, and num_rounds.\n"
-            "Example: \"lambda x: x['max_tokens'] < 262144\"\n"
-            "Security: Filter expressions use eval() and should only contain trusted input."
-        ),
-    )
-    num_dataset_entries: int = Field(
+    num_dataset_entries: Optional[int] = Field(
         100,
         description=(
             "Max number of sessions to load, applied to every source (local files and HuggingFace). "
@@ -419,32 +465,9 @@ class TraceLabTraceReplayConfig(SessionReplayConfig):
             "max_wait_ms is left unset it is raised to match this cap."
         ),
     )
-    ignore_trace_delays: bool = Field(
-        False,
-        description=(
-            "Ignore delays from original trace and run back-to-back. Overrides "
-            "trace_idle_gap_cap_seconds: every inter-round gap is set to zero."
-        ),
-    )
 
     @model_validator(mode="after")
-    def validate_trace_sources(self) -> "TraceLabTraceReplayConfig":
-        # Validate that exactly one of trace_directory, trace_files, or hf_dataset_path is provided
-        sources_provided = sum(
-            [
-                self.trace_directory is not None,
-                self.trace_files is not None,
-                self.hf_dataset_path is not None,
-            ]
-        )
-
-        if sources_provided == 0:
-            raise ValueError("Either trace_directory, trace_files, or hf_dataset_path must be provided")
-        if sources_provided > 1:
-            raise ValueError(
-                "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
-            )
-
+    def reconcile_wait_clamp(self) -> "TraceLabTraceReplayConfig":
         # Reconcile the two timing knobs. ReplayGraphSessionGeneratorBase
         # clamps every event wait to max_wait_ms, whose default (15s) would
         # silently truncate the 60s gap cap (or any larger explicit cap).

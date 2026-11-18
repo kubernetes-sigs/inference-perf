@@ -300,6 +300,29 @@ For example:
 
 The trace reader normalizes timestamps to start from 0, so only the relative timing between requests matters.
 
+### Workload replay (alpha)
+
+Other recorded traces go through the workload record layer: a trace format says what the rows of one session mean, and reading, selecting, ordering and sending the sessions is shared by every format. The schema is alpha and may change between minor releases.
+
+```yaml
+data:
+  type: workload_replay
+  workload:
+    format: <format name>    # built in, or package.module:Class for a format of your own
+    trace_files:             # or trace_directory, or hf_dataset_path
+      - ./traces/trace.jsonl
+    block_size: 512          # optional, the format's own size by default
+    filter: "lambda x: x['session_id'] != 'warmup'"   # optional, over the format's session summary
+    num_dataset_entries: 100 # optional, stop reading once this many sessions are kept
+    trace_idle_gap_cap_seconds: 60   # optional, cap on recorded waits inside a session
+    max_wait_ms: 15000       # optional, the session settings sit beside the rest
+```
+
+Which load type to use follows from what the format records. Independent timestamped requests run with `load.type: trace_replay` and no `load.trace` block, since the send times come from the records, and the earliest request is sent at zero. Sessions run with `load.type: trace_session_replay`, in a shuffle of their ids seeded by `load.base_seed`; the generator refuses the other combination. Prompts for formats that recorded lengths rather than text are built from the prompt corpus (`data.corpus_file_path`) and seeded by `load.base_seed`, so requests that recorded a shared prefix are sent with the same leading text on every worker.
+
+#### TraceLab
+
+[TraceLab](https://github.com/uw-syfi/TraceLab) records real coding-agent sessions from Claude Code and Codex, one LLM round per row (JSONL or a JSON array, either gzipped, or a directory of them), with the round's whole prompt size (`input_tokens_total`), how much of it the engine served from cache (`prefix_tokens`), the output length and absolute timestamps. No text and no content hashes are recorded. Each session becomes one replay session: a round reuses the leading blocks of the previous prompt that its prefix covers and gets fresh blocks for the rest, which reproduces the recorded prefix reuse within a session (sharing between sessions is not recoverable from the corpus), and the recorded gap between rounds is the think time. Block size is a choice here since the corpus records none; the default is 64. Rounds depend on each other, so use `format: TraceLab` with `load.type: trace_session_replay`. Subagent sessions are recorded without a link to their parent and replay as independent sessions. `data.type: tracelab_trace_replay` runs the same format with settings of its own: the Hugging Face tables, a session filter, a session cap and a cap on the recorded gaps (see [tracelab_trace_replay.md](tracelab_trace_replay.md)).
 ## Troubleshooting
 
 You can observe how accurate the tool is generating your desired load by looking at few things:
