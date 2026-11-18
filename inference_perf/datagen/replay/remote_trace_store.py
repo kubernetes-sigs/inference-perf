@@ -36,6 +36,7 @@ import logging
 import os
 import queue
 import re
+import stat
 import threading
 import time
 from collections import Counter
@@ -76,6 +77,10 @@ _RESCAN_INTERVAL_S = 60.0
 _STALE_PART_S = 3600.0
 
 _T = TypeVar("_T")
+
+# The name of a cache entry's directory: sha256(uri)[:24], then the ETag's alphanumerics.
+# Only directories named like this are ever scanned or evicted.
+_ENTRY_DIR = re.compile(r"[0-9a-f]{24}-[A-Za-z0-9]{0,40}")
 
 
 class RemoteReadError(OSError):
@@ -219,11 +224,36 @@ def check_not_all_denied(results: Sequence[Union[TraceRecord, None, Exception]])
             raise ValueError(f"Every remote trace was refused ({code}): {_CREDENTIALS_HINT}")
 
 
+def prepare_private_dir(path: Path) -> None:
+    """Create ``path`` owner-only, or accept it only if it already is: a real directory this user owns that others cannot write.
+
+    For the default cache under the shared system temp dir, whose name another user could
+    create first, as a symlink into this user's home or as a directory of planted files.
+    """
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    except OSError as e:
+        raise ValueError(f"Cannot create the trace cache directory {path}: {e}") from e
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        raise ValueError(f"Refusing trace cache directory {path}: it is a symlink; set remote_cache_dir")
+    if not stat.S_ISDIR(st.st_mode):
+        raise ValueError(f"Refusing trace cache directory {path}: not a directory; set remote_cache_dir")
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None and st.st_uid != getuid():
+        raise ValueError(f"Refusing trace cache directory {path}: owned by uid {st.st_uid}; set remote_cache_dir")
+    if st.st_mode & 0o022:
+        raise ValueError(f"Refusing trace cache directory {path}: writable by other users; set remote_cache_dir")
+
+
 class RemoteTraceStore:
     """Lists, probes and caches remote trace objects.
 
     Shared by the parent and every worker through a pickled copy. The copy rebuilds its
-    client lazily and never prefetches: only the parent knows the play order.
+    client lazily, and never prefetches or evicts: only the parent knows the play order and
+    holds the pins, so it alone decides what leaves the shared cache directory.
 
     Each process keeps an index of the cache directory (path -> last use, size), so
     eviction does not rescan the directory after every download; it rereads it at most
@@ -236,6 +266,7 @@ class RemoteTraceStore:
         # None looks default_client up at first use, so a replacement installed later applies.
         self.client_factory = client_factory
         self.prefetch_enabled = True
+        self.evict_enabled = True
         # Off while the run is still being prepared, when downloads are expected rather than stalls.
         self.report_waits = True
         self.sync_downloads = 0
@@ -252,11 +283,23 @@ class RemoteTraceStore:
         self._pinned: Counter[Path] = Counter()
         self._index: Optional[Dict[Path, Tuple[float, int]]] = None
         self._index_bytes = 0
+        # Bytes of downloads in progress, reserved before they write so the cap covers them.
+        self._reserved = 0
         self._scanned_at = 0.0
 
     def __getstate__(self) -> Dict[str, object]:
         state = dict(self.__dict__)
-        for name in ("_client", "_lock", "_inflight", "_queue", "_pinned", "_index", "_index_bytes", "_scanned_at"):
+        for name in (
+            "_client",
+            "_lock",
+            "_inflight",
+            "_queue",
+            "_pinned",
+            "_index",
+            "_index_bytes",
+            "_reserved",
+            "_scanned_at",
+        ):
             state.pop(name, None)
         return state
 
@@ -264,6 +307,7 @@ class RemoteTraceStore:
         self.__dict__.update(state)
         self._init_runtime()
         self.prefetch_enabled = False
+        self.evict_enabled = False
         self.sync_downloads = 0
         self.sync_wait_s = 0.0
 
@@ -400,6 +444,8 @@ class RemoteTraceStore:
         Reads a 256 KiB range, then extends it fourfold while the first record does not
         fit, fetching only the new bytes, so only the start of the object is downloaded.
         """
+        if obj.size == 0:
+            return None  # a ranged read of an empty object is an error (416), not an empty body
         size = _PROBE_CHUNK
         data = b""
         while True:
@@ -464,15 +510,30 @@ class RemoteTraceStore:
             self.sync_wait_s += waited
             # With no cache every read downloads, by choice; a warning each time would be noise.
             if self.max_bytes > 0:
-                logger.warning(f"Waited {waited:.2f}s for {obj.uri} ({obj.size} bytes): {reason}")
+                logger.warning(
+                    f"Waited {waited:.2f}s for {obj.uri} ({obj.size} bytes): {reason} "
+                    f"[{self.sync_downloads} waits, {self.sync_wait_s:.1f}s so far in this process]"
+                )
         return path
 
     def _fetch(self, obj: RemoteObject) -> Path:
         path = self.cache_path(obj)
-        size = self._retrying(lambda: self._fetch_once(obj, path), obj)
+        with self._lock:
+            # Reserve the object's size and make room first, so the download in progress
+            # counts against the cap instead of landing on top of it.
+            self._ensure_index()
+            self._reserved += obj.size
+            if self.evict_enabled:
+                self._evict(keep=path)
+        try:
+            size = self._retrying(lambda: self._fetch_once(obj, path), obj)
+        finally:
+            with self._lock:
+                self._reserved -= obj.size
         with self._lock:
             self._remember(path, size)
-            self._evict(keep=path)
+            if self.evict_enabled:
+                self._evict(keep=path)
         return path
 
     def _fetch_once(self, obj: RemoteObject, path: Path) -> int:
@@ -483,6 +544,8 @@ class RemoteTraceStore:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 out = tmp.open("wb")
+            except FileNotFoundError as e:  # another process evicted the entry's directory meanwhile
+                raise RemoteReadError(f"{obj.uri}: cache entry removed during download", retryable=True) from e
             except OSError as e:
                 raise RemoteReadError(f"{obj.uri}: cannot write to the cache: {e}") from e
             with out:
@@ -530,7 +593,8 @@ class RemoteTraceStore:
         except OSError:
             entries = []
         for entry in entries:
-            if not entry.is_dir(follow_symlinks=False):
+            # Anything not named like a cache entry is someone else's file: never touch it.
+            if not _ENTRY_DIR.fullmatch(entry.name) or not entry.is_dir(follow_symlinks=False):
                 continue
             try:
                 files = list(os.scandir(entry.path))
@@ -553,9 +617,12 @@ class RemoteTraceStore:
         self._index_bytes = sum(size for _, size in index.values())
         self._scanned_at = time.monotonic()
 
-    def _remember(self, path: Path, size: int) -> None:
+    def _ensure_index(self) -> None:
         if self._index is None or time.monotonic() - self._scanned_at > _RESCAN_INTERVAL_S:
             self._scan()
+
+    def _remember(self, path: Path, size: int) -> None:
+        self._ensure_index()
         assert self._index is not None
         previous = self._index.get(path)
         self._index_bytes += size - (previous[1] if previous else 0)
@@ -567,11 +634,11 @@ class RemoteTraceStore:
         Pinned files count toward the total even though they are never deleted.
         """
         assert self._index is not None
-        if self._index_bytes <= self.max_bytes:
+        if self._index_bytes + self._reserved <= self.max_bytes:
             return
         candidates = sorted((used, p) for p, (used, _) in self._index.items() if p != keep and not self._pinned[p])
         for _, p in candidates:
-            if self._index_bytes <= self.max_bytes:
+            if self._index_bytes + self._reserved <= self.max_bytes:
                 break
             try:
                 p.unlink()
@@ -634,21 +701,25 @@ class RemoteTraceStore:
                 if done is not None:
                     done.set()
 
-    def download_all(self, objs: Sequence[RemoteObject]) -> None:
+    def download_all(self, objs: Sequence[RemoteObject]) -> Dict[str, RemoteReadError]:
         """Download every object not yet cached, concurrently, and wait for all of them.
 
         Cached ones are touched. Pin the set first when it must survive its own downloads.
+        Returns the failures by URI.
         """
         todo = [o for o in objs if not self._touch(self.cache_path(o))]
+        failures: Dict[str, RemoteReadError] = {}
 
         def fetch(o: RemoteObject) -> None:
             try:
                 self._fetch(o)
             except RemoteReadError as e:
                 logger.warning(f"Could not pre-download {o.uri}: {e}")
+                failures[o.uri] = e
 
         with ThreadPoolExecutor(_PROBE_THREADS, thread_name_prefix="trace-download") as pool:
             list(pool.map(fetch, todo))
+        return failures
 
 
 def _decompress_prefix(data: bytes, obj: RemoteObject, whole: bool) -> bytes:
