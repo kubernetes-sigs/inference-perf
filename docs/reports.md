@@ -9,6 +9,7 @@ By default, reports are saved in a directory named `reports-YYYYMMDD-HHMMSS/`. T
 - **`summary_lifecycle_metrics.json`**: Aggregated metrics for the entire benchmark run.
 - **`stage_N_lifecycle_metrics.json`**: Metrics for a specific load stage (where N is the stage index).
 - **`per_request_lifecycle_metrics.json`**: Raw data for every single request, including timestamps and token counts.
+- **`sweep_probe.json`**: Present only when the run used `load.sweep.probe`. The measured capacity curve: `r_sat` and `n_knee` with confidence intervals, the ladder's `stop_reason`, whether that result is `censored` (a lower bound, not a measured plateau), `failed_concurrency` when a rung produced no measurement and ended the ladder, and every rung with its throughput, standard error, latency, Little's law residual, failed-request fraction and generator loop lag.
 - **`config.yaml`**: A copy of the configuration used for the run, with credentials redacted (see [Credentials](config.md#credentials)).
 
 For Weka replay runs with `separate_subagent_session_ids` enabled, each per-request
