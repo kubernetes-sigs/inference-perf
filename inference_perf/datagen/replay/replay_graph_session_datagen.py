@@ -60,7 +60,7 @@ from inference_perf.apis.anthropic_messages import (
 )
 from inference_perf.apis.chat import ChatMessage, reasoning_field
 from inference_perf.apis.image_parts import base64_size, image_bytes, is_image_part, to_otel_part
-from inference_perf.apis.response_errors import InBandError, in_band_error
+from inference_perf.apis.response_errors import EmptyResponseError, InBandError, in_band_error
 from inference_perf.payloads import Image, Images, RequestMetrics, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
@@ -1099,6 +1099,15 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 extract_content=_extract_streaming_content,
                 extract_reasoning=lambda data: reasoning_field(data.get("choices", [{}])[0].get("delta", {})),
             )
+            # As in ChatCompletionAPIData: a stream with no generated text, no tool call
+            # and no usage is not a completion, so the turn fails instead of replying "".
+            if (
+                not parsed.output_text
+                and not parsed.reasoning_text
+                and not parsed.has_tool_calls
+                and parsed.server_usage is None
+            ):
+                raise EmptyResponseError(parsed.raw_content)
             text_content, chunk_times, response_chunks, server_usage = (
                 parsed.output_text,
                 parsed.chunk_times,
@@ -1184,6 +1193,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
                 if reasoning_content:
                     output_message["reasoning_content"] = reasoning_content
+            # As in ChatCompletionAPIData: no text, no tool call and no usage means the
+            # body is not a completion, so the turn fails instead of replying "".
+            if not text_content and not reasoning_content and not tool_calls and server_usage is None:
+                raise EmptyResponseError()
             output_len = sum(
                 tokenizer.count_tokens(part, add_special_tokens=False) for part in (text_content, reasoning_content) if part
             )
