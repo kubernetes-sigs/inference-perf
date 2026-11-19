@@ -173,7 +173,10 @@ class TraceSessionReplayLoadStage(LoadStage):
                     f"You can't start sessions faster than the concurrency limit allows."
                 )
 
-        if self.timeout is not None:
+        # Read raw storage rather than `self.timeout` so checking whether deprecated
+        # `timeout` was configured does not emit Pydantic's DeprecationWarning when unset.
+        timeout = self.__dict__["timeout"]
+        if timeout is not None:
             logger.warning("load.stages[].timeout is deprecated; use max_stage_duration instead.")
 
         # Both fields stop the stage, so together they race, and a count-based win is the
@@ -196,7 +199,7 @@ class TraceSessionReplayLoadStage(LoadStage):
         # gap rather than only documenting one. timeout is the deprecated spelling of the
         # same cap, so compare against whichever one is in effect.
         effective_cap_field = "max_stage_duration" if self.max_stage_duration is not None else "timeout"
-        effective_cap = self.max_stage_duration if self.max_stage_duration is not None else self.timeout
+        effective_cap = self.max_stage_duration if self.max_stage_duration is not None else timeout
         if self.duration is not None and effective_cap is not None and self.duration >= effective_cap:
             raise ValueError(
                 f"duration ({self.duration}) must be shorter than {effective_cap_field} "
