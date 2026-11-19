@@ -107,6 +107,54 @@ class RerankConfig(StrictBaseModel):
         return self
 
 
+class AsyncPollingConfig(StrictBaseModel):
+    """Polling options for asynchronous 202-Accepted enqueue endpoints (e.g. Coordinator async-broker)."""
+
+    poll_url_template: str = Field(
+        default="/v1/requests/{id}",
+        description="URL path (relative to server.base_url) or full URL template polled after a 202 response, with '{id}' replaced by the request ID.",
+    )
+    id_json_field: str = Field(
+        default="id",
+        min_length=1,
+        description="Dot-separated JSON field in the 202 response body carrying the request ID.",
+    )
+    response_id_header: Optional[str] = Field(
+        default="x-request-id",
+        description="Response header fallback used to extract the request ID when id_json_field is absent from the 202 body.",
+    )
+    poll_interval_sec: float = Field(
+        default=0.5,
+        gt=0.0,
+        description="Seconds between GET status polls while the server answers 202.",
+    )
+    max_poll_duration_sec: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description="Maximum seconds spent polling a 202 request before failing with TimeoutError. Defaults to load.request_timeout when unset.",
+    )
+    exclude_request_headers: list[str] = Field(
+        default_factory=lambda: ["x-llm-d-async-mode"],
+        description="Request header names (case-insensitive) omitted from GET poll requests while forwarding remaining headers such as tenant and auth.",
+    )
+    headers: Optional[dict[str, str]] = Field(
+        default=None,
+        description="Additional HTTP headers sent on GET poll requests.",
+    )
+
+    @model_validator(mode="after")
+    def validate_template(self) -> "AsyncPollingConfig":
+        if "{id}" not in self.poll_url_template:
+            raise ValueError("poll_url_template must contain '{id}'")
+        if not (
+            self.poll_url_template.startswith("/")
+            or self.poll_url_template.startswith("http://")
+            or self.poll_url_template.startswith("https://")
+        ):
+            raise ValueError("poll_url_template must start with '/', 'http://', or 'https://'")
+        return self
+
+
 # API types that return a single JSON body with no generated text, and so can
 # neither stream nor constrain output to a schema.
 _NO_GENERATION_API_TYPES = (APIType.Embeddings, APIType.Rerank)
@@ -131,6 +179,10 @@ class APIConfig(StrictBaseModel):
     slo_ttft_header: Optional[str] = Field(
         default=None,
         description="Request header carrying the per-request TTFT SLO threshold. Defaults to 'x-slo-ttft-<slo_unit>'.",
+    )
+    async_polling: Optional[AsyncPollingConfig] = Field(
+        default=None,
+        description="Async 202-Accepted enqueue and GET status polling options (e.g. llm-d Coordinator async-broker enqueue mode).",
     )
     response_format: Optional[ResponseFormat] = Field(
         default=None, description="Structured output settings sent as the 'response_format' request parameter."
@@ -167,6 +219,8 @@ class APIConfig(StrictBaseModel):
         # /generate takes structured output inside sampling_params, not as response_format.
         if self.type == APIType.SGLangGenerate and self.response_format is not None:
             raise ValueError("response_format is not supported for the sglang_generate API")
+        if self.async_polling is not None and self.streaming:
+            raise ValueError("streaming is not supported when async_polling is configured")
         if self.type != APIType.Embeddings and self.embeddings is not None:
             raise ValueError("embeddings options are only valid when type is 'embeddings'")
         if self.type != APIType.Rerank and self.rerank is not None:

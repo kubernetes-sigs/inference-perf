@@ -14,6 +14,7 @@
 from inference_perf.config.apis.config import (
     APIConfig,
     APIType,
+    AsyncPollingConfig,
     EmbeddingsConfig,
     EmbeddingsEncodingFormat,
     RerankConfig,
@@ -24,6 +25,7 @@ from inference_perf.config.apis.config import (
 __all__ = [
     "APIConfig",
     "APIType",
+    "AsyncPollingConfig",
     "EmbeddingsConfig",
     "EmbeddingsEncodingFormat",
     "RerankConfig",
