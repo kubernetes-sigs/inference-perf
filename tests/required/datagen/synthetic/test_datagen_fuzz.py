@@ -37,7 +37,7 @@ def _make_mock_tokenizer(vocab_size: int = 1000) -> MagicMock:
     hf_tok.encode = MagicMock(side_effect=lambda text, **kw: [1] * max(1000, len(text.split())))
     mock_tokenizer.get_tokenizer.return_value = hf_tok
 
-    def count_tokens(text: str) -> int:
+    def count_tokens(text: str, add_special_tokens: bool = True) -> int:
         parts = text.split()
         total = 0
         for p in parts:

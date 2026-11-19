@@ -88,22 +88,39 @@ def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.n
     prefix's server-side tokens stay stable. Ids whose decoded text comes
     back as more than one token (e.g. gpt2 ids that decode to an incomplete
     UTF-8 sequence) are left out: a one-token suffix starting with one of
-    them can never converge. Falls back to the full vocab when no such
-    tokens exist.
+    them can never converge.
+
+    Some tokenizers (e.g. T5, ALBERT, BERT) never decode a single id with
+    leading whitespace. For those the pool falls back to every valid id that
+    still re-tokenizes to one token.
+
+    Raises:
+        ValueError: If no valid id decodes to text that re-tokenizes to one token.
     """
     hf_tokenizer = tokenizer.get_tokenizer()
-    candidate_ids: List[int] = []
-    candidate_texts: List[str] = []
+    decoded_ids: List[int] = []
+    decoded_texts: List[str] = []
     for tid in valid_token_ids:
         decoded = hf_tokenizer.decode([int(tid)], skip_special_tokens=True)
-        if isinstance(decoded, str) and decoded[:1].isspace():
-            candidate_ids.append(int(tid))
-            candidate_texts.append(decoded)
-    counts = _count_tokens_batch(tokenizer, candidate_texts)
-    word_starts = [tid for tid, count in zip(candidate_ids, counts, strict=True) if count == 1]
-    if not word_starts:
-        return valid_token_ids
-    return np.array(word_starts, dtype=np.int64)
+        if isinstance(decoded, str):
+            decoded_ids.append(int(tid))
+            decoded_texts.append(decoded)
+
+    word_start_ids = [tid for tid, text in zip(decoded_ids, decoded_texts, strict=True) if text[:1].isspace()]
+    word_start_texts = [text for text in decoded_texts if text[:1].isspace()]
+    counts = _count_tokens_batch(tokenizer, word_start_texts)
+    word_starts = [tid for tid, count in zip(word_start_ids, counts, strict=True) if count == 1]
+    if word_starts:
+        return np.array(word_starts, dtype=np.int64)
+    counts = _count_tokens_batch(tokenizer, decoded_texts)
+    single_tokens = [tid for tid, count in zip(decoded_ids, counts, strict=True) if count == 1]
+    if single_tokens:
+        return np.array(single_tokens, dtype=np.int64)
+    name = getattr(hf_tokenizer, "name_or_path", "") or type(hf_tokenizer).__name__
+    raise ValueError(
+        f"Tokenizer {name!r} has no token id whose decoded text re-tokenizes to exactly one token, "
+        "so shared-prefix suffixes cannot be sized exactly."
+    )
 
 
 def converge_to_exact_length_text(
@@ -112,6 +129,7 @@ def converge_to_exact_length_text(
     initial_tokens: List[int],
     adjust_tokens_fn: Callable[[List[int], int, int], List[int]],
     wrap_fn: Optional[Callable[[str], str]] = None,
+    add_special_tokens: bool = True,
 ) -> Tuple[str, List[int]]:
     """Generate text tokenizing to exactly target_len; return (text, ids).
 
@@ -126,6 +144,11 @@ def converge_to_exact_length_text(
     counted with add_special_tokens=False because the wrapper embeds its own
     special tokens; the returned ids remain the unwrapped content ids.
     Callers must ensure target_len exceeds the wrapper's fixed overhead.
+
+    Set ``add_special_tokens=False`` when the text is a fragment appended to
+    another sequence (e.g. a shared-prefix suffix): the tokenizer's special
+    tokens (BERT's [CLS]/[SEP], T5's </s>) belong to the whole prompt, not to
+    the fragment, so counting them would make short targets unreachable.
     """
     if target_len <= 0:
         return "", []
@@ -142,7 +165,7 @@ def converge_to_exact_length_text(
             text = " ".join(text)
 
         if wrap_fn is None:
-            current_len = tokenizer.count_tokens(text)
+            current_len = tokenizer.count_tokens(text, add_special_tokens=add_special_tokens)
         else:
             text = wrap_fn(text)
             current_len = tokenizer.count_tokens(text, add_special_tokens=False)
