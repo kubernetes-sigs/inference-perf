@@ -1,0 +1,3 @@
+run:
+  eid: gemma-270m-rate-sweep-2026-11-06
+  description: Rate 2-4 of a sweep split across invocations.

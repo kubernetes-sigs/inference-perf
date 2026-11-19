@@ -1,0 +1,25 @@
+results:
+  observability:
+    pod_startup_times:
+      collected_at: 2026-11-06T10:00:00Z
+      pods:
+        - name: vllm-0
+          model: google/gemma-3-270m
+          role: replica
+          node: gke-l4-pool-1
+          creation_timestamp: 2026-11-06T09:56:10Z
+          ready_timestamp: 2026-11-06T09:58:30Z
+          startup_seconds: 140.0
+      aggregate:
+        units: s
+        mean: 140.0
+        min: 140.0
+        max: 140.0
+  component_health:
+    - component_label: vllm-0
+      total_restarts: 0
+      failed_replicas: 0
+      replica_health:
+        - replica_id: vllm-0
+          restarts: 0
+          healthy: true

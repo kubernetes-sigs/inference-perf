@@ -1,0 +1,34 @@
+run:
+  cid: gke-us-central1-bench
+  pid: gemma-270m-rate-sweep
+  user: bench-bot
+  description: Nightly rate sweep against one vLLM replica.
+  keywords: [nightly, vllm, gemma]
+scenario:
+  stack:
+    - metadata:
+        label: vllm-0
+        cfg_id: vllm-gemma-270m
+        schema_version: 0.0.1
+      standardized:
+        kind: inference_engine
+        tool: vllm
+        tool_version: 0.11.0
+        role: replica
+        replicas: 1
+        model:
+          name: google/gemma-3-270m
+        accelerator:
+          model: nvidia-l4
+          count: 1
+          parallelism:
+            tp: 1
+            dp: 1
+            dp_local: 1
+            workers: 1
+      native:
+        args:
+          --max-num-seqs: 256
+          --gpu-memory-utilization: 0.9
+        envars:
+          VLLM_USE_V1: "1"
