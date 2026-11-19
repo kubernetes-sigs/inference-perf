@@ -33,23 +33,31 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple, cast
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple, Union, cast
 
 from datasets import Dataset
 
+from inference_perf.datagen.replay.remote_trace_store import (
+    RemoteObject,
+    RemoteTraceStore,
+    TraceRecord,
+    check_not_all_denied,
+)
 from inference_perf.datagen.replay.wire_trace_converter import (
     FORMAT_OTEL_JSONL,
     WIRE_FORMATS,
+    _probe_file,
     convert_wire_file,
-    derive_trace_id,
-    detect_trace_format,
+    detect_trace_format_from_record,
+    trace_id_from_record,
     trace_read_errors,
     iter_wire_spans,
     open_trace_text,
     trace_stem,
+    trace_suffix,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,6 +214,8 @@ class LocalTraceRecord:
     source_id: str
     byte_offset: Optional[int] = None
     byte_length: Optional[int] = None
+    # Set for a record read from object storage; ``path`` is then its cache location.
+    remote: Optional[RemoteObject] = None
 
 
 # Injected by the generator, which owns normalization: (data, source_name,
@@ -250,30 +260,127 @@ class LocalTraceSource:
 
     def __init__(
         self,
-        files: Sequence[Path],
+        files: Sequence[Union[Path, RemoteObject]],
         skip_invalid: bool,
         normalize: NormalizeFn,
         validate_at_startup: bool = True,
+        remote: Optional[RemoteTraceStore] = None,
     ) -> None:
         self._skip_invalid = skip_invalid
         self._normalize = normalize
         self._validate_at_startup = validate_at_startup
+        self._remote = remote
         self._records: List[LocalTraceRecord] = self._index(files)
 
-    def _index(self, files: Sequence[Path]) -> List[LocalTraceRecord]:
+    def _index(self, files: Sequence[Union[Path, RemoteObject]]) -> List[LocalTraceRecord]:
+        # Probe every line-delimited remote object up front and concurrently: one request
+        # each, and thousands of them in series would take minutes.
+        probe_targets = [f for f in files if isinstance(f, RemoteObject) and trace_suffix(PurePosixPath(f.name)) != ".json"]
+        probes = (
+            dict(zip((o.uri for o in probe_targets), self._store().first_records(probe_targets), strict=True))
+            if probe_targets
+            else {}
+        )
+        check_not_all_denied(list(probes.values()))
+        whole = [f for f in files if isinstance(f, RemoteObject) and (f.uri not in probes or _is_otel_probe(probes[f.uri]))]
+        indexed_whole = self._index_whole(whole, probes) if whole else {}
         records: List[LocalTraceRecord] = []
-        for path in files:
+        for entry in files:
             try:
-                records.extend(self._index_one(path))
+                if isinstance(entry, RemoteObject):
+                    result = indexed_whole.get(entry.uri)
+                    if isinstance(result, Exception):
+                        raise result
+                    records.extend(result if result is not None else self._index_remote(entry, probes.get(entry.uri)))
+                else:
+                    records.extend(self._index_one(entry))
             except Exception as e:
-                logger.error(f"Failed to load {path}: {e}")
+                logger.error(f"Failed to load {entry.uri if isinstance(entry, RemoteObject) else entry}: {e}")
                 if not self._skip_invalid:
                     raise
         return records
 
-    def _index_one(self, path: Path) -> List[LocalTraceRecord]:
+    def _index_whole(
+        self, objs: Sequence[RemoteObject], probes: Dict[str, Union[TraceRecord, None, Exception]]
+    ) -> Dict[str, Union[List[LocalTraceRecord], Exception]]:
+        """Index the objects read in full (OTel), in pinned batches that fit half the cache.
+
+        Downloading a batch concurrently and indexing it before the next keeps each object
+        on disk until it is read, so none is downloaded twice, and the cap still holds.
+        """
+        store = self._store()
+        results: Dict[str, Union[List[LocalTraceRecord], Exception]] = {}
+        for batch in _fitting_batches(objs, store.max_bytes / 2):
+            store.pin(batch)
+            try:
+                failures = store.download_all(batch)
+                if len(failures) == len(batch):
+                    check_not_all_denied(list(failures.values()))
+                for o in batch:
+                    failure = failures.get(o.uri)
+                    if failure is not None:
+                        results[o.uri] = TraceReadError(str(failure))
+                        continue
+                    try:
+                        results[o.uri] = self._index_remote(o, probes.get(o.uri))
+                    except Exception as e:
+                        results[o.uri] = e
+            finally:
+                store.unpin(batch)
+        return results
+
+    def _store(self) -> RemoteTraceStore:
+        if self._remote is None:
+            raise ValueError("Remote trace entries need a RemoteTraceStore")
+        return self._remote
+
+    def _index_remote(self, obj: RemoteObject, first: Union[TraceRecord, None, Exception]) -> List[LocalTraceRecord]:
+        """Index one remote object: probe-only for wire captures, cached and indexed for OTel."""
+        if isinstance(first, OSError):
+            raise TraceReadError(str(first)) from first
+        if isinstance(first, Exception):
+            raise InvalidTraceError(str(first)) from first
+        name = PurePosixPath(obj.key)
+        if trace_suffix(name) == ".json" or _is_otel_probe(first):
+            # OTel identity and .jsonl row offsets need the whole file, so read it like a local one.
+            path = self._materialize(obj)
+            try:
+                indexed = self._index_one(path, identity=obj.uri)
+            except TraceSourceError as e:
+                raise type(e)(str(e).replace(str(path), obj.uri)) from e
+            except ValueError as e:
+                raise InvalidTraceError(str(e).replace(str(path), obj.uri)) from e
+            return [replace(r, remote=obj, source_id=r.source_id.replace(str(path), obj.uri, 1)) for r in indexed]
         try:
-            trace_format = detect_trace_format(path)
+            trace_format = detect_trace_format_from_record(first, name)
+        except ValueError as e:
+            raise InvalidTraceError(str(e).replace(str(name), obj.uri, 1)) from e
+        if trace_format not in WIRE_FORMATS:
+            raise UnsupportedTraceFormatError(f"{obj.uri}: not a wire capture")
+        # Validation would download the whole object; a broken one surfaces when it's loaded.
+        return [
+            LocalTraceRecord(
+                path=self._store().cache_path(obj),
+                trace_format=LocalTraceFormat.WIRE,
+                row_index=None,
+                normalize_row_index=None,
+                session_id_suffix=trace_id_from_record(first, obj.uri),
+                source_id=obj.uri,
+                remote=obj,
+            )
+        ]
+
+    def _materialize(self, obj: RemoteObject) -> Path:
+        try:
+            return self._store().materialize(obj)
+        except OSError as e:
+            raise TraceReadError(str(e)) from e
+
+    def _index_one(self, path: Path, identity: Optional[str] = None) -> List[LocalTraceRecord]:
+        """Index one local file. ``identity`` replaces the path in fallback ids (a remote object's URI)."""
+        try:
+            first = _probe_file(path)
+            trace_format = detect_trace_format_from_record(first, path)
         except trace_read_errors() as e:
             raise TraceReadError(f"{path}: {e}") from e
 
@@ -309,7 +416,7 @@ class LocalTraceSource:
             # the converter, which prefers a recorded session-id header and falls
             # back to a path hash -- capture files are commonly all named
             # calls.jsonl, so a bare stem would collide across sessions.
-            trace_id = derive_trace_id(path)
+            trace_id = trace_id_from_record(first, identity or str(path.resolve()))
             if self._validate_at_startup:
                 _validate_wire_convertible(path, trace_id)
             return [
@@ -360,15 +467,32 @@ class LocalTraceSource:
 
     def load_record(self, record_index: int) -> Dict[str, Any]:
         record = self._records[record_index]
-        raw = self._read_raw(record)
+        if record.remote is None:
+            raw = self._read_raw(record)
+        else:
+            raw = self._read_remote(record)
+        where = record.remote.uri if record.remote else str(record.path)
         normalized = self._normalize(
             raw,
             record.path.name,
-            str(record.path),
+            where,
             record.normalize_row_index,
         )
-        validate_record_schema(normalized, str(record.path))
+        validate_record_schema(normalized, where)
         return normalized
+
+    def _read_remote(self, record: LocalTraceRecord) -> Dict[str, object]:
+        """Read a remote record from its cached copy, fetching it if needed."""
+        assert record.remote is not None
+        for attempt in (1, 2):
+            path = self._materialize(record.remote)
+            try:
+                return self._read_raw(replace(record, path=path))
+            except TraceSourceError as e:
+                if attempt == 1 and isinstance(e.__cause__, FileNotFoundError):
+                    continue  # evicted by another process between the cache hit and the read
+                raise type(e)(f"{record.remote.uri}: {e}") from e
+        raise AssertionError("unreachable")
 
     def _read_raw(self, record: LocalTraceRecord) -> Dict[str, Any]:
         """Read one record's raw trace document."""
@@ -394,7 +518,7 @@ class LocalTraceSource:
 
         if record.trace_format is LocalTraceFormat.WIRE:
             try:
-                converted = convert_wire_file(path)
+                converted = convert_wire_file(path, trace_id=record.session_id_suffix or None)
             except ValueError as e:
                 raise InvalidTraceError(str(e)) from e
             except trace_read_errors() as e:
@@ -412,6 +536,24 @@ class LocalTraceSource:
             raise InvalidTraceError(f"{path}: not valid JSON: {e}") from e
         except trace_read_errors() as e:
             raise TraceReadError(f"{path}: {e}") from e
+
+
+def _fitting_batches(objs: Sequence[RemoteObject], budget: float) -> List[List[RemoteObject]]:
+    """Split ``objs`` in order into batches whose sizes sum to at most ``budget`` (at least one object each)."""
+    batches: List[List[RemoteObject]] = []
+    total = 0
+    for o in objs:
+        if batches and total + o.size <= budget:
+            batches[-1].append(o)
+            total += o.size
+        else:
+            batches.append([o])
+            total = o.size
+    return batches
+
+
+def _is_otel_probe(first: Union[TraceRecord, None, Exception]) -> bool:
+    return isinstance(first, dict) and "spans" in first
 
 
 def _otel_session_id(document: Dict[str, Any], fallback: str) -> str:

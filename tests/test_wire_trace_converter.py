@@ -1427,3 +1427,52 @@ def test_flatten_output_name_joins_nested_path(tmp_path: Path) -> None:
     f = nested / "calls.jsonl"
     f.touch()
     assert flatten_output_name(f, root) == "aime_codex_bifrost_2_model_calls.json"
+
+
+# --------------------------------------------------------------------------------------
+# Record-based helpers (shared by local files and remote objects)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "record,name,expected",
+    [
+        ({"path": "/v1/chat/completions", "request": "{}"}, "calls.jsonl", FORMAT_CHAT_COMPLETIONS_WIRE),
+        ({"path": "/v1/responses", "request": "{}"}, "calls.jsonl.zst", FORMAT_RESPONSES_WIRE),
+        ({"path": "/anthropic", "wire": "anthropic", "request": "{}"}, "calls.jsonl", FORMAT_ANTHROPIC_WIRE),
+        ({"spans": []}, "t.jsonl.zst", FORMAT_OTEL_JSONL),
+        ({"spans": []}, "t.json", FORMAT_OTEL_JSON),
+    ],
+)
+def test_detect_from_record_matches_file_detection(
+    tmp_path: Path, record: Dict[str, object], name: str, expected: str
+) -> None:
+    from pathlib import PurePosixPath
+
+    from inference_perf.datagen.replay.wire_trace_converter import detect_trace_format_from_record
+
+    assert detect_trace_format_from_record(record, PurePosixPath("bucket/dir") / name) == expected
+    plain = tmp_path / name.removesuffix(".zst")
+    plain.write_text(json.dumps(record) + "\n")
+    assert detect_trace_format(plain) == expected
+
+
+def test_detect_from_record_none_is_empty_file() -> None:
+    from pathlib import PurePosixPath
+
+    from inference_perf.datagen.replay.wire_trace_converter import detect_trace_format_from_record
+
+    with pytest.raises(ValueError, match="k/calls.jsonl: file is empty"):
+        detect_trace_format_from_record(None, PurePosixPath("k/calls.jsonl"))
+
+
+def test_trace_id_from_record_header_and_fallback() -> None:
+    import hashlib
+
+    from inference_perf.datagen.replay.wire_trace_converter import trace_id_from_record
+
+    with_header = {"headers": {"session_id": "abcd-ef01"}}
+    assert trace_id_from_record(with_header, "s3://b/k") == "abcdef01"
+    expected = hashlib.sha256(b"s3://b/k").hexdigest()[:32]
+    assert trace_id_from_record({"headers": {}}, "s3://b/k") == expected
+    assert trace_id_from_record(None, "s3://b/k") == expected

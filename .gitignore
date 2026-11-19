@@ -196,3 +196,6 @@ tests/optional/**/output/
 # scripts/check_mutation_regression.py
 mutation.json
 /mutants/
+
+# macOS Finder metadata
+.DS_Store
