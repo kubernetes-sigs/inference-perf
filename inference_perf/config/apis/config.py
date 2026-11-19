@@ -24,6 +24,7 @@ class APIType(Enum):
     AnthropicMessages = "anthropic_messages"
     Embeddings = "embeddings"
     Rerank = "rerank"
+    SGLangGenerate = "sglang_generate"
 
 
 class EmbeddingsEncodingFormat(Enum):
@@ -114,7 +115,7 @@ _NO_GENERATION_API_TYPES = (APIType.Embeddings, APIType.Rerank)
 class APIConfig(StrictBaseModel):
     type: APIType = Field(
         default=APIType.Completion,
-        description="API endpoint to benchmark: text completion, chat completion, Anthropic messages, embeddings or rerank.",
+        description="API endpoint to benchmark: text completion, chat completion, Anthropic messages, embeddings, rerank or SGLang's native /generate.",
     )
     streaming: bool = Field(
         default=False, description="Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics."
@@ -163,6 +164,9 @@ class APIConfig(StrictBaseModel):
                 raise ValueError(f"streaming is not supported for the {self.type.value} API")
             if self.response_format is not None:
                 raise ValueError(f"response_format is not supported for the {self.type.value} API")
+        # /generate takes structured output inside sampling_params, not as response_format.
+        if self.type == APIType.SGLangGenerate and self.response_format is not None:
+            raise ValueError("response_format is not supported for the sglang_generate API")
         if self.type != APIType.Embeddings and self.embeddings is not None:
             raise ValueError("embeddings options are only valid when type is 'embeddings'")
         if self.type != APIType.Rerank and self.rerank is not None:

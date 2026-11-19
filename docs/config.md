@@ -30,7 +30,7 @@ Controls the API interaction behavior. If SLO headers are present, each request 
 
 ```yaml
 api:
-  type: completion             # API type (completion|chat|anthropic_messages|embeddings|rerank)
+  type: completion             # API type (completion|chat|anthropic_messages|embeddings|rerank|sglang_generate)
   streaming: true             # Enable streaming for TTFT, ITL, and TPOT metrics
   headers:                     # Optional custom HTTP headers
     x-inference-model: llama
@@ -68,6 +68,8 @@ api:
     documents_field: documents # Optional request field name for the documents list
     top_n: 5                   # Optional; ask the server to return only the top N results
 ```
+
+With `type: sglang_generate`, requests go to SGLang's native `/generate` route as `text` plus `sampling_params` (`max_new_tokens`, `ignore_eos`), with no `model` field. Prompt and completion token counts come from the response's `meta_info`, and `meta_info.cached_tokens` is reported as cached prompt tokens. Streaming reads both the server's default cumulative chunks and the delta chunks of a server started with `--incremental-streaming-output`. Either way, the per-request report records each streamed chunk as only its new text (`response_chunks`), so every token is counted once; the raw body is kept in `response`. `response_format` and `load.lora_traffic_split` are not supported yet. It works with the `sglang` and `mock` server types and the `synthetic` and `mock` data generators.
 
 ### Data Generation
 

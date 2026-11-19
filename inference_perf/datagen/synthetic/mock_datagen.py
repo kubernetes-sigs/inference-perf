@@ -22,6 +22,7 @@ from inference_perf.apis import (
     EmbeddingsAPIData,
     InferenceAPIData,
     RerankAPIData,
+    SGLangGenerateAPIData,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -31,7 +32,14 @@ class MockDataGenerator(DataGenerator):
         super().__init__(api_config, config, tokenizer)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat, APIType.AnthropicMessages, APIType.Embeddings, APIType.Rerank]
+        return [
+            APIType.Completion,
+            APIType.Chat,
+            APIType.AnthropicMessages,
+            APIType.Embeddings,
+            APIType.Rerank,
+            APIType.SGLangGenerate,
+        ]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
@@ -60,6 +68,10 @@ class MockDataGenerator(DataGenerator):
                 i += 1
                 documents = [f"mock document {i}-{j}" for j in range(document_count)]
                 yield RerankAPIData.from_query_and_documents(f"mock query {i}", documents, rerank_options)
+        elif self.api_config.type == APIType.SGLangGenerate:
+            while True:
+                i += 1
+                yield SGLangGenerateAPIData(prompt=f"1 2 3 {i}")
         else:
             raise Exception("Unsupported API type")
 

@@ -184,3 +184,22 @@ def test_rerank_config_rejects_matching_field_names() -> None:
 def test_rerank_config_rejects_reserved_field_names(field: str, reserved: str) -> None:
     with pytest.raises(ValidationError, match="may not be 'model' or 'top_n'"):
         RerankConfig(**{field: reserved})
+
+
+# sglang_generate with streaming on -> accepted: /generate streams.
+def test_sglang_generate_accepts_streaming() -> None:
+    cfg = APIConfig(type=APIType.SGLangGenerate, streaming=True)
+    assert cfg.type == APIType.SGLangGenerate
+    assert cfg.streaming is True
+
+
+# sglang_generate with a response_format -> rejected: /generate takes structured output in sampling_params.
+def test_sglang_generate_rejects_response_format() -> None:
+    with pytest.raises(ValidationError, match="response_format is not supported for the sglang_generate API"):
+        APIConfig(type=APIType.SGLangGenerate, response_format=ResponseFormat(type=ResponseFormatType.JSON_OBJECT))
+
+
+# api.type sglang_generate from the CLI -> the enum member.
+def test_sglang_generate_read_from_cli() -> None:
+    cfg = read_config(cli_overrides={"api": {"type": "sglang_generate", "streaming": True}})
+    assert cfg.api.type == APIType.SGLangGenerate
