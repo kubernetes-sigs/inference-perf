@@ -14,6 +14,13 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.slo_unit` | str | Time unit for SLO header values: 's', 'ms' or 'us'. Defaults to 'ms'. |
 | `--api.slo_tpot_header` | str | Request header carrying the per-request TPOT SLO threshold. Defaults to 'x-slo-tpot-<slo_unit>'. |
 | `--api.slo_ttft_header` | str | Request header carrying the per-request TTFT SLO threshold. Defaults to 'x-slo-ttft-<slo_unit>'. |
+| `--api.async_polling.poll_url_template` | str | URL path (relative to server.base_url) or full URL template polled after a 202 response, with '{id}' replaced by the request ID. |
+| `--api.async_polling.id_json_field` | str | Dot-separated JSON field in the 202 response body carrying the request ID. |
+| `--api.async_polling.response_id_header` | str | Response header fallback used to extract the request ID when id_json_field is absent from the 202 body. |
+| `--api.async_polling.poll_interval_sec` | float | Seconds between GET status polls while the server answers 202. |
+| `--api.async_polling.max_poll_duration_sec` | float | Maximum seconds spent polling a 202 request before failing with TimeoutError. Defaults to load.request_timeout when unset. |
+| `--api.async_polling.exclude_request_headers` | JSON | Request header names (case-insensitive) omitted from GET poll requests while forwarding remaining headers such as tenant and auth. |
+| `--api.async_polling.headers` | JSON | Additional HTTP headers sent on GET poll requests. |
 | `--api.response_format.type` | Enum (json_schema, json_object) | Structured output mode: a full JSON schema or any JSON object. |
 | `--api.response_format.name` | str | Name given to the JSON schema in the request payload. |
 | `--api.response_format.json_schema` | JSON | JSON schema the model output must conform to when type is 'json_schema'. |

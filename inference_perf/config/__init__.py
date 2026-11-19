@@ -14,6 +14,7 @@
 from inference_perf.config.apis import (
     APIConfig,
     APIType,
+    AsyncPollingConfig,
     EmbeddingsConfig,
     EmbeddingsEncodingFormat,
     RerankConfig,
@@ -99,6 +100,7 @@ __all__ = [
     "AnyResolution",
     "APIConfig",
     "APIType",
+    "AsyncPollingConfig",
     "AudioDatagenConfig",
     "CircuitBreakerConfig",
     "ConcurrentLoadStage",
