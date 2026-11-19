@@ -18,6 +18,8 @@ import typing
 from enum import Enum
 from pydantic import BaseModel, SecretStr
 
+from inference_perf.analysis.analyze import RATE_CHOICES
+
 
 def unwrap_type(annotation: typing.Any) -> typing.Tuple[typing.Any, bool]:
     origin = typing.get_origin(annotation)
@@ -49,6 +51,25 @@ def add_global_args(
         parser.add_argument("-a", "--analyze", nargs="*", help="Path to a report directories to analyze", required=False),
         parser.add_argument("-u", "--unified_analysis_dir", help="Unified analysis directory path", required=False),
         parser.add_argument(
+            "--analyze-labels",
+            nargs="+",
+            metavar="LABEL",
+            help="Display names for the --analyze report directories, in the same order. The unified analysis legend uses them",
+            required=False,
+        ),
+        parser.add_argument(
+            "--analyze-rate",
+            help="Request rate on the QPS axis of the analysis charts: the achieved rate or the requested (configured) rate",
+            default="achieved",
+            choices=list(RATE_CHOICES),
+        ),
+        parser.add_argument(
+            "--analyze-latency-stat",
+            metavar="STAT",
+            help="Latency statistic in the analysis charts: mean, median, min, max or a percentile such as p90 or p99",
+            default="mean",
+        ),
+        parser.add_argument(
             "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         ),
     ]
@@ -57,7 +78,7 @@ def add_global_args(
         flags = ", ".join(f"`{opt}`" for opt in action.option_strings)
         if action.choices is not None:
             arg_type = f"Enum ({', '.join(str(choice) for choice in action.choices)})"
-        elif action.nargs == "*":
+        elif action.nargs in ("*", "+"):
             arg_type = "list of str"
         else:
             arg_type = "str"
