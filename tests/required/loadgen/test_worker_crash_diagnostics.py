@@ -43,7 +43,7 @@ from inference_perf.loadgen.load_generator import (
     WorkerFailure,
     collect_worker_failures,
 )
-from inference_perf.client.server_metrics.base import StageStatus
+from inference_perf.client.server_metrics.base import StageRuntimeInfo, StageStatus
 from inference_perf.metrics.request_collector import MultiprocessRequestMetricCollector
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -282,6 +282,8 @@ class TestWorkerCrashEndToEnd(unittest.IsolatedAsyncioTestCase):
         # exit code 1 and the RuntimeError traceback, and must mark the stage FAILED.
         # The worker is respawned between stages and the run continues, so the
         # second stage runs and fails the same way: two failures, two failed stages.
+        # Both failed stages still reach the stage-end report hook (#817): a
+        # failed stage's reports are what explain the failure.
         api_config = APIConfig(type=APIType.Completion, streaming=False)
         data_config = DataConfig(
             type=DataGenType.Random,
@@ -300,6 +302,12 @@ class TestWorkerCrashEndToEnd(unittest.IsolatedAsyncioTestCase):
             base_seed=42,
         )
         load_gen = LoadGenerator(datagen, load_config)
+        hooked: List[StageRuntimeInfo] = []
+
+        async def after_stage(info: StageRuntimeInfo) -> None:
+            hooked.append(info)
+
+        load_gen.after_stage = after_stage
 
         async with collector.start():
             await load_gen.mp_run(client)
@@ -319,6 +327,8 @@ class TestWorkerCrashEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(load_gen.stage_runtime_info), 2, "both stages must run")
         for info in load_gen.stage_runtime_info.values():
             self.assertEqual(info.status, StageStatus.FAILED)
+        self.assertEqual([info.stage_id for info in hooked], [0, 1], "failed stages must still get their reports")
+        self.assertEqual([info.status for info in hooked], [StageStatus.FAILED, StageStatus.FAILED])
 
     # One worker, one stage, and a datagen that raises while the worker unpickles it.
     # The worker exits 1 before Worker.run() with no crash record, the run returns

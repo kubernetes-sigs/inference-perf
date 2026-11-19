@@ -34,7 +34,7 @@ import signal
 import sys
 import time
 from contextlib import suppress
-from typing import Any, Generator, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Concatenate, Generator, List, Optional, ParamSpec, Tuple
 
 import pytest
 
@@ -43,6 +43,7 @@ from inference_perf.apis.base import InferenceAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.client.modelserver.base import ModelServerClient
 from inference_perf.client.modelserver.metrics import BaseMetrics
+from inference_perf.client.server_metrics.base import StageRuntimeInfo
 from inference_perf.config import (
     APIConfig,
     APIType,
@@ -60,6 +61,24 @@ from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueDat
 from inference_perf.loadgen.load_timer import LoadTimer
 from inference_perf.utils.mp_context import MP_CONTEXT
 from inference_perf.utils.request_queue import Drained, RequestQueue
+
+
+P = ParamSpec("P")
+
+
+# Wraps LoadGenerator.run_stage so a test sees each stage start and end:
+# before(0) runs as stage 0 starts, after(0) once it has returned.
+def _around_run_stage(
+    run_stage: Callable[Concatenate[int, P], Awaitable[None]],
+    before: Callable[[int], None],
+    after: Callable[[int], None],
+) -> Callable[Concatenate[int, P], Awaitable[None]]:
+    async def wrapped(stage_id: int, /, *args: P.args, **kwargs: P.kwargs) -> None:
+        before(stage_id)
+        await run_stage(stage_id, *args, **kwargs)
+        after(stage_id)
+
+    return wrapped
 
 
 class _TestClientBase(ModelServerClient):
@@ -1005,9 +1024,13 @@ async def test_zero_request_stage_boundary_is_not_missed() -> None:
         harness.shutdown()
 
 
-async def test_multi_stage_happy_path_through_mp_run() -> None:
+async def test_multi_stage_happy_path_through_mp_run(monkeypatch: pytest.MonkeyPatch) -> None:
     """Normal multi-stage runs must be unaffected by the teardown rework: both
-    stages complete cleanly through the real mp_run worker lifecycle."""
+    stages complete cleanly through the real mp_run worker lifecycle.
+
+    Each stage's reports are written by the after_stage hook (#817), so the
+    hook must see every stage once, in order, with that stage's runtime info,
+    and must have returned before the next stage starts."""
     from inference_perf.client.modelserver import MockModelServerClient
     from inference_perf.metrics.request_collector.local import LocalRequestMetricCollector
 
@@ -1024,6 +1047,28 @@ async def test_multi_stage_happy_path_through_mp_run() -> None:
     loadgen = LoadGenerator(datagen, load_config)
     client = MockModelServerClient(LocalRequestMetricCollector(), api_config, mock_latency=0.05)
 
+    events: List[Tuple[str, int]] = []
+    hooked: List[StageRuntimeInfo] = []
+
+    async def after_stage(info: StageRuntimeInfo) -> None:
+        events.append(("hook started", info.stage_id))
+        hooked.append(info)
+        # Outlasts the 0.1s interval: a hook nobody waited for would still be
+        # running when the next stage starts.
+        await asyncio.sleep(0.3)
+        events.append(("hook finished", info.stage_id))
+
+    monkeypatch.setattr(
+        loadgen,
+        "run_stage",
+        _around_run_stage(
+            loadgen.run_stage,
+            lambda stage_id: events.append(("stage started", stage_id)),
+            lambda stage_id: events.append(("stage ended", stage_id)),
+        ),
+    )
+    loadgen.after_stage = after_stage
+
     start = time.perf_counter()
     await loadgen.run(client)
     elapsed = time.perf_counter() - start
@@ -1034,6 +1079,17 @@ async def test_multi_stage_happy_path_through_mp_run() -> None:
         assert loadgen.stage_runtime_info[1].status.name == "COMPLETED"
         assert loadgen.stage_runtime_info[0].dropped_requests == 0
         assert loadgen.stage_runtime_info[1].dropped_requests == 0
+        assert events == [
+            ("stage started", 0),
+            ("stage ended", 0),
+            ("hook started", 0),
+            ("hook finished", 0),
+            ("stage started", 1),
+            ("stage ended", 1),
+            ("hook started", 1),
+            ("hook finished", 1),
+        ]
+        assert hooked == [loadgen.stage_runtime_info[0], loadgen.stage_runtime_info[1]]
     finally:
         await loadgen.stop()
 
@@ -1054,6 +1110,12 @@ async def test_sweep_preprocess_timeout_is_bounded() -> None:
         stage_teardown_grace_seconds=1.0,
     )
     loadgen = LoadGenerator(datagen, load_config)
+    hooked: List[int] = []
+
+    async def after_stage(info: StageRuntimeInfo) -> None:
+        hooked.append(info.stage_id)
+
+    loadgen.after_stage = after_stage
 
     start = time.perf_counter()
     await loadgen.run(HangingAsyncClient())
@@ -1064,6 +1126,9 @@ async def test_sweep_preprocess_timeout_is_bounded() -> None:
         # The probe stage (stage_id=-1) timed out but still produced runtime info.
         assert -1 in loadgen.stage_runtime_info
         assert loadgen.stage_runtime_info[-1].status.name == "TIMED_OUT"
+        # The probe only sizes the real stages and its reports are filtered
+        # out, so it must never reach the stage-end report hook (#817).
+        assert hooked == []
     finally:
         await loadgen.stop()
 
