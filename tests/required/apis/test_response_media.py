@@ -18,10 +18,14 @@ from inference_perf.payloads import Audio, Audios, Image, Images, RequestMetrics
 
 
 # A unary text response with 3 output tokens, and a streamed one with no chunks.
-# Expects neither dump to carry image, video or audio keys, so a text run's
-# per-request JSON is unchanged.
+# Expects neither dump to carry image, video or audio keys, so media leaves a
+# text run's per-request JSON unchanged.
 def test_text_response_serializes_without_media_keys() -> None:
-    assert UnaryResponseMetrics(output_tokens=3).model_dump() == {"output_tokens": 3, "server_usage": None}
+    assert UnaryResponseMetrics(output_tokens=3).model_dump() == {
+        "output_tokens": 3,
+        "server_usage": None,
+        "finish_reason": None,
+    }
     streamed = StreamedResponseMetrics(output_tokens=3).model_dump()
     assert not {"image", "video", "audio"} & streamed.keys()
 

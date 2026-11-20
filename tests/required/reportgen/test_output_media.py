@@ -78,7 +78,11 @@ def test_response_images_get_an_output_block_and_rate() -> None:
 def test_text_run_report_has_no_output_media() -> None:
     successes = summarize_requests([_request(0.0, 1.0)], percentiles=[50]).successes
 
-    assert not [key for key in successes if key.startswith("output_") and key not in ("output_len", "output_tokens")]
+    assert not [
+        key
+        for key in successes
+        if key.startswith("output_") and key not in ("output_len", "output_tokens", "output_shortfalls")
+    ]
     assert not [key for key in successes["throughput"] if key.startswith("output_") and key != "output_tokens_per_sec"]
     assert successes["image"]["count"]["mean"] == 0.0
 
