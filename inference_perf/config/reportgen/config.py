@@ -14,7 +14,7 @@
 from typing import Dict, List, Optional
 
 from inference_perf.config.common import StrictBaseModel
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class PerRequestFieldsConfig(StrictBaseModel):
@@ -53,6 +53,25 @@ class RequestLifecycleMetricsReportConfig(StrictBaseModel):
         description="Cap on the number of distinct example error messages retained per error label in the failure "
         "report, and per substitution entry.",
     )
+    group_by_labels: Optional[List[List[str]]] = Field(
+        default=None,
+        description="Generate a report for each combination of values of the listed request labels. Each inner list is "
+        "one grouping: [[tenant], [tenant, priority]] reports per tenant and per (tenant, priority) pair.",
+    )
+
+    @field_validator("group_by_labels")
+    @classmethod
+    def validate_group_by_labels(cls, groups: Optional[List[List[str]]]) -> Optional[List[List[str]]]:
+        seen: set[tuple[str, ...]] = set()
+        for group in groups or []:
+            if not group:
+                raise ValueError("each group_by_labels entry needs at least one label")
+            if len(set(group)) != len(group):
+                raise ValueError(f"group_by_labels entry {group} repeats a label")
+            if tuple(group) in seen:
+                raise ValueError(f"group_by_labels entry {group} is listed more than once")
+            seen.add(tuple(group))
+        return groups
 
 
 class PrometheusMetricsReportConfig(StrictBaseModel):

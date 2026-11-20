@@ -17,6 +17,7 @@ import json
 import re
 from collections import defaultdict
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union, TYPE_CHECKING
+from urllib.parse import quote
 from inference_perf.apis.tool_output import tool_argument_deltas, tool_name_deltas
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -51,6 +52,9 @@ from inference_perf.utils import ReportFile
 TOOL_TOKEN_AGREEMENT_REL_TOL = 0.25
 # Single-call Hermes template gaps measured at 13–14 tokens; see docs/metrics.md.
 TOOL_TOKEN_AGREEMENT_ABS_TOL = 16
+
+# Slice a request falls into when it carries no value for a group_by_labels key.
+MISSING_LABEL_VALUE = "default"
 
 logger = logging.getLogger(__name__)
 
@@ -1078,6 +1082,26 @@ def summarize_requests(
     )
 
 
+def group_metrics_by_labels(
+    metrics: List[RequestLifecycleMetric], label_keys: List[str]
+) -> dict[tuple[str, ...], List[RequestLifecycleMetric]]:
+    """Bucket requests by their values for label_keys, one bucket per combination of values seen."""
+    groups: dict[tuple[str, ...], List[RequestLifecycleMetric]] = defaultdict(list)
+    for metric in metrics:
+        groups[tuple(metric.info.labels.get(key, MISSING_LABEL_VALUE) for key in label_keys)].append(metric)
+    return groups
+
+
+def label_slice_report_name(labels: dict[str, str]) -> str:
+    """Report name for the slice with these label values.
+
+    Label values come from trace attributes and the name becomes a file name, so keys
+    and values are percent-encoded: no value can add a path separator.
+    """
+    pairs = "_".join(f"{quote(key, safe='')}={quote(value, safe='')}" for key, value in labels.items())
+    return f"labels_{pairs}_lifecycle_metrics"
+
+
 def build_per_request_lifecycle_entry(
     metric: RequestLifecycleMetric,
     fields: PerRequestFieldsConfig,
@@ -1312,7 +1336,20 @@ class ReportGenerator:
                 )
                 lifecycle_reports.append(report_file)
 
-        # Per-stage Prometheus summaries for the BR0.2 partials, kept only if the whole
+        for label_keys in report_config.request_lifecycle.group_by_labels or []:
+            for label_values, metrics in group_metrics_by_labels(request_metrics, label_keys).items():
+                labels = dict(zip(label_keys, label_values, strict=True))
+                contents = summarize_requests(
+                    metrics,
+                    percentiles,
+                    goodput_config=report_config.goodput,
+                    tokenizer=tokenizer,
+                    use_server_output_tokens=use_server_output_tokens,
+                    max_error_messages=max_error_messages,
+                ).model_dump()
+                contents["labels"] = labels
+                lifecycle_reports.append(ReportFile(name=label_slice_report_name(labels), contents=contents))
+
         # section succeeds: no partial carries metrics the native report dropped.
         stage_server_metrics: Dict[int, ModelServerMetrics] = {}
         if report_config.prometheus:

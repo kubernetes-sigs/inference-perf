@@ -432,6 +432,7 @@ report:
     use_server_output_tokens: false # Treat the server's usage.completion_tokens as the source of truth for output tokens.
     max_error_messages: 100   # Max number of unique error messages retained per error label (failures.by_label) and per bad tool call substitution entry
     use_server_output_tokens: false # Treat the server's usage.completion_tokens as the source of truth for output tokens.
+    group_by_labels: [[tenant], [tenant, priority]] # Generate metrics for each combination of request label values, see reports.md
   prometheus:
     summary: true             # Include Prometheus metrics summary
     per_stage: false          # Disable Prometheus stage breakdown
