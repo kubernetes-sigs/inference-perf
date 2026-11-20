@@ -17,6 +17,34 @@ adds `request_session_id` for the wire identity sent through
 `api.session_id_header_key`. Parent requests omit `request_session_id` because their
 wire identity is already the enclosing `session_id`.
 
+### Reports by request label
+
+`report.request_lifecycle.group_by_labels` adds one report for each combination of
+request label values. Requests get labels from OTel trace replay, where
+`data.otel_trace_replay.attribute_to_label_map` copies span attributes into labels.
+
+```yaml
+report:
+  request_lifecycle:
+    group_by_labels:
+      - [tenant]
+      - [tenant, priority]
+```
+
+Each inner list is one grouping. With the config above, a run whose requests carry
+`tenant` values `a` and `b` and `priority` values `high` and `low` writes
+`labels_tenant=a_lifecycle_metrics.json`, `labels_tenant=b_lifecycle_metrics.json` and
+one `labels_tenant=<t>_priority=<p>_lifecycle_metrics.json` for each pair that occurred.
+
+- The file has the same structure as `summary_lifecycle_metrics.json`, computed over the
+  requests in that slice, plus a top-level `labels` object holding the slice's label values.
+- A request with no value for a listed label is counted under the value `default`.
+- Label keys and values are percent-encoded in the file name, so a tenant named `a/b`
+  is written as `labels_tenant=a%2Fb_lifecycle_metrics.json`. The `labels` object holds
+  the unencoded values.
+- The console prints a "Summary by Request Labels" table with the 15 slices that have the
+  most requests.
+
 ## Understanding the Report Structure
 
 Here is an example snippet from a `summary_lifecycle_metrics.json` report:

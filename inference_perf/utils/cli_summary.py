@@ -15,6 +15,7 @@
 import re
 from typing import Iterable, List, Dict, Any, Optional
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from rich import print as rprint
 from inference_perf.utils.report_file import ReportFile
@@ -34,6 +35,15 @@ def extract_session_stage_id(report_name: str) -> Optional[int]:
     if match:
         return int(match.group(1))
     return None
+
+
+# Rows the label-slice table prints before it truncates; the report files hold every slice.
+MAX_LABEL_SLICE_ROWS = 15
+
+
+def is_label_slice_report(report_name: str) -> bool:
+    """Whether a report is a group_by_labels slice of the request lifecycle metrics."""
+    return re.fullmatch(r"labels_.+_lifecycle_metrics", report_name) is not None
 
 
 def token_source_caption(stage_contents: Iterable[Dict[str, Any]], has_server_output: bool) -> str:
@@ -107,6 +117,7 @@ def print_summary_table(reports: List[ReportFile]) -> None:
     if not stage_reports:
         rprint("[yellow]No per-stage lifecycle metrics found to display summary table.[/yellow]")
         print_session_summary_tables(reports)
+        print_label_slice_summary_table(reports)
         print_error_summary_table(reports)
         return
 
@@ -366,6 +377,7 @@ def print_summary_table(reports: List[ReportFile]) -> None:
 
     # Print session-level metrics if available
     print_session_summary_tables(reports)
+    print_label_slice_summary_table(reports)
     print_error_summary_table(reports)
 
 
@@ -635,6 +647,57 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
         console.print(cache_table)
     if has_any_tfut:
         console.print(tfut_table)
+
+
+def print_label_slice_summary_table(reports: List[ReportFile]) -> None:
+    """Print one row per group_by_labels slice, largest request count first."""
+    slices = sorted(
+        (report.contents for report in reports if is_label_slice_report(report.name)),
+        key=lambda contents: contents.get("load_summary", {}).get("count", 0),
+        reverse=True,
+    )
+    if not slices:
+        return
+
+    has_goodput = any("goodput_metrics" in contents.get("successes", {}) for contents in slices)
+
+    table = Table(title="[bold magenta]Summary by Request Labels[/bold magenta]", show_header=True, header_style="bold cyan")
+    table.add_column("Labels", justify="left", overflow="fold")
+    table.add_column("Requests", justify="right")
+    table.add_column("Error Rate", justify="right")
+    table.add_column("Req/s", justify="right")
+    table.add_column("TTFT Mean (ms)", justify="right")
+    table.add_column("TTFT P90 (ms)", justify="right")
+    if has_goodput:
+        table.add_column("Goodput %", justify="right")
+
+    for contents in slices[:MAX_LABEL_SLICE_ROWS]:
+        successes = contents.get("successes", {})
+        failed_count = contents.get("failures", {}).get("count", 0)
+        total_count = successes.get("count", 0) + failed_count
+        error_rate = failed_count / total_count if total_count > 0 else 0.0
+        error_color = "red" if error_rate > 0.05 else ("yellow" if error_rate > 0 else "green")
+
+        ttft = successes.get("latency", {}).get("time_to_first_token") or {}
+        ttft_mean = ttft.get("mean")
+        ttft_p90 = ttft.get("p90")
+
+        row = [
+            escape(", ".join(f"{key}={value}" for key, value in contents.get("labels", {}).items())),
+            str(contents.get("load_summary", {}).get("count", 0)),
+            f"[{error_color}]{error_rate * 100.0:0.1f}%[/]",
+            f"{successes.get('throughput', {}).get('requests_per_sec', 0.0):.2f}",
+            _fmt(None if ttft_mean is None else ttft_mean * 1000.0, 1),
+            _fmt(None if ttft_p90 is None else ttft_p90 * 1000.0, 1),
+        ]
+        if has_goodput:
+            row.append(_fmt(successes.get("goodput_metrics", {}).get("goodput_percentage"), 1))
+        table.add_row(*row)
+
+    console = Console()
+    console.print(table)
+    if len(slices) > MAX_LABEL_SLICE_ROWS:
+        console.print(f"... and {len(slices) - MAX_LABEL_SLICE_ROWS} more label slices (see the report files)")
 
 
 def _collect_error_labels(failures_by_stage: Dict[int, Dict[str, Any]]) -> list[str]:
