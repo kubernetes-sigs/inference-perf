@@ -58,6 +58,8 @@ api:
 
 If these headers are present in the request (or set globally in `api.headers`), `inference-perf` will extract them and use them as the constraints for that specific request.
 
+OTel trace replay can set these headers per request from span attributes, see [Headers and Labels from Span Attributes](otel_trace_replay.md#headers-and-labels-from-span-attributes).
+
 ### How They Interact
 
 - If a request has a per-request SLO specified via headers, it will **override** the corresponding global constraint from the `goodput` config for that specific request.
