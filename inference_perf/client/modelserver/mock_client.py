@@ -59,6 +59,19 @@ class MockModelServerClient(ModelServerClient):
         self.response_metrics = response_metrics or UnaryResponseMetrics(output_tokens=0)
         self.tokenizer = None
 
+    def _recorded_info(
+        self, data: InferenceAPIData, lora_adapter: Optional[str], response_metrics: Optional[UnaryResponseMetrics] = None
+    ) -> InferenceInfo:
+        """The InferenceInfo a recorded metric carries, with the request's labels as the real clients report them."""
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=0)),
+            response_metrics=response_metrics,
+            lora_adapter=lora_adapter,
+        )
+        if data.labels:
+            info.labels = data.labels
+        return info
+
     async def process_request(
         self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
     ) -> None:
@@ -82,11 +95,7 @@ class MockModelServerClient(ModelServerClient):
                     RequestLifecycleMetric(
                         stage_id=stage_id,
                         request_data=str(await data.to_request_body(effective_model_name, 3, False, False)),
-                        info=InferenceInfo(
-                            request_metrics=RequestMetrics(text=Text(input_tokens=0)),
-                            response_metrics=self.response_metrics.model_copy(deep=True),
-                            lora_adapter=lora_adapter,
-                        ),
+                        info=self._recorded_info(data, lora_adapter, self.response_metrics.model_copy(deep=True)),
                         error=None,
                         start_time=start,
                         end_time=time.perf_counter(),
@@ -100,10 +109,7 @@ class MockModelServerClient(ModelServerClient):
                 RequestLifecycleMetric(
                     stage_id=stage_id,
                     request_data="",
-                    info=InferenceInfo(
-                        request_metrics=RequestMetrics(text=Text(input_tokens=0)),
-                        lora_adapter=lora_adapter,
-                    ),
+                    info=self._recorded_info(data, lora_adapter),
                     error=stage_teardown_cancelled_error(),
                     start_time=start,
                     end_time=time.perf_counter(),
@@ -117,11 +123,7 @@ class MockModelServerClient(ModelServerClient):
                 RequestLifecycleMetric(
                     stage_id=stage_id,
                     request_data=str(data.to_request_body(effective_model_name, 3, False, False)),
-                    info=InferenceInfo(
-                        request_metrics=RequestMetrics(text=Text(input_tokens=0)),
-                        response_metrics=UnaryResponseMetrics(output_tokens=0),
-                        lora_adapter=lora_adapter,
-                    ),
+                    info=self._recorded_info(data, lora_adapter, UnaryResponseMetrics(output_tokens=0)),
                     error=ErrorResponseInfo(
                         error_msg=str(e),
                         error_type=type(e).__name__,
