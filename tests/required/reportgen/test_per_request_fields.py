@@ -12,14 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import cast
+from typing import Optional, cast
 
 import pytest
 
-from inference_perf.apis import ErrorResponseInfo, InferenceInfo, RequestLifecycleMetric, StreamedResponseMetrics
+from inference_perf.apis import (
+    ErrorResponseInfo,
+    InferenceInfo,
+    RequestLifecycleMetric,
+    StreamedResponseMetrics,
+    UnaryResponseMetrics,
+)
 from inference_perf.config import PerRequestFieldsConfig
 from inference_perf.payloads import RequestMetrics, Text
-from inference_perf.reportgen.base import build_per_request_lifecycle_entry
+from inference_perf.reportgen.base import build_per_request_lifecycle_entry, summarize_requests
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
@@ -145,7 +151,9 @@ def test_per_request_fields_computed_metrics_disabled_by_default() -> None:
 
 
 # One streamed chunk at 1.5 on a request from 1.0 to 2.0, with computed_metrics on.
-# The entry has latency 1.0, NTPOT 0.5 (1.0 over 2 tokens) and TTFT 0.5. TPOT and ITL need two timestamps.
+# The entry has latency 1.0, NTPOT 0.5 (1.0 over 2 tokens) and TTFT 0.5. TPOT and ITL need two
+# timestamps. There is no server usage, so output_tokens falls back to the client's 2, which is
+# also output_len and the count TPOT/NTPOT divide by.
 def test_per_request_fields_computed_metrics_can_be_enabled() -> None:
     entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig(computed_metrics=True))
 
@@ -159,9 +167,154 @@ def test_per_request_fields_computed_metrics_can_be_enabled() -> None:
         "inter_token_latencies": [],
         "input_tokens": 5,
         "output_tokens": 2,
+        "output_len": 2,
+        "tpot_output_tokens": 2,
         "ttft_slo_sec": None,
         "tpot_slo_sec": None,
     }
+
+
+# A streamed request whose client re-tokenization counted client_tokens output tokens, carrying
+# server_usage as the raw usage dict the server sent (None when it sent none).
+def _metric_with_usage(client_tokens: int, server_usage: Optional[dict[str, object]]) -> RequestLifecycleMetric:
+    metric = _metric()
+    metric.info.response_metrics = StreamedResponseMetrics(
+        output_tokens=client_tokens,
+        server_usage=server_usage,
+        output_token_times=[1.2] + [1.5] * (client_tokens - 1),
+    )
+    return metric
+
+
+# Server says 12 output tokens, the client re-tokenized 10. computed_metrics.output_tokens must be
+# the server's 12, the number the summary aggregates carry, while output_len keeps the client's 10
+# and tpot_output_tokens shows TPOT divided by 10 because use_server_output_tokens is off (#1105).
+def test_per_request_computed_metrics_output_tokens_is_the_server_count() -> None:
+    entry = build_per_request_lifecycle_entry(
+        _metric_with_usage(10, {"prompt_tokens": 5, "completion_tokens": 12}),
+        PerRequestFieldsConfig(computed_metrics=True),
+    )
+
+    computed = entry["computed_metrics"]
+    assert computed["output_tokens"] == 12
+    assert computed["output_len"] == 10
+    assert computed["tpot_output_tokens"] == 10
+
+
+# The same request with use_server_output_tokens on: TPOT and NTPOT divide by the server's 12, so
+# tpot_output_tokens reports 12, while output_tokens and output_len keep their meanings.
+def test_per_request_computed_metrics_tpot_output_tokens_follows_the_server_flag() -> None:
+    entry = build_per_request_lifecycle_entry(
+        _metric_with_usage(10, {"completion_tokens": 12}),
+        PerRequestFieldsConfig(computed_metrics=True),
+        use_server_output_tokens=True,
+    )
+
+    computed = entry["computed_metrics"]
+    assert computed["output_tokens"] == 12
+    assert computed["output_len"] == 10
+    assert computed["tpot_output_tokens"] == 12
+
+
+# A server that reported no usage leaves no server count to prefer, so output_tokens falls back to
+# the client's 10 under either flag setting, matching the summary's fallback, and TPOT divides by 10.
+def test_per_request_computed_metrics_falls_back_to_the_client_count() -> None:
+    for use_server in (False, True):
+        entry = build_per_request_lifecycle_entry(
+            _metric_with_usage(10, None),
+            PerRequestFieldsConfig(computed_metrics=True),
+            use_server_output_tokens=use_server,
+        )
+
+        computed = entry["computed_metrics"]
+        assert computed["output_tokens"] == 10
+        assert computed["output_len"] == 10
+        assert computed["tpot_output_tokens"] == 10
+
+
+# Usage that carries only prompt tokens has not counted the output, so the entry keeps the client's
+# 10 instead of reading the absent output key as 0.
+def test_per_request_computed_metrics_falls_back_when_usage_has_no_output_count() -> None:
+    entry = build_per_request_lifecycle_entry(
+        _metric_with_usage(10, {"prompt_tokens": 5}),
+        PerRequestFieldsConfig(computed_metrics=True),
+    )
+
+    assert entry["computed_metrics"]["output_tokens"] == 10
+    assert entry["computed_metrics"]["output_len"] == 10
+
+
+# The Anthropic Messages API reports output_tokens inside usage; that spelling is the server count
+# and wins over the client's 10 exactly like completion_tokens does.
+def test_per_request_computed_metrics_reads_the_anthropic_output_spelling() -> None:
+    entry = build_per_request_lifecycle_entry(
+        _metric_with_usage(10, {"input_tokens": 5, "output_tokens": 99}),
+        PerRequestFieldsConfig(computed_metrics=True),
+    )
+
+    assert entry["computed_metrics"]["output_tokens"] == 99
+    assert entry["computed_metrics"]["output_len"] == 10
+
+
+# A server-reported 0 is a count, not a missing count: output_tokens stays 0 and, with the flag on,
+# TPOT and NTPOT divide by 0 so both report null rather than borrowing the client's 7.
+def test_per_request_computed_metrics_keeps_a_server_reported_zero() -> None:
+    entry = build_per_request_lifecycle_entry(
+        _metric_with_usage(7, {"completion_tokens": 0}),
+        PerRequestFieldsConfig(computed_metrics=True),
+        use_server_output_tokens=True,
+    )
+
+    computed = entry["computed_metrics"]
+    assert computed["output_tokens"] == 0
+    assert computed["output_len"] == 7
+    assert computed["tpot_output_tokens"] == 0
+    assert computed["normalized_time_per_output_token"] is None
+    assert computed["time_per_output_token"] is None
+
+
+# docs/config.md says the per-request values are the ones the summary aggregates: for a single
+# request, the summary's output_tokens mean equals computed_metrics.output_tokens, flag on or off.
+def test_per_request_output_tokens_matches_the_summary_aggregate() -> None:
+    for use_server in (False, True):
+        metric = _metric_with_usage(10, {"completion_tokens": 12})
+        entry = build_per_request_lifecycle_entry(
+            metric,
+            PerRequestFieldsConfig(computed_metrics=True),
+            use_server_output_tokens=use_server,
+        )
+
+        summary = summarize_requests([metric], [50])
+        assert entry["computed_metrics"]["output_tokens"] == summary.successes["output_tokens"]["mean"]
+
+
+# A non-streamed response carries the same three counts; TTFT and TPOT stay null because there are
+# no token arrival times to measure them from.
+def test_per_request_computed_metrics_reports_counts_for_unary_responses() -> None:
+    metric = _metric()
+    metric.info.response_metrics = UnaryResponseMetrics(output_tokens=10, server_usage={"completion_tokens": 12})
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(computed_metrics=True))
+
+    computed = entry["computed_metrics"]
+    assert computed["output_tokens"] == 12
+    assert computed["output_len"] == 10
+    assert computed["tpot_output_tokens"] == 10
+    assert computed["time_to_first_token"] is None
+
+
+# A successful request with no response metrics has counted nothing on either side, so all three
+# count fields are null rather than 0.
+def test_per_request_computed_metrics_reports_null_counts_without_response_metrics() -> None:
+    metric = _metric()
+    metric.info.response_metrics = None
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(computed_metrics=True))
+
+    computed = entry["computed_metrics"]
+    assert computed["output_tokens"] is None
+    assert computed["output_len"] is None
+    assert computed["tpot_output_tokens"] is None
 
 
 def test_per_request_fields_disabled_computed_metrics_does_not_mutate_token_metrics() -> None:

@@ -125,6 +125,11 @@ requests had no server number at all, per side. See
 [Token Accounting and Provenance](./metrics.md#token-accounting-and-provenance) for what each
 field is derived from and which one normalizes per-token latency.
 
+Per-request entries in `per_request_lifecycle_metrics.json` use the same names when
+`computed_metrics` is on: `output_tokens` is the server count with the client count as the
+fallback, `output_len` is the client count alone, and `tpot_output_tokens` is the count TPOT
+and NTPOT divided by for that request.
+
 ## Session Reports
 
 Session replay runs (for example OTel trace replay) additionally produce session

@@ -86,6 +86,12 @@ that count from the same usage keys the report does, so either spelling switches
 The flag does not change `output_len` or `output_tokens` themselves, only which of the two the
 per-token metrics divide by.
 
+In `per_request_lifecycle_metrics.json`, `computed_metrics.tpot_output_tokens` names the count
+those per-token metrics divided by for that request, so the denominator is readable without
+backing it out of `request_latency / normalized_time_per_output_token`. The sibling
+`computed_metrics.output_tokens` keeps the summary's meaning — server count, client fallback —
+and `computed_metrics.output_len` is the client count alone, whichever way the flag is set.
+
 ### Reading a mismatch
 
 A nonzero `token_count_mismatches` means the client timeline count differs from server

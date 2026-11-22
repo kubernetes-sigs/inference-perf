@@ -355,6 +355,22 @@ def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric], percenti
     return result
 
 
+def reported_output_tokens(response_metrics: Optional[ResponseMetrics]) -> Optional[float]:
+    """Output token count the report carries for one request.
+
+    The server's usage count when it reported one (`completion_tokens`, or the
+    Anthropic `output_tokens`), the client-side re-tokenization otherwise. Resolved
+    once here so the per-request entry and the summary aggregate cannot disagree
+    (#1105). None only when the request carries no response metrics at all.
+    """
+    if response_metrics is None:
+        return None
+    server_tokens = server_reported_tokens(response_metrics.server_usage, SERVER_OUTPUT_TOKEN_KEYS)
+    if server_tokens is not None:
+        return server_tokens
+    return float(response_metrics.output_tokens)
+
+
 def summarize_output_token_usage(metrics: List[RequestLifecycleMetric], percentiles: List[float]) -> dict[str, float]:
     """Output tokens as reported by the server (usage.completion_tokens).
 
@@ -369,11 +385,9 @@ def summarize_output_token_usage(metrics: List[RequestLifecycleMetric], percenti
     per_request: List[float] = []
 
     for metric in metrics:
-        response_metrics = metric.info.response_metrics
-        server_usage = response_metrics.server_usage if response_metrics else None
-        completion_tokens = server_reported_tokens(server_usage, SERVER_OUTPUT_TOKEN_KEYS)
+        completion_tokens = reported_output_tokens(metric.info.response_metrics)
         if completion_tokens is None:
-            completion_tokens = safe_float(response_metrics.output_tokens if response_metrics else None)
+            completion_tokens = 0.0
         output_tokens_total += completion_tokens
         per_request.append(completion_tokens)
 
@@ -1122,6 +1136,7 @@ def build_per_request_lifecycle_entry(
 
     if fields.computed_metrics and metric.error is None:
         latency = compute_request_latency_metrics(metric, use_server_output_tokens)
+        response_metrics = metric.info.response_metrics
         entry["computed_metrics"] = {
             "request_latency": latency["request_latency"],
             "normalized_time_per_output_token": latency["normalized_time_per_output_token"],
@@ -1131,7 +1146,15 @@ def build_per_request_lifecycle_entry(
             "inter_token_latency": latency["inter_token_latency"],
             "inter_token_latencies": latency["inter_token_latency_deltas"],
             "input_tokens": metric.info.request_metrics.text.input_tokens,
-            "output_tokens": metric.info.response_metrics.output_tokens if metric.info.response_metrics else None,
+            # output_tokens means the same thing here as in the summary aggregates: the
+            # server's count, with the client count as the fallback. output_len is the
+            # client-side count alone, and tpot_output_tokens is the count TPOT and
+            # NTPOT actually divided by, which follows use_server_output_tokens (#1105).
+            "output_tokens": reported_output_tokens(response_metrics),
+            "output_len": response_metrics.output_tokens if response_metrics is not None else None,
+            "tpot_output_tokens": (
+                effective_output_tokens(response_metrics, use_server_output_tokens) if response_metrics is not None else None
+            ),
             "ttft_slo_sec": metric.ttft_slo_sec,
             "tpot_slo_sec": metric.tpot_slo_sec,
         }
