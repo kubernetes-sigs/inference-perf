@@ -215,8 +215,9 @@ load:
   type: constant|poisson|concurrent|trace_session_replay # Load pattern type
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
-    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
+    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS); a number, or an expression over stage seconds t such as "10 + 5*sin(2*pi*t/60)" (the stage sends the rate integrated over its window, and reports carry the mean), with load.type left out for an expression
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
+      stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds; may read measured terms, see Stop Conditions (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS, defaults to num_conversations for conversation_replay)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
   num_workers: 4                    # Concurrent worker threads (default: cgroup-aware CPU count: min(CPU affinity, cgroup CPU quota when present, host CPUs))
@@ -234,6 +235,97 @@ load:
 ```
 
 **Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
+
+#### Rate Expressions
+
+A stage's `rate` is a number, spaced as `load.type` says (constant or poisson), or an [expression](./expressions.md), set with no `load.type`. An expression may vary with stage time `t` and need not mention it: `"2 + 3"` is a rate of 5. The stage sends the rate integrated over its window, and reports carry the mean rate. The request count is the area under the rate over the stage, rounded down, with a small tolerance so that a ramp whose area works out to 50 sends 50 and not 49. A number schedules exactly as it always has.
+
+<!-- checked-example -->
+```yaml
+load:
+  stages:
+  - rate: "Min(5 + t/2, 40)"         # ramp to 40 req/s, then hold
+    stop_condition: "t >= 120"
+  - rate: "10 + 5*sin(2*pi*t/60)"    # one full cycle around 10 req/s
+    duration: 60
+```
+
+| Rate | Window (s) | Requests | Mean req/s |
+| --- | --- | --- | --- |
+| `10` | 60 | 600 | 10.00 |
+| `2 + 3` | 60 | 300 | 5.00 |
+| `5 + t/2` | 60 | 1200 | 20.00 |
+| `Min(5 + t/2, 40)` | 120 | 3575 | 29.79 |
+| `10 + 5*sin(2*pi*t/60)` | 60 | 600 | 10.00 |
+| `2 + 18*Heaviside(t - 30)` | 60 | 660 | 11.00 |
+| `Piecewise((2, t < 30), (20, True))` | 60 | 660 | 11.00 |
+| `40*exp(-t/30)` | 90 | 1140 | 12.67 |
+| `Max(0, 20 - t/3)` | 90 | 600 | 6.67 |
+| `0` | 60 | 0 | 0.00 |
+| `Max(0, -t)` | 60 | 0 | 0.00 |
+| `2**(t/10)` | 60 | 908 | 15.15 |
+
+A rate expression is sent at exact times, with no randomness: request 1 goes out when the area under the rate reaches 1, request 2 when it reaches 2, and so on, so the same config gives the same send times on every run. This holds for a constant expression too: `rate: "10"` over 60 s sends at 0.1 s, 0.2 s and on to 60.0 s. A numeric rate under `load.type: constant` is different: `rate: 10` sends the same exact count, with its requests spread at random inside the window.
+
+| Rate expression | Window (s) | First three sends (s) | Last send (s) |
+| --- | --- | --- | --- |
+| `10` | 60 | 0.100, 0.200, 0.300 | 60.000 |
+| `2 + 3` | 60 | 0.200, 0.400, 0.600 | 60.000 |
+| `t` | 10 | 1.414, 2.000, 2.449 | 10.000 |
+| `5 + t/2` | 60 | 0.198, 0.392, 0.583 | 60.000 |
+
+`load.type` is not set alongside a rate expression: leave it out. A config that sets `load.type` and gives any stage a rate expression is rejected when it loads.
+
+A rate of zero is legal, as a number or as an expression. A stage whose rate is zero for the whole stage sends zero requests, lasts its `duration` or `stop_condition` and reports a count of 0, so it works as a pause between two stages. A warning says the stage sends nothing, and why, when the config loads and when the stage runs. A rate that is zero for part of the stage, such as `Max(0, 20 - t/3)`, sends nothing during that part. A rate above zero that adds up to less than one request, such as `0.1` for 5 s, is treated the same way: the stage sends nothing, lasts its window, reports a count of 0 and logs a warning. A rate that is negative anywhere in the stage is rejected.
+
+| Rejected rate | Why |
+| --- | --- |
+| `10 - t` | Goes negative during a 60s stage. |
+| `Normal(10, 1)` | Random. A rate is never random. |
+| `requests/10` | `requests` is not a known symbol. |
+| `-1` | Negative. |
+
+Under `load.type: trace_replay` the trace sets when each request is sent, so a rate expression is rejected there too.
+
+#### Stop Conditions
+
+A constant or Poisson stage ends after exactly one of `duration` (seconds) or `stop_condition`, a condition over stage time `t`. `duration: N` means `stop_condition: "t >= N"`, and existing configs are unchanged. The condition is solved when the config loads, so the stage ends at an exact time, fractional seconds included. See [Conditions](./expressions.md#conditions) for what a condition may contain and what is rejected.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: poisson
+  stages:
+  - rate: 5
+    duration: 30                              # ends at 30s
+  - rate: 20
+    stop_condition: "t > 90.5"                # ends at 90.5s
+  - rate: 40
+    stop_condition: "(t >= 300) | (t >= 60)"  # whichever first: 60s
+```
+
+A condition can also read what the stage measures: window functions over finished requests such as `quantile_over_time(0.99, ttft[30s])` or `avg_over_last(error, 100)`, and the signals `completed`, `errors`, `in_flight`, `queued` and `since_last_completion`. A signal can be narrowed by a label, `completed{status="failure"}`, and a count can be read as it was earlier, `completed offset 60s`. **Series use short names:** `ttft`, not the report's `time_to_first_token`. See [Measured terms](./expressions.md#measured-terms) for the full list and the rules. A condition must still end on time alone, so a measured term only ever ends a stage before its deadline.
+
+The condition is evaluated on every finished request, and once a second while none finish, so a stalled server still ends the stage. The object form adds `hold`, the number of consecutive evaluations the condition must hold on before it ends the stage. A string holds once.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: constant
+  stages:
+  - rate: 20
+    stop_condition: "(t >= 300) | (errors >= 10)"   # the tenth failure ends it; 300s at the latest
+  - rate: 40
+    stop_condition:
+      condition: "((t >= 30) & (quantile_over_time(0.99, ttft[30s]) > 2)) | (t >= 600)"   # after 30s, once p99 TTFT over the last 30s exceeds 2s
+      hold: 3                                                                              # on 3 consecutive evaluations
+  - rate: 10
+    stop_condition: "(t >= 600) | ((in_flight > 0) & (since_last_completion > 30))"   # nothing has finished for 30s
+```
+
+A stage ended this way is COMPLETED. The load generator logs the stage second the condition held at and the value of each term it read, and the requests it had scheduled after that point are reported as dropped.
+
+Under `load.type: trace_replay` the trace sets when each request is sent, so `stop_condition` is rejected there.
 
 #### Retrying Transport Faults
 
