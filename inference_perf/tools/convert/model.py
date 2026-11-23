@@ -35,9 +35,10 @@ refuses rather than guesses.
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, FrozenSet, List, Mapping, Optional
+from typing import Callable, FrozenSet, List, Mapping, Optional, Union
 
 from inference_perf.config import Config, Distribution, DistributionType
+from inference_perf.utils.numeric.distribution.utils import compile_legacy_distribution
 
 
 class Verdict(Enum):
@@ -149,19 +150,21 @@ class Conversion:
             self.dropped.append(flag)
 
 
-def fixed_dist(value: int) -> Distribution:
-    """A distribution that emits exactly ``value`` for every request.
-
-    ``std_dev`` is left at its (unused) default so the field stays unset in
-    the emitted YAML and full-dump comparisons against hand-written fixtures
-    do not trip over it.
-    """
-    return Distribution(type=DistributionType.FIXED, mean=value, min=value, max=value)
+def _io_length(block: Distribution) -> Union[int, str]:
+    # the same rewrite the config layer applies to a legacy block, done here so a
+    # conversion does not warn the user about a block they never wrote
+    value = compile_legacy_distribution(block, integer=True, io=True)
+    return int(value) if isinstance(value, float) else value
 
 
-def uniform_dist(low: int, high: int) -> Distribution:
-    return Distribution(type=DistributionType.UNIFORM, mean=(low + high) / 2, min=low, max=high)
+def fixed_dist(value: int) -> Union[int, str]:
+    """An input or output length of exactly ``value`` for every request."""
+    return _io_length(Distribution(type=DistributionType.FIXED, mean=value, min=value, max=value))
 
 
-def normal_dist(mean: float, std_dev: float, min_value: int, max_value: int) -> Distribution:
-    return Distribution(type=DistributionType.NORMAL, mean=mean, std_dev=std_dev, min=min_value, max=max_value)
+def uniform_dist(low: int, high: int) -> Union[int, str]:
+    return _io_length(Distribution(type=DistributionType.UNIFORM, mean=(low + high) / 2, min=low, max=high))
+
+
+def normal_dist(mean: float, std_dev: float, min_value: int, max_value: int) -> Union[int, str]:
+    return _io_length(Distribution(type=DistributionType.NORMAL, mean=mean, std_dev=std_dev, min=min_value, max=max_value))

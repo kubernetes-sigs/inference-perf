@@ -29,8 +29,6 @@ import pytest
 from inference_perf.config import (
     APIType,
     ConcurrentLoadStage,
-    Distribution,
-    DistributionType,
     LoadType,
     MetricsClientType,
     StandardLoadStage,
@@ -107,11 +105,8 @@ def test_case_a_fixed_rate_converts() -> None:
     assert isinstance(stage, StandardLoadStage)
     assert stage.rate == 40
     assert stage.duration == 15
-    assert isinstance(config.data.input_distribution, Distribution)
-    assert config.data.input_distribution.type == DistributionType.FIXED
-    assert config.data.input_distribution.mean == 128
-    assert isinstance(config.data.output_distribution, Distribution)
-    assert config.data.output_distribution.mean == 64
+    assert config.data.input_distribution == 128
+    assert config.data.output_distribution == 64
     assert config.server is not None
     assert config.server.ignore_eos is True
     assert config.server.base_url == "http://127.0.0.1:8000"
@@ -410,12 +405,8 @@ def test_normal_isl_gets_wide_clamps_and_assumption() -> None:
     assert conversion.refusals == []
     config = conversion.config
     assert config is not None
-    dist = config.data.input_distribution
-    assert isinstance(dist, Distribution)
-    assert dist.type == DistributionType.NORMAL
-    assert dist.std_dev == 50
-    assert dist.min == 1
-    assert dist.max == 800  # mean + 6 sigma
+    # clamped to [1, mean + 6 sigma]
+    assert config.data.input_distribution == "floor(Min(Max(Normal(500, 50), 1), 800) + 1/2)"
     assert any("no upper clamp" in item for item in conversion.assumptions)
 
 
