@@ -109,8 +109,8 @@ read from.
 
 | What you are pinning | inference-perf | `vllm bench serve` v0.10.0 | `aiperf profile` v0.12.0 |
 | :--- | :--- | :--- | :---
-| Evenly spaced arrivals at a rate | `load.type: constant`, `stages[].rate` (random gaps rescaled to the exact stage duration) | `--request-rate` (random gaps rescaled to exactly `--num-prompts`/rate, the same construction) | `--request-rate` with `--arrival-pattern constant` (perfectly even) |
-| Poisson arrivals at a rate | `load.type: poisson`, `stages[].rate` | no equivalent at v0.10.0: every finite-rate schedule is rescaled to an anchored total, not a Poisson process | `--request-rate` (default `--arrival-pattern poisson`) |
+| Evenly spaced arrivals at a rate `r` | `stages[].request_interval: 1/r` (perfectly even) | no equivalent at v0.10.0: `--request-rate` draws random gaps rescaled to exactly `--num-prompts`/rate, the construction of `load.type: constant`, `stages[].rate` | `--request-rate` with `--arrival-pattern constant` (perfectly even) |
+| Poisson arrivals at a rate `r` | `stages[].request_interval: "Exponential(r)"` (or `load.type: poisson`, `stages[].rate`, deprecated) | no equivalent at v0.10.0: every finite-rate schedule is rescaled to an anchored total, not a Poisson process | `--request-rate` (default `--arrival-pattern poisson`) |
 | Fixed requests in flight | `load.type: concurrent`, `stages[].concurrency_level` | `--max-concurrency` | `--concurrency` |
 | How much load to send | `stages[].duration`, or `num_requests` under `concurrent` | `--num-prompts` | `--request-count`, or `--benchmark-duration` |
 | Input length | `data.input_distribution` (`type: fixed`, `mean`) | `--random-input-len` with `--random-range-ratio 0` | `--isl` with `--isl-stddev 0` |
@@ -128,13 +128,15 @@ These are the rows that cannot be translated by substituting a value, and they a
 a converted config still needs reading:
 
 - **Arrival spacing defaults disagree.** AIPerf defaults to Poisson at a given rate
-  (`--arrival-pattern poisson`), an unanchored process whose total time drifts. vLLM v0.10.0
-  draws random gaps and rescales them so the last request lands at exactly
-  `--num-prompts / --request-rate` (`get_request` in `vllm/benchmarks/serve.py`), which is the
-  construction of `load.type: constant`, so "rate 40" means a different stimulus on each side.
-  Set `--arrival-pattern` explicitly on the AIPerf side or compare only average offered rate;
-  vLLM has no unanchored Poisson setting, and burstiness values other than 1 draw gamma
-  intervals that are still rescaled.
+  (`--arrival-pattern poisson`), an unanchored process whose total time drifts, which is
+  `request_interval: "Exponential(40)"` at rate 40. vLLM v0.10.0 draws random gaps and rescales
+  them so the last request lands at exactly `--num-prompts / --request-rate` (`get_request` in
+  `vllm/benchmarks/serve.py`), which is the construction of `load.type: constant`. Neither is the
+  evenly spaced stimulus `request_interval: 0.025` produces, so "rate 40" means a different
+  stimulus on each side. Set `--arrival-pattern` explicitly on the AIPerf side or compare only
+  average offered rate. vLLM has no unanchored Poisson setting and no exactly even one:
+  `--burstiness b` other than 1 draws gamma intervals with shape `b` and scale `1/(b*r)`, which
+  are still rescaled.
 - **vLLM sends everything at once unless you ask otherwise.** `--request-rate` defaults to
   `inf`, which also disables `--burstiness`, so the default run offers all `--num-prompts`
   immediately. The nearest inference-perf equivalent is `load.type: concurrent` with

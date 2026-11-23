@@ -13,8 +13,10 @@
 # limitations under the License.
 import time
 from abc import ABC, abstractmethod
-from typing import Generator, Optional, Tuple
+from typing import Generator, Optional, Tuple, Union
 import numpy as np
+from inference_perf.utils.numeric.request_schedule import RequestSchedule
+from inference_perf.utils.numeric.rate_schedule import RateSchedule
 from inference_perf.utils.trace_reader import TraceReader
 from pathlib import Path
 
@@ -36,16 +38,33 @@ class LoadTimer(ABC):
 class ConstantLoadTimer(LoadTimer):
     """
     A load generator that generates requests at a constant rate.
-    Introduces a small amount of random noise in timing.
+    Introduces a small amount of random noise in timing for a numeric rate.
+    A rate written as an expression is sent at exact times, with no noise.
     """
 
-    def __init__(self, rate: float, duration: float) -> None:
+    def __init__(self, rate: Union[float, RateSchedule], duration: float) -> None:
+        # A rate expression, constant or not, is placed exactly: request k
+        # where the area under the rate reaches k. A numeric rate keeps the
+        # original jittered time-space arithmetic.
+        self._schedule: Optional[RateSchedule] = None
+        if isinstance(rate, RateSchedule):
+            if rate.is_expression:
+                self._schedule = rate
+                rate = rate.mean_rate
+            else:
+                rate = rate.constant_rate
         self._rate = rate
         self._duration = duration
         # TODO: Make random state a global seed
         self._rand = np.random.default_rng()
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        if self._schedule is not None:
+            start = time.monotonic() if initial is None else initial
+            for offset in self._schedule.send_times():
+                yield start + float(offset)
+            return
+
         num_requests = int(self._rate * self._duration)
         if num_requests == 0:
             return
@@ -70,12 +89,20 @@ class PoissonLoadTimer(LoadTimer):
     A load generator that generates requests based on a Poisson distribution.
     """
 
-    def __init__(self, rate: float, duration: float) -> None:
+    def __init__(self, rate: Union[float, RateSchedule], duration: float) -> None:
+        if isinstance(rate, RateSchedule):
+            # load.type is rejected next to a rate expression, so only a
+            # constant schedule gets here
+            rate = rate.constant_rate
         self._rate = rate
         self._duration = duration
         self._rand = np.random.default_rng()
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        # a zero rate never draws a request, so the loop below would never yield
+        if self._rate == 0:
+            return
+
         # Set start time
         next_time = time.perf_counter() if initial is None else initial
 
@@ -95,6 +122,22 @@ class PoissonLoadTimer(LoadTimer):
             for _ in range(req_count):
                 next_time = next(time_generator)
                 yield next_time
+
+
+class RequestIntervalLoadTimer(LoadTimer):
+    """
+    A load generator that sends each request at the time its stage's
+    request_interval gaps put it. The gaps are already drawn, so the timer is
+    finite: it yields one time per scheduled request and stops.
+    """
+
+    def __init__(self, schedule: RequestSchedule) -> None:
+        self._schedule = schedule
+
+    def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        start = time.perf_counter() if initial is None else initial
+        for offset in self._schedule.offsets:
+            yield start + float(offset)
 
 
 class TraceReplayLoadTimer(LoadTimer):

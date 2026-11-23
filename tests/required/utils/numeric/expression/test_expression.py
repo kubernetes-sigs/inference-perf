@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
 import numpy as np
 import pytest
 
@@ -80,6 +81,13 @@ class TestVariablePermissions:
         with pytest.raises((ValueError, TypeError)):
             Expression("10 +* 2")
 
+    # '1, 2' parses to a Python tuple and '[1]' to a list. Both are rejected as not a numeric value,
+    # where they used to fail with AttributeError: 'tuple' object has no attribute 'atoms'.
+    @pytest.mark.parametrize("raw", ["1, 2", "[1]"])
+    def test_tuple_or_list_rejected(self, raw: str) -> None:
+        with pytest.raises(ValueError, match="is not a numeric value"):
+            Expression(raw)
+
 
 class TestRandom:
     def test_normal_returns_float(self) -> None:
@@ -116,15 +124,10 @@ class TestRandom:
         assert isinstance(expr.sample(t=5, rng=np.random.default_rng(0)), float)
 
     def test_distribution_beyond_legacy_fast_path(self) -> None:
-        # Rayleigh was never in the hand-written sampler table; it is served by
-        # sympy's own numpy dispatcher on the fast path (not the slow fallback)
-        # and its draws stay within the [0, oo) support.
-        expr = Expression("Rayleigh(2)")
-        assert expr.is_random
-        assert not expr._fallback
-        result = expr.sample(size=200, rng=np.random.default_rng(7))
-        assert isinstance(result, np.ndarray)
-        assert result.min() >= 0
+        # Rayleigh has no row in the distribution table, so it is rejected by
+        # name when parsed. It used to be served by sympy's numpy dispatcher.
+        with pytest.raises(ValueError, match="Distribution 'Rayleigh' is not supported"):
+            Expression("Rayleigh(2)")
 
 
 class TestRangeValidation:
@@ -223,19 +226,16 @@ class TestClipPolicy:
 class TestSympyInternalsFence:
     """Fail loudly if a sympy upgrade breaks the internals the fast path leans on.
 
-    Both fences guard silent degradation: if sympy moves ``do_sample_numpy``
-    or reshapes its distribution constructors, Expression would still work but
-    every random draw would take the slow symbolic path.
+    The first fence guards the compiled skeleton every random draw goes
+    through. The second guards constructor discovery: if sympy reshapes its
+    distribution constructors, a supported distribution would stop parsing.
     """
 
     def test_numpy_fast_path_compiled(self) -> None:
-        from inference_perf.utils.numeric.expression import expression as mod
-
-        # getattr rather than attribute access: do_sample_numpy is an import,
-        # not a definition, so mypy --strict flags cross-module access to it.
-        assert getattr(mod, "do_sample_numpy", None) is not None
+        # sampling no longer imports sympy's do_sample_numpy and has no symbolic
+        # fallback, so the fence is the compiled skeleton and one leaf per draw.
         expr = Expression("Normal(0, 1) + Uniform(0, 1) + t")
-        assert not expr._fallback
+        assert len(expr._random_leaves) == 2
         assert expr._lambdified is not None
 
     def test_distribution_constructors_discovered(self) -> None:
@@ -324,3 +324,189 @@ def test_bounds_contain_samples(raw: str) -> None:
     lo, hi = expr.bounds
     samples = np.asarray(expr.sample(rng=np.random.default_rng(0), size=20000))
     assert lo <= samples.min() and samples.max() <= hi
+
+
+# is_integer_valued, one case per branch: a whole constant, a fractional constant, an integer-support variable
+# (Poisson), a finite-set variable (Binomial), a real-support variable (Normal), and floor() over one.
+# Expected: True, False, True, True, False, True.
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("512", True),
+        ("512.5", False),
+        ("Poisson(2)", True),
+        ("Binomial(10, 1/2)", True),
+        ("Normal(512, 128)", False),
+        ("floor(Normal(512, 128))", True),
+    ],
+)
+def test_is_integer_valued(raw: str, expected: bool) -> None:
+    assert Expression(raw).is_integer_valued is expected
+
+
+# Arithmetic keeps or loses integrality the way it should. Poisson(2) + 1 and Min(Poisson(2), 20) stay whole,
+# Poisson(2) / 2 and Poisson(2) * 1.5 do not. Expected: True, True, False, False.
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("Poisson(2) + 1", True), ("Min(Poisson(2), 20)", True), ("Poisson(2) / 2", False), ("Poisson(2) * 1.5", False)],
+)
+def test_is_integer_valued_through_arithmetic(raw: str, expected: bool) -> None:
+    assert Expression(raw).is_integer_valued is expected
+
+
+# bounds read through floor/ceiling and a finite support: floor(Uniform(10, 90)) -> (10, 90),
+# ceiling(Uniform(0, 2)) -> (0, 2), Binomial(10, 1/2) -> (0, 10).
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("floor(Uniform(10, 90))", (10.0, 90.0)), ("ceiling(Uniform(0, 2))", (0.0, 2.0)), ("Binomial(10, 1/2)", (0.0, 10.0))],
+)
+def test_bounds_through_rounding_and_finite_support(raw: str, expected: tuple[float, float]) -> None:
+    assert Expression(raw).bounds == expected
+
+
+# is_within against [1, 100], one case per way to fail: inside, below, above, an open side, and no
+# provable bounds. floor(Uniform(1, 100)) -> True; Min(Poisson(3), 50) -> False (can be 0); Uniform(50, 200) ->
+# False; Min(Poisson(3), 100) with only a maximum -> True; a Piecewise mixture -> False (nothing proven).
+@pytest.mark.parametrize(
+    ("raw", "minimum", "maximum", "expected"),
+    [
+        ("floor(Uniform(1, 100))", 1, 100, True),
+        ("Min(Poisson(3), 50)", 1, 100, False),
+        ("Uniform(50, 200)", 1, 100, False),
+        ("Min(Poisson(3), 100)", None, 100, True),
+        ("Piecewise((Poisson(2), Uniform(0, 1) < 0.5), (Poisson(9), True))", 0, None, False),
+    ],
+)
+def test_is_within(raw: str, minimum: float | None, maximum: float | None, expected: bool) -> None:
+    assert Expression(raw).is_within(minimum, maximum) is expected
+
+
+# An Expression that may take t in a distribution's parameters, as request_interval does.
+def _over_time(raw: str, minimum: float | None = None, duration: float | None = None) -> Expression:
+    return Expression(raw, minimum=minimum, duration=duration, time_in_parameters=True)
+
+
+# t inside a distribution's parameters is opt-in and then counts as t: "Exponential(5 + t/10)" varies with time
+# and lists t among its symbols, "Exponential(5)" does not. Without the opt-in the parameter must be a constant,
+# and a parameter may read t only, not another draw.
+def test_time_in_a_distribution_parameter_is_seen() -> None:
+    assert _over_time("Exponential(5 + t/10)").varies_with_time
+    assert _over_time("Exponential(5 + t/10)").free_symbols == {"t"}
+    assert not _over_time("Exponential(5)").varies_with_time
+    assert _over_time("t + Exponential(5)").varies_with_time
+    with pytest.raises(ValueError, match="rate must be a finite constant, got t/10 \\+ 5"):
+        Expression("Exponential(5 + t/10)")
+    with pytest.raises(ValueError, match="disallowed symbol"):
+        Expression("Normal(t, 1)", allow_time=False, time_in_parameters=True)
+    with pytest.raises(ValueError, match="mean must be a constant or an expression of t"):
+        _over_time("Normal(Uniform(0, 1) + t, 1)")
+    with pytest.raises(ValueError, match="requires std > 0, got std = 0"):
+        _over_time("Normal(512, 0)")
+
+
+# A draw uses the parameters as they stand at the given t: 2000 seeded draws of "Exponential(10 + t)"
+# average 0.1 at t=0 and 0.01 at t=90 (within 10%), which is also what mean(t) gives. Drawing without a t is an error.
+def test_draw_uses_the_parameters_at_t() -> None:
+    expression = _over_time("Exponential(10 + t)")
+    assert expression.mean(0.0) == pytest.approx(0.1) and expression.mean(90.0) == pytest.approx(0.01)
+    for t, mean in ((0.0, 0.1), (90.0, 0.01)):
+        draws = np.asarray(expression.sample(t, rng=np.random.default_rng(0), size=2000))
+        assert float(draws.mean()) == pytest.approx(mean, rel=0.1)
+    with pytest.raises(ValueError, match="requires \\['t'\\]"):
+        expression.sample(rng=np.random.default_rng(0))
+
+
+# A support that moves with t is bounded over the window: "Uniform(t, t + 1)" over 60s lies in [0, 61],
+# and "0.05 + Exponential(20 + t)" is at least 0.05.
+def test_bounds_of_a_support_that_moves_with_time() -> None:
+    assert _over_time("Uniform(t, t + 1)", duration=60).bounds == (0.0, 61.0)
+    assert _over_time("0.05 + Exponential(20 + t)", duration=60).bounds == (0.05, float("inf"))
+
+
+# Random expressions over t that can be drawn from at every t in a 60s window pass the check, and so
+# do expressions the check does not apply to. A LogNormal passes with or without t, since its mean comes
+# from the table, and a gap with t and no distribution passes although its bounds are undecidable.
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Exponential(5 + t/10)",
+        "Exponential(0.1 + t)",
+        "Gamma(2, 0.1 + t)",
+        "Uniform(t, t + 1)",
+        "0.05 + Exponential(20 + t)",
+        "Max(0, Normal(1 + t, 0.1))",
+        "Exponential(10)",
+        "LogNormal(-2.55, 0.7)",
+        "LogNormal(-2.55 + t/100, 0.7)",
+        "Pareto(1 + t, 2)",
+        "DiscreteUniform([0.1, 0.2]) + t/100",
+        "1/t",
+        "Piecewise((oo, t < 5), (0.1, True))",
+    ],
+)
+def test_valid_draws_over_time_are_accepted(raw: str) -> None:
+    _over_time(raw, minimum=0, duration=60).require_valid_draws()
+
+
+# Over a 60s window each of these is rejected, naming the condition and a t where one is found: a rate of 0 at
+# t=0, a rate that reaches 0 at t=10, a rate with a pole at t=5 that cannot be shown finite, a rate that is
+# infinite at t=0, a distribution with no row, a Pareto with no finite mean, and a gap that cannot be shown to
+# stay at or above 0.
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ("Exponential(t)", "Exponential\\(rate\\) requires 'rate > 0', which fails at t = 0 over \\[0, 60\\]"),
+        ("Exponential(10 - t)", "Exponential\\(rate\\) requires 'rate > 0', which fails at t = 10 over \\[0, 60\\]"),
+        ("Exponential(1/(t - 5))", "requires 'rate is a finite real', which could not be proved over \\[0, 60\\]"),
+        ("Exponential(1/t)", "requires 'rate is a finite real', which fails at t = 0 over \\[0, 60\\]"),
+        ("Abs(Cauchy(1 + t, 1))", "Distribution 'Cauchy' is not supported"),
+        ("Pareto(1 + t, 1)", "requires 'alpha > 1 for a finite mean', which fails at t = 0 over \\[0, 60\\]"),
+        ("Exponential(5 + t) - 0.01", "cannot be shown to stay inside the permitted range"),
+    ],
+)
+def test_invalid_draws_over_time_are_rejected(raw: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        _over_time(raw, minimum=0, duration=60).require_valid_draws()
+
+
+# The check needs a window: a random expression over t built with no duration is refused.
+def test_valid_draws_need_a_duration() -> None:
+    with pytest.raises(ValueError, match="needs a duration"):
+        _over_time("Exponential(5 + t)", minimum=0).require_valid_draws()
+
+
+# With t allowed in parameters, a parameter that cannot follow a curve is still refused when parsed, by name:
+# a gamma's shape, and any parameter of Beta, Poisson, Binomial or Geometric.
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ("Gamma(2 + t, 0.1)", "shape of Gamma\\(shape, scale\\) cannot vary with t. Only scale can."),
+        ("Beta(2 + t, 5)", "the parameters of Beta\\(alpha, beta\\) cannot vary with t"),
+        ("Poisson(3 + t)", "the parameters of Poisson\\(mean\\) cannot vary with t"),
+        ("Binomial(10, 1/(2 + t))", "the parameters of Binomial\\(n, p\\) cannot vary with t"),
+        ("Geometric(1/(2 + t))", "the parameters of Geometric\\(p\\) cannot vary with t"),
+    ],
+)
+def test_parameters_that_cannot_follow_a_curve_are_rejected(raw: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        _over_time(raw)
+
+
+# sample_base and value_given split a draw from the time it is read at. For "0.05 + Exponential(20 + t)" the
+# base is one Exponential(1) draw per value, and a row z reads as 0.05 + z/20 at t=0 and 0.05 + z/80 at t=60.
+# For "Poisson(3)/(10 + t)" the base is the Poisson draw itself. A value with no draw has no columns.
+def test_a_draw_is_read_at_any_time() -> None:
+    moving = _over_time("0.05 + Exponential(20 + t)")
+    base = moving.sample_base(np.random.default_rng(0), 4)
+    np.testing.assert_array_equal(base[:, 0], np.random.default_rng(0).standard_exponential(4))
+    z = float(base[0, 0])
+    assert moving.value_given([z], 0.0) == pytest.approx(0.05 + z / 20)
+    assert moving.value_given([z], 60.0) == pytest.approx(0.05 + z / 80)
+    still = _over_time("Poisson(3)/(10 + t)")
+    draws = still.sample_base(np.random.default_rng(1), 4)
+    np.testing.assert_array_equal(draws[:, 0], np.random.default_rng(1).poisson(3, 4))
+    assert still.value_given([6.0], 2.0) == pytest.approx(0.5)
+    assert Expression("1/(1 + t)").sample_base(np.random.default_rng(0), 3).shape == (3, 0)
+    assert Expression("1/(1 + t)").value_given([], 1.0) == pytest.approx(0.5)
+    # division by zero reads as an infinite value
+    assert Expression("1/t").value_given([], 0.0) == math.inf
