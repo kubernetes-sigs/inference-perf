@@ -11,11 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 import math
 import threading
 import time
 import unittest
-from typing import Any
+from pathlib import Path
+from typing import Any, Mapping, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -106,6 +108,63 @@ class TestLoadTimeoutValidation(unittest.TestCase):
         for value in (0, -5, math.inf, math.nan):
             with self.assertRaises(ValidationError, msg=f"load_timeout={value}"):
                 CustomTokenizerConfig(load_timeout=value)
+
+
+# A word-level tokenizer (vocabulary "a", "b") loaded from tmp_path, with model_max_length 4.
+# `truncation` is written into tokenizer.json as shipped (None: disabled).
+def _word_tokenizer(tmp_path: Path, truncation: Optional[Mapping[str, object]] = None) -> CustomTokenizer:
+    spec: dict[str, object] = {
+        "version": "1.0",
+        "truncation": dict(truncation) if truncation is not None else None,
+        "padding": None,
+        "added_tokens": [],
+        "normalizer": None,
+        "pre_tokenizer": {"type": "WhitespaceSplit"},
+        "post_processor": None,
+        "decoder": None,
+        "model": {"type": "WordLevel", "vocab": {"<unk>": 0, "a": 1, "b": 2}, "unk_token": "<unk>"},
+    }
+    (tmp_path / "tokenizer.json").write_text(json.dumps(spec), encoding="utf-8")
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"tokenizer_class": "PreTrainedTokenizerFast", "model_max_length": 4}), encoding="utf-8"
+    )
+    return CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path=str(tmp_path)))
+
+
+# 3 tokens count as 3; 8 tokens are capped at model_max_length (4), the same count
+# Hugging Face gives when truncating to it.
+def test_count_is_capped_at_model_max_length(tmp_path: Path) -> None:
+    tokenizer = _word_tokenizer(tmp_path)
+    hf = tokenizer.get_tokenizer()
+
+    assert tokenizer.count_tokens("a b a") == 3
+    assert tokenizer.count_tokens("a b a b a b a b") == 4
+    assert len(hf("a b a b a b a b", truncation=True, max_length=4).input_ids) == 4
+
+
+# count_tokens must not reconfigure the tokenizer's backend: the backend is shared by
+# every thread using the tokenizer (with open loop, the datagen thread encodes with
+# truncation=False while the event loop counts), so a call that enabled truncation
+# could make another thread's encode come back cut to model_max_length. After counting
+# an over-long text the backend still has truncation disabled.
+def test_count_tokens_leaves_the_backend_untouched(tmp_path: Path) -> None:
+    tokenizer = _word_tokenizer(tmp_path)
+    backend = tokenizer.get_tokenizer().backend_tokenizer
+
+    tokenizer.count_tokens("a b a b a b a b")
+
+    assert backend.truncation is None
+
+
+# A tokenizer.json that ships with truncation enabled (max_length 2) has it switched
+# off at load, so no later call has to reconfigure the backend; counts are still
+# capped at model_max_length (4), not at the shipped 2.
+def test_shipped_truncation_is_disabled_at_load(tmp_path: Path) -> None:
+    shipped = {"direction": "Right", "max_length": 2, "strategy": "LongestFirst", "stride": 0}
+    tokenizer = _word_tokenizer(tmp_path, truncation=shipped)
+
+    assert tokenizer.get_tokenizer().backend_tokenizer.truncation is None
+    assert tokenizer.count_tokens("a b a b a b a b") == 4
 
 
 if __name__ == "__main__":
