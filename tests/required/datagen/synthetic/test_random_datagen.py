@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from itertools import islice
+
 import numpy as np
 import pytest
 
-from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import ChatCompletionAPIData, CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType
 from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -231,3 +233,54 @@ def test_random_datagen_distribution_types() -> None:
     assert len(generator.output_lengths) == 5
     for length in generator.output_lengths:
         assert length == 7
+
+
+# api.type chat with five random prompts -> get_data() yields lazy requests that
+# materialize into /v1/chat/completions payloads with one user message.
+async def test_random_datagen_chat_yields_chat_completion_data() -> None:
+    api_config = APIConfig(type=APIType.Chat, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    tokenizer = DummyCustomTokenizer()
+    generator = RandomDataGenerator(api_config, data_config, tokenizer)
+
+    assert APIType.Chat in generator.get_supported_apis()
+
+    for i, lazy_data in enumerate(islice(generator.get_data(), 5)):
+        assert isinstance(lazy_data, LazyLoadInferenceAPIData)
+        data = generator.load_lazy_data(lazy_data)
+
+        assert isinstance(data, ChatCompletionAPIData)
+        assert data.get_route() == "/v1/chat/completions"
+        assert len(data.messages) == 1
+        assert data.messages[0].role == "user"
+        assert isinstance(data.messages[0].content, str)
+        assert tokenizer.count_tokens(data.messages[0].content) == generator.input_lengths[i]
+        assert data.max_tokens == generator.output_lengths[i]
+
+        body = await data.to_request_body(
+            effective_model_name="m",
+            max_tokens=999,
+            ignore_eos=False,
+            streaming=True,
+        )
+        assert body["messages"] == [{"role": "user", "content": data.messages[0].content}]
+        assert body["max_tokens"] == generator.output_lengths[i]
+
+
+# api.type chat plus data.use_chat_template=true -> construction fails instead
+# of applying the tokenizer chat template and server chat template twice.
+def test_random_datagen_use_chat_template_rejects_chat_api() -> None:
+    api_config = APIConfig(type=APIType.Chat, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        use_chat_template=True,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+
+    with pytest.raises(ValueError, match="cannot be combined with api.type: chat"):
+        RandomDataGenerator(api_config, data_config, ChatTemplateDummyCustomTokenizer())

@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+from itertools import islice
 from typing import Any, Iterator
 from unittest.mock import patch
 
 import pytest
 
 from inference_perf.apis import (
+    ChatCompletionAPIData,
     CompletionAPIData,
     EmbeddingsAPIData,
     LazyLoadInferenceAPIData,
@@ -261,3 +263,58 @@ def test_synthetic_datagen_sglang_generate_requires_output_distribution() -> Non
 
     with pytest.raises(ValueError, match="IODistribution and tokenizer are required"):
         SyntheticDataGenerator(APIConfig(type=APIType.SGLangGenerate), data_config, DummyCustomTokenizer())
+
+
+# api.type chat with five synthetic prompts -> get_data() yields lazy requests
+# that materialize into valid /v1/chat/completions wire payloads.
+async def test_synthetic_datagen_chat_yields_chat_completion_data() -> None:
+    api_config = APIConfig(type=APIType.Chat)
+    data_config = DataConfig(
+        type=DataGenType.Synthetic,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    tokenizer = DummyCustomTokenizer()
+    generator = SyntheticDataGenerator(api_config, data_config, tokenizer)
+
+    assert APIType.Chat in generator.get_supported_apis()
+    assert generator._materialized_count == 0
+
+    for i, lazy_data in enumerate(islice(generator.get_data(), 5)):
+        assert isinstance(lazy_data, LazyLoadInferenceAPIData)
+        data = generator.load_lazy_data(lazy_data)
+
+        assert isinstance(data, ChatCompletionAPIData)
+        assert data.get_route() == "/v1/chat/completions"
+        assert len(data.messages) == 1
+        assert data.messages[0].role == "user"
+        assert isinstance(data.messages[0].content, str)
+        assert tokenizer.count_tokens(data.messages[0].content) == generator.input_lengths[i]
+        assert data.max_tokens == generator.output_lengths[i]
+
+        body = await data.to_request_body(
+            effective_model_name="m",
+            max_tokens=999,
+            ignore_eos=False,
+            streaming=False,
+        )
+        assert body["messages"] == [{"role": "user", "content": data.messages[0].content}]
+        assert body["max_tokens"] == generator.output_lengths[i]
+
+    assert generator._materialized_count == 5
+
+
+# api.type chat generates output, so omitting output_distribution -> constructor
+# rejects the configuration just like Completion and SGLangGenerate.
+def test_synthetic_datagen_chat_requires_output_distribution() -> None:
+    data_config = DataConfig(
+        type=DataGenType.Synthetic,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+    )
+
+    with pytest.raises(ValueError, match="IODistribution and tokenizer are required"):
+        SyntheticDataGenerator(
+            APIConfig(type=APIType.Chat),
+            data_config,
+            DummyCustomTokenizer(),
+        )

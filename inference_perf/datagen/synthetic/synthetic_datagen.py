@@ -20,6 +20,8 @@ from typing import Generator, List, Optional
 import numpy as np
 
 from inference_perf.apis import (
+    ChatCompletionAPIData,
+    ChatMessage,
     CompletionAPIData,
     EmbeddingsAPIData,
     InferenceAPIData,
@@ -126,7 +128,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         self._last_progress_log_time: Optional[float] = None
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Embeddings, APIType.Rerank, APIType.SGLangGenerate]
+        return [APIType.Completion, APIType.Chat, APIType.Embeddings, APIType.Rerank, APIType.SGLangGenerate]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -192,6 +194,14 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
             self._log_progress()
             return CompletionAPIData(
                 prompt=prompt_text,
+                max_tokens=self.output_lengths[n],
+            )
+        elif self.api_config.type == APIType.Chat:
+            length = self.input_lengths[n]
+            prompt_text = self._generate_exact_length_text(length)
+            self._log_progress()
+            return ChatCompletionAPIData(
+                messages=[ChatMessage(role="user", content=prompt_text)],
                 max_tokens=self.output_lengths[n],
             )
         elif self.api_config.type == APIType.SGLangGenerate:
