@@ -22,6 +22,11 @@ import pytest
 from inference_perf.apis import ChatCompletionAPIData, ChatMessage, CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.client.batch.jsonl import build_batch_input
+from inference_perf.datagen.replay.replay_graph_session_datagen import (
+    EventOutputRegistry,
+    SessionChatCompletionAPIData,
+    WorkerSessionTracker,
+)
 
 
 # Empties the LocalUserSession registry before and after a test, so session "u0" starts fresh and does not
@@ -113,6 +118,24 @@ async def test_user_session_turns_are_rejected() -> None:
     with pytest.raises(ValueError, match="u0"):
         batch = build_batch_input(records, custom_id_prefix="s0-b0", model_name="m", max_tokens=16, ignore_eos=False)
         await asyncio.wait_for(batch, timeout=5)
+
+
+# Trace replay event session_1:event_1 lists session_1:event_0 as its predecessor. The load generator fills its
+# prompt from event_0's response through wait_for_predecessors_and_substitute, which a batch never calls, so the
+# writer raises ValueError for record 0 instead of writing the recorded placeholder text.
+async def test_trace_replay_events_are_rejected() -> None:
+    record = SessionChatCompletionAPIData(
+        messages=[ChatMessage(role="user", content="hi")],
+        event_id="session_1:event_1",
+        registry=EventOutputRegistry(),
+        worker_tracker=WorkerSessionTracker(),
+        completion_queue=None,
+        total_events_in_session=2,
+        predecessor_event_ids=["session_1:event_0"],
+    )
+
+    with pytest.raises(ValueError, match="Record 0"):
+        await build_batch_input([record], custom_id_prefix="s0-b0", model_name="m", max_tokens=16, ignore_eos=False)
 
 
 # No records means no endpoint to batch against, so an empty list raises ValueError.

@@ -47,8 +47,10 @@ async def build_batch_input(
     """Build one batch's input file from `records`, in order.
 
     Line i gets the custom_id `{custom_id_prefix}-{i}`. All records must use one route, because a batch
-    runs against a single endpoint. A user-session turn is refused: its prompt is built from the session's
-    earlier responses, and a batch returns none of them until it ends, so building it would wait forever.
+    runs against a single endpoint. A user-session turn and a trace replay event are refused: each builds its
+    prompt from earlier responses, and a batch returns none of them until it ends. A user-session turn would
+    wait forever, and a replay event would go out with its recorded placeholder text. A replay event is known
+    by the hook the load generator awaits before sending it, so this module needs no datagen import.
     """
     if not records:
         raise ValueError("A batch needs at least one record")
@@ -58,6 +60,8 @@ async def build_batch_input(
     for index, record in enumerate(records):
         if isinstance(record, UserSessionCompletionAPIData):
             raise ValueError(f"Record {index} is a turn of user session {record.user_session_id}, which a batch cannot hold")
+        elif hasattr(record, "wait_for_predecessors_and_substitute"):
+            raise ValueError(f"Record {index} waits on earlier responses that a batch does not return")
         route = record.get_route()
         if route != endpoint:
             raise ValueError(f"All records in a batch must use one route: record {index} uses {route}, not {endpoint}")
