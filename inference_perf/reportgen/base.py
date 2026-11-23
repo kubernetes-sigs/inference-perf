@@ -355,7 +355,7 @@ def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric], percenti
     return result
 
 
-def reported_output_tokens(response_metrics: Optional[ResponseMetrics]) -> Optional[float]:
+def reported_output_tokens(response_metrics: Optional[ResponseMetrics]) -> Optional[int]:
     """Output token count the report carries for one request.
 
     The server's usage count when it reported one (`completion_tokens`, or the
@@ -367,8 +367,8 @@ def reported_output_tokens(response_metrics: Optional[ResponseMetrics]) -> Optio
         return None
     server_tokens = server_reported_tokens(response_metrics.server_usage, SERVER_OUTPUT_TOKEN_KEYS)
     if server_tokens is not None:
-        return server_tokens
-    return float(response_metrics.output_tokens)
+        return int(server_tokens)
+    return response_metrics.output_tokens
 
 
 def summarize_output_token_usage(metrics: List[RequestLifecycleMetric], percentiles: List[float]) -> dict[str, float]:
@@ -385,9 +385,8 @@ def summarize_output_token_usage(metrics: List[RequestLifecycleMetric], percenti
     per_request: List[float] = []
 
     for metric in metrics:
-        completion_tokens = reported_output_tokens(metric.info.response_metrics)
-        if completion_tokens is None:
-            completion_tokens = 0.0
+        reported_tokens = reported_output_tokens(metric.info.response_metrics)
+        completion_tokens = float(reported_tokens) if reported_tokens is not None else 0.0
         output_tokens_total += completion_tokens
         per_request.append(completion_tokens)
 
@@ -857,8 +856,8 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
     # NTPOT: (End - Start) / Output Tokens. Not measurable without output tokens
     # (e.g. embeddings), so None rather than a fabricated 0.0, matching the
     # llm-d benchmark report (reportgen/br/v0_2/adapter.py).
-    ntpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
-    ntpot: Optional[float] = request_latency / ntpot_output_tokens if ntpot_output_tokens > 0 else None
+    tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
+    ntpot: Optional[float] = request_latency / tpot_output_tokens if tpot_output_tokens > 0 else None
 
     ttft: Optional[float] = None
     ttfo: Optional[float] = None
@@ -881,7 +880,6 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
         if any(t != response_metrics.output_token_times[0] for t in response_metrics.output_token_times):
             # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
             duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
-            tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
             if tpot_output_tokens > 1:
                 tpot = duration / (tpot_output_tokens - 1)
 
@@ -897,6 +895,7 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
         "time_to_first_token": ttft,
         "time_to_first_output_token": ttfo,
         "time_per_output_token": tpot,
+        "tpot_output_tokens": tpot_output_tokens if response_metrics is not None else None,
         "inter_token_latency": itl,
         "inter_token_latency_deltas": itl_deltas,
     }
@@ -1148,13 +1147,11 @@ def build_per_request_lifecycle_entry(
             "input_tokens": metric.info.request_metrics.text.input_tokens,
             # output_tokens means the same thing here as in the summary aggregates: the
             # server's count, with the client count as the fallback. output_len is the
-            # client-side count alone, and tpot_output_tokens is the count TPOT and
-            # NTPOT actually divided by, which follows use_server_output_tokens (#1105).
+            # client-side count alone. tpot_output_tokens is the selected count N:
+            # TPOT divides by N - 1 and NTPOT by N, following use_server_output_tokens (#1105).
             "output_tokens": reported_output_tokens(response_metrics),
             "output_len": response_metrics.output_tokens if response_metrics is not None else None,
-            "tpot_output_tokens": (
-                effective_output_tokens(response_metrics, use_server_output_tokens) if response_metrics is not None else None
-            ),
+            "tpot_output_tokens": latency["tpot_output_tokens"],
             "ttft_slo_sec": metric.ttft_slo_sec,
             "tpot_slo_sec": metric.tpot_slo_sec,
         }

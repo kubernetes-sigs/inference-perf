@@ -127,8 +127,9 @@ field is derived from and which one normalizes per-token latency.
 
 Per-request entries in `per_request_lifecycle_metrics.json` use the same names when
 `computed_metrics` is on: `output_tokens` is the server count with the client count as the
-fallback, `output_len` is the client count alone, and `tpot_output_tokens` is the count TPOT
-and NTPOT divided by for that request.
+fallback, `output_len` is the client count alone, and `tpot_output_tokens` is the selected count N
+for that request. Measurable TPOT divides by N - 1; NTPOT divides by N. These counts are integers,
+or `null` when response metrics are absent.
 
 ## Session Reports
 

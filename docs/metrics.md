@@ -86,9 +86,9 @@ that count from the same usage keys the report does, so either spelling switches
 The flag does not change `output_len` or `output_tokens` themselves, only which of the two the
 per-token metrics divide by.
 
-In `per_request_lifecycle_metrics.json`, `computed_metrics.tpot_output_tokens` names the count
-those per-token metrics divided by for that request, so the denominator is readable without
-backing it out of `request_latency / normalized_time_per_output_token`. The sibling
+In `per_request_lifecycle_metrics.json`, `computed_metrics.tpot_output_tokens` names the selected
+count N for that request: measurable TPOT divides by N - 1 and normalized TPOT divides by N.
+This exposes the count without backing it out of `request_latency / normalized_time_per_output_token`. The sibling
 `computed_metrics.output_tokens` keeps the summary's meaning — server count, client fallback —
 and `computed_metrics.output_len` is the client count alone, whichever way the flag is set.
 
