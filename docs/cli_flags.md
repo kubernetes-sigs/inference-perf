@@ -7,6 +7,9 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `-c`, `--config_file` | str | Config File |
 | `-a`, `--analyze` | list of str | Path to a report directories to analyze |
 | `-u`, `--unified_analysis_dir` | str | Unified analysis directory path |
+| `--analyze-labels` | list of str | Display names for the --analyze report directories, in the same order. The unified analysis legend uses them |
+| `--analyze-rate` | Enum (achieved, requested) | Request rate on the QPS axis of the analysis charts: the achieved rate or the requested (configured) rate (default: achieved) |
+| `--analyze-latency-stat` | str | Latency statistic in the analysis charts: mean, median, min, max or a percentile such as p90 or p99 (default: mean) |
 | `--log-level` | Enum (DEBUG, INFO, WARNING, ERROR, CRITICAL) | Logging level (default: INFO) |
 | `--api.type` | Enum (completion, chat, anthropic_messages, embeddings, rerank, sglang_generate) | API endpoint to benchmark: text completion, chat completion, Anthropic messages, embeddings, rerank or SGLang's native /generate. |
 | `--api.streaming` | boolean | Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics. |
