@@ -18,6 +18,9 @@ and the cross-stage ``LoadConfig`` validator that ties stage shape to load
 type and checks the MultiLoRA traffic split.
 """
 
+import logging
+import warnings
+
 import pytest
 from pydantic import ValidationError
 
@@ -175,6 +178,31 @@ def test_trace_session_replay_stage_duration_checked_against_deprecated_timeout(
     """
     with pytest.raises(ValueError, match="must be shorter than timeout"):
         TraceSessionReplayLoadStage(concurrent_sessions=4, duration=2100, timeout=1800)
+
+
+# Inputs: session replay stages with concurrent_sessions=4 (and optional max_stage_duration/duration), no timeout.
+# Expected: constructing them emits neither a DeprecationWarning nor a deprecation log warning.
+def test_trace_session_replay_stage_without_timeout_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="inference_perf.config.loadgen.config"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            TraceSessionReplayLoadStage(concurrent_sessions=4)
+            TraceSessionReplayLoadStage(concurrent_sessions=4, duration=1800, max_stage_duration=2100)
+
+    deprecation_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert deprecation_warnings == []
+    assert caplog.records == []
+
+
+# Input: TraceSessionReplayLoadStage(concurrent_sessions=4, timeout=30.0) using the deprecated field name.
+# Expected: validation logs a deprecation warning and reading stage.timeout raises DeprecationWarning.
+def test_trace_session_replay_stage_with_timeout_warns(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="inference_perf.config.loadgen.config"):
+        stage = TraceSessionReplayLoadStage(concurrent_sessions=4, timeout=30.0)
+
+    assert any("load.stages[].timeout is deprecated; use max_stage_duration instead." in r.message for r in caplog.records)
+    with pytest.warns(DeprecationWarning, match="max_stage_duration"):
+        assert stage.timeout == 30.0
 
 
 # --- LoadConfig cross-stage validation -----------------------------------
