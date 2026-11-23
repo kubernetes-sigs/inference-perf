@@ -196,3 +196,147 @@ class TestExpressionBoundary:
     def test_expression_rejects_condition(self) -> None:
         with pytest.raises(ValueError, match="use Predicate"):
             Expression("t >= 60")
+
+
+# 50 clauses joined by '|': 36 'errors >= N', then `planted` as clause 37, then 13 'completed >= N'.
+def _fifty_clauses(planted: str) -> str:
+    before = [f"(errors >= {n})" for n in range(1, 37)]
+    after = [f"(completed >= {n})" for n in range(1, 14)]
+    return " | ".join(before + [planted] + after)
+
+
+class TestErrorsNameTheFault:
+    # One faulty clause planted as clause 37 of 50. Each message names the fault, places it in
+    # "clause 37 of 50" and stays under 450 characters although the condition is over 800.
+    @pytest.mark.parametrize(
+        "planted, named",
+        [
+            ("((t >= 60) & (t < 120))", "Cause: 't < 120' in clause 37 of 50, '((t >= 60) & (t < 120))'."),
+            ("(t >= 0)", "Cause: 't >= 0' in clause 37 of 50, '(t >= 0)'."),
+            ("(t == 5)", "uses equality in clause 37 of 50, '(t == 5)';"),
+            ("(Eq(t, 5))", "uses equality in clause 37 of 50, '(Eq(t, 5))';"),
+            ("(Ne(t, 5))", "uses equality in clause 37 of 50, '(Ne(t, 5))';"),
+            ("(sin(t) > 0)", "uses 'sin', which is not allowed in a condition"),
+            ("(sin(t) > 0)", "Found in clause 37 of 50, '(sin(t) > 0)'."),
+            ("(latencyy > 3)", "Found in clause 37 of 50, '(latencyy > 3)'."),
+            ("(Foo(t) > 1)", "Found in clause 37 of 50, '(Foo(t) > 1)'."),
+            ("(t >= 60 & t < 90)", "Found in clause 37 of 50, '(t >= 60 & t < 90)'."),
+        ],
+    )
+    def test_fault_in_clause_37_of_50(self, planted: str, named: str) -> None:
+        raw = _fifty_clauses(planted)
+        assert len(raw) > 800
+        with pytest.raises(ValueError) as rejected:
+            Predicate(raw)
+        message = str(rejected.value)
+        assert named in message
+        assert len(message) < 450
+
+    # A condition over 80 characters is quoted up to its 80th character with its length; clause 50 is not repeated.
+    def test_long_condition_is_quoted_up_to_80_characters(self) -> None:
+        raw = _fifty_clauses("(t >= 0)")
+        with pytest.raises(ValueError) as rejected:
+            Predicate(raw)
+        message = str(rejected.value)
+        assert message.startswith(f"Predicate {raw[:80]!r}... ({len(raw)} characters) already holds at")
+        assert "(completed >= 13)" not in message
+
+    # An 80-character condition is quoted whole; at 81 characters it is cut and its length is given.
+    @pytest.mark.parametrize("length, quoted_whole", [(80, True), (81, False)])
+    def test_quote_limit_is_80_characters(self, length: int, quoted_whole: bool) -> None:
+        raw = "t < 60" + " " * (length - 6)
+        with pytest.raises(ValueError) as rejected:
+            Predicate(raw)
+        message = str(rejected.value)
+        assert message.startswith(f"Predicate {raw!r} holds only on") is quoted_whole
+        assert (f"({length} characters)" in message) is not quoted_whole
+
+    # Predicate('t < 60', name='stop_condition') says "stop_condition 't < 60'"; without a name it says "Predicate 't < 60'".
+    def test_name_replaces_predicate_in_the_message(self) -> None:
+        with pytest.raises(ValueError, match=r"^stop_condition 't < 60' holds only on"):
+            Predicate("t < 60", name="stop_condition")
+        with pytest.raises(ValueError, match=r"^Predicate 't < 60' holds only on"):
+            Predicate("t < 60")
+
+    # An accepted condition carries the same label its errors would use: "stop_condition 't >= 60'".
+    def test_label_is_the_name_and_the_quoted_condition(self) -> None:
+        assert Predicate("t >= 60", name="stop_condition").label == "stop_condition 't >= 60'"
+        assert Predicate("t >= 60").label == "Predicate 't >= 60'"
+
+    # '(t >= 60) & (t < 120)' is one clause, so the cause is the comparison alone with no clause number.
+    def test_single_clause_names_the_comparison_only(self) -> None:
+        with pytest.raises(ValueError) as rejected:
+            Predicate("(t >= 60) & (t < 120)")
+        assert str(rejected.value).endswith("Cause: 't < 120'.")
+
+    # '120 > t' is written number-first; the cause keeps that spelling and finds it in clause 2 of 2.
+    def test_flipped_comparison_is_found_in_its_clause(self) -> None:
+        with pytest.raises(ValueError) as rejected:
+            Predicate("(t >= 600) | ((120 > t) & (errors > 3))")
+        message = str(rejected.value)
+        assert "holds only on [0, 120) or [600, infinity) once its measured values hold;" in message
+        assert message.endswith("Cause: '120 > t' in clause 2 of 2, '((120 > t) & (errors > 3))'.")
+
+    # 't < -5' never holds, so it is not a cause: only 't < 120' is named for '(t < -5) | ((t >= 60) & (t < 120))'.
+    def test_comparison_that_never_holds_is_not_a_cause(self) -> None:
+        with pytest.raises(ValueError) as rejected:
+            Predicate("(t < -5) | ((t >= 60) & (t < 120))")
+        message = str(rejected.value)
+        assert message.endswith("Cause: 't < 120' in clause 2 of 2, '((t >= 60) & (t < 120))'.")
+        assert "t < -5'" not in message.split("Cause:")[1]
+
+    # 't**2 - 10*t > -16' holds on [0, 2) and again from 8: one comparison that lapses on its own is named as the cause.
+    def test_comparison_holding_on_two_pieces_is_a_cause(self) -> None:
+        with pytest.raises(ValueError) as rejected:
+            Predicate("t**2 - 10*t > -16")
+        message = str(rejected.value)
+        assert "holds only on [0, 2) or (8, infinity);" in message
+        assert message.endswith("Cause: 't**2 - 10*t > -16'.")
+
+    # Five lapsing clauses 't < 10' .. 't < 50': the first three are named with their clause, then "and 2 more".
+    def test_more_than_three_causes_are_counted(self) -> None:
+        with pytest.raises(ValueError) as rejected:
+            Predicate("(t<10)|(t<20)|(t<30)|(t<40)|(t<50)")
+        assert str(rejected.value).endswith(
+            "Cause: 't < 10' in clause 1 of 5, '(t<10)'; 't < 20' in clause 2 of 5, '(t<20)'; "
+            "'t < 30' in clause 3 of 5, '(t<30)'; and 2 more."
+        )
+
+    # 'sin' in clauses 2 and 3 of 3: the first is quoted and the other is counted as "and 1 more".
+    def test_fault_in_two_clauses_names_the_first(self) -> None:
+        with pytest.raises(ValueError) as rejected:
+            Predicate("(t >= 600) | (sin(t) > 0) | (sin(t) > 1)")
+        assert str(rejected.value).endswith("Found in clause 2 of 3, '(sin(t) > 0)' and 1 more.")
+
+    # A '|' inside parentheses does not split a clause: '((t < 30) | (t >= 60))' is one clause, so no clause number.
+    def test_nested_or_is_one_clause(self) -> None:
+        with pytest.raises(ValueError) as rejected:
+            Predicate("((t < 30) | (t >= 60))")
+        assert str(rejected.value).endswith("Cause: 't < 30'.")
+
+    # No time bound in 3 measured-only-with-time clauses: the message counts the clauses and gives the clause to add.
+    def test_no_time_bound_counts_the_clauses(self) -> None:
+        with pytest.raises(ValueError) as rejected:
+            Predicate("((t >= 60) & (errors > 1)) | ((t >= 60) & (errors > 2)) | ((t >= 60) & (errors > 3))")
+        message = str(rejected.value)
+        assert (
+            "never holds on time alone: it must hold with every measured comparison false, and none of its 3 clauses does."
+            in message
+        )
+        assert message.endswith("Add a time bound as one more clause: '| (t >= 600)'.")
+
+    # 't >= 60 & t < 120' fails inside Python as a TypeError; the message says what is wrong without the Python text.
+    def test_unparenthesised_message_has_no_python_error(self) -> None:
+        with pytest.raises(ValueError) as rejected:
+            Predicate("t >= 60 & t < 120")
+        message = str(rejected.value)
+        assert "'&' or '|' joins a comparison that has no parentheses." in message
+        assert "unsupported operand" not in message
+
+    # '(t >= 60) & (t >' is a syntax error, not a TypeError: the parser's own reason is kept next to the hint.
+    def test_syntax_error_keeps_the_parser_reason(self) -> None:
+        with pytest.raises(ValueError) as rejected:
+            Predicate("(t >= 60) & (t > )")
+        message = str(rejected.value)
+        assert "joins a comparison that has no parentheses" not in message
+        assert "parenthesise each one" in message
