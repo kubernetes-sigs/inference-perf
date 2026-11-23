@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from itertools import islice
+
 import numpy as np
 import pytest
 
@@ -233,7 +235,9 @@ def test_random_datagen_distribution_types() -> None:
         assert length == 7
 
 
-def test_random_datagen_chat_yields_chat_completion_data() -> None:
+# api.type chat with five random prompts -> get_data() yields lazy requests that
+# materialize into /v1/chat/completions payloads with one user message.
+async def test_random_datagen_chat_yields_chat_completion_data() -> None:
     api_config = APIConfig(type=APIType.Chat, streaming=True)
     data_config = DataConfig(
         type=DataGenType.Random,
@@ -245,17 +249,30 @@ def test_random_datagen_chat_yields_chat_completion_data() -> None:
 
     assert APIType.Chat in generator.get_supported_apis()
 
-    for i in range(5):
-        data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=i))
+    for i, lazy_data in enumerate(islice(generator.get_data(), 5)):
+        assert isinstance(lazy_data, LazyLoadInferenceAPIData)
+        data = generator.load_lazy_data(lazy_data)
 
         assert isinstance(data, ChatCompletionAPIData)
+        assert data.get_route() == "/v1/chat/completions"
         assert len(data.messages) == 1
         assert data.messages[0].role == "user"
         assert isinstance(data.messages[0].content, str)
         assert tokenizer.count_tokens(data.messages[0].content) == generator.input_lengths[i]
         assert data.max_tokens == generator.output_lengths[i]
 
+        body = await data.to_request_body(
+            effective_model_name="m",
+            max_tokens=999,
+            ignore_eos=False,
+            streaming=True,
+        )
+        assert body["messages"] == [{"role": "user", "content": data.messages[0].content}]
+        assert body["max_tokens"] == generator.output_lengths[i]
 
+
+# api.type chat plus data.use_chat_template=true -> construction fails instead
+# of applying the tokenizer chat template and server chat template twice.
 def test_random_datagen_use_chat_template_rejects_chat_api() -> None:
     api_config = APIConfig(type=APIType.Chat, streaming=True)
     data_config = DataConfig(
