@@ -224,7 +224,7 @@ def _request_metrics() -> Dict[int, List[RequestLifecycleMetric]]:
 
 
 def _sessions() -> Dict[int, List[SessionLifecycleMetric]]:
-    """Session metrics by stage. Stage 2 has none: all of its sessions were stranded."""
+    """Session metrics by stage. Stage 2 has none: it ended before any of its sessions started."""
 
     def session(session_id: str, stage_id: int, start: float, *, num_events: int, completed: int) -> SessionLifecycleMetric:
         return SessionLifecycleMetric(
@@ -275,7 +275,9 @@ def _stage_infos() -> Dict[int, StageRuntimeInfo]:
             end_time=_EPOCH + 50.0,
             status=StageStatus.TIMED_OUT,
             max_stage_duration=10.0,
-            sessions_not_completed_active=2,
+            # Pending sessions only. The load generator gives every active session it
+            # strands a truncated row, so a stage with stranded actives always has rows.
+            sessions_not_completed_active=0,
             sessions_not_completed_pending=1,
         ),
     }
@@ -328,6 +330,7 @@ def _lifecycle(
 # dumps uncorrected into per_request first.
 REPORT_CONFIGS = [
     pytest.param(ReportConfig(), id="default"),
+    pytest.param(_lifecycle(summary=True, per_stage=False), id="summary_only"),
     pytest.param(_lifecycle(summary=False, per_stage=False), id="no_summary_no_per_stage"),
     pytest.param(_lifecycle(summary=False, per_stage=False, per_request=True), id="per_request_raw"),
     pytest.param(
@@ -609,9 +612,9 @@ async def test_br_partial_waits_for_the_end_of_the_run_with_per_stage_prometheus
 async def test_stage_session_reports_match_end_of_run(report_config: ReportConfig) -> None:
     """Session workloads get stage_N_session_lifecycle_metrics at stage end, equal to
     the end-of-run copy: TFUT reads the first token time, which the lifecycle reports
-    correct or not depending on config. A stage whose sessions were all stranded, with
-    no session metric and no request, still gets its file and its BR partial, because
-    its stranded counts are the only record that the stage ran."""
+    correct or not depending on config. A stage that ended before any of its sessions
+    started, with no session metric and no request, still gets its file and its BR
+    partial, because its pending count is the only record that the stage ran."""
     stage_infos = _stage_infos()
     generator = _generator(with_sessions=True)
 
