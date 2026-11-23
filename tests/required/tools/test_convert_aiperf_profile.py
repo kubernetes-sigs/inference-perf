@@ -306,6 +306,14 @@ def test_unset_osl_refuses() -> None:
     assert any("max_tokens" in refusal for refusal in conversion.refusals)
 
 
+# --osl 0 with no stddev -> refused: a fixed output length of 0, and an inference-perf
+# length is at least 1.
+def test_zero_osl_refuses() -> None:
+    conversion = convert(["--model", "m", "--endpoint-type", "completions", "--isl", "128", "--osl", "0"])
+    assert conversion.config is None
+    assert any(refusal.startswith("--osl: a fixed length of 0") for refusal in conversion.refusals)
+
+
 # A bare conversion runs on aiperf's default chat endpoint, and the emitted
 # data.type random serves the completions path only, so it refuses and the
 # reason names the default and the fix.

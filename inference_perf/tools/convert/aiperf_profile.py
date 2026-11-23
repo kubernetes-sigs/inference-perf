@@ -1464,6 +1464,11 @@ def _convert_data(
         )
         return None, None
 
+    for flag, mean, stddev in (("--isl", isl_mean, isl_stddev), ("--osl", osl_mean, osl_stddev)):
+        if stddev <= 0 and int(round(mean)) < 1:
+            conversion.refuse(flag, f"a fixed length of {int(round(mean))}, and an inference-perf length is at least 1")
+            return None, None
+
     conversion.no_equivalent(SYNTHETIC_NOTE)
     conversion.assume(
         f"--isl {isl_mean:g}: aiperf puts that many content tokens on the wire and a BOS-prepending server"

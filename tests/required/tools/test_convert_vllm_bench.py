@@ -292,6 +292,21 @@ def test_refusals_carry_named_reasons(argv: List[str], reason_fragment: str) -> 
     assert any(reason_fragment in refusal for refusal in conversion.refusals), conversion.refusals
 
 
+# --random-output-len 7 at range ratio 0.9 -> refused: vllm draws output lengths from
+# randint(0, 13), and an inference-perf length is at least 1.
+def test_range_ratio_down_to_zero_length_refuses() -> None:
+    conversion = convert(["--model", "m", "--random-output-len", "7", "--random-range-ratio", "0.9"])
+    assert conversion.config is None
+    assert any(refusal.startswith("--random-output-len: vllm draws lengths down to 0") for refusal in conversion.refusals)
+
+
+# --random-input-len 0 -> refused rather than emitting a config that fails to load.
+def test_zero_input_len_refuses() -> None:
+    conversion = convert(["--model", "m", "--random-input-len", "0"])
+    assert conversion.config is None
+    assert any(refusal.startswith("--random-input-len:") for refusal in conversion.refusals)
+
+
 def test_all_refusals_are_collected_not_thrown() -> None:
     argv = ["--model", "m", "--temperature", "0.7", "--top-p", "0.9", "--profile", "--dataset-name", "sonnet"]
     conversion = convert(argv)
