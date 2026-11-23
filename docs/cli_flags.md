@@ -385,7 +385,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.synthetic_agentic.context_compaction.target_tokens.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.synthetic_agentic.context_compaction.target_tokens.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.use_chat_template` | boolean | Wrap each generated prompt in the tokenizer's chat template as a single user turn before sending it on the completions path, reproducing the request shape of harnesses that benchmark with chat templating enabled. The input length distribution targets the fully templated prompt, so the server-side prefill token count still matches the configured length. Only supported by the 'random' type; setting it with any other type is a config error. |
-| `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Load pattern used to schedule requests. |
+| `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay, batch) | Load pattern used to schedule requests. |
 | `--load.interval` | float | Seconds to wait between stages. |
 | `--load.stages` | JSON | Load stages to run in sequence. The stage fields depend on the load type. |
 | `--load.sweep.type` | Enum (geometric, linear) | How stage rates are spaced up to the saturation rate: 'geometric' or 'linear'. |

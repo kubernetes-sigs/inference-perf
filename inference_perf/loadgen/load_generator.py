@@ -20,11 +20,17 @@ from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceRep
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
 from inference_perf.apis import InferenceAPIData
 from inference_perf.apis.user_session import LocalUserSession
+from inference_perf.client.batch.client import END_STATES, BatchClient
+from inference_perf.client.batch.job import run_batch_job
+from inference_perf.client.batch.jsonl import BatchInput, build_batch_input
 from inference_perf.client.modelserver import ModelServerClient
+from inference_perf.client.modelserver.openai_client import openAIModelServerClient, openAIModelServerClientSession
 from inference_perf.client.modelserver.otel_instrumentation import get_otel_instrumentation
 from inference_perf.circuit_breaker import get_circuit_breaker
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.config import (
+    BatchJobConfig,
+    BatchLoadStage,
     LoadConfig,
     LoadType,
     StageGenType,
@@ -60,6 +66,7 @@ else:
 from typing import Awaitable, List, Tuple, Optional, NamedTuple, Protocol, Union, Set, Dict, cast
 from types import FrameType
 import ctypes
+from itertools import islice
 import time
 import traceback
 import multiprocessing as mp
@@ -2081,6 +2088,9 @@ class LoadGenerator:
         stop_signal.set()
 
     async def run(self, client: ModelServerClient) -> None:
+        # A batch run makes its Batch API calls from this process, so it starts no worker.
+        if self.load_type == LoadType.BATCH:
+            return await self.run_batch_stages(client)
         if self.num_workers > 0:
             return await self.mp_run(client)
 
@@ -2170,6 +2180,128 @@ class LoadGenerator:
             status=stage_status,
             concurrency_level=None,
         )
+
+    async def run_batch_stages(self, client: ModelServerClient) -> None:
+        """Run load.type batch: each stage's jobs go to the OpenAI Batch API together, and the stages run in order."""
+        if not isinstance(client, openAIModelServerClient):
+            raise TypeError(
+                f"load.type batch needs an OpenAI-compatible server type, but the client is {type(client).__name__}"
+            )
+        session = openAIModelServerClientSession(client)
+        try:
+            batch_client = session.batch_client()
+            for stage_id, stage in enumerate(self.stages):
+                # A Ctrl-C in the wait before this stage ends the run before the stage writes anything.
+                if self.interrupt_sig:
+                    break
+                if not isinstance(stage, BatchLoadStage):
+                    raise TypeError(f"load.type batch runs BatchLoadStage stages, got {type(stage).__name__}")
+                await self._run_reported_stage(stage_id, self._run_batch_stage(client, batch_client, stage_id, stage))
+                if self.interrupt_sig:
+                    break
+                if self.stageInterval and stage_id < len(self.stages) - 1:
+                    await sleep(self.stageInterval)
+        finally:
+            await session.close()
+
+    async def _run_batch_stage(
+        self, client: openAIModelServerClient, batch_client: BatchClient, stage_id: int, stage: BatchLoadStage
+    ) -> None:
+        """Write the input file of each of the stage's jobs, submit them together and wait for every one to end."""
+        if not isinstance(self.datagen, DataGenerator):
+            raise TypeError("load.type batch requires a DataGenerator")
+        # Each stage starts the data over, as the request stages do.
+        data = self.datagen.get_data()
+        inputs: List[BatchInput] = []
+        for job_index, job in enumerate(stage.batches):
+            # A Ctrl-C while the input files are written stops the stage before anything is submitted.
+            if self.interrupt_sig:
+                break
+            records = [LazyLoadDataMixin.get_request(self.datagen, record) for record in islice(data, job.batch_size)]
+            if len(records) < job.batch_size:
+                raise ValueError(
+                    f"Stage {stage_id} batch {job_index} needs {job.batch_size} records, "
+                    f"but the data generator has only {len(records)} left"
+                )
+            inputs.append(
+                await build_batch_input(
+                    records,
+                    custom_id_prefix=f"s{stage_id}-b{job_index}",
+                    api_config=client.api_config,
+                    model_name=client.model_name,
+                    max_tokens=client.max_completion_tokens,
+                    ignore_eos=client.ignore_eos,
+                )
+            )
+
+        logger.info("Stage %d - run started", stage_id)
+        self._stage_started(StageContext(stage_id=stage_id))
+        start_time = time.time()
+        completed = (
+            []
+            if self.interrupt_sig
+            else await gather(
+                *(
+                    self._run_batch_job(batch_client, stage_id, job_index, job, batch_input, stage.poll_interval_sec)
+                    for job_index, (job, batch_input) in enumerate(zip(stage.batches, inputs, strict=True))
+                )
+            )
+        )
+        if self.interrupt_sig:
+            stage_status = StageStatus.INTERRUPTED
+        elif all(completed):
+            stage_status = StageStatus.COMPLETED
+        else:
+            stage_status = StageStatus.FAILED
+        logger.info("Stage %d - run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
+        self.stage_runtime_info[stage_id] = StageRuntimeInfo(
+            stage_id=stage_id, rate=0.0, start_time=start_time, end_time=time.time(), status=stage_status
+        )
+
+    async def _run_batch_job(
+        self,
+        batch_client: BatchClient,
+        stage_id: int,
+        job_index: int,
+        job: BatchJobConfig,
+        batch_input: BatchInput,
+        poll_interval_sec: float,
+    ) -> bool:
+        """Run one batch job and log how it ended. True when its batch completed."""
+        try:
+            result = await run_batch_job(
+                batch_client,
+                batch_input,
+                filename=f"s{stage_id}-b{job_index}.jsonl",
+                completion_window=job.completion_window,
+                metadata={"stage": str(stage_id), "batch": str(job_index)},
+                poll_interval_sec=poll_interval_sec,
+                should_stop=lambda: self.interrupt_sig,
+            )
+        # Whatever ends one job, such as a refused call, a dropped connection, a timeout or a reply that is not
+        # what the API documents, fails that job only: the stage's other batches go on, and so does the run.
+        except Exception as e:
+            logger.error("Stage %d batch %d failed: %r", stage_id, job_index, e)
+            return False
+        batch = result.batch
+        logger.info(
+            "Stage %d batch %d (%s) is %s after %.1fs: %d of %d lines succeeded, %d failed, %d unanswered",
+            stage_id,
+            job_index,
+            batch.id,
+            batch.status,
+            result.finished_at - result.submitted_at,
+            result.succeeded,
+            result.lines,
+            result.failed,
+            result.unanswered,
+        )
+        # A batch that failed, such as one whose input file did not validate, says why only here.
+        for error in batch.errors.data if batch.errors is not None else []:
+            logger.warning("Batch %s reported %s: %s", batch.id, error.code, error.message)
+        if batch.status not in END_STATES:
+            logger.warning("Stopped waiting for batch %s, which is still running on the server", batch.id)
+        return batch.status == "completed"
 
     async def stop(self) -> None:
         for worker in self.workers:

@@ -212,7 +212,7 @@ Defines the benchmarking load pattern:
 
 ```yaml
 load:
-  type: constant|poisson|concurrent|trace_session_replay # Load pattern type
+  type: constant|poisson|concurrent|trace_session_replay|batch # Load pattern type
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
@@ -233,7 +233,7 @@ load:
       split: 0.5
 ```
 
-**Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
+**Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details. So does `batch`; see [Batch Load](#batch-load).
 
 #### Retrying Transport Faults
 
@@ -288,6 +288,47 @@ load:
     stage_duration: 180         # Duration of each generated stage
     saturation_percentile: 95   # Percentile of sampled rates to select as saturation point
 ```
+
+#### Batch Load
+
+`load.type: batch` sends records through the OpenAI Batch API (`/v1/files` and `/v1/batches`), as
+llm-d-batch-gateway serves it, instead of one HTTP request per record. A stage lists batch jobs, which are
+submitted together. Stages run in order, and each stage starts the data over, as request stages do.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: batch
+  stages:
+    - batches:                    # Batch jobs submitted together
+        - batch_size: 1000        # Records in the batch, one input line each
+          completion_window: 30m  # Sent to /v1/batches as given. Default 24h, the only window OpenAI accepts
+        - batch_size: 1000
+      poll_interval_sec: 5        # Seconds between status checks of each batch. Default 5
+```
+
+For each job, the run writes one input line per record, uploads the file, creates the batch, and polls it
+until it is completed, failed, expired or cancelled. It then downloads the output and error files and logs
+how many lines got status 200, how many failed, and how many got no answer, along with any errors the batch
+reports. A stage whose batches do not all complete is marked failed. The run writes no request lifecycle reports, because a batch gives its lines no
+timings of their own.
+
+- `api.type` must be `completion`, `chat` or `embeddings`, and `api.streaming` must be `false`.
+- A line's body is the one the HTTP path would send for the record, `api.response_format` and
+  `api.clean_tool_schemas` included.
+- `server.type` must be an OpenAI-compatible type (`vllm`, `sglang` or `tgi`). The run sends to its base URL
+  with its API key, `api.headers` and TLS files, and each line names the model a request would. A server with
+  no `/v1/models`, such as llm-d-batch-gateway, needs `server.model_name` and
+  `tokenizer.pretrained_model_name_or_path` set. `load.request_timeout` applies to each Batch API call,
+  uploads and downloads included. Unset, aiohttp's default of 5 minutes per call applies, so raise it for
+  large files.
+- The Batch API calls are made from the main process, so `num_workers` and `worker_max_concurrency` do not
+  apply. `sweep` and `lora_traffic_split` are not supported.
+- A job that fails, for example on a refused call or a dropped connection, fails its stage, and the other
+  jobs and stages go on. Polls are not retried, so one failed poll ends its job. Each batch's id is logged
+  when it is created, so a batch left running can be found on the server.
+- On Ctrl-C the run submits nothing more and stops waiting after the next poll. A batch that has not ended
+  keeps running on the server.
 
 ### Model Server
 

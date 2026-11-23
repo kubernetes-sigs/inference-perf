@@ -26,7 +26,8 @@ from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anth
 from inference_perf.apis.response_errors import InvalidResponseError
 from inference_perf.apis.base import is_stage_teardown_cancelled, stage_teardown_cancelled_error
 from inference_perf.apis.streaming_parser import StreamInterruptedError
-from inference_perf.apis.tool_schema import clean_request_tool_schemas
+from inference_perf.apis.request_body import build_request_body
+from inference_perf.client.batch.client import BatchClient
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession
@@ -685,20 +686,14 @@ class openAIModelServerClientSession(ModelServerClientSession):
     ) -> None:
         # Compute effective model name: use LoRA adapter if provided, otherwise use client's model name
         effective_model_name = lora_adapter if lora_adapter else self.client.model_name
-        payload = await data.to_request_body(
-            effective_model_name=effective_model_name,
+        payload = await build_request_body(
+            data,
+            self.client.api_config,
+            model_name=effective_model_name,
             max_tokens=self.client.max_completion_tokens,
             ignore_eos=self.client.ignore_eos,
             streaming=self.client.api_config.streaming,
         )
-
-        # Opt-in: rewrite tool schemas for servers that reject the recorded ones.
-        if self.client.api_config.clean_tool_schemas:
-            clean_request_tool_schemas(payload, self.client.api_config.type)
-
-        # Add response_format for structured output if configured.
-        if self.client.api_config.type != APIType.AnthropicMessages and self.client.api_config.response_format:
-            payload["response_format"] = self.client.api_config.response_format.to_api_format()
 
         headers = _build_request_headers(self.client.api_config, self.client.api_key)
 
@@ -1058,6 +1053,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         if cancelled:
             raise asyncio.CancelledError()
+
+    def batch_client(self) -> BatchClient:
+        """A Batch API client on this session, sending the auth and api.headers headers process_request sends."""
+        return BatchClient(self.session, self.client.uri, _build_request_headers(self.client.api_config, self.client.api_key))
 
     async def close(self) -> None:
         await self.session.close()
