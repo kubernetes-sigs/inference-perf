@@ -1753,3 +1753,17 @@ def test_a_worker_miss_warns_even_at_cap_zero(tmp_path: Path, caplog: pytest.Log
     worker = pickle.loads(pickle.dumps(RemoteTraceStore(tmp_path / "cache", 0, client_factory=_shared_client)))
     worker.materialize(obj(fake, "a.jsonl"))
     assert "Waited" in caplog.text
+
+
+# Ten sessions, cache for 6.5 files; five are dispatched and still running (pinned). The window
+# may use only what they leave, so disk stays within the cap plus one file instead of holding
+# the five running files plus half the cache.
+def test_running_sessions_shrink_the_download_ahead_window(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = corpus(10)
+    size = len(next(iter(fake.objects.values())))
+    gen = make_generator(
+        monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"], remote_cache_max_gb=small_cap(fake, 6.5)
+    )
+    dispatch_in_order(gen, 5)  # none cleaned up
+    store, _ = remote_parts(gen)
+    assert disk_bytes(tmp_path / "cache") <= store.max_bytes + size
