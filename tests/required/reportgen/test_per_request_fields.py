@@ -12,14 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import cast
+"""Per-request report fields, token provenance, and report-generation wiring."""
+
+import json
+from pathlib import Path
+from typing import Optional, cast
 
 import pytest
 
-from inference_perf.apis import ErrorResponseInfo, InferenceInfo, RequestLifecycleMetric, StreamedResponseMetrics
-from inference_perf.config import PerRequestFieldsConfig
+from inference_perf.apis import (
+    ErrorResponseInfo,
+    InferenceInfo,
+    RequestLifecycleMetric,
+    StreamedResponseMetrics,
+    UnaryResponseMetrics,
+)
+from inference_perf.client.filestorage import LocalStorageClient
+from inference_perf.client.modelserver.metrics import BaseMetrics
+from inference_perf.client.server_metrics.base import PerfRuntimeParameters, StageRuntimeInfo, StageStatus
+from inference_perf.config import (
+    Config,
+    LoadConfig,
+    PerRequestFieldsConfig,
+    ReportConfig,
+    RequestLifecycleMetricsReportConfig,
+    StandardLoadStage,
+    StorageConfigBase,
+)
+from inference_perf.metrics.request_collector import LocalRequestMetricCollector
 from inference_perf.payloads import RequestMetrics, Text
-from inference_perf.reportgen.base import build_per_request_lifecycle_entry
+from inference_perf.reportgen.base import (
+    ReportGenerator,
+    build_per_request_lifecycle_entry,
+    compute_request_latency_metrics,
+    summarize_requests,
+)
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
@@ -144,8 +171,8 @@ def test_per_request_fields_computed_metrics_disabled_by_default() -> None:
     assert "computed_metrics" not in entry
 
 
-# One streamed chunk at 1.5 on a request from 1.0 to 2.0, with computed_metrics on.
-# The entry has latency 1.0, NTPOT 0.5 (1.0 over 2 tokens) and TTFT 0.5. TPOT and ITL need two timestamps.
+# One streamed chunk at 1.5 on a request from 1.0 to 2.0 gives latency 1.0, NTPOT 0.5 and TTFT 0.5.
+# TPOT and ITL need two timestamps. With no server usage, all three counts are the client's integer 2.
 def test_per_request_fields_computed_metrics_can_be_enabled() -> None:
     entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig(computed_metrics=True))
 
@@ -159,9 +186,238 @@ def test_per_request_fields_computed_metrics_can_be_enabled() -> None:
         "inter_token_latencies": [],
         "input_tokens": 5,
         "output_tokens": 2,
+        "output_len": 2,
+        "tpot_output_tokens": 2,
         "ttft_slo_sec": None,
         "tpot_slo_sec": None,
     }
+    assert type(entry["computed_metrics"]["output_tokens"]) is int
+
+
+# A streamed request whose client re-tokenization counted client_tokens output tokens, carrying
+# server_usage as the raw usage dict the server sent (None when it sent none).
+def _metric_with_usage(client_tokens: int, server_usage: Optional[dict[str, object]]) -> RequestLifecycleMetric:
+    metric = _metric()
+    metric.info.response_metrics = StreamedResponseMetrics(
+        output_tokens=client_tokens,
+        server_usage=server_usage,
+        output_token_times=[1.2] + [1.5] * (client_tokens - 1),
+    )
+    return metric
+
+
+# Server says 12 output tokens, the client re-tokenized 10. computed_metrics.output_tokens must be
+# the server's 12, the number the summary aggregates carry, while output_len keeps the client's 10
+# and tpot_output_tokens is 10 (TPOT divides by 9) because use_server_output_tokens is off (#1105).
+def test_per_request_computed_metrics_output_tokens_is_the_server_count() -> None:
+    entry = build_per_request_lifecycle_entry(
+        _metric_with_usage(10, {"prompt_tokens": 5, "completion_tokens": 12}),
+        PerRequestFieldsConfig(computed_metrics=True),
+    )
+
+    computed = entry["computed_metrics"]
+    assert computed["output_tokens"] == 12
+    assert type(computed["output_tokens"]) is int
+    assert computed["output_len"] == 10
+    assert computed["tpot_output_tokens"] == 10
+    assert computed["time_per_output_token"] == pytest.approx(0.3 / 9)
+    assert computed["normalized_time_per_output_token"] == pytest.approx(1.0 / 10)
+
+
+# With use_server_output_tokens on, TPOT divides by 11 and NTPOT by 12.
+# tpot_output_tokens reports 12, while output_tokens and output_len keep their meanings and types.
+def test_per_request_computed_metrics_tpot_output_tokens_follows_the_server_flag() -> None:
+    entry = build_per_request_lifecycle_entry(
+        _metric_with_usage(10, {"completion_tokens": 12}),
+        PerRequestFieldsConfig(computed_metrics=True),
+        use_server_output_tokens=True,
+    )
+
+    computed = entry["computed_metrics"]
+    assert computed["output_tokens"] == 12
+    assert type(computed["output_tokens"]) is int
+    assert computed["output_len"] == 10
+    assert computed["tpot_output_tokens"] == 12
+    assert computed["time_per_output_token"] == pytest.approx(0.3 / 11)
+    assert computed["normalized_time_per_output_token"] == pytest.approx(1.0 / 12)
+
+
+# A server that reported no usage leaves no server count to prefer, so output_tokens falls back to
+# the client's integer 10 under either flag setting, matching the summary's fallback; TPOT divides by 9.
+def test_per_request_computed_metrics_falls_back_to_the_client_count() -> None:
+    for use_server in (False, True):
+        entry = build_per_request_lifecycle_entry(
+            _metric_with_usage(10, None),
+            PerRequestFieldsConfig(computed_metrics=True),
+            use_server_output_tokens=use_server,
+        )
+
+        computed = entry["computed_metrics"]
+        assert computed["output_tokens"] == 10
+        assert type(computed["output_tokens"]) is int
+        assert computed["output_len"] == 10
+        assert computed["tpot_output_tokens"] == 10
+
+
+# Usage that carries only prompt tokens has not counted the output, so the entry keeps the client's
+# 10 instead of reading the absent output key as 0.
+def test_per_request_computed_metrics_falls_back_when_usage_has_no_output_count() -> None:
+    entry = build_per_request_lifecycle_entry(
+        _metric_with_usage(10, {"prompt_tokens": 5}),
+        PerRequestFieldsConfig(computed_metrics=True),
+    )
+
+    assert entry["computed_metrics"]["output_tokens"] == 10
+    assert type(entry["computed_metrics"]["output_tokens"]) is int
+    assert entry["computed_metrics"]["output_len"] == 10
+
+
+# The Anthropic Messages API reports output_tokens inside usage; that spelling is the server count
+# and wins over the client's 10 exactly like completion_tokens does.
+def test_per_request_computed_metrics_reads_the_anthropic_output_spelling() -> None:
+    entry = build_per_request_lifecycle_entry(
+        _metric_with_usage(10, {"input_tokens": 5, "output_tokens": 99}),
+        PerRequestFieldsConfig(computed_metrics=True),
+    )
+
+    assert entry["computed_metrics"]["output_tokens"] == 99
+    assert type(entry["computed_metrics"]["output_tokens"]) is int
+    assert entry["computed_metrics"]["output_len"] == 10
+
+
+# A server-reported 0 is a count, not a missing count: output_tokens stays an integer 0.
+# With the flag on, TPOT and NTPOT are unmeasurable rather than borrowing the client's 7.
+def test_per_request_computed_metrics_keeps_a_server_reported_zero() -> None:
+    entry = build_per_request_lifecycle_entry(
+        _metric_with_usage(7, {"completion_tokens": 0}),
+        PerRequestFieldsConfig(computed_metrics=True),
+        use_server_output_tokens=True,
+    )
+
+    computed = entry["computed_metrics"]
+    assert computed["output_tokens"] == 0
+    assert type(computed["output_tokens"]) is int
+    assert computed["output_len"] == 7
+    assert computed["tpot_output_tokens"] == 0
+    assert computed["normalized_time_per_output_token"] is None
+    assert computed["time_per_output_token"] is None
+
+
+# A request with 10 client tokens and 12 server tokens has matching per-request and summary counts
+# and latencies under either flag. Per-request counts are integers; summary distributions stay floats.
+def test_per_request_output_tokens_matches_the_summary_aggregate() -> None:
+    for use_server in (False, True):
+        metric = _metric_with_usage(10, {"completion_tokens": 12})
+        entry = build_per_request_lifecycle_entry(
+            metric,
+            PerRequestFieldsConfig(computed_metrics=True),
+            use_server_output_tokens=use_server,
+        )
+
+        summary = summarize_requests([metric], [50], use_server_output_tokens=use_server)
+        computed = entry["computed_metrics"]
+        assert computed["output_tokens"] == summary.successes["output_tokens"]["mean"]
+        assert type(computed["output_tokens"]) is int
+        assert type(summary.successes["output_tokens"]["total"]) is float
+        assert type(summary.successes["output_tokens"]["mean"]) is float
+        assert computed["output_len"] == summary.successes["output_len"]["mean"]
+        for name in ("time_per_output_token", "normalized_time_per_output_token"):
+            assert computed[name] == pytest.approx(summary.successes["latency"][name]["mean"])
+
+
+@pytest.mark.parametrize("use_server", [False, True])
+# Ten client tokens and twelve server tokens select 10 or 12 for normalization. The latency helper
+# exposes that count alongside TPOT (0.3 / (count - 1)) and NTPOT (1.0 / count).
+def test_latency_metrics_expose_the_normalization_count(use_server: bool) -> None:
+    latency = compute_request_latency_metrics(_metric_with_usage(10, {"completion_tokens": 12}), use_server)
+
+    count = 12 if use_server else 10
+    assert latency["tpot_output_tokens"] == count
+    assert type(latency["tpot_output_tokens"]) is int
+    assert latency["time_per_output_token"] == pytest.approx(0.3 / (count - 1))
+    assert latency["normalized_time_per_output_token"] == pytest.approx(1.0 / count)
+
+
+@pytest.mark.parametrize("use_server", [False, True])
+@pytest.mark.parametrize("include_info", [False, True])
+# Generate and save a run with 10 client tokens and 12 server tokens, with or without raw info.
+# JSON counts stay integers and the flag selects the TPOT/NTPOT count across per-request, stage,
+# and summary reports, so dropping the flag or a count field in generate_reports fails this test.
+async def test_generate_reports_preserves_output_token_provenance(
+    tmp_path: Path, use_server: bool, include_info: bool
+) -> None:
+    collector = LocalRequestMetricCollector()
+    collector.record_metric(_metric_with_usage(10, {"prompt_tokens": 5, "completion_tokens": 12}))
+    config = Config(
+        load=LoadConfig(stages=[StandardLoadStage(rate=1.0, duration=1.0)]),
+        report=ReportConfig(
+            request_lifecycle=RequestLifecycleMetricsReportConfig(
+                per_request=True,
+                per_request_fields=PerRequestFieldsConfig(info=include_info, computed_metrics=True),
+                use_server_output_tokens=use_server,
+            ),
+            prometheus=None,
+        ),
+    )
+    runtime = PerfRuntimeParameters(
+        start_time=1.0,
+        duration=1.0,
+        model_server_metrics=BaseMetrics(),
+        stages={0: StageRuntimeInfo(stage_id=0, rate=1.0, start_time=1.0, end_time=2.0, status=StageStatus.COMPLETED)},
+    )
+    generator = ReportGenerator(metrics_client=None, metrics_collector=collector, config=config)
+
+    reports = await generator.generate_reports(config.report, runtime)
+    LocalStorageClient(StorageConfigBase(path=str(tmp_path))).save_report(reports)
+
+    [entry] = json.loads((tmp_path / "per_request_lifecycle_metrics.json").read_text(encoding="utf-8"))
+    computed = entry["computed_metrics"]
+    count = 12 if use_server else 10
+    assert ("info" in entry) is include_info
+    assert computed["output_tokens"] == 12
+    assert computed["output_len"] == 10
+    assert computed["tpot_output_tokens"] == count
+    for field in ("output_tokens", "output_len", "tpot_output_tokens"):
+        assert type(computed[field]) is int
+    assert computed["time_per_output_token"] == pytest.approx(0.3 / (count - 1))
+    assert computed["normalized_time_per_output_token"] == pytest.approx(1.0 / count)
+    for filename in ("summary_lifecycle_metrics.json", "stage_0_lifecycle_metrics.json"):
+        successes = json.loads((tmp_path / filename).read_text(encoding="utf-8"))["successes"]
+        assert successes["output_tokens"]["mean"] == computed["output_tokens"]
+        assert type(successes["output_tokens"]["mean"]) is float
+        assert successes["output_len"]["mean"] == computed["output_len"]
+        for name in ("time_per_output_token", "normalized_time_per_output_token"):
+            assert successes["latency"][name]["mean"] == pytest.approx(computed[name])
+
+
+# A non-streamed response carries the same three counts; TTFT and TPOT stay null because there are
+# no token arrival times to measure them from.
+def test_per_request_computed_metrics_reports_counts_for_unary_responses() -> None:
+    metric = _metric()
+    metric.info.response_metrics = UnaryResponseMetrics(output_tokens=10, server_usage={"completion_tokens": 12})
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(computed_metrics=True))
+
+    computed = entry["computed_metrics"]
+    assert computed["output_tokens"] == 12
+    assert type(computed["output_tokens"]) is int
+    assert computed["output_len"] == 10
+    assert computed["tpot_output_tokens"] == 10
+    assert computed["time_to_first_token"] is None
+
+
+# A successful request with no response metrics has counted nothing on either side, so all three
+# count fields are null rather than 0.
+def test_per_request_computed_metrics_reports_null_counts_without_response_metrics() -> None:
+    metric = _metric()
+    metric.info.response_metrics = None
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(computed_metrics=True))
+
+    computed = entry["computed_metrics"]
+    assert computed["output_tokens"] is None
+    assert computed["output_len"] is None
+    assert computed["tpot_output_tokens"] is None
 
 
 def test_per_request_fields_disabled_computed_metrics_does_not_mutate_token_metrics() -> None:
@@ -221,6 +477,7 @@ def test_per_request_fields_computed_metrics_uses_tokenizer_corrected_chunks() -
     # The correction sets output_token_times only; output_tokens keeps the API layer's
     # whole-message count (see #564).
     assert entry["computed_metrics"]["output_tokens"] == 4
+    assert type(entry["computed_metrics"]["output_tokens"]) is int
 
 
 def test_per_request_fields_include_session_ids_when_set() -> None:
