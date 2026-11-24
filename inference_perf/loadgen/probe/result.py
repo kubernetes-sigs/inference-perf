@@ -22,7 +22,7 @@ reference them while user config can never define them.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple, TypedDict
 
 # Internal-only symbol names the probe may bind. Config validation must reject
 # any user-supplied definition of these names; stage expressions may reference
@@ -153,6 +153,50 @@ class RungResult:
             raise ValueError(f"client_lag must be non-negative, got {self.client_lag}")
 
 
+class IntervalReport(TypedDict):
+    """A confidence interval as it lands in the report file."""
+
+    low: float
+    high: float
+
+
+class ConstantReport(TypedDict):
+    """One bound constant, with the interval that qualifies it."""
+
+    value: float
+    ci: IntervalReport
+
+
+class RungReport(TypedDict):
+    """One ladder rung as it lands in the report file.
+
+    The measurement names match the lifecycle reports (`requests_per_sec`,
+    `request_latency`), so a reader can put the probe's curve next to a stage's
+    results without translating vocabularies.
+    """
+
+    concurrency: int
+    requests_per_sec: float
+    requests_per_sec_se: float
+    request_latency: float
+    littles_law_residual: float
+    stationary: bool
+    signal: str
+    error_rate: float
+    client_lag: float
+    usable: bool
+
+
+class ProbeReport(TypedDict):
+    """The serialized probe, and the schema `sweep_probe.json` is held to."""
+
+    stop_reason: str
+    censored: bool
+    failed_concurrency: Optional[int]
+    constants: Dict[str, ConstantReport]
+    rungs: List[RungReport]
+
+
 @dataclass(frozen=True)
 class ProbeResult:
     """Everything a probe run produced: the rung curve and the bound constants.
@@ -184,7 +228,7 @@ class ProbeResult:
             raise KeyError(f"probe did not bind '{name}'; bound symbols: {sorted(self.constants)}")
         return self.constants[name]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> ProbeReport:
         """Serialize the probe for a report file.
 
         This is the reported schema: `stop_reason` and `censored` qualify the
@@ -207,9 +251,9 @@ class ProbeResult:
             "rungs": [
                 {
                     "concurrency": rung.concurrency,
-                    "throughput": rung.throughput,
-                    "throughput_se": rung.throughput_se,
-                    "latency": rung.latency,
+                    "requests_per_sec": rung.throughput,
+                    "requests_per_sec_se": rung.throughput_se,
+                    "request_latency": rung.latency,
                     "littles_law_residual": rung.littles_law_residual,
                     "stationary": rung.stationary,
                     "signal": rung.signal.value,

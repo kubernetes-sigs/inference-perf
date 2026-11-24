@@ -39,9 +39,12 @@ import multiprocessing as mp
 import sys
 import time
 import unittest
-from typing import Any, Optional
+from typing import Optional
 from unittest.mock import patch
 
+from transformers import PreTrainedTokenizerBase
+
+from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver.mock_client import MockModelServerClient
 from inference_perf.config import (
     APIConfig,
@@ -59,7 +62,7 @@ from inference_perf.config import (
 from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.loadgen.probe import ProbeStopReason
-from inference_perf.metrics.request_collector import MultiprocessRequestMetricCollector
+from inference_perf.metrics.request_collector import MultiprocessRequestMetricCollector, RequestMetricCollector
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 # Match the start method used in production (main.py) so the tokenizer and
@@ -73,16 +76,31 @@ if sys.platform == "darwin":
 MOCK_LATENCY = 0.05
 
 
-class _DummyHFTokenizer:
-    """Minimal HuggingFace-shaped tokenizer backed by space-delimited integers."""
+class _DummyHFTokenizer(PreTrainedTokenizerBase):
+    """Minimal HuggingFace-shaped tokenizer backed by space-delimited integers.
+
+    It subclasses the real base so `get_tokenizer` keeps the production return
+    type rather than widening it. The HuggingFace constructor is skipped on
+    purpose: the random datagen only reads `vocab_size` and `all_special_ids`
+    and counts through the tokenizer's own `count_tokens`.
+    """
 
     vocab_size = 1000
     all_special_ids = [1, 2, 3]
 
-    def decode(self, tokens: list[int], **kwargs: Any) -> str:
-        return " ".join(str(t) for t in tokens)
+    def __init__(self) -> None:
+        pass
 
-    def encode(self, text: str) -> list[int]:
+    # Widened parameters keep the override compatible with the HuggingFace
+    # signatures; every caller in the random datagen passes a list of ids.
+    # The parent declares str | list[str] (one string per row for batch input),
+    # so the annotation follows it even though this tokenizer always returns one.
+    def decode(self, token_ids: object, skip_special_tokens: bool = False, **kwargs: object) -> str | list[str]:
+        assert isinstance(token_ids, list)
+        return " ".join(str(t) for t in token_ids)
+
+    def encode(self, text: object, **kwargs: object) -> list[int]:
+        assert isinstance(text, str)
         try:
             return [int(t) for t in text.split()]
         except ValueError:
@@ -93,7 +111,7 @@ class _DummyCustomTokenizer(CustomTokenizer):
     def __init__(self) -> None:
         pass
 
-    def get_tokenizer(self) -> Any:
+    def get_tokenizer(self) -> PreTrainedTokenizerBase:
         return _DummyHFTokenizer()
 
     def count_tokens(self, text: str, add_special_tokens: bool = True) -> int:
@@ -110,13 +128,23 @@ class _CapacityLimitedMockClient(MockModelServerClient):
     loop instead of being pickled across the process boundary.
     """
 
-    def __init__(self, *args: Any, capacity: int, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        metrics_collector: RequestMetricCollector,
+        api_config: APIConfig,
+        timeout: Optional[float] = None,
+        mock_latency: float = 1,
+        request_retries: int = 0,
+        request_retry_backoff_sec: float = 0.5,
+        *,
+        capacity: int,
+    ) -> None:
+        super().__init__(metrics_collector, api_config, timeout, mock_latency, request_retries, request_retry_backoff_sec)
         self.capacity = capacity
         self._slots: Optional[asyncio.Semaphore] = None
 
     async def process_request(
-        self, data: Any, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
     ) -> None:
         if self._slots is None:
             self._slots = asyncio.Semaphore(self.capacity)
@@ -128,7 +156,7 @@ class _HangingMockClient(MockModelServerClient):
     """Mock server that measures the first two rungs and then never answers."""
 
     async def process_request(
-        self, data: Any, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
     ) -> None:
         if stage_id <= -3:
             # Only a cancellation ends this, which is what the drain cancel does.
@@ -140,12 +168,22 @@ class _HangingMockClient(MockModelServerClient):
 class _FailingRungMockClient(MockModelServerClient):
     """Mock server that times out every request from a given rung onward."""
 
-    def __init__(self, *args: Any, fail_from_stage: int = -3, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        metrics_collector: RequestMetricCollector,
+        api_config: APIConfig,
+        timeout: Optional[float] = None,
+        mock_latency: float = 1,
+        request_retries: int = 0,
+        request_retry_backoff_sec: float = 0.5,
+        *,
+        fail_from_stage: int = -3,
+    ) -> None:
+        super().__init__(metrics_collector, api_config, timeout, mock_latency, request_retries, request_retry_backoff_sec)
         self.fail_from_stage = fail_from_stage
 
     async def process_request(
-        self, data: Any, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
     ) -> None:
         if stage_id <= self.fail_from_stage:
             # The mock records a failed lifecycle metric for this timeout, which

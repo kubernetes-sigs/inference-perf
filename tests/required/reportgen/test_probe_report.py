@@ -95,6 +95,13 @@ async def test_generate_reports_writes_the_probe_as_its_own_report() -> None:
     assert contents["constants"]["r_sat"]["value"] == 20.0
     assert [rung["concurrency"] for rung in contents["rungs"]] == [1, 2]
     assert [rung["usable"] for rung in contents["rungs"]] == [True, False]
+    # The measurement keys use the same names as the lifecycle reports, so a
+    # reader can compare this curve with a stage's results without translating.
+    first = contents["rungs"][0]
+    assert first["requests_per_sec"] == 10.0
+    assert first["requests_per_sec_se"] == 0.0
+    assert first["request_latency"] == 0.0
+    assert "throughput" not in first
 
 
 async def test_generate_reports_omits_the_probe_report_without_a_probe() -> None:
