@@ -167,7 +167,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.otel_trace_replay.attribute_to_header_map` | JSON | Map OTel span attributes to HTTP headers |
 | `--data.otel_trace_replay.attribute_to_label_map` | JSON | Map OTel span attributes to metrics reporting labels |
 | `--data.otel_trace_replay.remote_cache_dir` | str | Local directory caching traces read from s3:// entries (compressed, as stored). Defaults to <system temp dir>/inference-perf-<user>/trace-cache; in Kubernetes, point it at an emptyDir. |
-| `--data.otel_trace_replay.remote_cache_max_gb` | float | Disk budget in GB for remote_cache_dir, enforced by least-recently-used eviction. When every matched object fits, all are downloaded before the run; otherwise upcoming sessions are downloaded ahead. 0 downloads each trace when it is read and keeps only the latest one. |
+| `--data.otel_trace_replay.remote_cache_max_gb` | float | Disk budget in GB for remote_cache_dir, enforced by least-recently-used eviction. When every matched object fits, all are downloaded before the run; otherwise upcoming sessions are downloaded ahead. A running session keeps its trace until it ends, so many concurrent sessions can exceed the budget by their own files. 0 keeps only running sessions' traces. |
 | `--data.weka_trace_replay.use_static_model` | boolean | Use a single static model for all requests |
 | `--data.weka_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.weka_trace_replay.model_mapping` | JSON | Map recorded model names to target models |

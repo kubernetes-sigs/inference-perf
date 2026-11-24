@@ -42,6 +42,7 @@ from datasets import Dataset
 
 from inference_perf.datagen.replay.remote_trace_store import (
     RemoteObject,
+    RemoteReadError,
     RemoteTraceStore,
     TraceRecord,
     check_not_all_denied,
@@ -281,9 +282,19 @@ class LocalTraceSource:
             if probe_targets
             else {}
         )
-        check_not_all_denied(list(probes.values()))
         whole = [f for f in files if isinstance(f, RemoteObject) and (f.uri not in probes or _is_otel_probe(probes[f.uri]))]
-        indexed_whole = self._index_whole(whole, probes) if whole else {}
+        # OTel .jsonl cannot be read compressed (records are loaded by offset), so reject it from
+        # its probe, as a local one is, rather than download it whole first.
+        rejected: Dict[str, Union[List[LocalTraceRecord], Exception]] = {
+            o.uri: UnsupportedTraceFormatError(f"{o.uri}: OTel .jsonl cannot be read compressed; decompress it first")
+            for o in whole
+            if o.name.endswith(".jsonl.zst")
+        }
+        indexed_whole = self._index_whole([o for o in whole if o.uri not in rejected], probes) if whole else {}
+        indexed_whole.update(rejected)
+        # One check over every remote object, after both the probes and the whole downloads:
+        # a refusal of some objects is theirs to skip; a refusal of all of them is the keys.
+        check_not_all_denied([_outcome(f, probes, indexed_whole) for f in files if isinstance(f, RemoteObject)])
         records: List[LocalTraceRecord] = []
         for entry in files:
             try:
@@ -314,12 +325,12 @@ class LocalTraceSource:
             store.pin(batch)
             try:
                 failures = store.download_all(batch)
-                if len(failures) == len(batch):
-                    check_not_all_denied(list(failures.values()))
                 for o in batch:
                     failure = failures.get(o.uri)
                     if failure is not None:
-                        results[o.uri] = TraceReadError(str(failure))
+                        error = TraceReadError(str(failure))
+                        error.__cause__ = failure  # keeps the store's error code for check_not_all_denied
+                        results[o.uri] = error
                         continue
                     try:
                         results[o.uri] = self._index_remote(o, probes.get(o.uri))
@@ -536,6 +547,20 @@ class LocalTraceSource:
             raise InvalidTraceError(f"{path}: not valid JSON: {e}") from e
         except trace_read_errors() as e:
             raise TraceReadError(f"{path}: {e}") from e
+
+
+def _outcome(
+    obj: RemoteObject,
+    probes: Dict[str, Union[TraceRecord, None, Exception]],
+    indexed_whole: Dict[str, Union[List["LocalTraceRecord"], Exception]],
+) -> Union[TraceRecord, None, Exception]:
+    """What reading ``obj`` produced at indexing: its store error if a download failed, else its probe."""
+    result = indexed_whole.get(obj.uri)
+    if result is None:
+        return probes.get(obj.uri)
+    if isinstance(result, Exception):
+        return result.__cause__ if isinstance(result.__cause__, RemoteReadError) else result
+    return None  # indexed fine
 
 
 def _fitting_batches(objs: Sequence[RemoteObject], budget: float) -> List[List[RemoteObject]]:

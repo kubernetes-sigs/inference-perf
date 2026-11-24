@@ -133,7 +133,7 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | `bad_tool_call_handling` | enum | No (default: `none`) | How to handle tool_calls whose `function.arguments` is not valid JSON. `none`: no mitigation (upstream behavior). `use_recorded`: substitute the recorded assistant message at the affected slot. See [Bad tool-call handling](#bad-tool-call-handling) |
 | `tool_choice_mode` | enum | No (default: `force_recorded`) | Whether to inject a `tool_choice` on recorded tool-call turns. `force_recorded`: force the recorded function, or `"required"` when that isn't possible (upstream behavior). `as_recorded`: inject nothing, leaving the choice to the model. See [Forced `tool_choice` and Token Budget](#forced-tool_choice-and-token-budget) |
 | `remote_cache_dir` | string | No (default: `<system temp dir>/inference-perf-<user>/trace-cache`) | Local cache for traces read from `s3://` entries. In Kubernetes, point it at an `emptyDir` |
-| `remote_cache_max_gb` | float | No (default: `10.0`) | Disk budget for `remote_cache_dir`, least-recently-used eviction. `0` downloads each trace when it is read and keeps only the latest one |
+| `remote_cache_max_gb` | float | No (default: `10.0`) | Disk budget for `remote_cache_dir`, least-recently-used eviction. A running session keeps its trace on disk until it ends, so many concurrent sessions can exceed the budget by their own files. `0` keeps only the traces of running sessions |
 | `disable_output_substitution` | boolean | No (default: `false`) | When `true`, replay each call with its recorded assistant output (text and tool calls) instead of substituting the live output from predecessor calls. Predecessor wait timing is still enforced. Cannot be combined with `inject_random_session_id` or `duplicate_sessions_target` (those trigger substitution and would contradict this flag — config validation rejects the combination) |
 
 **Examples:**
@@ -229,6 +229,25 @@ volumes:
       sizeLimit: 12Gi                     # above remote_cache_max_gb
 ```
 
+Path-style addressing has no environment variable in boto3; it can only come from a config file. In Kubernetes, mount
+one from a ConfigMap and point `AWS_CONFIG_FILE` at it:
+
+```yaml
+# kubectl create configmap trace-store-aws --from-literal=config=$'[default]\ns3 =\n    addressing_style = path\n'
+containers:
+  - name: inference-perf
+    env:
+      - name: AWS_CONFIG_FILE
+        value: /etc/aws/config
+    volumeMounts:
+      - name: aws-config
+        mountPath: /etc/aws
+volumes:
+  - name: aws-config
+    configMap:
+      name: trace-store-aws
+```
+
 A cache directory that cannot be written fails the run at startup. The default directory is created owner-only,
 and refused if it is a symlink, owned by another user, or writable by others. Only the cache's own entries are
 ever evicted, so other files in `remote_cache_dir` are left alone.
@@ -237,9 +256,12 @@ ever evicted, so other files in `remote_cache_dir` are left alone.
 and session id; OTel `.json` / `.jsonl` objects are downloaded whole, because their identity and row offsets need
 the full file (within `remote_cache_max_gb`: a larger OTel set is evicted as it is indexed and downloaded again
 when its sessions run). Transient read errors (throttling, server errors, dropped connections) are retried. Objects land in `remote_cache_dir`, compressed as stored and pinned to the version listed at
-startup; an object that changes during the run fails its session. If every matched object fits
+startup; an object that changes during the run cannot be read, so its session is skipped with `skip_invalid_files`
+and otherwise stops the run, like any unreadable trace. If every matched object fits
 `remote_cache_max_gb`, all of them are downloaded before the first stage, so no download happens while measuring.
-Otherwise the upcoming sessions are downloaded ahead, up to half the cache. Any session that still has to wait for
+Otherwise the upcoming sessions are downloaded ahead, up to half the cache less what running sessions hold. Each
+running session keeps its trace on disk until it ends, so its worker always reads it from the cache. Any session that
+still has to wait for
 a download is logged with how long it waited.
 
 Remote wire captures are not fully validated at startup (that would download every one); a broken capture surfaces

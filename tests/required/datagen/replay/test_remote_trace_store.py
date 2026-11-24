@@ -765,24 +765,74 @@ def test_prefetch_into_an_unwritable_cache_does_not_hang(tmp_path: Path) -> None
     assert isinstance(_materialize_in_thread(store, obj(fake, "a.jsonl")), RemoteReadError)
 
 
-# The first GET fails with InternalError: the read that needs the object still gets its bytes.
-def test_a_failed_prefetch_is_retried_by_the_load_that_needs_it(tmp_path: Path) -> None:
-    class FlakyOnce(FakeS3):
-        failed = False
+# The first three GETs fail with InternalError, so the download ahead uses up its retries and
+# fails; the read that needs the object downloads it again (GET 4) and gets its bytes.
+def test_a_failed_prefetch_is_retried_by_the_load_that_needs_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import inference_perf.datagen.replay.remote_trace_store as remote_module
 
+    monkeypatch.setattr(remote_module, "_RETRY_DELAYS", (0.0, 0.0))
+
+    import threading
+    import time
+
+    release = threading.Event()
+
+    class FailingThrice(FakeS3):
         def get_object(
             self, Bucket: str, Key: str, IfMatch: Optional[str] = None, Range: Optional[str] = None
         ) -> GetObjectOutput:
-            if not self.failed:
-                self.failed = True
+            if len(self.gets) < 3:
+                release.wait(5)  # hold the download ahead until the reader is waiting on it
+                self.gets.append(Key)
                 raise ClientError({"Error": {"Code": "InternalError", "Message": "reset"}}, "GetObject")
             return super().get_object(Bucket, Key, IfMatch, Range)
 
-    fake = FlakyOnce({"a.jsonl": b"a"})
+    fake = FailingThrice({"a.jsonl": b"a"})
     store = make_store(tmp_path, fake)
     store.prefetch([obj(fake, "a.jsonl")])
+    threading.Timer(0.3, release.set).start()
+    time.sleep(0.05)  # the download ahead is in flight, blocked on its first GET
     result = _materialize_in_thread(store, obj(fake, "a.jsonl"))
     assert isinstance(result, Path) and result.read_bytes() == b"a"
+    assert len(fake.gets) == 4
+    assert "its download ahead failed" in caplog.text
+
+
+# InternalError on every attempt: after the last retry the read fails with the store's
+# RemoteReadError (three GETs), not an IndexError from running past the retry delays.
+def test_a_retryable_error_on_every_attempt_is_a_read_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import inference_perf.datagen.replay.remote_trace_store as remote_module
+
+    monkeypatch.setattr(remote_module, "_RETRY_DELAYS", (0.0, 0.0))
+
+    class AlwaysFailing(FakeS3):
+        def get_object(
+            self, Bucket: str, Key: str, IfMatch: Optional[str] = None, Range: Optional[str] = None
+        ) -> GetObjectOutput:
+            self.gets.append(Key)
+            raise ClientError({"Error": {"Code": "InternalError", "Message": "down"}}, "GetObject")
+
+    fake = AlwaysFailing({"a.jsonl": b"a"})
+    with pytest.raises(RemoteReadError, match="InternalError"):
+        make_store(tmp_path, fake).materialize(obj(fake, "a.jsonl"))
+    assert len(fake.gets) == 3
+
+
+# A symlink in the cache dir named like a cache entry (<24 hex>-<etag>) pointing at another
+# directory: its target's file (victim.txt, 500 B) survives downloads with a 150 B budget.
+def test_an_entry_named_symlink_is_never_scanned(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "victim.txt").write_bytes(b"v" * 500)
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / f"{'a' * 24}-1").symlink_to(elsewhere)
+    fake = FakeS3({"a.jsonl": b"a" * 100, "b.jsonl": b"b" * 100})
+    store = make_store(tmp_path, fake, max_bytes=150)
+    store.materialize(obj(fake, "a.jsonl"))
+    store.materialize(obj(fake, "b.jsonl"))
+    assert (elsewhere / "victim.txt").read_bytes() == b"v" * 500
 
 
 # A process queues 32 slow (0.5 s) downloads and returns: it exits within the 20 s timeout
@@ -1479,13 +1529,14 @@ def test_wait_warnings_carry_running_totals(tmp_path: Path, caplog: pytest.LogCa
     assert "2 waits" in caplog.text
 
 
-# check_not_all_denied raises only when every result is a refusal with one credential code.
+# check_not_all_denied raises only when there is a result and every result is a refusal with a
+# credential code (codes may differ); a record or a non-credential error suppresses it.
 @pytest.mark.parametrize(
     "results,raises",
     [
         ([], False),
         ([RemoteReadError("x", code="AccessDenied")], True),
-        ([RemoteReadError("x", code="AccessDenied"), RemoteReadError("y", code="InvalidAccessKeyId")], False),
+        ([RemoteReadError("x", code="AccessDenied"), RemoteReadError("y", code="InvalidAccessKeyId")], True),
         ([RemoteReadError("x", code="AccessDenied"), {"path": "/v1/messages"}], False),
         ([RemoteReadError("x", code="NoSuchKey")], False),
         ([ValueError("bad json")], False),
@@ -1540,3 +1591,167 @@ def test_window_charges_a_shared_file_once(monkeypatch: pytest.MonkeyPatch, tmp_
         expected += 1
     assert len(gen._ahead) == expected
     assert gen._ahead_bytes == total
+
+
+# A FakeS3 that answers AccessDenied (or `codes[key]`) for the keys in `refused`.
+class Refusing(FakeS3):
+    def __init__(self, objects: Dict[str, bytes], refused: Dict[str, str]) -> None:
+        super().__init__(objects)
+        self.refused = refused
+
+    def get_object(
+        self, Bucket: str, Key: str, IfMatch: Optional[str] = None, Range: Optional[str] = None
+    ) -> GetObjectOutput:
+        if Key in self.refused:
+            self.gets.append(Key)
+            raise ClientError({"Error": {"Code": self.refused[Key], "Message": "refused"}}, "GetObject")
+        return super().get_object(Bucket, Key, IfMatch, Range)
+
+
+# Ten readable wire captures plus one OTel .json refused with AccessDenied, skip_invalid_files on:
+# the ten load and the refused one is skipped, instead of startup aborting.
+def test_one_refused_otel_object_among_readable_ones_is_skipped(tmp_path: Path) -> None:
+    objects = {f"k/w{i}.jsonl.zst": wire_bytes() for i in range(10)}
+    objects["k/denied.json"] = json.dumps(otel_doc("d")).encode()
+    fake = Refusing(objects, {"k/denied.json": "AccessDenied"})
+    store = make_store(tmp_path, fake)
+    source = remote_source(store, store.resolve(f"s3://{BUCKET}/k/*.json*"), skip_invalid=True)
+    assert len(source.list_records()) == 10
+
+
+# One refused wire capture plus five readable OTel .json: the five load (the probes alone are
+# not every object).
+def test_one_refused_probe_among_readable_otel_objects_is_skipped(tmp_path: Path) -> None:
+    objects = {f"k/t{i}.json": json.dumps(otel_doc(f"t{i}")).encode() for i in range(5)}
+    objects["k/denied.jsonl.zst"] = wire_bytes()
+    fake = Refusing(objects, {"k/denied.jsonl.zst": "AccessDenied"})
+    store = make_store(tmp_path, fake)
+    source = remote_source(store, store.resolve(f"s3://{BUCKET}/k/*.json*"), skip_invalid=True)
+    assert len(source.list_records()) == 5
+
+
+# Five OTel .json with a cache so small each is its own batch, only the last refused: four load.
+def test_a_refused_object_alone_in_its_batch_is_skipped(tmp_path: Path) -> None:
+    objects = {f"k/t{i}.json": json.dumps(otel_doc(f"t{i}")).encode() for i in range(5)}
+    fake = Refusing(objects, {"k/t4.json": "AccessDenied"})
+    store = make_store(tmp_path, fake, max_bytes=1)
+    source = remote_source(store, store.resolve(f"s3://{BUCKET}/k/*.json"), skip_invalid=True)
+    assert len(source.list_records()) == 4
+
+
+# Every object refused, one probed (.jsonl.zst) and one read whole (.json), with different
+# credential codes: the credentials hint.
+def test_everything_refused_across_probes_and_downloads_names_the_credentials(tmp_path: Path) -> None:
+    objects = {"k/a.jsonl.zst": wire_bytes(), "k/b.json": json.dumps(otel_doc("b")).encode()}
+    fake = Refusing(objects, {"k/a.jsonl.zst": "AccessDenied", "k/b.json": "ExpiredToken"})
+    store = make_store(tmp_path, fake)
+    with pytest.raises(ValueError, match=r"AccessDenied, ExpiredToken.*AWS_ACCESS_KEY_ID"):
+        remote_source(store, store.resolve(f"s3://{BUCKET}/k/*.json*"), skip_invalid=True)
+
+
+# Every object failed, but one with NoSuchKey: not a credentials problem, so no hint; all are skipped.
+def test_a_non_credential_failure_suppresses_the_hint(tmp_path: Path) -> None:
+    objects = {"k/a.json": b"{}", "k/b.json": b"{}"}
+    fake = Refusing(objects, {"k/a.json": "AccessDenied", "k/b.json": "NoSuchKey"})
+    store = make_store(tmp_path, fake)
+    assert remote_source(store, store.resolve(f"s3://{BUCKET}/k/*.json"), skip_invalid=True).list_records() == []
+
+
+# A readable local capture plus a bucket refusing everything: still the credentials hint, since
+# running on the local file alone would hide that the S3 keys are wrong.
+def test_all_remote_refused_names_the_credentials_even_with_local_files(tmp_path: Path) -> None:
+    local = tmp_path / "local-calls.jsonl"
+    local.write_bytes(wire_bytes(compress=False))
+    fake = Refusing({"k/a.json": b"{}"}, {"k/a.json": "AccessDenied"})
+    store = make_store(tmp_path, fake)
+    with pytest.raises(ValueError, match="AWS_ACCESS_KEY_ID"):
+        remote_source(store, [local, *store.resolve(f"s3://{BUCKET}/k/*.json")], skip_invalid=True)
+
+
+# A remote OTel .jsonl.zst is rejected from its probe, as locally, without downloading it whole
+# (one ranged GET, no full one).
+def test_remote_otel_jsonl_zst_is_rejected_from_its_probe(tmp_path: Path) -> None:
+    from inference_perf.datagen.replay.trace_source import UnsupportedTraceFormatError
+
+    data = zstd.compress((json.dumps(otel_doc("t0")) + "\n").encode())
+    fake = FakeS3({"d/t.jsonl.zst": data})
+    store = make_store(tmp_path, fake)
+    with pytest.raises(UnsupportedTraceFormatError, match=r"s3://bkt/d/t\.jsonl\.zst.*compressed"):
+        remote_source(store, store.resolve(f"s3://{BUCKET}/d/*.jsonl.zst"))
+    assert fake.ranges == ["bytes=0-262143"]
+
+
+# Dispatch sessions 0..count-1 like the parent loop: build each, then activate it.
+def dispatch_in_order(gen: OTelTraceReplayDataGenerator, count: int) -> None:
+    store, _ = remote_parts(gen)
+    for i in range(count):
+        assert gen.is_session_buildable(i)
+        gen.activate_session(gen._session_ids[i])
+        wait_until_cached(store, [])
+
+
+# Cap 0, eight sessions dispatched back to back, then their worker builds them: the worker
+# finds every file the parent fetched and makes no GET of its own.
+def test_worker_reads_every_dispatched_session_from_the_cache_at_cap_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = corpus(8)
+    gen = make_generator(monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"], remote_cache_max_gb=0)
+    worker = pickle.loads(pickle.dumps(gen))  # forked before any session is built, as workers are
+    dispatch_in_order(gen, 8)
+    before = len(fake.gets)
+    for i in range(8):
+        worker._ensure_session_built(i)
+    assert len(fake.gets) == before
+
+
+# Ten sessions, cache for 3.5 files, all ten dispatched before the worker reads any (a burst
+# larger than the cache): the worker still makes no GET.
+def test_worker_reads_a_burst_larger_than_the_cache_from_the_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = corpus(10)
+    gen = make_generator(
+        monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"], remote_cache_max_gb=small_cap(fake, 3.5)
+    )
+    worker = pickle.loads(pickle.dumps(gen))  # forked before any session is built, as workers are
+    dispatch_in_order(gen, 10)
+    before = len(fake.gets)
+    for i in range(10):
+        worker._ensure_session_built(i)
+    assert len(fake.gets) == before
+
+
+# A dispatched session's file is released when the parent cleans the session up: after all
+# eight finish at cap 0, no dispatch pin is left and the next download evicts them.
+def test_cleanup_releases_the_dispatch_pin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = corpus(8)
+    gen = make_generator(monkeypatch, fake, tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"], remote_cache_max_gb=0)
+    dispatch_in_order(gen, 8)
+    store, _ = remote_parts(gen)
+    for i in range(8):
+        gen.cleanup_session(gen._session_ids[i])
+    assert gen._dispatch_pins == {} and not +store._pinned
+
+
+# Two sessions share one file (a corpus of 2 padded to 4): cleaning one up twice lowers the
+# file's pin count by exactly one, so it stays pinned for the other.
+def test_double_cleanup_does_not_release_a_shared_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    gen = make_generator(
+        monkeypatch, corpus(2), tmp_path, trace_files=[f"s3://{BUCKET}/m/*/*.jsonl.zst"], duplicate_sessions_target=4
+    )
+    store, _ = remote_parts(gen)
+    dispatch_in_order(gen, 4)
+    shared = gen._dispatch_pins[gen._session_ids[0]]
+    twin = next(sid for sid in gen._session_ids[1:] if gen._dispatch_pins[sid].uri == shared.uri)
+    before = store._pinned[store.cache_path(shared)]
+    gen.cleanup_session(gen._session_ids[0])
+    gen.cleanup_session(gen._session_ids[0])
+    assert store._pinned[store.cache_path(shared)] == before - 1 and twin in gen._dispatch_pins
+
+
+# A worker's miss is always reported, even at cap 0: the parent fetched the same file a moment ago.
+def test_a_worker_miss_warns_even_at_cap_zero(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    fake = FakeS3({"a.jsonl": b"a"})
+    _SHARED["fake"] = fake
+    worker = pickle.loads(pickle.dumps(RemoteTraceStore(tmp_path / "cache", 0, client_factory=_shared_client)))
+    worker.materialize(obj(fake, "a.jsonl"))
+    assert "Waited" in caplog.text

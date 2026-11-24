@@ -429,6 +429,11 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
     _ahead_reading: List[RemoteObject]
     # How many sessions in the window use each file, by URI.
     _ahead_uses: "Counter[str]"
+    # Running sessions' files, pinned from dispatch until the parent cleans the session up, so
+    # its worker never finds the file evicted: session id -> object, and uses/bytes per file.
+    _dispatch_pins: Dict[str, RemoteObject]
+    _active_uses: "Counter[str]"
+    _active_bytes: int
     _ahead_next: int = 0
     _ahead_bytes: int = 0
 
@@ -618,6 +623,9 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             store = self._remote_store = RemoteTraceStore(cache_dir, int(cfg.remote_cache_max_gb * 1e9))
             store.check_writable()
             store.report_waits = False
+            self._dispatch_pins = {}
+            self._active_uses = Counter()
+            self._active_bytes = 0
         found: Dict[str, RemoteObject] = {}
         for entry in entries:
             for obj in store.list_directory(entry) if directory else store.resolve(entry):
@@ -676,7 +684,10 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             if record is not None and record.remote is not None:
                 new_file = record.remote.uri not in self._ahead_uses
                 if new_file:
-                    if self._ahead and self._ahead_bytes + record.remote.size > store.max_bytes / 2:
+                    # Half the cache, less what running sessions hold, so disk stays within the
+                    # cap unless the running sessions alone exceed it.
+                    budget = min(store.max_bytes / 2, store.max_bytes - self._active_bytes)
+                    if self._ahead and self._ahead_bytes + record.remote.size > budget:
                         break
                     self._ahead_bytes += record.remote.size
                     added.append(record.remote)
@@ -687,6 +698,35 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         store.pin(added)
         store.unpin(released)
         return added
+
+    def activate_session(self, session_id: str) -> None:
+        super().activate_session(session_id)
+        store = self._remote_store
+        # Parent only (it alone evicts): keep the session's file until its worker is done with it.
+        if store is None or not store.evict_enabled or session_id in self._dispatch_pins:
+            return
+        index = self._session_id_to_index.get(session_id)
+        record = self._record_for_index(index) if index is not None else None
+        if record is None or record.remote is None:
+            return
+        self._dispatch_pins[session_id] = record.remote
+        if self._active_uses[record.remote.uri] == 0:
+            self._active_bytes += record.remote.size
+        self._active_uses[record.remote.uri] += 1
+        store.pin([record.remote])
+
+    def cleanup_session(self, session_id: str) -> None:
+        super().cleanup_session(session_id)
+        store = self._remote_store
+        # Keyed by session id, so a second cleanup cannot release another session's pin on a shared file.
+        released = self._dispatch_pins.pop(session_id, None) if store is not None else None
+        if store is None or released is None:
+            return
+        self._active_uses[released.uri] -= 1
+        if self._active_uses[released.uri] == 0:
+            del self._active_uses[released.uri]
+            self._active_bytes -= released.size
+        store.unpin([released])
 
     def _warm_remote_cache(self) -> None:
         """Download every remote trace before the run if they all fit the cache, else the first window."""

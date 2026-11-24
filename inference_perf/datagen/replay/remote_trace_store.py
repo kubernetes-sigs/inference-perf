@@ -216,12 +216,14 @@ def default_client() -> S3Client:
 
 
 def check_not_all_denied(results: Sequence[Union[TraceRecord, None, Exception]]) -> None:
-    """Fail with the credentials hint when every probe was refused: the keys, not the data, are wrong."""
-    codes = {r.code for r in results if isinstance(r, RemoteReadError)}
-    if results and len(codes) == 1 and all(isinstance(r, RemoteReadError) for r in results):
-        code = next(iter(codes))
-        if code in _CREDENTIAL_ERROR_CODES:
-            raise ValueError(f"Every remote trace was refused ({code}): {_CREDENTIALS_HINT}")
+    """Fail with the credentials hint when every remote object was refused: the keys, not the data, are wrong.
+
+    ``results`` holds one outcome per remote object. Any readable object, or any failure
+    that is not a credential refusal, means the data is at fault, not the keys.
+    """
+    if results and all(isinstance(r, RemoteReadError) and r.code in _CREDENTIAL_ERROR_CODES for r in results):
+        codes = sorted({r.code for r in results if isinstance(r, RemoteReadError) and r.code})
+        raise ValueError(f"Every remote trace was refused ({', '.join(codes)}): {_CREDENTIALS_HINT}")
 
 
 def prepare_private_dir(path: Path) -> None:
@@ -508,8 +510,9 @@ class RemoteTraceStore:
         if self.report_waits:
             self.sync_downloads += 1
             self.sync_wait_s += waited
-            # With no cache every read downloads, by choice; a warning each time would be noise.
-            if self.max_bytes > 0:
+            # With no cache the parent's reads download by choice; a warning each time would be
+            # noise. A worker's never are: the parent fetched the same file a moment before.
+            if self.max_bytes > 0 or not self.evict_enabled:
                 logger.warning(
                     f"Waited {waited:.2f}s for {obj.uri} ({obj.size} bytes): {reason} "
                     f"[{self.sync_downloads} waits, {self.sync_wait_s:.1f}s so far in this process]"
