@@ -86,6 +86,13 @@ async def test_single_token_stream_reports_ttft(tmp_path: Path) -> None:
         assert computed["time_to_first_token"] is not None
         assert SIM_TTFT_SEC <= computed["time_to_first_token"] <= computed["request_latency"]
         assert computed["time_per_output_token"] is None
+        # One server token and one client token, so both counts are 1 and the count selected for
+        # normalization is 1 too. They stay integers through JSON, as the report serializes them.
+        assert computed["output_tokens"] == 1
+        assert computed["output_len"] == 1
+        assert computed["tpot_output_tokens"] == 1
+        for count_field in ("output_tokens", "output_len", "tpot_output_tokens"):
+            assert type(computed[count_field]) is int
 
     summary_ttft = result.reports["summary_lifecycle_metrics.json"]["successes"]["latency"]["time_to_first_token"]
     assert summary_ttft is not None and summary_ttft["min"] >= SIM_TTFT_SEC
