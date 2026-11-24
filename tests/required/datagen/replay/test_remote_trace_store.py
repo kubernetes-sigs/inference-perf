@@ -1599,9 +1599,7 @@ class Refusing(FakeS3):
         super().__init__(objects)
         self.refused = refused
 
-    def get_object(
-        self, Bucket: str, Key: str, IfMatch: Optional[str] = None, Range: Optional[str] = None
-    ) -> GetObjectOutput:
+    def get_object(self, Bucket: str, Key: str, IfMatch: Optional[str] = None, Range: Optional[str] = None) -> GetObjectOutput:
         if Key in self.refused:
             self.gets.append(Key)
             raise ClientError({"Error": {"Code": self.refused[Key], "Message": "refused"}}, "GetObject")
