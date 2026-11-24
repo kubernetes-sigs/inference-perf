@@ -76,18 +76,17 @@ async def test_a_completed_job_counts_each_line_by_its_answer() -> None:
     assert server.creates == [
         {"input_file_id": "file-2", "endpoint": "/v1/completions", "completion_window": "30m", "metadata": {"stage": "0"}}
     ]
-    assert result.batch.status == "completed"
+    assert result.batch is not None and result.batch.status == "completed"
     assert result.status_first_seen == {"in_progress": 11.0, "completed": 12.0}
     assert (result.submitted_at, result.finished_at) == (10.0, 13.0)
     assert (result.lines, result.succeeded, result.failed, result.unanswered) == (4, 1, 2, 1)
 
 
-# A job whose should_stop answers true stops waiting at the first poll, with the batch still in_progress and
-# no output to count: all 4 lines are unanswered, and the job finishes at clock 12, after that poll at 11.
-async def test_a_stopped_job_leaves_every_line_unanswered() -> None:
-    states: list[dict[str, object]] = [{"status": "in_progress"}, {"status": "completed"}]
-    clock = iter([10.0, 11.0, 12.0]).__next__
-    async with FakeBatchServer(states) as server, aiohttp.ClientSession() as session:
+# A job whose should_stop already answers true when its file has uploaded creates no batch: the server sees one
+# upload and no create, the result has no batch, and all 4 lines are unanswered, from clock 10 to clock 11.
+async def test_a_job_stopped_while_uploading_creates_no_batch() -> None:
+    clock = iter([10.0, 11.0]).__next__
+    async with FakeBatchServer(poll_states=[]) as server, aiohttp.ClientSession() as session:
         client = BatchClient(session, server.base_url, HEADERS, clock=clock)
         result = await asyncio.wait_for(
             run_batch_job(
@@ -102,7 +101,36 @@ async def test_a_stopped_job_leaves_every_line_unanswered() -> None:
             timeout=5,
         )
 
-    assert (result.batch.status, server.polls) == ("in_progress", 1)
+    assert (len(server.uploads), server.creates, server.polls) == (1, [], 0)
+    assert result.batch is None
+    assert (result.status_first_seen, result.submitted_at, result.finished_at) == ({}, 10.0, 11.0)
+    assert (result.lines, result.succeeded, result.failed, result.unanswered) == (4, 0, 0, 4)
+
+
+# A job whose should_stop answers false when the batch is created and true at the first poll stops waiting with
+# the batch still in_progress and no output to count: all 4 lines are unanswered, and the job finishes at clock 12,
+# after that poll at 11.
+async def test_a_job_stopped_after_its_first_poll_leaves_every_line_unanswered() -> None:
+    states: list[dict[str, object]] = [{"status": "in_progress"}, {"status": "completed"}]
+    clock = iter([10.0, 11.0, 12.0]).__next__
+    answers = iter([False, True])
+    async with FakeBatchServer(states) as server, aiohttp.ClientSession() as session:
+        client = BatchClient(session, server.base_url, HEADERS, clock=clock)
+        result = await asyncio.wait_for(
+            run_batch_job(
+                client,
+                BATCH_INPUT,
+                filename="s0-b0.jsonl",
+                completion_window="24h",
+                metadata={},
+                poll_interval_sec=0,
+                should_stop=lambda: next(answers),
+            ),
+            timeout=5,
+        )
+
+    assert result.batch is not None
+    assert (result.batch.status, len(server.creates), server.polls) == ("in_progress", 1, 1)
     assert result.finished_at == 12.0
     assert (result.lines, result.succeeded, result.failed, result.unanswered) == (4, 0, 0, 4)
 

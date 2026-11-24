@@ -2284,7 +2284,13 @@ class LoadGenerator:
             logger.error("Stage %d batch %d failed: %r", stage_id, job_index, e)
             return False
         batch = result.batch
-        logger.info(
+        if batch is None:
+            logger.info("Stage %d batch %d stopped before it created its batch", stage_id, job_index)
+            return False
+        # Until a batch report exists, this line is the run's only record of lines that did not succeed.
+        level = logging.WARNING if result.failed or result.unanswered else logging.INFO
+        logger.log(
+            level,
             "Stage %d batch %d (%s) is %s after %.1fs: %d of %d lines succeeded, %d failed, %d unanswered",
             stage_id,
             job_index,

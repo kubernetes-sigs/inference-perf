@@ -310,7 +310,8 @@ load:
 For each job, the run writes one input line per record, uploads the file, creates the batch, and polls it
 until it is completed, failed, expired or cancelled. It then downloads the output and error files and logs
 how many lines got status 200, how many failed, and how many got no answer, along with any errors the batch
-reports. A stage whose batches do not all complete is marked failed. The run writes no request lifecycle reports, because a batch gives its lines no
+reports. The line is a warning when any line failed or got no answer. A stage whose batches do not all
+complete is marked failed. The run writes no request lifecycle reports, because a batch gives its lines no
 timings of their own.
 
 - `api.type` must be `completion`, `chat` or `embeddings`, and `api.streaming` must be `false`.
@@ -327,8 +328,9 @@ timings of their own.
 - A job that fails, for example on a refused call or a dropped connection, fails its stage, and the other
   jobs and stages go on. Polls are not retried, so one failed poll ends its job. Each batch's id is logged
   when it is created, so a batch left running can be found on the server.
-- On Ctrl-C the run submits nothing more and stops waiting after the next poll. A batch that has not ended
-  keeps running on the server.
+- After Ctrl-C no batch is created: a job whose file is still uploading finishes the upload and stops there.
+  The run stops waiting for batches already created after the next poll, and they keep running on the
+  server.
 
 ### Model Server
 

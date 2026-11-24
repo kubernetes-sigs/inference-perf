@@ -22,7 +22,7 @@ from pydantic import ConfigDict, Field, model_validator
 from inference_perf.config.apis import APIConfig, APIType
 from inference_perf.config.circuit_breaker import CircuitBreakerConfig
 from inference_perf.config.client.filestorage import StorageConfig
-from inference_perf.config.client.modelserver import ModelServerClientConfig
+from inference_perf.config.client.modelserver import ModelServerClientConfig, ModelServerType
 from inference_perf.config.datagen import ConversationReplayConfig, DataConfig, DataGenType
 from inference_perf.config.loadgen import (
     BatchLoadStage,
@@ -285,8 +285,8 @@ def _validate_batch_load(config: Config) -> Config:
 
     The Batch API takes completion, chat and embeddings lines, and it answers each line with a whole
     response, so a batch run has no endpoint for the other API types and nothing to stream. Every line
-    names the run's one model, so no LoRA traffic split applies. Undecorated so mutation testing reaches
-    it: mutmut skips the body of the validator that calls this.
+    names the run's one model, so no LoRA traffic split applies, and the mock server type has no Batch API.
+    Undecorated so mutation testing reaches it: mutmut skips the body of the validator that calls this.
     """
     if config.load.type != LoadType.BATCH:
         return config
@@ -299,6 +299,9 @@ def _validate_batch_load(config: Config) -> Config:
         raise ValueError("load.type 'batch' needs api.streaming false: a batch returns each response whole")
     if config.load.lora_traffic_split:
         raise ValueError("load.lora_traffic_split is not supported with load.type 'batch'")
+    # Refused here rather than when the run starts, after the tokenizer and the data have loaded.
+    if config.server is not None and config.server.type == ModelServerType.MOCK:
+        raise ValueError("load.type 'batch' needs an OpenAI-compatible server.type (vllm, sglang or tgi), not mock")
     return config
 
 

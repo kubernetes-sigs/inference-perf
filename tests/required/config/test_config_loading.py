@@ -366,6 +366,19 @@ def test_batch_load_rejects_streaming() -> None:
         Config.model_validate({"api": {"type": "chat", "streaming": True}, "load": _BATCH_LOAD})
 
 
+# load.type batch with server.type mock -> rejected when the config loads, before the tokenizer and the data do:
+# the mock server type has no Batch API.
+def test_batch_load_rejects_the_mock_server_type() -> None:
+    with pytest.raises(ValueError, match="load.type 'batch' needs an OpenAI-compatible server.type"):
+        Config.model_validate({"server": {"type": "mock", "base_url": "http://localhost:8000"}, "load": _BATCH_LOAD})
+
+
+# load.type batch with server.type vllm -> accepted.
+def test_batch_load_accepts_an_openai_compatible_server_type() -> None:
+    config = Config.model_validate({"server": {"type": "vllm", "base_url": "http://localhost:8000"}, "load": _BATCH_LOAD})
+    assert config.server is not None
+
+
 # load.type batch with a LoRA traffic split of adapter-a at 1.0 -> rejected: every line of a batch names the
 # run's one model.
 def test_batch_load_rejects_lora_traffic_split() -> None:

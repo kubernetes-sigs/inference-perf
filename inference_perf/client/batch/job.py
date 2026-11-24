@@ -15,7 +15,7 @@
 and error files and count how each input line was answered."""
 
 import logging
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Optional
 
 from pydantic import BaseModel
 
@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 class BatchJobResult(BaseModel):
     """How one batch job went. Times are on the batch client's clock."""
 
-    # The batch as the last poll returned it. Its status is an end state unless the wait was stopped first.
-    batch: Batch
+    # The batch as the last poll returned it. Its status is an end state unless the wait was stopped first. None
+    # when the job was stopped before it created its batch.
+    batch: Optional[Batch]
     # For each status the polls returned, the time of the first poll that returned it.
     status_first_seen: dict[str, float]
     # Before the upload began, and after the last download, or after the last poll when nothing was downloaded.
@@ -54,9 +55,25 @@ async def run_batch_job(
     poll_interval_sec: float,
     should_stop: Callable[[], bool],
 ) -> BatchJobResult:
-    """Submit `batch_input` as one batch and wait for it to end, or until `should_stop` answers true."""
+    """Submit `batch_input` as one batch and wait for it to end, or until `should_stop` answers true.
+
+    `should_stop` is asked once the file has uploaded, before the batch is created, and after each poll.
+    """
     submitted_at = client.clock()
+    lines = len(batch_input.custom_ids)
     uploaded = await client.upload_file(batch_input.content, filename)
+    # A stop that came while the file uploaded ends the job here, so no batch is created after it.
+    if should_stop():
+        return BatchJobResult(
+            batch=None,
+            status_first_seen={},
+            submitted_at=submitted_at,
+            finished_at=client.clock(),
+            lines=lines,
+            succeeded=0,
+            failed=0,
+            unanswered=lines,
+        )
     created = await client.create_batch(uploaded.id, batch_input.endpoint, completion_window, metadata)
     # Logged before the wait, so a batch whose job fails later can still be found on the server.
     logger.info("Created batch %s from %s", created.id, filename)
@@ -84,7 +101,7 @@ async def run_batch_job(
         status_first_seen=poll.status_first_seen,
         submitted_at=submitted_at,
         finished_at=client.clock(),
-        lines=len(batch_input.custom_ids),
+        lines=lines,
         succeeded=succeeded,
         failed=failed,
         unanswered=unanswered,

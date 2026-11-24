@@ -526,6 +526,7 @@ async def test_an_interrupt_during_a_stage_skips_the_wait_after_it() -> None:
 async def test_the_errors_of_a_failed_batch_are_logged(caplog: pytest.LogCaptureFixture) -> None:
     async def failed_validation(job: _Job) -> BatchJobResult:
         result = _result(job.batch_input, "failed")
+        assert result.batch is not None
         result.batch.errors = BatchErrors(data=[BatchError(code="invalid_json", message="line 2 is not valid JSON")])
         return result
 
@@ -540,3 +541,63 @@ async def test_the_errors_of_a_failed_batch_are_logged(caplog: pytest.LogCapture
         "batch-s0-b0-0" in record.message and "invalid_json" in record.message and "line 2 is not valid JSON" in record.message
         for record in caplog.records
     )
+
+
+# An interrupt arrives while stage 0's job uploads its file, so the job returns with no batch created: an INFO line
+# says the job stopped before creating its batch, and stage 0 is INTERRUPTED.
+async def test_a_job_stopped_before_its_batch_is_created_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    loadgen = _load_generator([BatchLoadStage(batches=[BatchJobConfig(batch_size=1)])])
+
+    async def stopped_while_uploading(job: _Job) -> BatchJobResult:
+        loadgen.interrupt_sig = True
+        lines = len(job.batch_input.custom_ids)
+        return BatchJobResult(
+            batch=None,
+            status_first_seen={},
+            submitted_at=0.0,
+            finished_at=1.0,
+            lines=lines,
+            succeeded=0,
+            failed=0,
+            unanswered=lines,
+        )
+
+    recorder = _JobRecorder()
+    recorder.answer = {"s0-b0.jsonl": stopped_while_uploading}
+
+    with caplog.at_level(logging.INFO, logger="inference_perf.loadgen.load_generator"):
+        await _run(loadgen, recorder)
+
+    assert any("Stage 0 batch 0 stopped before it created its batch" in record.message for record in caplog.records)
+    assert loadgen.stage_runtime_info[0].status == StageStatus.INTERRUPTED
+
+
+# The level of the line that reports stage 0's only batch, a job of 2 records.
+async def _outcome_level(failed: int, unanswered: int, caplog: pytest.LogCaptureFixture) -> int:
+    async def answered(job: _Job) -> BatchJobResult:
+        result = _result(job.batch_input, "completed")
+        return result.model_copy(
+            update={"succeeded": result.lines - failed - unanswered, "failed": failed, "unanswered": unanswered}
+        )
+
+    recorder = _JobRecorder()
+    recorder.answer = {"s0-b0.jsonl": answered}
+    loadgen = _load_generator([BatchLoadStage(batches=[BatchJobConfig(batch_size=2)])])
+    with caplog.at_level(logging.INFO, logger="inference_perf.loadgen.load_generator"):
+        await _run(loadgen, recorder)
+    (record,) = [record for record in caplog.records if "lines succeeded" in record.message]
+    return record.levelno
+
+
+# A completed batch of 2 lines with 1 failed line, or with 1 line the output never answered, is reported at
+# WARNING: until a batch report exists that line is the run's only record of the lines that did not succeed.
+@pytest.mark.parametrize("failed, unanswered", [(1, 0), (0, 1)])
+async def test_a_batch_with_lines_that_did_not_succeed_is_a_warning(
+    failed: int, unanswered: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    assert await _outcome_level(failed, unanswered, caplog) == logging.WARNING
+
+
+# A completed batch of 2 lines that both succeeded is reported at INFO.
+async def test_a_batch_whose_lines_all_succeeded_is_info(caplog: pytest.LogCaptureFixture) -> None:
+    assert await _outcome_level(0, 0, caplog) == logging.INFO
