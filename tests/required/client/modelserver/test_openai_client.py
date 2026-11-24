@@ -39,10 +39,11 @@ from inference_perf.apis import (
     InferenceInfo,
     RerankAPIData,
     SessionLifecycleMetric,
+    StreamedResponseMetrics,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
 from inference_perf.apis.base import STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
-from inference_perf.config import APIType
+from inference_perf.config import APIConfig, APIType
 from inference_perf.payloads import RequestMetrics, Text
 
 
@@ -1493,3 +1494,154 @@ async def test_otel_does_not_mark_failed_request_cancelled(mock_client: MagicMoc
 
     assert recorded["error"] is not None
     assert recorded["cancelled"] is False
+
+
+# Unary 200 with a custom seconds-unit deadline header attaches request_latency_slo_sec
+# (30.0s) while leaving streaming-only ttft_slo_sec and tpot_slo_sec as None.
+@pytest.mark.asyncio
+async def test_process_request_unary_200_attaches_request_latency_slo(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config = APIConfig(
+        type=APIType.Completion,
+        streaming=False,
+        slo_unit="s",
+        slo_request_latency_header="x-llm-d-request-timeout-seconds",
+        headers={"x-llm-d-request-timeout-seconds": "30"},
+    )
+    mock_data.headers = None
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).return_value = _ok_ctx()
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is None
+    assert metric.request_latency_slo_sec == pytest.approx(30.0)
+    assert metric.ttft_slo_sec is None
+    assert metric.tpot_slo_sec is None
+
+
+# Streaming 200 with config TTFT/TPOT/latency headers and a per-request latency override
+# attaches all three *_slo_sec values converted from ms to seconds.
+@pytest.mark.asyncio
+async def test_process_request_streaming_200_attaches_all_slo_thresholds(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config = APIConfig(
+        type=APIType.Completion,
+        streaming=True,
+        slo_unit="ms",
+        headers={
+            "x-slo-ttft-ms": "200",
+            "x-slo-tpot-ms": "20",
+            "x-slo-request-latency-ms": "5000",
+        },
+    )
+    mock_data.headers = {"x-slo-request-latency-ms": "2500"}
+    mock_data.process_response = AsyncMock(
+        return_value=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=4)),
+            response_metrics=StreamedResponseMetrics(output_tokens=2, output_token_times=[1.0, 1.05]),
+        )
+    )
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).return_value = _ok_ctx()
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is None
+    assert metric.ttft_slo_sec == pytest.approx(0.2)
+    assert metric.tpot_slo_sec == pytest.approx(0.02)
+    assert metric.request_latency_slo_sec == pytest.approx(2.5)
+
+
+# Failed unary 504 response still attaches request_latency_slo_sec so an all-failed run
+# with only slo_request_latency_header reports submitted_attainment_percentage: 0.0.
+@pytest.mark.asyncio
+async def test_process_request_failed_504_attaches_request_latency_slo(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_client.api_config = APIConfig(
+        type=APIType.Completion,
+        streaming=False,
+        slo_unit="s",
+        slo_request_latency_header="x-llm-d-request-timeout-seconds",
+        headers={"x-llm-d-request-timeout-seconds": "15"},
+    )
+    mock_data.headers = None
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).return_value = _error_ctx(504)
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is not None
+    assert metric.error.error_type == "HTTP Error 504"
+    assert metric.request_latency_slo_sec == pytest.approx(15.0)
+    assert metric.ttft_slo_sec is None
+    assert metric.tpot_slo_sec is None
+
+
+# Failed streaming 504 response attaches ttft_slo_sec, tpot_slo_sec, and
+# request_latency_slo_sec so all-failed streaming runs also emit submitted attainment.
+@pytest.mark.asyncio
+async def test_process_request_failed_504_streaming_attaches_all_slo_thresholds(
+    mock_client: MagicMock, mock_data: MagicMock
+) -> None:
+    mock_client.api_config = APIConfig(
+        type=APIType.Completion,
+        streaming=True,
+        slo_unit="ms",
+        headers={
+            "x-slo-ttft-ms": "500",
+            "x-slo-tpot-ms": "25",
+            "x-slo-request-latency-ms": "4000",
+        },
+    )
+    mock_data.headers = None
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).return_value = _error_ctx(504)
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is not None
+    assert metric.error.error_type == "HTTP Error 504"
+    assert metric.ttft_slo_sec == pytest.approx(0.5)
+    assert metric.tpot_slo_sec == pytest.approx(0.025)
+    assert metric.request_latency_slo_sec == pytest.approx(4.0)
+
+
+# Non-finite or non-positive SLO header values ("nan", "inf", "-inf", "-5", "0") are
+# rejected with None and a warning instead of serializing NaN or marking every request bad.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", ["nan", "inf", "-inf", "-5", "0"])
+async def test_process_request_rejects_non_finite_and_non_positive_slo_headers(
+    mock_client: MagicMock,
+    mock_data: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+    bad_value: str,
+) -> None:
+    mock_client.api_config = APIConfig(
+        type=APIType.Completion,
+        streaming=True,
+        slo_unit="ms",
+        headers={
+            "x-slo-ttft-ms": bad_value,
+            "x-slo-tpot-ms": bad_value,
+            "x-slo-request-latency-ms": bad_value,
+        },
+    )
+    mock_data.headers = None
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).return_value = _ok_ctx()
+
+    with caplog.at_level(logging.WARNING, logger="inference_perf.client.modelserver.openai_client"):
+        await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.ttft_slo_sec is None
+    assert metric.tpot_slo_sec is None
+    assert metric.request_latency_slo_sec is None
+    slo_warnings = [r.message for r in caplog.records if "SLO value" in r.message]
+    assert slo_warnings == [
+        f"Invalid TTFT SLO value: {bad_value}",
+        f"Invalid TPOT SLO value: {bad_value}",
+        f"Invalid request latency SLO value: {bad_value}",
+    ]

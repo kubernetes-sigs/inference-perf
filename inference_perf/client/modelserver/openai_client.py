@@ -38,6 +38,7 @@ import asyncio
 import random
 from asyncio import sleep
 import json
+import math
 import time
 import logging
 import requests
@@ -1014,8 +1015,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if req_lat_slo is not None:
             metric.request_latency_slo_sec = req_lat_slo
 
-        # Grab TTFT and TPOT thresholds from request headers if available for streaming requests with token-level timestamps
-        if (
+        # Attach TTFT/TPOT thresholds when streaming is enabled (including failed/cancelled
+        # requests so all-failed streaming runs still report submitted_attainment_percentage: 0.0)
+        # or when streamed token timestamps were recorded.
+        if self.client.api_config.streaming or (
             metric.info
             and isinstance(metric.info.response_metrics, StreamedResponseMetrics)
             and metric.info.response_metrics.output_token_times
@@ -1036,6 +1039,21 @@ class openAIModelServerClientSession(ModelServerClientSession):
 def _slo_unit_factor(unit_name: str) -> float:
     unit_to_s = {"s": 1.0, "ms": 0.001, "us": 0.000001}
     return unit_to_s.get(unit_name.lower(), 1.0)
+
+
+def _parse_positive_slo_seconds(raw_value: Optional[str], factor: float, label: str) -> Optional[float]:
+    """Parse a positive, finite SLO threshold header value and convert it to seconds."""
+    if raw_value is None or raw_value == "default":
+        return None
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        logger.warning(f"Invalid {label} SLO value: {raw_value}")
+        return None
+    if not math.isfinite(parsed) or parsed <= 0:
+        logger.warning(f"Invalid {label} SLO value: {raw_value}")
+        return None
+    return parsed * factor
 
 
 def extract_request_slo_thresholds(
@@ -1068,29 +1086,8 @@ def extract_request_slo_thresholds(
     raw_lat_h = getattr(api_config, "slo_request_latency_header", None)
     lat_header = raw_lat_h if isinstance(raw_lat_h, str) and raw_lat_h else f"x-slo-request-latency-{slo_unit}"
 
-    ttft_slo: Optional[float] = None
-    tpot_slo: Optional[float] = None
-    req_lat_slo: Optional[float] = None
-
-    raw_ttft = combined_headers.get(ttft_header.lower())
-    if raw_ttft is not None and raw_ttft != "default":
-        try:
-            ttft_slo = float(raw_ttft) * factor
-        except ValueError:
-            logger.warning(f"Invalid TTFT SLO value: {raw_ttft}")
-
-    raw_tpot = combined_headers.get(tpot_header.lower())
-    if raw_tpot is not None and raw_tpot != "default":
-        try:
-            tpot_slo = float(raw_tpot) * factor
-        except ValueError:
-            logger.warning(f"Invalid TPOT SLO value: {raw_tpot}")
-
-    raw_lat = combined_headers.get(lat_header.lower())
-    if raw_lat is not None and raw_lat != "default":
-        try:
-            req_lat_slo = float(raw_lat) * factor
-        except ValueError:
-            logger.warning(f"Invalid request latency SLO value: {raw_lat}")
+    ttft_slo = _parse_positive_slo_seconds(combined_headers.get(ttft_header.lower()), factor, "TTFT")
+    tpot_slo = _parse_positive_slo_seconds(combined_headers.get(tpot_header.lower()), factor, "TPOT")
+    req_lat_slo = _parse_positive_slo_seconds(combined_headers.get(lat_header.lower()), factor, "request latency")
 
     return ttft_slo, tpot_slo, req_lat_slo

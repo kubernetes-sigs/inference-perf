@@ -40,6 +40,7 @@ api:
   slo_unit: "ms"               # Optional SLO unit (e.g., ms, s), default is ms
   slo_tpot_header: "x-slo-tpot-ms"        # Optional header name for TPOT SLO Header, default is x-slo-tpot-ms
   slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
+  slo_request_latency_header: "x-slo-request-latency-ms" # Optional header name for request latency/deadline SLO, default is x-slo-request-latency-<slo_unit>
   clean_tool_schemas: false    # Optional: rewrite tool schemas for strict servers (see below), default is false
 ```  
 
@@ -469,7 +470,8 @@ successful entry with `request_latency`, `normalized_time_per_output_token`,
 `time_to_first_token`, `time_per_output_token`, `inter_token_latency` (mean),
 `inter_token_latencies` (per-token deltas), `input_tokens`, `output_tokens`,
 `output_len`, `tpot_output_tokens`, and the request's
-`ttft_slo_sec`/`tpot_slo_sec` SLOs — the same values (and the same
+`ttft_slo_sec`/`tpot_slo_sec` SLOs (plus `request_latency_slo_sec` when a
+request-latency/deadline SLO header is set) — the same values (and the same
 tokenizer-based correction from raw streaming chunks) used to compute the
 `summary_lifecycle_metrics.json` / `stage_*_lifecycle_metrics.json`
 aggregates. Token counts keep the summary's provenance: `output_tokens` is the
