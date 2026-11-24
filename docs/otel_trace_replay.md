@@ -209,8 +209,9 @@ S3-compatible store:
 | Laptop | A profile in `~/.aws/credentials` (`aws_access_key_id`, `aws_secret_access_key`) and `~/.aws/config` (`endpoint_url = https://<your-s3-endpoint>`), selected with `AWS_PROFILE=<name>` |
 | Kubernetes | A Secret exposed as env vars `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_ENDPOINT_URL_S3` |
 
-Leave the endpoint unset for AWS S3 itself. Stores that need path-style addressing set `addressing_style = path`
-under `s3 =` in the profile. In Kubernetes:
+Leave the endpoint unset for AWS S3 itself. With an endpoint set, boto3 addresses objects path-style
+(`https://<your-s3-endpoint>/<bucket>/<key>`), which S3-compatible stores generally expect; no config file is needed.
+In Kubernetes:
 
 ```yaml
 # kubectl create secret generic trace-store --from-literal=AWS_ACCESS_KEY_ID=... \
@@ -229,11 +230,12 @@ volumes:
       sizeLimit: 12Gi                     # above remote_cache_max_gb
 ```
 
-Path-style addressing has no environment variable in boto3; it can only come from a config file. In Kubernetes, mount
-one from a ConfigMap and point `AWS_CONFIG_FILE` at it:
+A store that rejects path-style requests (`PathStyleRequestNotAllowed`) needs virtual-hosted addressing, which boto3
+reads only from a config file: `addressing_style = virtual` under `s3 =`. In Kubernetes, mount one from a ConfigMap and
+point `AWS_CONFIG_FILE` at it:
 
 ```yaml
-# kubectl create configmap trace-store-aws --from-literal=config=$'[default]\ns3 =\n    addressing_style = path\n'
+# kubectl create configmap trace-store-aws --from-literal=config=$'[default]\ns3 =\n    addressing_style = virtual\n'
 containers:
   - name: inference-perf
     env:

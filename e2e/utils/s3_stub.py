@@ -25,7 +25,7 @@ import hashlib
 import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from xml.sax.saxutils import escape
 
@@ -56,6 +56,7 @@ class S3Stub:
     access_key: Optional[str] = None
     full_gets_once: bool = False
     requests: List[Seen] = field(default_factory=list)
+    _served_whole: Set[Tuple[str, str]] = field(default_factory=set)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _server: Optional[ThreadingHTTPServer] = None
 
@@ -191,10 +192,13 @@ def _handler(stub: S3Stub) -> type:
             base = {"ETag": etag, "Last-Modified": "Thu, 01 Jan 2026 00:00:00 GMT", "Accept-Ranges": "bytes"}
             byte_range = headers.get("range")
             if byte_range is None:
-                if stub.full_gets_once and any(
-                    r.key == key and "range" not in r.headers and r.status == 200 for r in stub.requests
-                ):
-                    return self._error(403, "AccessDenied", f"{key} was already downloaded once")
+                if stub.full_gets_once:
+                    # Check and claim together, so two concurrent full GETs cannot both be served.
+                    with stub._lock:
+                        first = (bucket, key) not in stub._served_whole
+                        stub._served_whole.add((bucket, key))
+                    if not first:
+                        return self._error(403, "AccessDenied", f"{key} was already downloaded once")
                 self._send(200, data, base)
                 return 200
             start_s, _, end_s = byte_range.removeprefix("bytes=").partition("-")

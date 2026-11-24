@@ -81,21 +81,25 @@ def s3(monkeypatch: pytest.MonkeyPatch) -> Iterator[S3Stub]:
         yield stub
 
 
-# A two-worker session replay of every capture in the stub bucket, caching under `cache`.
-def config(cache: Path) -> Dict[str, Any]:
+# A two-worker session replay of every capture in the stub bucket, caching under `cache` with a
+# budget of `max_gb` (default: far more than the bucket holds).
+def config(cache: Path, max_gb: float = 10.0) -> Dict[str, Any]:
     return {
         "data": {
             "type": "otel_trace_replay",
             "otel_trace_replay": {
                 "trace_files": [f"s3://{BUCKET}/m/*/*-calls.jsonl.zst"],
                 "remote_cache_dir": str(cache),
+                "remote_cache_max_gb": max_gb,
                 "use_static_model": True,
                 "static_model_name": "mock_model",
             },
         },
         "load": {
             "type": "trace_session_replay",
-            "stages": [{"concurrent_sessions": 2}],
+            # A worker refused a second download fails its session; the stage limit turns the
+            # stalled session into a quick, visible shortfall in successes rather than a timeout.
+            "stages": [{"concurrent_sessions": 2, "max_stage_duration": 90}],
             "num_workers": 2,
             "worker_max_concurrency": 4,
         },
@@ -142,3 +146,22 @@ async def test_wrong_access_key_fails_at_startup(s3: S3Stub, tmp_path: Path, mon
     assert not result.success
     assert "InvalidAccessKeyId" in result.stdout and "AWS_ACCESS_KEY_ID" in result.stdout
     assert not s3.gets()
+
+
+# A cache with room for 2.5 of the 4 captures, so they are downloaded ahead of their sessions
+# rather than all before the run: all 8 calls succeed and each object is served whole exactly
+# once. A worker that missed a file would be refused the second download and fail its session.
+# (Download-ahead may also ask again for a played file, as the first of a next pass that only
+# duration-bounded stages play; that request is refused too, and only costs a debug line.)
+@pytest.mark.asyncio
+async def test_download_ahead_with_a_cache_smaller_than_the_bucket(s3: S3Stub, tmp_path: Path) -> None:
+    keys = sorted(k for _, k in s3.objects if k.endswith(".zst"))
+    size = max(len(s3.objects[(BUCKET, k)]) for k in keys)
+    result = await run_benchmark_minimal(
+        config(tmp_path / "cache", max_gb=2.5 * size / 1e9), work_dir=tmp_path / "run", timeout_sec=240
+    )
+    assert result.success, result.stdout
+    assert "downloading ahead" in result.stdout
+    assert result.reports and result.reports["summary_lifecycle_metrics.json"]["successes"]["count"] == SESSIONS * CALLS
+    served = Counter(r.key for r in s3.gets() if "range" not in r.headers and r.status == 200)
+    assert served == Counter(keys), served
