@@ -720,6 +720,7 @@ data:
 
     # Generation parameters
     default_max_tokens: 1000                      # Fallback if output tokens are set to 0 in the otel file
+    replay_request_params: [reasoning_effort]      # Optional; defaults to [] (no recorded parameters replayed)
 
     # Error handling
     include_errors: false                         # Skip spans with error status, that is, status != 0 (default)
@@ -742,6 +743,14 @@ load:
   num_workers: 4                                  # Worker processes
   worker_max_concurrency: 10                      # Max concurrent requests per worker
 ```
+
+`replay_request_params: [reasoning_effort]` forwards recorded effort from native
+OTel spans or Chat Completions, Responses, and Anthropic Messages wire captures.
+Replay sends it as `reasoning_effort` for Chat Completions or
+`output_config.effort` for Anthropic Messages. It passes values unchanged and
+checks the target API's documented values even if the source API is unknown. An
+unsupported value is omitted, with one warning per run; model-specific support
+is still up to the target server. With the default `[]`, replay sends neither field.
 
 #### Stage Configuration
 

@@ -76,6 +76,8 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
             f"i.token: {input_tokens} | o.token: {output_tokens}",
             f"Duration: {duration:.1f}ms",
         ]
+        if (effort := call.get("reasoning_effort")) is not None:
+            label_parts.append(f"reasoning_effort={effort}")
 
         # Add wait time if non-zero
         if wait_ms > 0:

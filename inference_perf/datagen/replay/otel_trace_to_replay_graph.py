@@ -66,6 +66,7 @@ from inference_perf.datagen.replay.otel_trace_utils import (
     reconstruct_each_part_in_message_info,
 )
 from inference_perf.datagen.replay.replay_graph_types import (
+    REASONING_EFFORT_ATTRIBUTE,
     ComplexReplayMessage,
     GraphCall,
     GraphEvent,
@@ -587,6 +588,7 @@ class RawCall:
     tool_definitions: Optional[List[Dict[str, Any]]] = None
     extra_attributes: Dict[str, Any] = field(default_factory=dict)
     session_id_suffix: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
 
 def filter_duplicate_spans(spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -692,6 +694,7 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
             "gen_ai.output",
         }
         extra_attrs = {k: v for k, v in attrs.items() if k not in excluded_keys}
+        reasoning_effort = attrs.get(REASONING_EFFORT_ATTRIBUTE)
 
         calls.append(
             RawCall(
@@ -708,6 +711,7 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
                 max_tokens_recorded=attrs.get("gen_ai.request.max_tokens"),
                 tool_definitions=tool_definitions,
                 extra_attributes=extra_attrs,
+                reasoning_effort=reasoning_effort if isinstance(reasoning_effort, str) else None,
             )
         )
     if missing_images:
@@ -1434,6 +1438,7 @@ def build_graph(
             total_input_tokens=total_input_tokens,
             expected_output_tokens=expected_output_tokens,
             temperature=rc.temperature,
+            reasoning_effort=rc.reasoning_effort,
             max_tokens_recorded=rc.max_tokens_recorded,
             tool_definitions=rc.tool_definitions,
             expected_output_is_tool_call=effective_is_tool_call,
@@ -1601,6 +1606,8 @@ def graph_call_to_dict(gc: GraphCall) -> Dict[str, Any]:
         d["attributes"] = gc.attributes
     if gc.session_id_suffix is not None:
         d["session_id_suffix"] = gc.session_id_suffix
+    if gc.reasoning_effort is not None:
+        d["reasoning_effort"] = gc.reasoning_effort
     return d
 
 
@@ -1754,8 +1761,9 @@ def print_graph(graph: ReplayGraph) -> None:
         print("  ║")
 
         temp_str = f"  temperature={gc.temperature}" if gc.temperature is not None else ""
+        effort_str = f"  reasoning_effort={gc.reasoning_effort}" if gc.reasoning_effort is not None else ""
         tools_str = f"  tools={len(gc.tool_definitions)}" if gc.tool_definitions else ""
-        print(f"  ║   CALL {gc.call_id}   model={gc.model}{temp_str}{tools_str}")
+        print(f"  ║   CALL {gc.call_id}   model={gc.model}{temp_str}{effort_str}{tools_str}")
         print(f"  ║     Input  ({gc.total_input_tokens} tokens, {len(gc.messages)} messages):")
         for seg, messages in map_input_seq_to_messages(gc):
             offset = "       "
@@ -1779,7 +1787,8 @@ def summarize_graph(graph: ReplayGraph) -> str:
         )
         seg_str = " ".join(_segment_label(s, m) for s, m in map_input_seq_to_messages(gc))
         tools_str = f"  tools={len(gc.tool_definitions)}" if gc.tool_definitions else ""
-        lines.append(f"[{eid}] {preds}  t={event.t_start_ms}-{event.t_end_ms}ms{tools_str}")
+        effort_str = f"  reasoning_effort={gc.reasoning_effort}" if gc.reasoning_effort is not None else ""
+        lines.append(f"[{eid}] {preds}  t={event.t_start_ms}-{event.t_end_ms}ms{tools_str}{effort_str}")
         lines.append(f"    {gc.call_id}: [{seg_str}] -> O({gc.expected_output_tokens}t)")
     return "\n".join(lines)
 

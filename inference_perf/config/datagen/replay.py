@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Dict, List, Literal, Optional, Union, cast
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -142,6 +142,10 @@ class SessionReplayConfig(StrictBaseModel):
 
     # Request configuration
     default_max_tokens: int = Field(1000, gt=0, description="Default max_tokens if not specified in trace")
+    replay_request_params: List[Literal["reasoning_effort"]] = Field(
+        default_factory=list,
+        description="Recorded request parameters to replay when supported by the target API. Empty preserves default payloads.",
+    )
     override_tool_call_max_tokens: bool = Field(
         True,
         description="Add tiered headroom to recorded tool-call max_tokens",
