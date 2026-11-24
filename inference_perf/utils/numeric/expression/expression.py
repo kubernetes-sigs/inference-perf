@@ -61,7 +61,15 @@ from sympy.core.relational import GreaterThan, LessThan, Relational, StrictGreat
 from sympy.logic.boolalg import And, Boolean, Or
 from sympy.parsing.sympy_parser import parse_expr
 
-from .distributions import DISTRIBUTIONS, Distribution, DistributionUse, lookup, render_condition, unsupported_message
+from .distributions import (
+    DISTRIBUTIONS,
+    Distribution,
+    DistributionUse,
+    is_whole_number,
+    lookup,
+    render_condition,
+    unsupported_message,
+)
 from .measured import SERIES, SIGNALS, Term, extract_terms
 from .sympy_types import SympyExpr, SympyNode, SympyRandomSymbol, SympySet
 
@@ -472,16 +480,21 @@ class Expression:
     def is_integer_valued(self) -> bool:
         """True when every value the expression can take is provably an integer.
 
-        sympy does not know a discrete random variable is integer-valued, so each
-        one is stood in for by an integer symbol when its row says its draws are
-        whole numbers, and by a real symbol otherwise. ``Poisson(2) + 1`` and
-        ``floor(Normal(512, 128))`` prove, ``Normal(512, 128)`` and
-        ``Poisson(2) / 2`` do not.
+        sympy does not know a discrete random variable is integer-valued, or
+        that stage time ``t`` is real, so each random variable is stood in for
+        by an integer or real symbol according to its row and ``t`` by a real
+        symbol. ``Poisson(2) + 1``, ``floor(Normal(512, 128))`` and
+        ``floor(128 + 2*t)`` prove, ``Normal(512, 128)`` and ``Poisson(2) / 2``
+        do not.
         """
-        if _is_expr(self._expr) and self._expr.is_number:
-            return float(self._expr).is_integer()
+        return self._is_integer_valued()
+
+    def _is_integer_valued(self) -> bool:
+        if self._expr.is_number:
+            return is_whole_number(self._expr)
         stand_ins: dict[SympyNode, SympyNode] = {
-            rv: sympy.Dummy(integer=True) if use.integer else sympy.Dummy(real=True) for rv, use in self._uses.items()
+            _T: sympy.Dummy(real=True),
+            **{rv: sympy.Dummy(integer=True) if use.integer else sympy.Dummy(real=True) for rv, use in self._uses.items()},
         }
         return self._expr.xreplace(stand_ins).is_integer is True
 

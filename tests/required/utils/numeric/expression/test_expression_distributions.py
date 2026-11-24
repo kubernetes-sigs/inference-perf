@@ -432,3 +432,11 @@ def test_discrete_uniform_range_and_time() -> None:
     prove_parameter_conditions(parse_distribution_use("DiscreteUniform([1, 2.5])"), 10)
     with pytest.raises(ValueError, match=r"values\[0\] must be a finite constant, got t"):
         prove_parameter_conditions(parse_distribution_use("DiscreteUniform([t, 2])"), 10)
+
+
+# DiscreteUniform([128.0, 256]) is integer-valued even with a float literal, while
+# DiscreteUniform([128, 128.0]) is rejected as a repeat rather than double-weighting 128.
+def test_discrete_uniform_float_equivalence_in_expression() -> None:
+    assert Expression("DiscreteUniform([128.0, 256])").is_integer_valued is True
+    with pytest.raises(ValueError, match="each value may appear once"):
+        Expression("DiscreteUniform([128, 128.0])")

@@ -101,7 +101,9 @@ class Distribution:
         if not items:
             raise ValueError(f"{self.signature} needs at least one value.")
         # a repeat would have to mean a weight, which this distribution does not have
-        repeated = sorted({str(item) for item in items if items.count(item) > 1})
+        repeated = sorted(
+            {str(item) for i, item in enumerate(items) if any(Eq(item, other) is sympy.true for other in items[:i])}
+        )
         if repeated:
             raise ValueError(f"{self.signature}: each value may appear once, got {', '.join(repeated)} more than once.")
         return DistributionUse(self, tuple(items))
@@ -138,8 +140,11 @@ class DistributionUse:
     @property
     def integer(self) -> bool:
         """Whether every draw is a whole number."""
+        return self._is_integer()
+
+    def _is_integer(self) -> bool:
         if self.row.takes_list:
-            return all(sympy.floor(arg) == arg for arg in self.args)
+            return all(is_whole_number(arg) for arg in self.args)
         return self.row.integer
 
     @property
@@ -196,6 +201,11 @@ class DistributionUse:
 
     def sample(self, rng: np.random.Generator, size: int) -> NDArray[np.float64]:
         return self.row.sampler(rng, [float(arg) for arg in self.args], size)
+
+
+def is_whole_number(value: SympyExpr) -> bool:
+    """True when ``value`` is a finite real number equal to its floor, without float rounding."""
+    return value.is_real is True and Eq(sympy.floor(value), value) is sympy.true
 
 
 def _symbols(*names: str) -> tuple[SympyExpr, ...]:

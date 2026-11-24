@@ -296,6 +296,18 @@ def test_discrete_uniform_rejects_a_bad_list(args: tuple[object, ...], message: 
         DISTRIBUTIONS["DiscreteUniform"].use(args).require_constant()
 
 
+# DiscreteUniform compares values numerically, not by sympy type: [128.0, 256] is whole-numbered.
+def test_discrete_uniform_float_whole_numbers_are_integer() -> None:
+    assert _use("DiscreteUniform", ([128.0, 256],)).integer is True
+
+
+# DiscreteUniform rejects numerically equal repeats even across types: [128, 128.0] and [1/2, 0.5] raise.
+@pytest.mark.parametrize("values", [[128, 128.0], [_HALF, 0.5]], ids=["int-float", "rational-float"])
+def test_discrete_uniform_rejects_numeric_duplicates(values: list[object]) -> None:
+    with pytest.raises(ValueError, match="each value may appear once"):
+        DISTRIBUTIONS["DiscreteUniform"].use((values,))
+
+
 # Edge values sympy accepts are accepted: Binomial(0, 1/4), Binomial(10, 0), Binomial(10, 1), Geometric(1)
 # and a whole number written as a float, Binomial(10.0, 1/4).
 @pytest.mark.parametrize(

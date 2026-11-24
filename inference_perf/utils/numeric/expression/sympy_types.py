@@ -44,6 +44,9 @@ class SympyNode(Protocol):
 
     # sympy's assumptions answer True, False or None for "cannot tell"
     @property
+    def is_real(self) -> Optional[bool]: ...
+
+    @property
     def is_extended_real(self) -> Optional[bool]: ...
 
     @property

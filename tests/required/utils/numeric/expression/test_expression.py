@@ -353,6 +353,43 @@ def test_is_integer_valued_through_arithmetic(raw: str, expected: bool) -> None:
     assert Expression(raw).is_integer_valued is expected
 
 
+# Non-real and infinite constants are not integers and must return False rather than raise TypeError:
+# '1/0' (zoo), 'sqrt(-1)' (I), '1/0 + Poisson(2)' (simplifies to zoo), 'oo', '-oo', and 'nan' -> False.
+@pytest.mark.parametrize("raw", ["1/0", "sqrt(-1)", "1/0 + Poisson(2)", "oo", "-oo", "nan"])
+def test_is_integer_valued_non_real_or_infinite_is_false(raw: str) -> None:
+    assert Expression(raw).is_integer_valued is False
+
+
+# Constant integrality is exact past float's 2^53 precision limit and handles whole floats:
+# '2000000000000000000000000000001/2' -> False, '2000000000000000000000000000002/2' -> True, '512.0' -> True.
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2000000000000000000000000000001/2", False),
+        ("2000000000000000000000000000002/2", True),
+        ("512.0", True),
+    ],
+)
+def test_is_integer_valued_exact_constants(raw: str, expected: bool) -> None:
+    assert Expression(raw).is_integer_valued is expected
+
+
+# Stage time t is real, so roundings over t prove whole while unrounded t expressions do not:
+# 'floor(128 + 2*t)', 'ceiling(t)', 'floor(t) + Poisson(2)' -> True; '128 + 2*t', 'floor(1/t)' -> False.
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("floor(128 + 2*t)", True),
+        ("ceiling(t)", True),
+        ("floor(t) + Poisson(2)", True),
+        ("128 + 2*t", False),
+        ("floor(1/t)", False),
+    ],
+)
+def test_is_integer_valued_over_time(raw: str, expected: bool) -> None:
+    assert Expression(raw).is_integer_valued is expected
+
+
 # bounds read through floor/ceiling and a finite support: floor(Uniform(10, 90)) -> (10, 90),
 # ceiling(Uniform(0, 2)) -> (0, 2), Binomial(10, 1/2) -> (0, 10).
 @pytest.mark.parametrize(
