@@ -471,7 +471,7 @@ def test_unexpected_wire_conversion_error_is_wrapped(tmp_path: Path, monkeypatch
     path = write_jsonl(tmp_path / "calls.jsonl", [chat_record()])
     source = LocalTraceSource([path], False, _normalize_file_trace, validate_at_startup=False)
 
-    def fail_conversion(_path: Path) -> Dict[str, Any]:
+    def fail_conversion(_path: Path, trace_id: Optional[str] = None) -> Dict[str, Any]:
         raise RuntimeError("unexpected converter failure")
 
     monkeypatch.setattr(trace_source_module, "convert_wire_file", fail_conversion)

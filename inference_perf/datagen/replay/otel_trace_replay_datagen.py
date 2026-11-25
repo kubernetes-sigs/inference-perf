@@ -59,11 +59,15 @@ SessionChatCompletionAPIData holds refs to WorkerSessionTracker and completion_q
 import glob
 import json
 import logging
+import os
+import getpass
 import random
+import tempfile
+from collections import Counter, deque
 from functools import partial
 from multiprocessing.managers import SyncManager
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union, cast
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 from datasets import Dataset, load_dataset
 
@@ -88,8 +92,10 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     trace_stem,
     trace_suffix,
 )
+from inference_perf.datagen.replay.remote_trace_store import RemoteObject, RemoteTraceStore, is_remote, prepare_private_dir
 from inference_perf.datagen.replay.trace_source import (
     HFDatasetTraceSource,
+    LocalTraceRecord,
     LocalTraceSource,
     TraceSource,
     TraceSourceError,
@@ -168,6 +174,21 @@ def _validate_dataset_schema(dataset: Any, dataset_path: str) -> None:
         raise ValueError(f"Dataset '{dataset_path}' is missing the required 'spans' field.")
 
     logger.info(f"Schema validation passed for dataset '{dataset_path}'")
+
+
+def _default_remote_cache_dir() -> Path:
+    """A cache in a private per-user directory under the system temp dir.
+
+    The name is predictable, so another user could create it first; prepare_private_dir
+    refuses it unless it is a real directory this user owns that others cannot write.
+    """
+    try:
+        owner = getpass.getuser()
+    except (KeyError, OSError):  # no passwd entry, as in some containers
+        owner = str(os.getuid()) if hasattr(os, "getuid") else "default"
+    base = Path(tempfile.gettempdir()) / f"inference-perf-{owner}"
+    prepare_private_dir(base)
+    return base / "trace-cache"
 
 
 def _normalize_file_trace(
@@ -398,6 +419,24 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
       for growing-context patterns (multi-turn, agent chains)
     """
 
+    # Set by _resolve_remote when any trace entry is an s3:// URI.
+    _remote_store: Optional[RemoteTraceStore] = None
+    # Whether sessions download the traces that follow them; off once every trace is cached.
+    _download_ahead: bool = False
+    # The download-ahead window: (session index, object) in play order, the next index to
+    # consider, and the window's size in bytes.
+    _ahead: Deque[Tuple[int, RemoteObject]]
+    _ahead_reading: List[RemoteObject]
+    # How many sessions in the window use each file, by URI.
+    _ahead_uses: "Counter[str]"
+    # Running sessions' files, pinned from dispatch until the parent cleans the session up, so
+    # its worker never finds the file evicted: session id -> object, and uses/bytes per file.
+    _dispatch_pins: Dict[str, RemoteObject]
+    _active_uses: "Counter[str]"
+    _active_bytes: int
+    _ahead_next: int = 0
+    _ahead_bytes: int = 0
+
     def __init__(
         self,
         api_config: APIConfig,
@@ -437,7 +476,17 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         # latter can exceed Arrow's 32-bit offsets and fail outright during fingerprinting
         # with "offset overflow while concatenating arrays".
         source_label: str
-        if self.otel_config.trace_directory:
+        if self.otel_config.trace_directory and is_remote(self.otel_config.trace_directory):
+            # Same rule as a local directory: direct children named *.json*, filtered to trace suffixes.
+            listed = self._resolve_remote([self.otel_config.trace_directory], strict_suffix=False, directory=True)
+            if not listed:
+                raise ValueError(f"No .json or .jsonl files (optionally .zst) found in {self.otel_config.trace_directory}")
+            source_label = self.otel_config.trace_directory
+            self._trace_source: TraceSource = LocalTraceSource(
+                listed, self.otel_config.skip_invalid_files, _normalize_file_trace, remote=self._remote_store
+            )
+
+        elif self.otel_config.trace_directory:
             trace_dir = Path(self.otel_config.trace_directory)
             if not trace_dir.exists():
                 raise ValueError(f"Trace directory does not exist: {trace_dir}")
@@ -451,7 +500,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 raise ValueError(f"No .json or .jsonl files (optionally .zst) found in {trace_dir}")
 
             source_label = self.otel_config.trace_directory
-            self._trace_source: TraceSource = LocalTraceSource(
+            self._trace_source = LocalTraceSource(
                 trace_files,
                 self.otel_config.skip_invalid_files,
                 _normalize_file_trace,
@@ -459,13 +508,17 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
         elif self.otel_config.trace_files:
             # Multiple files mode
-            for path in self.otel_config.trace_files:
+            local_entries = [p for p in self.otel_config.trace_files if not is_remote(p)]
+            for path in local_entries:
                 if "*" not in path and "?" not in path:
                     if not Path(path).is_file():
                         raise ValueError(f"Trace file does not exist: {path}")
 
-            trace_files = drop_compressed_duplicates(resolve_trace_files(self.otel_config.trace_files))
-            if not trace_files:
+            trace_files = drop_compressed_duplicates(resolve_trace_files(local_entries)) if local_entries else []
+            remote_objects = self._resolve_remote(
+                [p for p in self.otel_config.trace_files if is_remote(p)], strict_suffix=True
+            )
+            if not trace_files and not remote_objects:
                 raise ValueError(f"No trace files resolved from {self.otel_config.trace_files}")
 
             for trace_file in trace_files:
@@ -478,9 +531,10 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
             source_label = str(self.otel_config.trace_files)
             self._trace_source = LocalTraceSource(
-                trace_files,
+                [*trace_files, *remote_objects],
                 self.otel_config.skip_invalid_files,
                 _normalize_file_trace,
+                remote=self._remote_store,
             )
 
         elif self.otel_config.hf_dataset_path:
@@ -550,6 +604,162 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             logger.info(f"Session corpus sufficient: {len(base_ids)} sessions available (target: {target})")
 
         self.initialize_sessions_lazy(session_ids)
+        if self._remote_store is not None:
+            self._warm_remote_cache()
+            self._remote_store.report_waits = True
+
+    def _resolve_remote(self, entries: Sequence[str], strict_suffix: bool, directory: bool = False) -> List[RemoteObject]:
+        """Resolve s3:// entries to objects, applying the rules local trace files follow.
+
+        ``strict_suffix`` mirrors trace_files (a match without a trace suffix is an error);
+        trace_directory instead keeps only trace suffixes, as a local directory listing does.
+        """
+        if not entries:
+            return []
+        store = self._remote_store
+        if store is None:
+            cfg = self.otel_config
+            cache_dir = Path(cfg.remote_cache_dir) if cfg.remote_cache_dir else _default_remote_cache_dir()
+            store = self._remote_store = RemoteTraceStore(cache_dir, int(cfg.remote_cache_max_gb * 1e9))
+            store.check_writable()
+            store.report_waits = False
+            self._dispatch_pins = {}
+            self._active_uses = Counter()
+            self._active_bytes = 0
+        found: Dict[str, RemoteObject] = {}
+        for entry in entries:
+            for obj in store.list_directory(entry) if directory else store.resolve(entry):
+                if trace_suffix(PurePosixPath(obj.name)) not in TRACE_FILE_SUFFIXES:
+                    if strict_suffix:
+                        raise ValueError(f"Trace file must be a .json or .jsonl file, optionally .zst: {obj.uri}")
+                    continue
+                found[obj.uri] = obj
+        # Keyed by URI: keys that differ only in a doubled or dotted segment are distinct objects.
+        kept: List[RemoteObject] = []
+        for uri in sorted(found):
+            if uri.endswith(".zst") and uri[: -len(".zst")] in found:
+                logger.warning(f"Skipping {uri}: {uri[: -len('.zst')]} is also listed and would replay the trace twice")
+                continue
+            kept.append(found[uri])
+        return kept
+
+    def _record_for_index(self, session_index: int) -> Optional[LocalTraceRecord]:
+        """The trace record session_index will replay, by the same arithmetic as _build_session and cycling."""
+        count = self._corpus_session_count or len(self._source_indices)
+        if not count or not isinstance(self._trace_source, LocalTraceSource):
+            return None
+        index = session_index % count
+        source = self._source_indices[index] if index < len(self._source_indices) else None
+        slot = source if source is not None else index
+        if slot >= len(self._row_order):
+            return None
+        return self._trace_source.records[self._row_order[slot]]
+
+    def _advance_download_ahead(self, after: int) -> List[RemoteObject]:
+        """Slide the download-ahead window past session ``after``; return the objects that entered it.
+
+        The window holds the sessions following ``after`` in play order, up to half the cache,
+        so what is downloaded ahead is never evicted before its session uses it. A file shared
+        by several sessions (rows of one .jsonl, duplicates) is charged and queued once. The
+        window always holds at least the next session, even one larger than that. Only its new
+        end is examined, so each dispatch costs the few sessions it adds, not the window.
+        """
+        store = self._remote_store
+        assert store is not None
+        # Session ``after`` leaves the window but its file stays pinned until the next dispatch:
+        # it is about to be read, and a download this call queues could otherwise evict it first.
+        released, self._ahead_reading = self._ahead_reading, []
+        while self._ahead and self._ahead[0][0] <= after:
+            index, done = self._ahead.popleft()
+            self._ahead_uses[done.uri] -= 1
+            if self._ahead_uses[done.uri] == 0:
+                del self._ahead_uses[done.uri]
+                self._ahead_bytes -= done.size
+                (self._ahead_reading if index == after else released).append(done)
+        added: List[RemoteObject] = []
+        index = max(self._ahead_next, after + 1)
+        horizon = after + 1 + max(self._corpus_session_count, 1)
+        while index < horizon:
+            record = self._record_for_index(index)
+            if record is not None and record.remote is not None:
+                new_file = record.remote.uri not in self._ahead_uses
+                if new_file:
+                    # Half the cache, less what running sessions hold, so disk stays within the
+                    # cap unless the running sessions alone exceed it.
+                    budget = min(store.max_bytes / 2, store.max_bytes - self._active_bytes)
+                    if self._ahead and self._ahead_bytes + record.remote.size > budget:
+                        break
+                    self._ahead_bytes += record.remote.size
+                    added.append(record.remote)
+                self._ahead.append((index, record.remote))
+                self._ahead_uses[record.remote.uri] += 1
+            index += 1
+        self._ahead_next = index
+        store.pin(added)
+        store.unpin(released)
+        return added
+
+    def activate_session(self, session_id: str) -> None:
+        super().activate_session(session_id)
+        store = self._remote_store
+        # Parent only (it alone evicts): keep the session's file until its worker is done with it.
+        if store is None or not store.evict_enabled or session_id in self._dispatch_pins:
+            return
+        index = self._session_id_to_index.get(session_id)
+        record = self._record_for_index(index) if index is not None else None
+        if record is None or record.remote is None:
+            return
+        self._dispatch_pins[session_id] = record.remote
+        if self._active_uses[record.remote.uri] == 0:
+            self._active_bytes += record.remote.size
+        self._active_uses[record.remote.uri] += 1
+        store.pin([record.remote])
+
+    def cleanup_session(self, session_id: str) -> None:
+        super().cleanup_session(session_id)
+        store = self._remote_store
+        # Keyed by session id, so a second cleanup cannot release another session's pin on a shared file.
+        released = self._dispatch_pins.pop(session_id, None) if store is not None else None
+        if store is None or released is None:
+            return
+        self._active_uses[released.uri] -= 1
+        if self._active_uses[released.uri] == 0:
+            del self._active_uses[released.uri]
+            self._active_bytes -= released.size
+        store.unpin([released])
+
+    def _warm_remote_cache(self) -> None:
+        """Download every remote trace before the run if they all fit the cache, else the first window."""
+        assert self._remote_store is not None and isinstance(self._trace_source, LocalTraceSource)
+        store = self._remote_store
+        objects = list({r.remote.uri: r.remote for r in self._trace_source.records if r.remote is not None}.values())
+        if not objects or store.max_bytes == 0:
+            return
+        total = sum(o.size for o in objects)
+        if total <= store.max_bytes:
+            missing = [o for o in objects if not store.cache_path(o).exists()]
+            if missing:
+                logger.info(
+                    f"Downloading {len(missing)} of {len(objects)} remote traces "
+                    f"({sum(o.size for o in missing) / 1e6:.1f} MB) before the run"
+                )
+            else:
+                logger.info(f"All {len(objects)} remote traces are already cached")
+            store.pin(objects)
+            store.download_all(objects)
+            return
+        self._ahead = deque()
+        self._ahead_uses = Counter()
+        self._ahead_reading = []
+        self._ahead_next = 0
+        self._ahead_bytes = 0
+        window = self._advance_download_ahead(-1)
+        logger.info(
+            f"Remote traces ({total / 1e6:.1f} MB) exceed remote_cache_max_gb; downloading ahead "
+            f"of sessions, starting with {len(window)}"
+        )
+        store.download_all(window)
+        self._download_ahead = True
 
     def _filter_source(self, filter_func: Callable[..., Any]) -> None:
         """Apply the configured filter to the trace source in place.
@@ -592,7 +802,10 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         """
         while len(self._source_indices) <= session_index:
             self._source_indices.append(None)
-        self._source_indices[session_index] = source_slot
+        # source_slot can itself be a duplicate (duplicate_sessions_target pads past the corpus);
+        # point at the trace it copies, or _build_session would index past _row_order.
+        original = self._source_indices[source_slot] if source_slot < len(self._source_indices) else None
+        self._source_indices[session_index] = original if original is not None else source_slot
 
     def _build_session(self, session_index: int) -> Optional[ReplaySession]:
         """Build one session's graph on demand (called by _ensure_session_built).
@@ -603,6 +816,8 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         source slot's record and relabels with the duplicate's session_id (graph content
         identical; the _dup suffix drives random-string injection in _build_session_schedule).
         """
+        if self._download_ahead and self._remote_store is not None and self._remote_store.prefetch_enabled:
+            self._remote_store.prefetch(self._advance_download_ahead(session_index))
         source_idx = self._source_indices[session_index]
         slot = source_idx if source_idx is not None else session_index
         row_index = self._row_order[slot]

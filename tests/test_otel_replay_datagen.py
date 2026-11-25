@@ -3169,3 +3169,36 @@ class TestTruncatedSessionReporting:
         assert pushed[0]["session_id"] == "session_1"
         assert pushed[0]["partial"] is True
         assert pushed[0]["event_completion_times"] == {"event_0": 10.0, "event_1": 11.0}
+
+
+# Four local wire captures padded to six sessions by duplicate_sessions_target, then cycled
+# to index 12 as a duration-bounded stage would: every index builds. A cycled index can land
+# on a padding duplicate, whose slot is past the corpus; it must resolve to the trace it copies.
+def test_cycling_a_padded_local_corpus_builds_every_index(tmp_path: Path) -> None:
+    from inference_perf.config import DataConfig
+
+    for i in range(4):
+        rows = [
+            {
+                "path": "/v1/chat/completions",
+                "wire": "openai",
+                "start_unix": 1.0 + n,
+                "headers": {"session_id": f"s{i}"},
+                "request": json.dumps({"model": "m", "messages": [{"role": "user", "content": f"hi {n}"}]}),
+                "model": "m",
+                "status": 200,
+                "response": json.dumps({"choices": [{"message": {"role": "assistant", "content": f"ok {n}"}}]}),
+                "total_ms": 5.0,
+            }
+            for n in range(2)
+        ]
+        (tmp_path / f"task{i}-calls.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    replay = OTelTraceReplayConfig(trace_directory=str(tmp_path), duplicate_sessions_target=6)
+    gen = OTelTraceReplayDataGenerator(
+        api_config=APIConfig(type=APIType.Chat, streaming=False),
+        config=DataConfig(type="otel_trace_replay", otel_trace_replay=replay),
+        tokenizer=None,
+        num_workers=1,
+    )
+    for index in range(13):
+        assert gen.is_session_buildable(index)

@@ -117,8 +117,8 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `trace_files` | list[string] | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | List of specific trace files. Supports glob patterns (e.g., `"path/*/*.json"`). All files are parsed into RAM at startup; graphs are built on demand. |
-| `trace_directory` | string | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | Directory containing trace files. All `.json` and `.jsonl` files will be loaded; agent wire captures and `.json` OTel documents may be `.zst`-compressed. All files are parsed into RAM at startup; graphs are built on demand. |
+| `trace_files` | list[string] | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | List of specific trace files. Supports glob patterns (e.g., `"path/*/*.json"`). Entries may be `s3://bucket/...` URIs, mixed with local paths; see [Reading traces from object storage](#reading-traces-from-object-storage). All files are parsed into RAM at startup; graphs are built on demand. |
+| `trace_directory` | string | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | Directory containing trace files, or an `s3://bucket/prefix/` URI. All `.json` and `.jsonl` files will be loaded; agent wire captures and `.json` OTel documents may be `.zst`-compressed. All files are parsed into RAM at startup; graphs are built on demand. |
 | `hf_dataset_path` | string \| dict | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | HuggingFace dataset identifier. As a string: `"username/dataset-name"`. As a dict: `{path, revision, split, ...}` — extra keys are forwarded to `datasets.load_dataset()`. Downloaded and cached automatically. Raw span data stays memory-mapped on disk; graphs are built on demand. |
 | `use_static_model` | boolean | No (default: `false`) | Override all recorded model names with `static_model_name` |
 | `static_model_name` | string | Required if `use_static_model: true` | Model name to use for all requests |
@@ -132,6 +132,8 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | `filter` | string | No | Lambda expression applied to each trace record before replay. Evaluated via `eval()` — use only with trusted inputs. Example: `"lambda x: x['benchmark'] == 'gsm8k'"`. Applies uniformly across all three trace sources |
 | `bad_tool_call_handling` | enum | No (default: `none`) | How to handle tool_calls whose `function.arguments` is not valid JSON. `none`: no mitigation (upstream behavior). `use_recorded`: substitute the recorded assistant message at the affected slot. See [Bad tool-call handling](#bad-tool-call-handling) |
 | `tool_choice_mode` | enum | No (default: `force_recorded`) | Whether to inject a `tool_choice` on recorded tool-call turns. `force_recorded`: force the recorded function, or `"required"` when that isn't possible (upstream behavior). `as_recorded`: inject nothing, leaving the choice to the model. See [Forced `tool_choice` and Token Budget](#forced-tool_choice-and-token-budget) |
+| `remote_cache_dir` | string | No (default: `<system temp dir>/inference-perf-<user>/trace-cache`) | Local cache for traces read from `s3://` entries. In Kubernetes, point it at an `emptyDir` |
+| `remote_cache_max_gb` | float | No (default: `10.0`) | Disk budget for `remote_cache_dir`, least-recently-used eviction. A running session keeps its trace on disk until it ends, so many concurrent sessions can exceed the budget by their own files. `0` keeps only the traces of running sessions |
 | `disable_output_substitution` | boolean | No (default: `false`) | When `true`, replay each call with its recorded assistant output (text and tool calls) instead of substituting the live output from predecessor calls. Predecessor wait timing is still enforced. Cannot be combined with `inject_random_session_id` or `duplicate_sessions_target` (those trigger substitution and would contradict this flag — config validation rejects the combination) |
 
 **Examples:**
@@ -177,6 +179,96 @@ data:
 ```
 
 > **Note:** The `hf_dataset_path` option automatically downloads the dataset from HuggingFace Hub and caches it locally (typically in `~/.cache/huggingface/datasets`). Subsequent runs will use the cached version. All JSON files in the dataset directory tree will be loaded as trace files.
+
+### Reading traces from object storage
+
+`trace_files` entries and `trace_directory` may be `s3://` URIs on any S3-compatible store. Patterns follow the
+same rules as local paths: `*` and `?` match within one folder, `**` matches any number of folders, `[...]`
+matches one character from a set (only inside an entry that also has `*` or `?`; otherwise the brackets are part
+of the name), an entry without `*` or `?` names one object (and the run fails if it does not exist), and every
+format a local file may use works the same from a bucket. A `trace_directory` URI is a literal prefix: its direct
+children named `*.json*` are replayed.
+
+```yaml
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_files:
+      - "s3://my-trace-bucket/<model>/*/<benchmark>-*/*-calls.jsonl.zst"
+    remote_cache_dir: "/scratch/trace-cache"   # optional
+    remote_cache_max_gb: 10                    # optional
+    use_static_model: true
+    static_model_name: "llama-3-8b"
+```
+
+**Credentials and endpoint** never go in the config. They come from the standard AWS chain, which works for any
+S3-compatible store:
+
+| Where | Setup |
+|---|---|
+| Laptop | A profile in `~/.aws/credentials` (`aws_access_key_id`, `aws_secret_access_key`) and `~/.aws/config` (`endpoint_url = https://<your-s3-endpoint>`), selected with `AWS_PROFILE=<name>` |
+| Kubernetes | A Secret exposed as env vars `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_ENDPOINT_URL_S3` |
+
+Leave the endpoint unset for AWS S3 itself. With an endpoint set, boto3 addresses objects path-style
+(`https://<your-s3-endpoint>/<bucket>/<key>`), which S3-compatible stores generally expect; no config file is needed.
+In Kubernetes:
+
+```yaml
+# kubectl create secret generic trace-store --from-literal=AWS_ACCESS_KEY_ID=... \
+#   --from-literal=AWS_SECRET_ACCESS_KEY=... --from-literal=AWS_ENDPOINT_URL_S3=https://<your-s3-endpoint>
+containers:
+  - name: inference-perf
+    envFrom:
+      - secretRef:
+          name: trace-store
+    volumeMounts:
+      - name: trace-cache
+        mountPath: /scratch/trace-cache   # remote_cache_dir
+volumes:
+  - name: trace-cache
+    emptyDir:
+      sizeLimit: 12Gi                     # above remote_cache_max_gb
+```
+
+A store that rejects path-style requests (`PathStyleRequestNotAllowed`) needs virtual-hosted addressing, which boto3
+reads only from a config file: `addressing_style = virtual` under `s3 =`. In Kubernetes, mount one from a ConfigMap and
+point `AWS_CONFIG_FILE` at it:
+
+```yaml
+# kubectl create configmap trace-store-aws --from-literal=config=$'[default]\ns3 =\n    addressing_style = virtual\n'
+containers:
+  - name: inference-perf
+    env:
+      - name: AWS_CONFIG_FILE
+        value: /etc/aws/config
+    volumeMounts:
+      - name: aws-config
+        mountPath: /etc/aws
+volumes:
+  - name: aws-config
+    configMap:
+      name: trace-store-aws
+```
+
+A cache directory that cannot be written fails the run at startup. The default directory is created owner-only,
+and refused if it is a symlink, owned by another user, or writable by others. Only the cache's own entries are
+ever evicted, so other files in `remote_cache_dir` are left alone.
+
+**How objects are read.** At startup each wire capture is probed for its first record only, which gives its format
+and session id; OTel `.json` / `.jsonl` objects are downloaded whole, because their identity and row offsets need
+the full file (within `remote_cache_max_gb`: a larger OTel set is evicted as it is indexed and downloaded again
+when its sessions run). Transient read errors (throttling, server errors, dropped connections) are retried. Objects land in `remote_cache_dir`, compressed as stored and pinned to the version listed at
+startup; an object that changes during the run cannot be read, so its session is skipped with `skip_invalid_files`
+and otherwise stops the run, like any unreadable trace. If every matched object fits
+`remote_cache_max_gb`, all of them are downloaded before the first stage, so no download happens while measuring.
+Otherwise the upcoming sessions are downloaded ahead, up to half the cache less what running sessions hold. Each
+running session keeps its trace on disk until it ends, so its worker always reads it from the cache. Any session that
+still has to wait for
+a download is logged with how long it waited.
+
+Remote wire captures are not fully validated at startup (that would download every one); a broken capture surfaces
+when its session is built and follows `skip_invalid_files`. A `filter` reads every matched trace at startup, so with
+remote entries it downloads all of them; prefer a narrower pattern.
 
 ### Bad tool-call handling
 
