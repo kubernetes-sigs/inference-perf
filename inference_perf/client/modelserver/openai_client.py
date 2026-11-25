@@ -33,12 +33,13 @@ from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession
 from .metrics import Metric, BaseMetrics
 from .otel_instrumentation import get_otel_instrumentation, summarize_media
-from typing import Iterator, List, Optional, Any, Dict, Tuple
+from typing import Iterator, List, Mapping, Optional, Any, Dict, Tuple
 import aiohttp
 import asyncio
 import random
 from asyncio import sleep
 import json
+import math
 import time
 import logging
 import requests
@@ -1005,48 +1006,20 @@ class openAIModelServerClientSession(ModelServerClientSession):
             scheduled_time=scheduled_time,
         )
 
-        # Grab TTFT and TPOT thresholds from request headers if available for streaming requests with token-level timestamps
-        if (
+        ttft_slo, tpot_slo, req_lat_slo = extract_request_slo_thresholds(self.client.api_config, data.headers)
+        if req_lat_slo is not None:
+            metric.request_latency_slo_sec = req_lat_slo
+
+        # Attach TTFT/TPOT thresholds when streaming is enabled (including failed/cancelled
+        # requests so all-failed streaming runs still report submitted_attainment_percentage: 0.0)
+        # or when streamed token timestamps were recorded.
+        if self.client.api_config.streaming or (
             metric.info
             and isinstance(metric.info.response_metrics, StreamedResponseMetrics)
             and metric.info.response_metrics.output_token_times
         ):
-            ttft_threshold = None
-            tpot_threshold = None
-            slo_unit = getattr(self.client.api_config, "slo_unit", None) or "ms"
-
-            default_ttft_header = f"x-slo-ttft-{slo_unit}"
-            default_tpot_header = f"x-slo-tpot-{slo_unit}"
-            ttft_header = getattr(self.client.api_config, "slo_ttft_header", None) or default_ttft_header
-            tpot_header = getattr(self.client.api_config, "slo_tpot_header", None) or default_tpot_header
-
-            combined_headers = {}
-            if self.client.api_config.headers:
-                for k, v in self.client.api_config.headers.items():
-                    combined_headers[k.lower()] = v
-            if data.headers:
-                for k, v in data.headers.items():
-                    combined_headers[k.lower()] = v
-
-            if combined_headers:
-                ttft_threshold = combined_headers.get(ttft_header.lower())
-                tpot_threshold = combined_headers.get(tpot_header.lower())
-
-                unit = slo_unit.lower()
-                unit_to_s = {"s": 1.0, "ms": 0.001, "us": 0.000001}
-                factor = unit_to_s.get(unit, 1.0)
-
-                if ttft_threshold is not None and ttft_threshold != "default":
-                    try:
-                        metric.ttft_slo_sec = float(ttft_threshold) * factor
-                    except ValueError:
-                        logger.warning(f"Invalid TTFT SLO value: {ttft_threshold}")
-
-                if tpot_threshold is not None and tpot_threshold != "default":
-                    try:
-                        metric.tpot_slo_sec = float(tpot_threshold) * factor
-                    except ValueError:
-                        logger.warning(f"Invalid TPOT SLO value: {tpot_threshold}")
+            metric.ttft_slo_sec = ttft_slo
+            metric.tpot_slo_sec = tpot_slo
 
         # Record the metric
         self.client.metrics_collector.record_metric(metric)
@@ -1060,3 +1033,60 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
     async def close(self) -> None:
         await self.session.close()
+
+
+def _slo_unit_factor(unit_name: str) -> float:
+    unit_to_s = {"s": 1.0, "ms": 0.001, "us": 0.000001}
+    return unit_to_s.get(unit_name.lower(), 1.0)
+
+
+def _parse_positive_slo_seconds(raw_value: Optional[str], factor: float, label: str) -> Optional[float]:
+    """Parse a positive, finite SLO threshold header value and convert it to seconds."""
+    if raw_value is None or raw_value == "default":
+        return None
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        logger.warning(f"Invalid {label} SLO value: {raw_value}")
+        return None
+    if not math.isfinite(parsed) or parsed <= 0:
+        logger.warning(f"Invalid {label} SLO value: {raw_value}")
+        return None
+    return parsed * factor
+
+
+def extract_request_slo_thresholds(
+    api_config: APIConfig,
+    data_headers: Optional[Mapping[str, str]] = None,
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Extract (ttft_slo_sec, tpot_slo_sec, request_latency_slo_sec) from configured and per-request headers."""
+    combined_headers: Dict[str, str] = {}
+    cfg_headers = getattr(api_config, "headers", None)
+    if isinstance(cfg_headers, Mapping):
+        for k, v in cfg_headers.items():
+            if isinstance(k, str) and isinstance(v, str):
+                combined_headers[k.lower()] = v
+    if isinstance(data_headers, Mapping):
+        for k, v in data_headers.items():
+            if isinstance(k, str) and isinstance(v, str):
+                combined_headers[k.lower()] = v
+
+    if not combined_headers:
+        return None, None, None
+
+    raw_unit = getattr(api_config, "slo_unit", None)
+    slo_unit = raw_unit if isinstance(raw_unit, str) and raw_unit else "ms"
+    factor = _slo_unit_factor(slo_unit)
+
+    raw_ttft_h = getattr(api_config, "slo_ttft_header", None)
+    ttft_header = raw_ttft_h if isinstance(raw_ttft_h, str) and raw_ttft_h else f"x-slo-ttft-{slo_unit}"
+    raw_tpot_h = getattr(api_config, "slo_tpot_header", None)
+    tpot_header = raw_tpot_h if isinstance(raw_tpot_h, str) and raw_tpot_h else f"x-slo-tpot-{slo_unit}"
+    raw_lat_h = getattr(api_config, "slo_request_latency_header", None)
+    lat_header = raw_lat_h if isinstance(raw_lat_h, str) and raw_lat_h else f"x-slo-request-latency-{slo_unit}"
+
+    ttft_slo = _parse_positive_slo_seconds(combined_headers.get(ttft_header.lower()), factor, "TTFT")
+    tpot_slo = _parse_positive_slo_seconds(combined_headers.get(tpot_header.lower()), factor, "TPOT")
+    req_lat_slo = _parse_positive_slo_seconds(combined_headers.get(lat_header.lower()), factor, "request latency")
+
+    return ttft_slo, tpot_slo, req_lat_slo
