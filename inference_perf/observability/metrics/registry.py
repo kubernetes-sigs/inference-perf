@@ -127,11 +127,14 @@ class ObservedRequest:
     ``series`` holds the request's value for each expression series it has one
     for, from the report's own formulas (``series_values``). ``output_tokens`` is
     the count the report uses under ``use_server_output_tokens``, 0 for a failure.
+    ``stage_last_end_time`` is the latest ``end_time`` among the requests seen so
+    far in this one's stage, itself included.
     """
 
     metric: RequestLifecycleMetric
     series: Mapping[str, float]
     output_tokens: int
+    stage_last_end_time: float
 
 
 @dataclass(frozen=True)
@@ -205,6 +208,7 @@ class MetricsHub:
             config.report.request_lifecycle.use_server_output_tokens if config is not None else False
         )
         self._failed_request_hooks: set[str] = set()
+        self._stage_last_end_times: dict[Optional[int], float] = {}
 
     def on_run_start(self, context: Optional[RunContext] = None) -> None:
         if context is None:
@@ -228,6 +232,9 @@ class MetricsHub:
                 logger.exception("%s hook for metric %r failed", event, spec.name)
 
     def observe_request(self, metric: RequestLifecycleMetric) -> None:
+        # results arrive in queue order, so this one can have finished before one already seen
+        stage_last_end_time = max(self._stage_last_end_times.get(metric.stage_id, metric.end_time), metric.end_time)
+        self._stage_last_end_times[metric.stage_id] = stage_last_end_time
         try:
             request = ObservedRequest(
                 metric=metric,
@@ -237,6 +244,7 @@ class MetricsHub:
                     if metric.error is None
                     else 0
                 ),
+                stage_last_end_time=stage_last_end_time,
             )
         except Exception:
             if "<values>" not in self._failed_request_hooks:

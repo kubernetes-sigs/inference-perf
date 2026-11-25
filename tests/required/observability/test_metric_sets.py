@@ -359,6 +359,38 @@ def test_last_completion_timestamp_is_the_unix_time_the_last_request_finished() 
     )
 
 
+# A request that finished 1s ago, then the result of one that finished 2s ago: the
+# collector hands results over in queue order, so an older one can arrive late.
+# Expects the gauge to stay on the later finish, time.time() - 1.0, within 50ms.
+def test_last_completion_timestamp_keeps_the_latest_finish_when_an_older_result_arrives_late() -> None:
+    hub = _streaming_hub()
+    now = time.perf_counter()
+    hub.observe_request(_streamed(start=now - 2.0, token_times=[now - 1.5], end=now - 1.0))
+    hub.observe_request(_streamed(start=now - 3.0, token_times=[now - 2.5], end=now - 2.0))
+
+    assert _sample(hub, "inference_perf_last_completion_timestamp_seconds", stage="0") == pytest.approx(
+        time.time() - 1.0, abs=0.05
+    )
+
+
+# Stage 0 finishes a request 3s ago, stage 1 one 1s ago, then a stage 0 result from 2s ago
+# arrives. Expects each stage to keep its own latest finish: stage 0 at time.time() - 2.0
+# and stage 1 at time.time() - 1.0, within 50ms.
+def test_last_completion_timestamp_is_kept_per_stage() -> None:
+    hub = _streaming_hub(stages=2)
+    now = time.perf_counter()
+    hub.observe_request(_streamed(stage_id=0, start=now - 4.0, token_times=[now - 3.5], end=now - 3.0))
+    hub.observe_request(_streamed(stage_id=1, start=now - 2.0, token_times=[now - 1.5], end=now - 1.0))
+    hub.observe_request(_streamed(stage_id=0, start=now - 3.0, token_times=[now - 2.5], end=now - 2.0))
+
+    assert _sample(hub, "inference_perf_last_completion_timestamp_seconds", stage="0") == pytest.approx(
+        time.time() - 2.0, abs=0.05
+    )
+    assert _sample(hub, "inference_perf_last_completion_timestamp_seconds", stage="1") == pytest.approx(
+        time.time() - 1.0, abs=0.05
+    )
+
+
 # Three requests: a failure, a one-token stream, and a zero-token stream. Expects
 # latency observed twice (failures never), TTFT once (needs a first chunk) and TPOT
 # never, since a single token gives no inter-token interval.

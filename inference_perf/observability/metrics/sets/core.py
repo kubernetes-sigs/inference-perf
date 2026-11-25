@@ -100,6 +100,9 @@ def _count_output_tokens(counter: Counter, request: ObservedRequest) -> None:
 
 
 def _stamp_last_completion(gauge: Gauge, request: ObservedRequest) -> None:
+    # a result that finished before one already seen must not move the gauge back
+    if request.metric.end_time < request.stage_last_end_time:
+        return
     # end_time is on the perf_counter clock the workers share. Shifting it by
     # that clock's gap to Unix time now gives the Unix time the request finished.
     finished = time.time() - (time.perf_counter() - request.metric.end_time)
