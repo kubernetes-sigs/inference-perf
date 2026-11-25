@@ -404,6 +404,7 @@ def test_per_request_computed_metrics_reports_counts_for_unary_responses() -> No
     assert computed["output_len"] == 10
     assert computed["tpot_output_tokens"] == 10
     assert computed["time_to_first_token"] is None
+    assert computed["time_per_output_token"] is None
 
 
 # A successful request with no response metrics has counted nothing on either side, so all three
