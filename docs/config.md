@@ -82,16 +82,16 @@ api:
     x-llm-d-async-mode: enqueue
     x-llm-d-tenant: batch
   async_polling:
-    poll_url_template: /v1/requests/{id}  # Relative path or full URL containing {id}
+    poll_url_template: /v1/requests/{id}  # Relative path (joined to server.base_url) containing {id}
     id_json_field: id                     # Dot-separated JSON field in the 202 body
-    response_id_header: x-request-id      # Fallback header when id_json_field is absent
+    response_id_header: x-request-id      # Optional fallback header when id_json_field is absent (default: null)
     poll_interval_sec: 0.5                # Delay between GET polls while the server returns 202
-    max_poll_duration_sec: 300            # Optional poll timeout (defaults to load.request_timeout)
-    exclude_request_headers:              # Request headers omitted from GET polls
+    max_poll_duration_sec: 300            # Optional timeout from enqueue dispatch through final poll (must exceed poll_interval_sec; defaults to load.request_timeout)
+    exclude_request_headers:              # Request headers omitted from GET polls (default: [])
       - x-llm-d-async-mode
 ```
 
-While the server responds `202`, the client polls `poll_url_template` until a terminal `200` (parsed as a standard response), non-`200`/`202` HTTP error (recorded without re-POSTing), or timeout. End-to-end request latency spans from initial enqueue dispatch to the terminal poll response.
+While the server responds `202`, the client polls `poll_url_template` until a terminal `200` (parsed as a standard response), non-`200`/`202` HTTP error (recorded without re-POSTing), or timeout (including one final poll at the deadline). End-to-end request latency spans from initial enqueue dispatch to the terminal poll response; because the first poll fires after `poll_interval_sec` and completions are observed on the next poll, measured latency can read up to `poll_interval_sec` higher than server completion, and polling adds roughly `pending_requests / poll_interval_sec` GET requests per second to the gateway.
 
 ### Data Generation
 

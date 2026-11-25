@@ -31,7 +31,6 @@ from inference_perf.client.modelserver.openai_client import (
     openAIModelServerClientSession,
 )
 from inference_perf.config import APIConfig, APIType, AsyncPollingConfig
-from inference_perf.config.redaction import REDACTED, redact
 
 
 class _MockHttpContext:
@@ -94,19 +93,26 @@ async def _make_session(client: MagicMock) -> tuple[openAIModelServerClientSessi
     return session, mock_http
 
 
-# Reject invalid poll_url_template or streaming+async_polling, accept absolute URLs, and redact sensitive poll headers.
-def test_async_polling_config_validation_and_redaction() -> None:
+# Validate AsyncPollingConfig defaults, relative-path requirement, max > interval check, and streaming incompatibility.
+def test_async_polling_config_validation_and_defaults() -> None:
+    defaults = AsyncPollingConfig()
+    assert defaults.exclude_request_headers == []
+    assert defaults.response_id_header is None
+
     with pytest.raises(ValueError, match="must contain '\\{id\\}'"):
         AsyncPollingConfig(poll_url_template="/v1/requests/static")
 
-    with pytest.raises(ValueError, match="poll_url_template must start with"):
+    with pytest.raises(ValueError, match="poll_url_template must start with '/'"):
         AsyncPollingConfig(poll_url_template="v1/requests/{id}")
 
-    cfg_http = AsyncPollingConfig(poll_url_template="http://status.local/jobs/{id}")
-    assert cfg_http.poll_url_template == "http://status.local/jobs/{id}"
+    with pytest.raises(ValueError, match="poll_url_template must start with '/'"):
+        AsyncPollingConfig(poll_url_template="https://other.host/v1/requests/{id}")
 
-    cfg_https = AsyncPollingConfig(poll_url_template="https://status.local/jobs/{id}")
-    assert cfg_https.poll_url_template == "https://status.local/jobs/{id}"
+    with pytest.raises(ValueError, match="max_poll_duration_sec must be greater than poll_interval_sec"):
+        AsyncPollingConfig(poll_interval_sec=1.0, max_poll_duration_sec=1.0)
+
+    with pytest.raises(ValueError, match="max_poll_duration_sec must be greater than poll_interval_sec"):
+        AsyncPollingConfig(poll_interval_sec=2.0, max_poll_duration_sec=1.0)
 
     with pytest.raises(ValueError, match="streaming is not supported when async_polling is configured"):
         APIConfig(
@@ -115,35 +121,37 @@ def test_async_polling_config_validation_and_redaction() -> None:
             async_polling=AsyncPollingConfig(),
         )
 
-    raw = {
-        "type": "completion",
-        "headers": {"x-llm-d-tenant": "batch", "Authorization": "Bearer top-secret"},
-        "async_polling": {
-            "poll_url_template": "/v1/requests/{id}",
-            "headers": {"X-Api-Key": "poll-secret", "x-llm-d-tenant": "batch"},
-        },
-    }
-    masked = redact(raw, APIConfig)
-    assert masked["headers"]["Authorization"] == REDACTED
-    assert masked["headers"]["x-llm-d-tenant"] == "batch"
-    assert masked["async_polling"]["headers"]["X-Api-Key"] == REDACTED
-    assert masked["async_polling"]["headers"]["x-llm-d-tenant"] == "batch"
 
-
-# Extract request IDs from nested JSON fields, integer IDs, malformed JSON + header fallback, and reject booleans.
+# Cover every branch of _extract_async_request_id: nested fields, non-dict intermediate, empty id, booleans, and header fallback.
 def test_extract_async_request_id_variants() -> None:
     nested_cfg = AsyncPollingConfig(id_json_field="data.job_id", response_id_header="x-request-id")
     assert _extract_async_request_id(json.dumps({"data": {"job_id": "req-7"}}), {}, nested_cfg) == "req-7"
     assert _extract_async_request_id(json.dumps({"data": {"job_id": 123}}), {}, nested_cfg) == "123"
+    # Non-dict intermediate node must not crash and returns None.
+    assert _extract_async_request_id(json.dumps({"data": 5}), {}, nested_cfg) is None
     # Boolean values must not be coerced via isinstance(True, int).
     assert _extract_async_request_id(json.dumps({"data": {"job_id": True}}), {}, nested_cfg) is None
-    # Malformed JSON falls back to case-insensitive response_id_header.
-    assert _extract_async_request_id("not-json", {"X-Request-Id": "hdr-9"}, nested_cfg) == "hdr-9"
+    # Empty-string JSON id falls back to response_id_header when configured.
+    flat_cfg = AsyncPollingConfig(id_json_field="id", response_id_header="x-request-id")
+    assert _extract_async_request_id(json.dumps({"id": ""}), {"X-Request-Id": "hdr-from-empty-id"}, flat_cfg) == (
+        "hdr-from-empty-id"
+    )
+    # Non-matching header before the id header is skipped; malformed JSON falls back to case-insensitive header.
+    assert (
+        _extract_async_request_id(
+            "not-json",
+            {"X-Other": "ignored", "X-Request-Id": "hdr-9"},
+            nested_cfg,
+        )
+        == "hdr-9"
+    )
+    # Empty header value is ignored and returns None.
+    assert _extract_async_request_id("{}", {"X-Request-Id": ""}, nested_cfg) is None
     # Missing from both body and header returns None.
     assert _extract_async_request_id("{}", {}, nested_cfg) is None
 
 
-# Poll a 202 enqueue response until 200, preserving tenant/auth headers and dropping excluded/content-type headers.
+# Poll a 202 enqueue response until 200, preserving tenant/auth headers, dropping excluded headers, and skipping process_failure.
 @pytest.mark.asyncio
 async def test_enqueue_202_polls_until_200_and_preserves_tenant_header() -> None:
     api_cfg = APIConfig(
@@ -157,6 +165,7 @@ async def test_enqueue_202_polls_until_200_and_preserves_tenant_header() -> None
         async_polling=AsyncPollingConfig(
             poll_url_template="/v1/requests/{id}",
             poll_interval_sec=0.005,
+            exclude_request_headers=["x-llm-d-async-mode"],
         ),
     )
     client = _make_mock_client(api_cfg)
@@ -190,7 +199,9 @@ async def test_enqueue_202_polls_until_200_and_preserves_tenant_header() -> None
     mock_http.get.side_effect = _fake_get
 
     req = CompletionAPIData(prompt="Summarize async batching.", max_tokens=16)
-    await session.process_request(req, stage_id=0, scheduled_time=0.0)
+    with patch.object(CompletionAPIData, "process_failure", new_callable=AsyncMock) as fail_spy:
+        await session.process_request(req, stage_id=0, scheduled_time=0.0)
+        fail_spy.assert_not_called()
 
     assert len(get_calls) == 2
     poll_url, poll_headers, poll_timeout = get_calls[0]
@@ -208,52 +219,141 @@ async def test_enqueue_202_polls_until_200_and_preserves_tenant_header() -> None
     assert recorded.info.response_metrics is not None
 
 
-# Support absolute poll_url_template, extra polling headers, and unbounded timeout when no deadline is configured.
+# Record a direct 200 POST response as a normal success without issuing any GET polls when async_polling is configured.
 @pytest.mark.asyncio
-async def test_enqueue_202_absolute_poll_url_custom_headers_and_no_timeout() -> None:
+async def test_async_polling_direct_200_succeeds_without_polling() -> None:
     api_cfg = APIConfig(
         type=APIType.Completion,
         streaming=False,
-        headers={"x-llm-d-tenant": "default"},
-        async_polling=AsyncPollingConfig(
-            poll_url_template="https://broker.example.com/status/{id}",
-            poll_interval_sec=0.005,
-            headers={"X-Poll-Source": "bench", "x-llm-d-tenant": "override"},
-        ),
+        async_polling=AsyncPollingConfig(poll_interval_sec=0.005),
     )
-    client = _make_mock_client(api_cfg, timeout=None)
+    client = _make_mock_client(api_cfg)
     session, mock_http = await _make_session(client)
 
-    mock_http.post.return_value = _MockHttpContext(202, json.dumps({"id": "job-abs"}))
     completion_payload = json.dumps(
         {
-            "id": "cmpl-abs",
+            "id": "cmpl-direct",
+            "choices": [{"text": "immediate reply"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        }
+    )
+    mock_http.post.return_value = _MockHttpContext(200, completion_payload)
+
+    req = CompletionAPIData(prompt="Direct 200", max_tokens=8)
+    await session.process_request(req, stage_id=0, scheduled_time=0.0)
+
+    mock_http.get.assert_not_called()
+    recorded: RequestLifecycleMetric = client.metrics_collector.record_metric.call_args.args[0]
+    assert recorded.error is None
+    assert recorded.info.request_metrics.text.input_tokens == 5
+
+
+# Record a direct 503 POST response as HTTP Error 503 without issuing any GET polls when async_polling is configured.
+@pytest.mark.asyncio
+async def test_async_polling_direct_503_records_error_without_polling() -> None:
+    api_cfg = APIConfig(
+        type=APIType.Completion,
+        streaming=False,
+        async_polling=AsyncPollingConfig(poll_interval_sec=0.005),
+    )
+    client = _make_mock_client(api_cfg)
+    session, mock_http = await _make_session(client)
+
+    mock_http.post.return_value = _MockHttpContext(503, "service unavailable")
+
+    req = CompletionAPIData(prompt="Direct 503", max_tokens=8)
+    await session.process_request(req, stage_id=0, scheduled_time=0.0)
+
+    mock_http.get.assert_not_called()
+    recorded: RequestLifecycleMetric = client.metrics_collector.record_metric.call_args.args[0]
+    assert recorded.error is not None
+    assert recorded.error.error_type == "HTTP Error 503"
+
+
+# Treat client.timeout == 0 (and None) as unbounded polling timeout, omitting per-GET timeout override.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_timeout", [None, 0.0])
+async def test_enqueue_202_unbounded_timeout_omits_poll_timeout(client_timeout: float | None) -> None:
+    api_cfg = APIConfig(
+        type=APIType.Completion,
+        streaming=False,
+        async_polling=AsyncPollingConfig(poll_interval_sec=0.005),
+    )
+    client = _make_mock_client(api_cfg, timeout=client_timeout)
+    session, mock_http = await _make_session(client)
+
+    mock_http.post.return_value = _MockHttpContext(202, json.dumps({"id": "job-unbounded"}))
+    completion_payload = json.dumps(
+        {
+            "id": "cmpl-unbounded",
             "choices": [{"text": "done"}],
             "usage": {"prompt_tokens": 5, "completion_tokens": 2},
         }
     )
-    get_calls: List[tuple[str, Dict[str, str], aiohttp.ClientTimeout | None]] = []
+    get_timeouts: List[aiohttp.ClientTimeout | None] = []
 
-    # Record GET arguments and return a 200 completion immediately.
+    # Record whether a timeout kwarg was passed and return a 200 completion.
     def _fake_get(
         url: str,
         headers: Dict[str, str],
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> _MockHttpContext:
-        get_calls.append((url, dict(headers), timeout))
+        get_timeouts.append(timeout)
         return _MockHttpContext(200, completion_payload)
 
     mock_http.get.side_effect = _fake_get
 
-    req = CompletionAPIData(prompt="Absolute URL", max_tokens=8)
+    req = CompletionAPIData(prompt="No timeout", max_tokens=8)
     await session.process_request(req, stage_id=0, scheduled_time=0.0)
 
-    assert len(get_calls) == 1
-    poll_url, poll_headers, poll_timeout = get_calls[0]
-    assert poll_url == "https://broker.example.com/status/job-abs"
-    assert poll_headers["X-Poll-Source"] == "bench"
-    assert poll_headers["x-llm-d-tenant"] == "override"
-    assert poll_timeout is None
+    assert get_timeouts == [None]
+    recorded: RequestLifecycleMetric = client.metrics_collector.record_metric.call_args.args[0]
+    assert recorded.error is None
+
+
+# Poll once more at the deadline when remaining <= poll_interval_sec so a job finishing in the last interval succeeds.
+@pytest.mark.asyncio
+async def test_enqueue_202_final_poll_at_deadline_catches_late_200() -> None:
+    api_cfg = APIConfig(
+        type=APIType.Completion,
+        streaming=False,
+        async_polling=AsyncPollingConfig(
+            poll_interval_sec=0.03,
+            max_poll_duration_sec=0.05,
+        ),
+    )
+    client = _make_mock_client(api_cfg, timeout=5.0)
+    session, mock_http = await _make_session(client)
+
+    mock_http.post.return_value = _MockHttpContext(202, json.dumps({"id": "job-late-ok"}))
+    completion_payload = json.dumps(
+        {
+            "id": "cmpl-late-ok",
+            "choices": [{"text": "finished in last interval"}],
+            "usage": {"prompt_tokens": 6, "completion_tokens": 4},
+        }
+    )
+    poll_count = 0
+
+    # Return 202 on the first poll (~30ms) and 200 on the final deadline poll (~50ms).
+    def _fake_get(
+        url: str,
+        headers: Dict[str, str],
+        timeout: aiohttp.ClientTimeout | None = None,
+    ) -> _MockHttpContext:
+        nonlocal poll_count
+        poll_count += 1
+        assert timeout is not None and timeout.total is not None and timeout.total > 0
+        if poll_count == 1:
+            return _MockHttpContext(202, json.dumps({"id": "job-late-ok", "status": "pending"}))
+        return _MockHttpContext(200, completion_payload)
+
+    mock_http.get.side_effect = _fake_get
+
+    req = CompletionAPIData(prompt="Late success", max_tokens=8)
+    await session.process_request(req, stage_id=0, scheduled_time=0.0)
+
+    assert poll_count == 2
     recorded: RequestLifecycleMetric = client.metrics_collector.record_metric.call_args.args[0]
     assert recorded.error is None
 
@@ -291,12 +391,16 @@ async def test_enqueue_202_terminal_504_deadline_exceeded_is_not_retried() -> No
             "x-llm-d-tenant": "batch",
             "x-llm-d-request-timeout-seconds": "10",
         },
-        async_polling=AsyncPollingConfig(poll_interval_sec=0.005),
+        async_polling=AsyncPollingConfig(
+            poll_interval_sec=0.005,
+            response_id_header="x-request-id",
+            exclude_request_headers=["x-llm-d-async-mode"],
+        ),
     )
     client = _make_mock_client(api_cfg)
     session, mock_http = await _make_session(client)
 
-    # Body has no id, so response_id_header ('x-request-id') fallback is exercised too.
+    # Body has no id, so opt-in response_id_header ('x-request-id') fallback is exercised too.
     mock_http.post.return_value = _MockHttpContext(
         202,
         "{}",
@@ -371,7 +475,30 @@ async def test_enqueue_202_invalid_response_error_preserves_raw_content() -> Non
     assert recorded.response_data == "raw-server-bytes"
 
 
-# Record TimeoutError without retrying POST when polling exceeds max_poll_duration_sec.
+# Record ValueError and retain the original poll_body when a non-InvalidResponseError is raised on a 200 poll.
+@pytest.mark.asyncio
+async def test_enqueue_202_non_invalid_response_error_keeps_poll_body() -> None:
+    api_cfg = APIConfig(
+        type=APIType.Completion,
+        streaming=False,
+        async_polling=AsyncPollingConfig(poll_interval_sec=0.005),
+    )
+    client = _make_mock_client(api_cfg)
+    session, mock_http = await _make_session(client)
+
+    mock_http.post.return_value = _MockHttpContext(202, json.dumps({"id": "job-non-json"}))
+    mock_http.get.return_value = _MockHttpContext(200, "not-json-body")
+
+    req = CompletionAPIData(prompt="Non-JSON 200", max_tokens=16)
+    await session.process_request(req, stage_id=0, scheduled_time=0.0)
+
+    recorded: RequestLifecycleMetric = client.metrics_collector.record_metric.call_args.args[0]
+    assert recorded.error is not None
+    assert recorded.error.error_type == "JSONDecodeError"
+    assert recorded.response_data == "not-json-body"
+
+
+# Record TimeoutError without retrying POST when the final deadline poll still returns 202.
 @pytest.mark.asyncio
 async def test_enqueue_202_poll_timeout_records_timeout_error() -> None:
     api_cfg = APIConfig(
@@ -392,6 +519,7 @@ async def test_enqueue_202_poll_timeout_records_timeout_error() -> None:
     await session.process_request(req, stage_id=0, scheduled_time=0.0)
 
     assert mock_http.post.call_count == 1
+    assert mock_http.get.call_count >= 2
     recorded: RequestLifecycleMetric = client.metrics_collector.record_metric.call_args.args[0]
     assert recorded.error is not None
     assert recorded.error.error_type == "TimeoutError"
@@ -404,14 +532,14 @@ async def test_enqueue_202_deadline_already_expired_skips_poll() -> None:
         type=APIType.Completion,
         streaming=False,
         async_polling=AsyncPollingConfig(
-            poll_interval_sec=0.1,
-            max_poll_duration_sec=0.01,
+            poll_interval_sec=0.01,
+            max_poll_duration_sec=0.02,
         ),
     )
     client = _make_mock_client(api_cfg, timeout=5.0)
     session, mock_http = await _make_session(client)
 
-    mock_http.post.return_value = _MockHttpContext(202, json.dumps({"id": "job-slow-post"}), delay_sec=0.03)
+    mock_http.post.return_value = _MockHttpContext(202, json.dumps({"id": "job-slow-post"}), delay_sec=0.04)
 
     req = CompletionAPIData(prompt="Slow enqueue", max_tokens=16)
     await session.process_request(req, stage_id=0, scheduled_time=0.0)

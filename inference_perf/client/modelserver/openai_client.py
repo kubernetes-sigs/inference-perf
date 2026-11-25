@@ -778,6 +778,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 # so end-to-end latency, TTFT and the scheduling metrics keep counting the
                 # failed attempt and its backoff -- the workload really did wait for them.
                 attempt_start = time.perf_counter()
+                raw_polling_cfg = getattr(self.client.api_config, "async_polling", None)
+                polling_cfg: Optional[AsyncPollingConfig] = (
+                    raw_polling_cfg if isinstance(raw_polling_cfg, AsyncPollingConfig) else None
+                )
                 response = None
                 info = None
                 error = None
@@ -808,9 +812,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                 # holding it in extra_info for the lifetime of the object causes unbounded
                                 # memory growth when many sessions run concurrently.
                                 response_content = info.extra_info.pop("raw_response", "") if info else ""
-                            elif response.status == 202 and isinstance(
-                                getattr(self.client.api_config, "async_polling", None), AsyncPollingConfig
-                            ):
+                            elif response.status == 202 and polling_cfg is not None:
                                 enqueue_body = await response.text()
                                 enqueue_headers = {k: v for k, v in response.headers.items()}
                                 enqueue_pending = True
@@ -895,8 +897,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                     response_content = f"Failed to read response text: {read_error}"
                                 raise
 
-                    polling_cfg = getattr(self.client.api_config, "async_polling", None)
-                    if enqueue_pending and isinstance(polling_cfg, AsyncPollingConfig):
+                    if enqueue_pending and polling_cfg is not None:
                         response, response_content, info, error, caught_exception = await self._poll_enqueued_result(
                             data=data,
                             polling_cfg=polling_cfg,
@@ -1091,22 +1092,27 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         encoded_id = urllib.parse.quote(req_id, safe="")
         rendered = polling_cfg.poll_url_template.replace("{id}", encoded_id)
-        poll_url = rendered if rendered.startswith(("http://", "https://")) else f"{self.client.uri.rstrip('/')}{rendered}"
+        poll_url = f"{self.client.uri.rstrip('/')}{rendered}"
 
         excluded = {h.lower() for h in polling_cfg.exclude_request_headers} | {"content-type"}
         poll_headers: Dict[str, str] = {k: v for k, v in request_headers.items() if k.lower() not in excluded}
-        if polling_cfg.headers:
-            _update_headers_case_insensitive(poll_headers, polling_cfg.headers)
 
-        max_poll = polling_cfg.max_poll_duration_sec if polling_cfg.max_poll_duration_sec is not None else self.client.timeout
+        # Treat client.timeout == 0 as no timeout, matching openAIModelServerClientSession.__init__.
+        default_timeout = self.client.timeout if self.client.timeout else None
+        max_poll = polling_cfg.max_poll_duration_sec if polling_cfg.max_poll_duration_sec is not None else default_timeout
         poll_deadline = (attempt_start + max_poll) if max_poll is not None else None
 
         while True:
+            final_poll = False
             if poll_deadline is not None:
                 remaining = poll_deadline - time.perf_counter()
                 if remaining <= 0:
                     raise asyncio.TimeoutError("Async poll timed out waiting for terminal response")
-                sleep_dur = min(polling_cfg.poll_interval_sec, remaining)
+                if remaining <= polling_cfg.poll_interval_sec:
+                    sleep_dur = remaining
+                    final_poll = True
+                else:
+                    sleep_dur = polling_cfg.poll_interval_sec
             else:
                 sleep_dur = polling_cfg.poll_interval_sec
 
@@ -1114,12 +1120,15 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
             if poll_deadline is not None:
                 remaining = poll_deadline - time.perf_counter()
-                if remaining <= 0:
+                if not final_poll and remaining <= 0:
                     raise asyncio.TimeoutError("Async poll timed out waiting for terminal response")
+                # On the final deadline poll, bound the GET with a short positive timeout
+                # (aiohttp treats ClientTimeout(total=0) as unbounded).
+                poll_timeout_sec = remaining if remaining > 0 else min(polling_cfg.poll_interval_sec, 1.0)
                 get_cm = self.session.get(
                     poll_url,
                     headers=poll_headers,
-                    timeout=aiohttp.ClientTimeout(total=remaining),
+                    timeout=aiohttp.ClientTimeout(total=poll_timeout_sec),
                 )
             else:
                 get_cm = self.session.get(poll_url, headers=poll_headers)
@@ -1127,6 +1136,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
             async with get_cm as poll_resp:
                 if poll_resp.status == 202:
                     await poll_resp.read()
+                    if final_poll:
+                        raise asyncio.TimeoutError("Async poll timed out waiting for terminal response")
                     continue
 
                 poll_body = await poll_resp.text()

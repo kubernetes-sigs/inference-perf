@@ -108,11 +108,11 @@ class RerankConfig(StrictBaseModel):
 
 
 class AsyncPollingConfig(StrictBaseModel):
-    """Polling options for asynchronous 202-Accepted enqueue endpoints (e.g. Coordinator async-broker)."""
+    """Polling options for asynchronous 202-Accepted enqueue endpoints."""
 
     poll_url_template: str = Field(
         default="/v1/requests/{id}",
-        description="URL path (relative to server.base_url) or full URL template polled after a 202 response, with '{id}' replaced by the request ID.",
+        description="Relative URL path (joined to server.base_url) polled after a 202 response, with '{id}' replaced by the request ID.",
     )
     id_json_field: str = Field(
         default="id",
@@ -120,8 +120,8 @@ class AsyncPollingConfig(StrictBaseModel):
         description="Dot-separated JSON field in the 202 response body carrying the request ID.",
     )
     response_id_header: Optional[str] = Field(
-        default="x-request-id",
-        description="Response header fallback used to extract the request ID when id_json_field is absent from the 202 body.",
+        default=None,
+        description="Optional response header fallback used to extract the request ID when id_json_field is absent from the 202 body.",
     )
     poll_interval_sec: float = Field(
         default=0.5,
@@ -131,27 +131,21 @@ class AsyncPollingConfig(StrictBaseModel):
     max_poll_duration_sec: Optional[float] = Field(
         default=None,
         gt=0.0,
-        description="Maximum seconds spent polling a 202 request before failing with TimeoutError. Defaults to load.request_timeout when unset.",
+        description="Maximum seconds from enqueue dispatch until a terminal poll response before failing with TimeoutError. Must exceed poll_interval_sec. Defaults to load.request_timeout when unset.",
     )
     exclude_request_headers: list[str] = Field(
-        default_factory=lambda: ["x-llm-d-async-mode"],
+        default_factory=list,
         description="Request header names (case-insensitive) omitted from GET poll requests while forwarding remaining headers such as tenant and auth.",
-    )
-    headers: Optional[dict[str, str]] = Field(
-        default=None,
-        description="Additional HTTP headers sent on GET poll requests.",
     )
 
     @model_validator(mode="after")
-    def validate_template(self) -> "AsyncPollingConfig":
+    def validate_config(self) -> "AsyncPollingConfig":
         if "{id}" not in self.poll_url_template:
             raise ValueError("poll_url_template must contain '{id}'")
-        if not (
-            self.poll_url_template.startswith("/")
-            or self.poll_url_template.startswith("http://")
-            or self.poll_url_template.startswith("https://")
-        ):
-            raise ValueError("poll_url_template must start with '/', 'http://', or 'https://'")
+        if not self.poll_url_template.startswith("/"):
+            raise ValueError("poll_url_template must start with '/'")
+        if self.max_poll_duration_sec is not None and self.max_poll_duration_sec <= self.poll_interval_sec:
+            raise ValueError("max_poll_duration_sec must be greater than poll_interval_sec")
         return self
 
 
