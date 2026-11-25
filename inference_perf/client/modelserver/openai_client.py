@@ -14,7 +14,14 @@
 
 from abc import abstractmethod
 from inference_perf.metrics.request_collector import RequestMetricCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig, WaitFor
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    AsyncPollingConfig,
+    CustomTokenizerConfig,
+    MultiLoRAConfig,
+    WaitFor,
+)
 from inference_perf.apis import (
     InferenceAPIData,
     InferenceInfo,
@@ -44,6 +51,7 @@ import time
 import logging
 import requests
 import ssl
+import urllib.parse
 
 
 logger = logging.getLogger(__name__)
@@ -770,6 +778,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 # so end-to-end latency, TTFT and the scheduling metrics keep counting the
                 # failed attempt and its backoff -- the workload really did wait for them.
                 attempt_start = time.perf_counter()
+                raw_polling_cfg = getattr(self.client.api_config, "async_polling", None)
+                polling_cfg: Optional[AsyncPollingConfig] = (
+                    raw_polling_cfg if isinstance(raw_polling_cfg, AsyncPollingConfig) else None
+                )
                 response = None
                 info = None
                 error = None
@@ -785,6 +797,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
                             received_token = resp.headers.get(session_token_header)
                             if received_token:
                                 self._session_tokens[session_id] = received_token
+                        enqueue_pending = False
+                        enqueue_body = ""
+                        enqueue_headers: Dict[str, str] = {}
                         try:
                             if self.client.api_config.streaming and response.status == 200:
                                 info = await data.process_response(
@@ -797,6 +812,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                 # holding it in extra_info for the lifetime of the object causes unbounded
                                 # memory growth when many sessions run concurrently.
                                 response_content = info.extra_info.pop("raw_response", "") if info else ""
+                            elif response.status == 202 and polling_cfg is not None:
+                                enqueue_body = await response.text()
+                                enqueue_headers = {k: v for k, v in response.headers.items()}
+                                enqueue_pending = True
                             else:
                                 # Read response body once to avoid double-read issue
                                 response_content = await response.text()
@@ -809,7 +828,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                         lora_adapter=lora_adapter,
                                     )
 
-                            if response.status != 200:
+                            if not enqueue_pending and response.status != 200:
                                 # Handle HTTP error responses (status != 200).
                                 #
                                 # For OTel trace replay, process_failure() is called to:
@@ -877,6 +896,17 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                 if not response_content:
                                     response_content = f"Failed to read response text: {read_error}"
                                 raise
+
+                    if enqueue_pending and polling_cfg is not None:
+                        response, response_content, info, error, caught_exception = await self._poll_enqueued_result(
+                            data=data,
+                            polling_cfg=polling_cfg,
+                            enqueue_body=enqueue_body,
+                            enqueue_headers=enqueue_headers,
+                            request_headers=headers,
+                            attempt_start=attempt_start,
+                            lora_adapter=lora_adapter,
+                        )
 
                 except aiohttp.ClientError as e:
                     caught_exception = e
@@ -1031,6 +1061,123 @@ class openAIModelServerClientSession(ModelServerClientSession):
         """A Batch API client on this session, sending the auth and api.headers headers process_request sends."""
         return BatchClient(self.session, self.client.uri, _build_request_headers(self.client.api_config, self.client.api_key))
 
+    async def _poll_enqueued_result(
+        self,
+        *,
+        data: InferenceAPIData,
+        polling_cfg: AsyncPollingConfig,
+        enqueue_body: str,
+        enqueue_headers: Mapping[str, str],
+        request_headers: Mapping[str, str],
+        attempt_start: float,
+        lora_adapter: Optional[str],
+    ) -> Tuple[
+        Optional[aiohttp.ClientResponse], str, Optional[InferenceInfo], Optional[ErrorResponseInfo], Optional[Exception]
+    ]:
+        req_id = _extract_async_request_id(enqueue_body, enqueue_headers, polling_cfg)
+        if not req_id:
+            err = ErrorResponseInfo(
+                error_msg=enqueue_body or "202 Accepted response missing request ID",
+                error_type="InvalidEnqueueResponse",
+            )
+            exc = Exception(f"{err.error_type}: {err.error_msg}")
+            fail_info = await data.process_failure(
+                response=None,
+                config=self.client.api_config,
+                tokenizer=self.client.tokenizer,
+                exception=exc,
+                lora_adapter=lora_adapter,
+            )
+            return None, enqueue_body, fail_info, err, None
+
+        encoded_id = urllib.parse.quote(req_id, safe="")
+        rendered = polling_cfg.poll_url_template.replace("{id}", encoded_id)
+        poll_url = f"{self.client.uri.rstrip('/')}{rendered}"
+
+        excluded = {h.lower() for h in polling_cfg.exclude_request_headers} | {"content-type"}
+        poll_headers: Dict[str, str] = {k: v for k, v in request_headers.items() if k.lower() not in excluded}
+
+        # Treat client.timeout == 0 as no timeout, matching openAIModelServerClientSession.__init__.
+        default_timeout = self.client.timeout if self.client.timeout else None
+        max_poll = polling_cfg.max_poll_duration_sec if polling_cfg.max_poll_duration_sec is not None else default_timeout
+        poll_deadline = (attempt_start + max_poll) if max_poll is not None else None
+
+        while True:
+            final_poll = False
+            if poll_deadline is not None:
+                remaining = poll_deadline - time.perf_counter()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError("Async poll timed out waiting for terminal response")
+                if remaining <= polling_cfg.poll_interval_sec:
+                    sleep_dur = remaining
+                    final_poll = True
+                else:
+                    sleep_dur = polling_cfg.poll_interval_sec
+            else:
+                sleep_dur = polling_cfg.poll_interval_sec
+
+            await sleep(sleep_dur)
+
+            if poll_deadline is not None:
+                remaining = poll_deadline - time.perf_counter()
+                if not final_poll and remaining <= 0:
+                    raise asyncio.TimeoutError("Async poll timed out waiting for terminal response")
+                # On the final deadline poll, bound the GET with a short positive timeout
+                # (aiohttp treats ClientTimeout(total=0) as unbounded).
+                poll_timeout_sec = remaining if remaining > 0 else min(polling_cfg.poll_interval_sec, 1.0)
+                get_cm = self.session.get(
+                    poll_url,
+                    headers=poll_headers,
+                    timeout=aiohttp.ClientTimeout(total=poll_timeout_sec),
+                )
+            else:
+                get_cm = self.session.get(poll_url, headers=poll_headers)
+
+            async with get_cm as poll_resp:
+                if poll_resp.status == 202:
+                    await poll_resp.read()
+                    if final_poll:
+                        raise asyncio.TimeoutError("Async poll timed out waiting for terminal response")
+                    continue
+
+                poll_body = await poll_resp.text()
+                if poll_resp.status == 200:
+                    try:
+                        poll_info = await data.process_response(
+                            response=poll_resp,
+                            config=self.client.api_config,
+                            tokenizer=self.client.tokenizer,
+                            lora_adapter=lora_adapter,
+                        )
+                        return poll_resp, poll_body, poll_info, None, None
+                    except Exception as read_err:
+                        orig: Exception = read_err
+                        if isinstance(read_err, InvalidResponseError) and read_err.raw_content:
+                            poll_body = read_err.raw_content
+                        err = ErrorResponseInfo(error_msg=str(orig), error_type=type(orig).__name__)
+                        fail_info = await data.process_failure(
+                            response=None,
+                            config=self.client.api_config,
+                            tokenizer=self.client.tokenizer,
+                            exception=orig,
+                            lora_adapter=lora_adapter,
+                        )
+                        return poll_resp, poll_body, fail_info, err, orig
+
+                err = ErrorResponseInfo(
+                    error_msg=poll_body,
+                    error_type=f"HTTP Error {poll_resp.status}",
+                )
+                exc = Exception(f"{err.error_type}: {err.error_msg}")
+                fail_info = await data.process_failure(
+                    response=poll_resp,
+                    config=self.client.api_config,
+                    tokenizer=self.client.tokenizer,
+                    exception=exc,
+                    lora_adapter=lora_adapter,
+                )
+                return poll_resp, poll_body, fail_info, err, None
+
     async def close(self) -> None:
         await self.session.close()
 
@@ -1090,3 +1237,33 @@ def extract_request_slo_thresholds(
     req_lat_slo = _parse_positive_slo_seconds(combined_headers.get(lat_header.lower()), factor, "request latency")
 
     return ttft_slo, tpot_slo, req_lat_slo
+
+
+def _extract_async_request_id(
+    enqueue_body: str,
+    enqueue_headers: Mapping[str, str],
+    polling_cfg: AsyncPollingConfig,
+) -> Optional[str]:
+    """Extract the enqueued request ID from a 202 JSON body or fallback response header."""
+    if enqueue_body.strip():
+        try:
+            parsed = json.loads(enqueue_body)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            node: object = parsed
+            for part in polling_cfg.id_json_field.split("."):
+                if isinstance(node, dict) and part in node:
+                    node = node[part]
+                else:
+                    node = None
+                    break
+            if isinstance(node, (str, int)) and not isinstance(node, bool) and str(node):
+                return str(node)
+
+    if polling_cfg.response_id_header:
+        target = polling_cfg.response_id_header.lower()
+        for k, v in enqueue_headers.items():
+            if k.lower() == target and v:
+                return v
+    return None
