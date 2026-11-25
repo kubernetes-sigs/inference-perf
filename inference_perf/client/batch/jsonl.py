@@ -13,8 +13,8 @@
 # limitations under the License.
 """Writes records as an OpenAI Batch API input file, one JSONL line per record.
 
-Each line's body is the request the record's own API shape sends on its own, built with streaming off,
-because a batch answers with whole responses.
+Each line's body is the request the HTTP path would send for the record, built by the same function, with
+streaming off because a batch answers with whole responses.
 """
 
 import json
@@ -23,7 +23,9 @@ from typing import Sequence
 from pydantic import BaseModel
 
 from inference_perf.apis import InferenceAPIData
+from inference_perf.apis.request_body import build_request_body
 from inference_perf.apis.user_session import UserSessionCompletionAPIData
+from inference_perf.config import APIConfig
 
 
 class BatchInput(BaseModel):
@@ -40,17 +42,19 @@ async def build_batch_input(
     records: Sequence[InferenceAPIData],
     *,
     custom_id_prefix: str,
+    api_config: APIConfig,
     model_name: str,
     max_tokens: int,
     ignore_eos: bool,
 ) -> BatchInput:
     """Build one batch's input file from `records`, in order.
 
-    Line i gets the custom_id `{custom_id_prefix}-{i}`. All records must use one route, because a batch
-    runs against a single endpoint. A user-session turn and a trace replay event are refused: each builds its
-    prompt from earlier responses, and a batch returns none of them until it ends. A user-session turn would
-    wait forever, and a replay event would go out with its recorded placeholder text. A replay event is known
-    by the hook the load generator awaits before sending it, so this module needs no datagen import.
+    Line i gets the custom_id `{custom_id_prefix}-{i}`, and its body gets the options `api_config` adds on the
+    HTTP path, such as response_format. All records must use one route, because a batch runs against a single
+    endpoint. A user-session turn and a trace replay event are refused: each builds its prompt from earlier
+    responses, and a batch returns none of them until it ends. A user-session turn would wait forever, and a
+    replay event would go out with its recorded placeholder text. A replay event is known by the hook the load
+    generator awaits before sending it, so this module needs no datagen import.
     """
     if not records:
         raise ValueError("A batch needs at least one record")
@@ -66,8 +70,8 @@ async def build_batch_input(
         if route != endpoint:
             raise ValueError(f"All records in a batch must use one route: record {index} uses {route}, not {endpoint}")
         custom_id = f"{custom_id_prefix}-{index}"
-        body = await record.to_request_body(
-            effective_model_name=model_name, max_tokens=max_tokens, ignore_eos=ignore_eos, streaming=False
+        body = await build_request_body(
+            record, api_config, model_name=model_name, max_tokens=max_tokens, ignore_eos=ignore_eos, streaming=False
         )
         line = {"custom_id": custom_id, "method": "POST", "url": route, "body": body}
         custom_ids.append(custom_id)

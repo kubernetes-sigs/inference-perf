@@ -67,6 +67,8 @@ from inference_perf.config.datagen import (
     WeightedVideoProfile,
 )
 from inference_perf.config.loadgen import (
+    BatchJobConfig,
+    BatchLoadStage,
     ConcurrentLoadStage,
     LoadConfig,
     LoadStage,
@@ -100,6 +102,8 @@ __all__ = [
     "APIConfig",
     "APIType",
     "AudioDatagenConfig",
+    "BatchJobConfig",
+    "BatchLoadStage",
     "CircuitBreakerConfig",
     "ConcurrentLoadStage",
     "Config",

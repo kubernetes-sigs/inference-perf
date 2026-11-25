@@ -52,8 +52,8 @@ async def _read_ok(response: aiohttp.ClientResponse) -> bytes:
 
 
 def parse_batch_output(content: bytes) -> list[BatchOutputLine]:
-    """The lines of an output or error file, in file order."""
-    return [BatchOutputLine.model_validate_json(line) for line in content.splitlines()]
+    """The lines of an output or error file, in file order. Blank lines are skipped."""
+    return [BatchOutputLine.model_validate_json(line) for line in content.splitlines() if line.strip()]
 
 
 class BatchClient:
@@ -65,11 +65,13 @@ class BatchClient:
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._session = session
-        self._base_url = base_url
+        # Each route starts with "/", so a trailing one here would make "//v1/files".
+        self._base_url = base_url.rstrip("/")
         # aiohttp sets the Content-Type each call needs: JSON to create a batch, multipart to upload a file.
         # The JSON Content-Type the model-server headers carry would break the upload, so it is dropped.
         self._headers = {key: value for key, value in headers.items() if key.lower() != "content-type"}
-        self._clock = clock
+        # The client clock each poll's status_first_seen reads, and that callers time a whole job with.
+        self.clock = clock
 
     async def upload_file(self, content: bytes, filename: str) -> BatchFile:
         form = aiohttp.FormData()
@@ -94,13 +96,19 @@ class BatchClient:
         async with self._session.get(f"{self._base_url}{BATCHES_ROUTE}/{batch_id}", headers=self._headers) as response:
             return Batch.model_validate_json(await _read_ok(response))
 
-    async def wait_for_batch(self, batch_id: str, poll_interval_sec: float) -> BatchPollResult:
-        """Poll the batch every `poll_interval_sec` until it reaches an end state."""
+    async def wait_for_batch(
+        self, batch_id: str, poll_interval_sec: float, should_stop: Callable[[], bool] = lambda: False
+    ) -> BatchPollResult:
+        """Poll the batch every `poll_interval_sec` until it reaches an end state.
+
+        `should_stop` is asked after each poll. Once it answers true, the wait returns the batch as that poll
+        saw it, which may not have ended; the batch goes on running on the server.
+        """
         status_first_seen: dict[str, float] = {}
         while True:
             batch = await self.retrieve_batch(batch_id)
-            status_first_seen.setdefault(batch.status, self._clock())
-            if batch.status in END_STATES:
+            status_first_seen.setdefault(batch.status, self.clock())
+            if batch.status in END_STATES or should_stop():
                 return BatchPollResult(batch=batch, status_first_seen=status_first_seen)
             await asyncio.sleep(poll_interval_sec)
 

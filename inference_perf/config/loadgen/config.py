@@ -14,7 +14,7 @@
 import logging
 import time
 from enum import Enum
-from typing import List, Optional, Union
+from typing import List, Optional, Sequence, Union
 
 from inference_perf.config.common import StrictBaseModel
 from pydantic import ConfigDict, Field, model_validator
@@ -31,6 +31,7 @@ class LoadType(Enum):
     TRACE_REPLAY = "trace_replay"
     CONCURRENT = "concurrent"
     TRACE_SESSION_REPLAY = "trace_session_replay"
+    BATCH = "batch"
 
 
 class LoadStage(StrictBaseModel):
@@ -212,6 +213,30 @@ class TraceSessionReplayLoadStage(LoadStage):
         return self
 
 
+class BatchJobConfig(StrictBaseModel):
+    """One batch job of a BATCH load stage."""
+
+    batch_size: int = Field(..., gt=0, description="Records the batch holds, written to its input file one line each.")
+    completion_window: str = Field(
+        default="24h",
+        description=(
+            "Time the server has to finish the batch, sent to POST /v1/batches as given. OpenAI accepts only 24h; "
+            "llm-d-batch-gateway accepts any Go duration, such as 30m."
+        ),
+    )
+
+
+class BatchLoadStage(LoadStage):
+    """Load stage for the BATCH load type: batch jobs submitted together through the OpenAI Batch API.
+
+    Each job uploads its input file, creates its batch, polls it until it ends (completed, failed, expired
+    or cancelled) and downloads its output and error files. The stage ends when every job has.
+    """
+
+    batches: List[BatchJobConfig] = Field(..., min_length=1, description="Batch jobs this stage submits together.")
+    poll_interval_sec: float = Field(default=5.0, gt=0, description="Seconds between status checks of each batch.")
+
+
 class StageGenType(Enum):
     GEOM = "geometric"
     LINEAR = "linear"
@@ -235,16 +260,37 @@ class MultiLoRAConfig(StrictBaseModel):
     split: float = Field(description="Fraction of traffic sent to this adapter. All splits must sum to 1.0.")
 
 
+# The stage model each load type takes. Constant, poisson and trace_replay take StandardLoadStage.
+_STAGE_MODELS: dict[LoadType, type[LoadStage]] = {
+    LoadType.CONCURRENT: ConcurrentLoadStage,
+    LoadType.TRACE_SESSION_REPLAY: TraceSessionReplayLoadStage,
+    LoadType.BATCH: BatchLoadStage,
+}
+
+
+def _check_stage_types(load_type: LoadType, stages: Sequence[LoadStage]) -> None:
+    """Raise unless every stage is the model its load type takes.
+
+    Undecorated so mutation testing reaches it: mutmut skips the body of the validator that calls this.
+    """
+    expected = _STAGE_MODELS.get(load_type, StandardLoadStage)
+    for i, stage in enumerate(stages):
+        if not isinstance(stage, expected):
+            raise ValueError(
+                f"Stage {i}: {load_type.value.upper()} load type requires {expected.__name__}, got {type(stage).__name__}"
+            )
+
+
 class LoadConfig(StrictBaseModel):
     type: LoadType = Field(default=LoadType.CONSTANT, description="Load pattern used to schedule requests.")
     interval: float = Field(default=1.0, description="Seconds to wait between stages.")
-    stages: Union[List[StandardLoadStage], List[ConcurrentLoadStage], List[TraceSessionReplayLoadStage]] = Field(
-        default=[], description="Load stages to run in sequence. The stage fields depend on the load type."
-    )
+    stages: Union[
+        List[StandardLoadStage], List[ConcurrentLoadStage], List[TraceSessionReplayLoadStage], List[BatchLoadStage]
+    ] = Field(default=[], description="Load stages to run in sequence. The stage fields depend on the load type.")
     sweep: Optional[SweepConfig] = Field(
         default=None,
         description="Generate stages automatically up to the server's saturation rate."
-        " Not valid for the 'concurrent' and 'trace_session_replay' load types.",
+        " Not valid for the 'concurrent', 'trace_session_replay' and 'batch' load types.",
     )
     num_workers: int = Field(
         default_factory=default_cpu_count,
@@ -308,29 +354,12 @@ class LoadConfig(StrictBaseModel):
 
     @model_validator(mode="after")
     def validate_load_config(self) -> "LoadConfig":
-        # Validate that sweep is not used with concurrent or trace session replay load types
-        if self.type in (LoadType.CONCURRENT, LoadType.TRACE_SESSION_REPLAY) and self.sweep is not None:
+        # Validate that sweep is not used with concurrent, trace session replay or batch load types
+        if self.type in (LoadType.CONCURRENT, LoadType.TRACE_SESSION_REPLAY, LoadType.BATCH) and self.sweep is not None:
             raise ValueError(f"Cannot have sweep config with {self.type.value.upper()} load type")
 
         # Validate stage types match load type
-        if self.type == LoadType.CONCURRENT:
-            for i, stage in enumerate(self.stages):
-                if not isinstance(stage, ConcurrentLoadStage):
-                    raise ValueError(
-                        f"Stage {i}: CONCURRENT load type requires ConcurrentLoadStage, got {type(stage).__name__}"
-                    )
-        elif self.type == LoadType.TRACE_SESSION_REPLAY:
-            for i, stage in enumerate(self.stages):
-                if not isinstance(stage, TraceSessionReplayLoadStage):
-                    raise ValueError(
-                        f"Stage {i}: TRACE_SESSION_REPLAY load type requires TraceSessionReplayLoadStage, got {type(stage).__name__}"
-                    )
-        else:  # CONSTANT, POISSON, or TRACE_REPLAY
-            for i, stage in enumerate(self.stages):
-                if not isinstance(stage, StandardLoadStage):
-                    raise ValueError(
-                        f"Stage {i}: {self.type.value.upper()} load type requires StandardLoadStage, got {type(stage).__name__}"
-                    )
+        _check_stage_types(self.type, self.stages)
 
         # Validate multilora traffic split adds up to 1.0 if present
         if self.lora_traffic_split is not None:

@@ -25,6 +25,8 @@ import pytest
 from pydantic import ValidationError
 
 from inference_perf.config import (
+    BatchJobConfig,
+    BatchLoadStage,
     ConcurrentLoadStage,
     LoadConfig,
     LoadType,
@@ -273,3 +275,54 @@ def test_multilora_traffic_split_summing_to_one_is_ok() -> None:
     )
     assert cfg.lora_traffic_split is not None
     assert len(cfg.lora_traffic_split) == 2
+
+
+# --- BatchLoadStage and the batch load type --------------------------------
+
+
+# Input: load type batch with one stage of two jobs, {batch_size: 1, completion_window: 30m} and {batch_size: 3}.
+# Expected: the stage is a BatchLoadStage, the second job's window defaults to 24h, and the stage polls every 5 s.
+def test_batch_load_type_reads_its_jobs() -> None:
+    config = LoadConfig.model_validate(
+        {"type": "batch", "stages": [{"batches": [{"batch_size": 1, "completion_window": "30m"}, {"batch_size": 3}]}]}
+    )
+
+    (stage,) = config.stages
+    assert isinstance(stage, BatchLoadStage)
+    assert [(job.batch_size, job.completion_window) for job in stage.batches] == [(1, "30m"), (3, "24h")]
+    assert stage.poll_interval_sec == 5.0
+
+
+# Input: a batch stage with an empty batches list. Expected: ValidationError, since the stage would submit nothing.
+def test_batch_stage_needs_at_least_one_job() -> None:
+    with pytest.raises(ValidationError):
+        BatchLoadStage(batches=[])
+
+
+# Input: a job with batch_size 0. Expected: ValidationError, since a batch needs at least one line.
+def test_batch_job_size_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        BatchJobConfig(batch_size=0)
+
+
+# Input: a batch stage with poll_interval_sec 0. Expected: ValidationError, since 0 would poll the server in a busy loop.
+def test_batch_stage_poll_interval_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        BatchLoadStage(batches=[BatchJobConfig(batch_size=1)], poll_interval_sec=0)
+
+
+# Input: load type batch with a constant-rate stage. Expected: ValueError naming the stage type batch needs.
+def test_batch_load_type_requires_batch_stage() -> None:
+    with pytest.raises(ValueError, match="BATCH load type requires BatchLoadStage"):
+        LoadConfig(type=LoadType.BATCH, stages=[StandardLoadStage(rate=10, duration=60)])
+
+
+# Input: load type batch with a geometric sweep. Expected: ValueError, since a sweep probes a request rate,
+# which a batch run does not have.
+def test_sweep_with_batch_is_error() -> None:
+    with pytest.raises(ValueError, match="Cannot have sweep config with BATCH"):
+        LoadConfig(
+            type=LoadType.BATCH,
+            sweep=SweepConfig(type=StageGenType.GEOM),
+            stages=[BatchLoadStage(batches=[BatchJobConfig(batch_size=1)])],
+        )

@@ -22,6 +22,7 @@ defined on ``Config`` itself.
 
 import os
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -36,7 +37,7 @@ from inference_perf.config import (
     deep_merge,
     read_config,
 )
-from inference_perf.config.loadgen import ConcurrentLoadStage, TraceSessionReplayLoadStage
+from inference_perf.config.loadgen import BatchLoadStage, ConcurrentLoadStage, TraceSessionReplayLoadStage
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
@@ -314,6 +315,75 @@ def test_lora_traffic_split_accepted_for_completion() -> None:
 def test_sglang_generate_accepted_without_lora_traffic_split() -> None:
     config = Config.model_validate({"api": {"type": "sglang_generate"}})
     assert config.load.lora_traffic_split is None
+
+
+# --- batch load type -----------------------------------------------------
+
+# One batch stage of one job of 2 records.
+_BATCH_LOAD = {"type": "batch", "stages": [{"batches": [{"batch_size": 2}]}]}
+
+
+# A config file with load.type batch and one stage of jobs of 3 (30m window) and 2 records, read the way the CLI
+# reads it -> the stage is a BatchLoadStage with those jobs, not a constant-rate stage missing rate and duration.
+def test_read_config_reads_batch_stages(tmp_path: Path) -> None:
+    config_file = tmp_path / "batch.yml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "load": {
+                    "type": "batch",
+                    "stages": [{"batches": [{"batch_size": 3, "completion_window": "30m"}, {"batch_size": 2}]}],
+                }
+            }
+        )
+    )
+
+    config = read_config(str(config_file))
+
+    (stage,) = config.load.stages
+    assert isinstance(stage, BatchLoadStage)
+    assert [(job.batch_size, job.completion_window) for job in stage.batches] == [(3, "30m"), (2, "24h")]
+
+
+# load.type batch with api.type completion, chat or embeddings (each has a Batch API endpoint) -> accepted.
+@pytest.mark.parametrize("api_type", ["completion", "chat", "embeddings"])
+def test_batch_load_accepts_api_types_with_a_batch_endpoint(api_type: str) -> None:
+    config = Config.model_validate({"api": {"type": api_type}, "load": _BATCH_LOAD})
+    assert config.load.type == LoadType.BATCH
+
+
+# load.type batch with api.type rerank, anthropic_messages or sglang_generate -> rejected, naming the api.type:
+# the Batch API has no endpoint for them.
+@pytest.mark.parametrize("api_type", ["rerank", "anthropic_messages", "sglang_generate"])
+def test_batch_load_rejects_api_types_without_a_batch_endpoint(api_type: str) -> None:
+    with pytest.raises(ValueError, match=f"load.type 'batch' does not support api.type '{api_type}'"):
+        Config.model_validate({"api": {"type": api_type}, "load": _BATCH_LOAD})
+
+
+# load.type batch with api.streaming true -> rejected: a batch returns whole responses, so nothing would stream.
+def test_batch_load_rejects_streaming() -> None:
+    with pytest.raises(ValueError, match="load.type 'batch' needs api.streaming false"):
+        Config.model_validate({"api": {"type": "chat", "streaming": True}, "load": _BATCH_LOAD})
+
+
+# load.type batch with server.type mock -> rejected when the config loads, before the tokenizer and the data do:
+# the mock server type has no Batch API.
+def test_batch_load_rejects_the_mock_server_type() -> None:
+    with pytest.raises(ValueError, match="load.type 'batch' needs an OpenAI-compatible server.type"):
+        Config.model_validate({"server": {"type": "mock", "base_url": "http://localhost:8000"}, "load": _BATCH_LOAD})
+
+
+# load.type batch with server.type vllm -> accepted.
+def test_batch_load_accepts_an_openai_compatible_server_type() -> None:
+    config = Config.model_validate({"server": {"type": "vllm", "base_url": "http://localhost:8000"}, "load": _BATCH_LOAD})
+    assert config.server is not None
+
+
+# load.type batch with a LoRA traffic split of adapter-a at 1.0 -> rejected: every line of a batch names the
+# run's one model.
+def test_batch_load_rejects_lora_traffic_split() -> None:
+    with pytest.raises(ValueError, match="load.lora_traffic_split is not supported with load.type 'batch'"):
+        Config.model_validate({"api": {"type": "completion"}, "load": {**_BATCH_LOAD, **_LORA_SPLIT}})
 
 
 # --- conversation replay load-type and concurrency validation ------------

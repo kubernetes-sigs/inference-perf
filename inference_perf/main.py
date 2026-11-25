@@ -18,13 +18,14 @@ from argparse import ArgumentParser
 import yaml
 from inference_perf.analysis.analyze import AnalysisOptionError, analyze_reports
 from inference_perf.utils.mp_context import MP_CONTEXT, start_forkserver
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Sequence
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
 from inference_perf.datagen.base import BaseGenerator
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.config import (
     APIType,
+    BatchLoadStage,
     Config,
     DataGenType,
     LoadType,
@@ -34,6 +35,7 @@ from inference_perf.config import (
     RuntimeMetricsConfig,
     StandardLoadStage,
     ConcurrentLoadStage,
+    LoadStage,
     read_config,
 )
 from inference_perf.datagen import (
@@ -101,6 +103,20 @@ def sync_tokenizer_config(config: Config, client: ModelServerClient) -> None:
         return
     if client.tokenizer_config is not None:
         config.tokenizer = client.tokenizer_config
+
+
+def max_stage_requests(stages: Sequence[LoadStage]) -> int:
+    """The most records a single stage draws from the data generator, which starts its data over each stage."""
+    max_requests = 0
+    for stage in stages:
+        if isinstance(stage, StandardLoadStage):
+            max_requests = max(max_requests, int(stage.rate * stage.duration))
+        elif isinstance(stage, ConcurrentLoadStage):
+            max_requests = max(max_requests, stage.num_requests)
+        elif isinstance(stage, BatchLoadStage):
+            # One record per line of each of the stage's batches.
+            max_requests = max(max_requests, sum(job.batch_size for job in stage.batches))
+    return max_requests
 
 
 def log_metrics_endpoint_failure(metrics_config: RuntimeMetricsConfig, error: OSError) -> None:
@@ -415,13 +431,7 @@ def main_cli() -> None:
                     )
 
                 # Calculate total count based on stage type
-                max_requests = 0
-                for stage in config.load.stages:
-                    if isinstance(stage, StandardLoadStage):
-                        max_requests = max(max_requests, int(stage.rate * stage.duration))
-                    elif isinstance(stage, ConcurrentLoadStage):
-                        max_requests = max(max_requests, stage.num_requests)
-                total_count = max_requests + 1
+                total_count = max_stage_requests(config.load.stages) + 1
                 if (
                     config.data.input_distribution.total_count is None
                     or config.data.input_distribution.total_count < total_count

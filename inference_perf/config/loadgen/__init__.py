@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.config.loadgen.config import (
+    BatchJobConfig,
+    BatchLoadStage,
     ConcurrentLoadStage,
     LoadConfig,
     LoadStage,
@@ -24,6 +26,8 @@ from inference_perf.config.loadgen.config import (
 )
 
 __all__ = [
+    "BatchJobConfig",
+    "BatchLoadStage",
     "ConcurrentLoadStage",
     "LoadConfig",
     "LoadStage",

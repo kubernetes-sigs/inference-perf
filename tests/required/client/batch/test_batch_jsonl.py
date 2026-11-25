@@ -22,11 +22,17 @@ import pytest
 from inference_perf.apis import ChatCompletionAPIData, ChatMessage, CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.client.batch.jsonl import build_batch_input
+from inference_perf.config import APIConfig, APIType
+from inference_perf.config.apis.config import ResponseFormat, ResponseFormatType
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventOutputRegistry,
     SessionChatCompletionAPIData,
     WorkerSessionTracker,
 )
+
+# The api config of a run that sets neither clean_tool_schemas nor response_format, so a line's body is the
+# shape's own body.
+NO_API_OPTIONS = APIConfig()
 
 
 # Empties the LocalUserSession registry before and after a test, so session "u0" starts fresh and does not
@@ -44,6 +50,7 @@ async def test_each_record_becomes_one_post_line_to_its_route() -> None:
     batch_input = await build_batch_input(
         [CompletionAPIData(prompt="hello"), CompletionAPIData(prompt="world")],
         custom_id_prefix="s0-b0",
+        api_config=NO_API_OPTIONS,
         model_name="m",
         max_tokens=16,
         ignore_eos=False,
@@ -73,6 +80,7 @@ async def test_chat_record_becomes_a_chat_completions_line() -> None:
     batch_input = await build_batch_input(
         [ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])],
         custom_id_prefix="s1-b2",
+        api_config=NO_API_OPTIONS,
         model_name="m",
         max_tokens=16,
         ignore_eos=True,
@@ -96,13 +104,36 @@ async def test_chat_record_becomes_a_chat_completions_line() -> None:
     ]
 
 
+# A chat record whose tool schema is {"type": "object", "title": "F"}, written for a run with
+# api.clean_tool_schemas on and api.response_format json_object, gets what the HTTP path would send: the
+# schema loses "title" and gains "properties": {}, and the body carries "response_format": {"type": "json_object"}.
+async def test_lines_get_the_api_options_the_http_path_adds() -> None:
+    record = ChatCompletionAPIData(
+        messages=[ChatMessage(role="user", content="hi")],
+        tool_definitions=[{"type": "function", "name": "f", "parameters": {"type": "object", "title": "F"}}],
+    )
+    api_config = APIConfig(
+        type=APIType.Chat, clean_tool_schemas=True, response_format=ResponseFormat(type=ResponseFormatType.JSON_OBJECT)
+    )
+
+    batch_input = await build_batch_input(
+        [record], custom_id_prefix="s0-b0", api_config=api_config, model_name="m", max_tokens=16, ignore_eos=False
+    )
+
+    (line,) = [json.loads(line) for line in batch_input.content.splitlines()]
+    assert line["body"]["tools"][0]["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert line["body"]["response_format"] == {"type": "json_object"}
+
+
 # A completion record followed by a chat record cannot go in one batch, because a batch runs against
 # one endpoint: this raises ValueError naming the second route.
 async def test_records_with_different_routes_are_rejected() -> None:
     records = [CompletionAPIData(prompt="hello"), ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])]
 
     with pytest.raises(ValueError, match="/v1/chat/completions"):
-        await build_batch_input(records, custom_id_prefix="s0-b0", model_name="m", max_tokens=16, ignore_eos=False)
+        await build_batch_input(
+            records, custom_id_prefix="s0-b0", api_config=NO_API_OPTIONS, model_name="m", max_tokens=16, ignore_eos=False
+        )
 
 
 # Rounds 0 and 1 of user session "u0" (shared_prefix and conversation_replay build these): round 1's prompt
@@ -116,7 +147,9 @@ async def test_user_session_turns_are_rejected() -> None:
     ]
 
     with pytest.raises(ValueError, match="u0"):
-        batch = build_batch_input(records, custom_id_prefix="s0-b0", model_name="m", max_tokens=16, ignore_eos=False)
+        batch = build_batch_input(
+            records, custom_id_prefix="s0-b0", api_config=NO_API_OPTIONS, model_name="m", max_tokens=16, ignore_eos=False
+        )
         await asyncio.wait_for(batch, timeout=5)
 
 
@@ -135,10 +168,14 @@ async def test_trace_replay_events_are_rejected() -> None:
     )
 
     with pytest.raises(ValueError, match="Record 0"):
-        await build_batch_input([record], custom_id_prefix="s0-b0", model_name="m", max_tokens=16, ignore_eos=False)
+        await build_batch_input(
+            [record], custom_id_prefix="s0-b0", api_config=NO_API_OPTIONS, model_name="m", max_tokens=16, ignore_eos=False
+        )
 
 
 # No records means no endpoint to batch against, so an empty list raises ValueError.
 async def test_empty_record_list_is_rejected() -> None:
     with pytest.raises(ValueError):
-        await build_batch_input([], custom_id_prefix="s0-b0", model_name="m", max_tokens=16, ignore_eos=False)
+        await build_batch_input(
+            [], custom_id_prefix="s0-b0", api_config=NO_API_OPTIONS, model_name="m", max_tokens=16, ignore_eos=False
+        )
