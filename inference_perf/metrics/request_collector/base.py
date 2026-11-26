@@ -54,6 +54,23 @@ class RequestMetricCollector(ABC):
     def get_metrics(self) -> List[RequestLifecycleMetric]:
         raise NotImplementedError
 
+    @abstractmethod
+    def snapshot(self) -> List[RequestLifecycleMetric]:
+        """Copy of the metrics collected so far, safe to read mid-run.
+
+        Unlike `get_metrics`, this must not require the collector to be
+        stopped first; the stage-end reports read it between stages.
+        """
+        raise NotImplementedError
+
+    async def wait_for_recorded(self, stage_id: int) -> bool:
+        """Wait until every metric recorded so far for a stage is visible to `snapshot`.
+
+        Returns False if it gave up with some still missing. Collectors that
+        record synchronously in this process have nothing to wait for.
+        """
+        return True
+
     @asynccontextmanager
     async def start(self) -> AsyncIterator[None]:
         yield

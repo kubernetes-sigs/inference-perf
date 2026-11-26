@@ -1,6 +1,6 @@
 # Inference Perf Reports
 
-`inference-perf` generates detailed reports in JSON format after a benchmark run. These reports help you analyze the performance in depth.
+`inference-perf` generates detailed reports in JSON format as a benchmark runs. These reports help you analyze the performance in depth.
 
 ## Report Files
 
@@ -16,6 +16,14 @@ entry keeps `session_id` as the enclosing replay session used for aggregation an
 adds `request_session_id` for the wire identity sent through
 `api.session_id_header_key`. Parent requests omit `request_session_id` because their
 wire identity is already the enclosing `session_id`.
+
+### When reports are written
+
+Each stage's own reports are written as soon as the stage ends, before the next stage starts: the enabled ones among `stage_N_lifecycle_metrics.json`, `adapter_<name>_stage_N_lifecycle_metrics.json` and `stage_N_session_lifecycle_metrics.json`, the BR0.2 partial `inference-perf.partial.stage_N.yaml` (see [BR0.2](br_v0_2.md)) unless `report.prometheus.per_stage` is on, and `config.yaml`. If the run dies later, for example because it is OOM-killed, the reports of the stages it completed are kept.
+
+Reports that cover the whole run are written once, at the end: the summaries, the per-request, per-session and per-adapter reports, the Prometheus reports (including the per-stage ones, which are queried after the scrape that covers the end of the stage, and with them the BR0.2 partials, which then carry each stage's server metrics) and `validation.json`. The end-of-run pass writes the stage reports again, with the same contents; Google Cloud Storage and S3 keep the copy written when the stage ended, since they skip files that already exist. If some of a stage's metrics have still not reached the main process 10 seconds after the last one arrived (a warning is logged), that stage's reports are written only at the end.
+
+The stage-end write happens while no load is in flight, alongside the `load.interval` pause between stages, so it only lengthens that pause when it takes longer.
 
 ## Understanding the Report Structure
 

@@ -554,7 +554,7 @@ After a run, three session report files are generated:
   - `total_events`, `total_events_completed`, `total_events_cancelled` — inclusive of truncated sessions. Their completed events really did complete, and the events they never got to are counted as cancelled, so a stage bounded by time does not appear to have lost work it simply ran out of time for
   - Distributions: `session_duration_sec`, `num_events`, `total_input_tokens`, `total_output_tokens`
   
-- **`stage_N_session_lifecycle_metrics.json`** — Same statistics grouped by stage, prefixed with a `stage_metadata` block describing the stage's configuration and outcome.
+- **`stage_N_session_lifecycle_metrics.json`** — Same statistics grouped by stage, prefixed with a `stage_metadata` block describing the stage's configuration and outcome. Written as soon as the stage ends, so it survives a run that dies in a later stage.
 
 - **`per_session_lifecycle_metrics.json`** — One entry per session with all fields (for detailed analysis)
 

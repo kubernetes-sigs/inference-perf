@@ -28,6 +28,12 @@ own (required schema fields are populated; optional sections are absent)
 and can be consumed directly or merged with other partials. The emitted
 `version` is `0.2.1`, the current point release of the BR0.2 schema family.
 
+Each partial is written as soon as its stage ends, so the partials of the
+stages a run completed survive if it dies later (see
+[When reports are written](reports.md#when-reports-are-written)). With
+`report.prometheus.per_stage` on, the partials carry server metrics that are
+only queried at the end of the run, so they are written then instead.
+
 ## What inference-perf fills
 
 ```yaml

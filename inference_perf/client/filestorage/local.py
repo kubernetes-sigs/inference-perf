@@ -17,6 +17,7 @@ from typing import List
 from inference_perf.client.filestorage import StorageClient
 from inference_perf.config import StorageConfigBase
 from inference_perf.utils import ReportFile
+import contextlib
 import json
 import os
 import yaml
@@ -34,9 +35,19 @@ class LocalStorageClient(StorageClient):
             filename = report.get_filename()
             report_path = f"{self.config.path if self.config.path else ''}/{self.config.report_file_prefix if self.config.report_file_prefix else ''}{filename}"
             os.makedirs(os.path.dirname(report_path), exist_ok=True)
-            with open(report_path, "w", encoding="utf-8") as f:
-                if report.file_type == "yaml":
-                    yaml.dump(report.get_contents(), f, sort_keys=False, default_flow_style=False)
-                else:
-                    f.write(json.dumps(report.get_contents(), indent=2))
+            # Write aside and rename: the end-of-run pass rewrites the files saved
+            # when their stage ended, and a process killed mid-write must not
+            # leave one of them truncated.
+            temp_path = f"{report_path}.tmp"
+            try:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    if report.file_type == "yaml":
+                        yaml.dump(report.get_contents(), f, sort_keys=False, default_flow_style=False)
+                    else:
+                        f.write(json.dumps(report.get_contents(), indent=2))
+                os.replace(temp_path, report_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.remove(temp_path)
+                raise
             logger.info(f"Report saved to: {report_path}")

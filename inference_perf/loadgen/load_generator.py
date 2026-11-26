@@ -63,7 +63,7 @@ else:
     # Runtime usage will still require Python 3.11+.
     TaskGroup = object
 
-from typing import Awaitable, List, Tuple, Optional, NamedTuple, Protocol, Union, Set, Dict, cast
+from typing import Awaitable, Callable, List, Tuple, Optional, NamedTuple, Protocol, Union, Set, Dict, cast
 from types import FrameType
 import ctypes
 from itertools import islice
@@ -743,6 +743,10 @@ class LoadGenerator:
         self.sweep_config = load_config.sweep
         self.interrupt_sig = False
         self.session_metrics_collector = session_metrics_collector
+        # Awaited after every stage that recorded its runtime info, before the
+        # next stage starts; InferencePerfRunner sets it to write the stage's
+        # reports. Not called for the sweep's preprocessing stage.
+        self.after_stage: Optional[Callable[[StageRuntimeInfo], Awaitable[None]]] = None
         self.teardown_grace_seconds = load_config.stage_teardown_grace_seconds
         # Set by mp_run; broadcast to workers when the teardown grace expires
         # so they cancel whatever is still in flight.
@@ -2076,12 +2080,18 @@ class LoadGenerator:
                 # Stage rendezvous already happened inside _teardown_stage
                 # (bounded, liveness-aware), so no barrier is needed here.
 
+                # Runs while no load is in flight, alongside the interval below,
+                # so it only lengthens the gap between stages when it takes longer.
+                after_stage = create_task(self._run_after_stage(stage_id))
+
                 # If we were interrupted by a signal, we can break out of run stages loop
                 if self.interrupt_sig:
+                    await after_stage
                     break
                 progress.refresh(force=True)
                 if self.stageInterval:
                     await sleep(self.stageInterval)
+                await after_stage
 
         # Reset the request phase to get workers out of their final wait()
         request_phase.set()
@@ -2105,10 +2115,24 @@ class LoadGenerator:
                 await self._run_reported_stage(stage_id, self._run_in_process_stage(client, stage_id, stage, progress))
                 progress.refresh(force=True)
                 LocalUserSession.clear_instances()
+                after_stage = create_task(self._run_after_stage(stage_id))
                 if self.interrupt_sig:
+                    await after_stage
                     break
                 if self.stageInterval and stage_id < len(self.stages) - 1:
                     await sleep(self.stageInterval)
+                await after_stage
+
+    async def _run_after_stage(self, stage_id: int) -> None:
+        # A session stage that found no sessions left returns without runtime info.
+        stage_info = self.stage_runtime_info.get(stage_id)
+        if self.after_stage is None or stage_info is None:
+            return
+        try:
+            await self.after_stage(stage_info)
+        except Exception:
+            # The remaining stages still run, and the end-of-run reports are still written.
+            logger.exception("Stage %d: post-stage hook failed; continuing", stage_id)
 
     async def _run_in_process_stage(
         self, client: ModelServerClient, stage_id: int, stage: StandardLoadStage, progress: ProgressBars

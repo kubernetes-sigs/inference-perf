@@ -61,7 +61,7 @@ from inference_perf.client.modelserver import (
     SGlangModelServerClient,
     MockModelServerClient,
 )
-from inference_perf.client.server_metrics.base import ServerMetricsClient, PerfRuntimeParameters
+from inference_perf.client.server_metrics.base import ServerMetricsClient, PerfRuntimeParameters, StageRuntimeInfo
 from inference_perf.client.server_metrics.prometheus_client import (
     PrometheusMetricsClient,
     GoogleManagedPrometheusMetricsClient,
@@ -160,11 +160,16 @@ class InferencePerfRunner:
         loadgen: LoadGenerator,
         reportgen: ReportGenerator,
         storage_clients: List[StorageClient],
+        report_config: ReportConfig,
     ) -> None:
         self.client = client
         self.loadgen = loadgen
         self.reportgen = reportgen
         self.storage_clients = storage_clients
+        self.report_config = report_config
+        # Write each stage's reports when it ends, so a run that dies later
+        # (e.g. OOMKilled) keeps the stages it completed.
+        self.loadgen.after_stage = self.save_stage_reports
 
     def run(self) -> None:
         async def _run() -> None:
@@ -181,6 +186,24 @@ class InferencePerfRunner:
     def save_reports(self, reports: List[ReportFile]) -> None:
         for storage_client in self.storage_clients:
             storage_client.save_report(reports)
+
+    async def save_stage_reports(self, stage_info: StageRuntimeInfo) -> None:
+        reports = await self.reportgen.generate_stage_reports(self.report_config, stage_info)
+        if not reports:
+            return
+        # The config doesn't change once the run starts. It goes out with every
+        # stage so the reports a dead run leaves behind come with it, even if an
+        # earlier stage failed to save it.
+        reports.append(self.reportgen.generate_config_report())
+        await asyncio.to_thread(self._save_reports_to_each_client, reports)
+
+    def _save_reports_to_each_client(self, reports: List[ReportFile]) -> None:
+        for storage_client in self.storage_clients:
+            # A storage client that fails must not keep the reports from the others.
+            try:
+                storage_client.save_report(reports)
+            except Exception:
+                logger.exception("Saving stage reports with %s failed", type(storage_client).__name__)
 
     def stop(self) -> None:
         asyncio.run(self.loadgen.stop())
@@ -520,7 +543,7 @@ def main_cli() -> None:
         reportgen.session_metrics_collector = session_metrics_collector
 
     # Setup Perf Test Runner
-    perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
+    perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients, config.report)
 
     metrics_server: Optional[PrometheusMetricsServer] = None
     metrics_config = config.observability.metrics
