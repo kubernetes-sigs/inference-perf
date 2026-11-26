@@ -27,8 +27,8 @@ import multiprocessing as mp
 import threading
 import time
 import unittest
-from typing import Any, List, Optional, Tuple, cast
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any, Awaitable, List, Optional, Tuple, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
@@ -329,6 +329,38 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([stage_id for _, stage_id, _, _ in client.calls], [0, 0, 1, 1])
         self.assertEqual(self.stage_done_counter.value, 2)
+
+    # One request scheduled 100 ms ahead, with every wait_for timer waking 5 ms before its timeout, as uvloop can.
+    # Expects the client to be called at or after the scheduled time, never before it.
+    async def test_early_timer_wake_does_not_dispatch_before_scheduled_time(self) -> None:
+        real_wait_for = asyncio.wait_for
+        called_at: List[float] = []
+
+        # Wraps asyncio.wait_for with a timeout 5 ms shorter than asked, floored at 0.
+        async def early_wait_for(awaitable: Awaitable[bool], timeout: float) -> bool:
+            return await real_wait_for(awaitable, timeout=max(timeout - 0.005, 0.0))
+
+        # Records the clock when the request reaches the client.
+        class _ClockClient(_ProbeClient):
+            async def process_request(
+                self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+            ) -> None:
+                called_at.append(time.perf_counter())
+                await super().process_request(data, stage_id, scheduled_time, lora_adapter)
+
+        client = _ClockClient()
+        worker = self._make_worker(client)
+        self.request_phase.set()
+        scheduled_time = time.perf_counter() + 0.1
+        self.request_queue.put(RequestQueueData(3, _make_data(), scheduled_time, None), 0)
+
+        with patch("inference_perf.loadgen.load_generator.wait_for", early_wait_for):
+            task = asyncio.get_event_loop().create_task(worker.loop())
+            await self._wait_until(lambda: self.finished_counter.value == 1)
+            await self._end_stage(task)
+
+        self.assertEqual(len(called_at), 1)
+        self.assertGreaterEqual(called_at[0], scheduled_time, "request reached the client before its scheduled time")
 
     # stop_signal and request_phase both set before loop() starts, nothing queued.
     # Expects loop() to return at once without calling the client.
