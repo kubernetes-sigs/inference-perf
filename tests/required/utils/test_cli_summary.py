@@ -14,8 +14,12 @@
 
 import unittest
 from unittest.mock import patch, MagicMock
+from rich.console import Console
 from inference_perf.utils.cli_summary import (
+    MAX_LABEL_SLICE_ROWS,
     extract_stage_id,
+    is_label_slice_report,
+    print_label_slice_summary_table,
     extract_session_stage_id,
     print_summary_table,
     print_session_summary_tables,
@@ -308,3 +312,105 @@ class TestCancelledColumn(unittest.TestCase):
 
         table = mock_console_print.call_args_list[0].args[0]
         self.assertEqual([column.header for column in table.columns], ["Stage", "Successes"])
+
+
+# One label-slice report's contents: `count` requests of which `failed` failed, labelled tenant=<tenant>.
+def _label_slice(tenant: str, count: int, failed: int = 0) -> ReportFile:
+    contents = {
+        "labels": {"tenant": tenant},
+        "load_summary": {"count": count},
+        "successes": {
+            "count": count - failed,
+            "latency": {"time_to_first_token": {"mean": 0.05, "p90": 0.08}},
+            "throughput": {"requests_per_sec": 2.0},
+        },
+        "failures": {"count": failed},
+    }
+    return ReportFile(name=f"labels_tenant={tenant}_lifecycle_metrics", contents=contents)
+
+
+# Renders the label-slice table for the given reports and returns what was printed as plain text.
+def _render_label_slices(reports: list[ReportFile], width: int = 200) -> str:
+    console = Console(record=True, width=width)
+    with patch("inference_perf.utils.cli_summary.Console", return_value=console):
+        print_label_slice_summary_table(reports)
+    return console.export_text()
+
+
+class TestLabelSliceSummary(unittest.TestCase):
+    # labels_<...>_lifecycle_metrics is a label slice; stage, adapter and summary report names are not.
+    def test_is_label_slice_report(self) -> None:
+        self.assertTrue(is_label_slice_report("labels_tenant=a_lifecycle_metrics"))
+        self.assertFalse(is_label_slice_report("stage_0_lifecycle_metrics"))
+        self.assertFalse(is_label_slice_report("adapter_labels_x_lifecycle_metrics"))
+        self.assertFalse(is_label_slice_report("summary_lifecycle_metrics"))
+        self.assertFalse(is_label_slice_report("labels_tenant=a_session_metrics"))
+
+    # With no label-slice report among the inputs nothing is printed.
+    def test_prints_nothing_without_slices(self) -> None:
+        self.assertEqual(_render_label_slices([ReportFile(name="stage_0_lifecycle_metrics", contents={})]), "")
+
+    # Tenant a (10 requests, 1 failed) renders its labels, request count, 10.0% errors and TTFT in ms.
+    def test_renders_one_row_per_slice(self) -> None:
+        text = _render_label_slices([_label_slice("a", 10, failed=1), _label_slice("b", 4)])
+        self.assertIn("tenant=a", text)
+        self.assertIn("tenant=b", text)
+        self.assertIn("10.0%", text)
+        self.assertIn("50.0", text)
+        self.assertIn("80.0", text)
+
+    # The Goodput % column appears only when a slice reports goodput: 75.0 for tenant a, a dash for tenant b.
+    def test_goodput_column_only_when_reported(self) -> None:
+        with_goodput = _label_slice("a", 4)
+        with_goodput.contents["successes"]["goodput_metrics"] = {"goodput_percentage": 75.0}
+        self.assertNotIn("Goodput", _render_label_slices([_label_slice("b", 4)]))
+        text = _render_label_slices([with_goodput, _label_slice("b", 3)])
+        self.assertIn("Goodput %", text)
+        self.assertIn("75.0", text)
+        self.assertIn("-", text.split("tenant=b")[1])
+
+    # In an 80-column console a tenant value of 40 "z" wraps onto further lines: all 40 are printed, none cut off.
+    def test_long_labels_wrap_instead_of_truncating(self) -> None:
+        text = _render_label_slices([_label_slice("z" * 40, 1)], width=80)
+        self.assertNotIn("…", text)
+        self.assertEqual(text.count("z"), 40)
+
+    # A label value that looks like rich markup, "[red]x", is printed as written instead of being styled.
+    def test_label_values_are_not_parsed_as_markup(self) -> None:
+        self.assertIn("tenant=[red]x", _render_label_slices([_label_slice("[red]x", 1)]))
+
+    # Slices are ordered by request count, largest first: b (9 requests) is printed above a (3).
+    def test_rows_ordered_by_request_count(self) -> None:
+        text = _render_label_slices([_label_slice("a", 3), _label_slice("b", 9)])
+        self.assertLess(text.index("tenant=b"), text.index("tenant=a"))
+
+    # At exactly MAX_LABEL_SLICE_ROWS slices every row is printed and no truncation note appears.
+    def test_no_truncation_at_row_limit(self) -> None:
+        reports = [_label_slice(f"t{i}", 100 - i) for i in range(MAX_LABEL_SLICE_ROWS)]
+        text = _render_label_slices(reports)
+        self.assertIn(f"tenant=t{MAX_LABEL_SLICE_ROWS - 1}", text)
+        self.assertNotIn("more label slices", text)
+
+    # Two slices over the limit: the two smallest are left out and the note counts them.
+    def test_truncates_past_row_limit(self) -> None:
+        reports = [_label_slice(f"t{i}", 100 - i) for i in range(MAX_LABEL_SLICE_ROWS + 2)]
+        text = _render_label_slices(reports)
+        self.assertNotIn(f"tenant=t{MAX_LABEL_SLICE_ROWS}", text)
+        self.assertIn("2 more label slices", text)
+
+    # print_summary_table prints the label-slice table along with the four per-stage tables.
+    @patch("inference_perf.utils.cli_summary.Console.print")
+    def test_summary_table_includes_label_slices(self, mock_console_print: MagicMock) -> None:
+        stage = ReportFile(name="stage_0_lifecycle_metrics", contents={"successes": {"count": 1}, "failures": {"count": 0}})
+        print_summary_table([stage])
+        without_slices = mock_console_print.call_count
+        mock_console_print.reset_mock()
+        print_summary_table([stage, _label_slice("a", 1)])
+        self.assertEqual(mock_console_print.call_count, without_slices + 1)
+
+    # With no per-stage report the label-slice table is still printed.
+    @patch("inference_perf.utils.cli_summary.rprint")
+    @patch("inference_perf.utils.cli_summary.Console.print")
+    def test_label_slices_printed_without_stage_reports(self, mock_console_print: MagicMock, _rprint: MagicMock) -> None:
+        print_summary_table([_label_slice("a", 1)])
+        self.assertEqual(mock_console_print.call_count, 1)

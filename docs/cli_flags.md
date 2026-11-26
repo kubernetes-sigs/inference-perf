@@ -431,6 +431,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--report.request_lifecycle.percentiles` | JSON | Percentiles reported for each metric. |
 | `--report.request_lifecycle.use_server_output_tokens` | boolean | Use the server-reported output token counts in metrics instead of tokenizing the response text. |
 | `--report.request_lifecycle.max_error_messages` | int | Cap on the number of distinct example error messages retained per error label in the failure report, and per substitution entry. |
+| `--report.request_lifecycle.group_by_labels` | JSON | Generate a report for each combination of values of the listed request labels. Each inner list is one grouping: [[tenant], [tenant, priority]] reports per tenant and per (tenant, priority) pair. |
 | `--report.prometheus.summary` | boolean | Generate a summary report across the whole run. |
 | `--report.prometheus.per_stage` | boolean | Generate a report for each load stage. |
 | `--report.session_lifecycle.summary` | boolean | Generate a summary report across the whole run. |

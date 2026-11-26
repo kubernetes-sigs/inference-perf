@@ -111,6 +111,40 @@ This differs from `api.session_id_header_key`, which unconditionally sends the r
 
 The setting applies to any workload that has a session identity, not just trace replay — `conversation_replay` and `shared_prefix` are covered too.
 
+### Headers and Labels from Span Attributes
+
+A trace can carry per-request metadata such as a tenant or a priority class as span attributes. Two maps under `data.otel_trace_replay` put that metadata on the replayed requests:
+
+- `attribute_to_header_map` sends a span attribute as a request header.
+- `attribute_to_label_map` records a span attribute as a label on the request's metrics.
+
+```yaml
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_directory: traces/
+    attribute_to_header_map:
+      tenant.id: x-tenant            # span attribute -> request header
+      slo.ttft_ms: x-slo-ttft-ms
+    attribute_to_label_map:
+      tenant.id: tenant              # span attribute -> metrics label
+      priority.class: priority
+
+report:
+  request_lifecycle:
+    group_by_labels:
+      - [tenant]
+      - [tenant, priority]
+```
+
+A span with `"tenant.id": "acme"`, `"priority.class": "high"` and `"slo.ttft_ms": 200` in its `attributes` is replayed with the headers `x-tenant: acme` and `x-slo-ttft-ms: 200`, and its metrics carry the labels `tenant=acme` and `priority=high`. With `group_by_labels` the run then writes one report per tenant and one per tenant and priority pair, see [Reports by request label](reports.md#reports-by-request-label).
+
+- Values are read from the span's `attributes` and converted to strings.
+- A span that lacks a mapped attribute gets the value `default`, as a header value and as a label value.
+- The message and tool attributes (`gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.output.text`, `gen_ai.output`, `gen_ai.completion`, `gen_ai.tool.definitions`) cannot be mapped.
+- A mapped header replaces a header of the same name from `api.headers`, ignoring case.
+- A mapped header named like the SLO headers sets that request's SLO, so goodput can differ per tenant or priority, see [Goodput](goodput.md#2-per-request-via-headers).
+
 ### Data Configuration: `otel_trace_replay`
 
 The `data.otel_trace_replay` section controls what traces to replay and how to process them.
