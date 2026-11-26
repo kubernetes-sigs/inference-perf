@@ -294,7 +294,9 @@ load:
 
 `load.type: batch` sends records through the OpenAI Batch API (`/v1/files` and `/v1/batches`), as
 llm-d-batch-gateway serves it, instead of one HTTP request per record. A stage lists batch jobs, which are
-submitted together. Stages run in order, and each stage starts the data over, as request stages do.
+submitted together. Stages run in order, and each stage starts the data over, as request stages do. The batch
+load type is experimental: its config keys may change until
+[#800](https://github.com/kubernetes-sigs/inference-perf/issues/800) settles where delivery modes are configured.
 
 <!-- checked-example -->
 ```yaml
