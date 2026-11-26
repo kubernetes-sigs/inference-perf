@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
+REASONING_EFFORT_ATTRIBUTE = "gen_ai.request.reasoning_effort"
+
 
 @dataclass
 class ReplayMessage:
@@ -99,6 +101,7 @@ class GraphCall:
     # Relative to the active ReplaySession ID; resolved at dispatch so graphs
     # shared by duplicated sessions never retain the source session's identity.
     session_id_suffix: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
 
 @dataclass

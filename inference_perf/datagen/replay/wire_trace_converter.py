@@ -44,6 +44,7 @@ from types import ModuleType
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, TextIO, Tuple, Type
 
 from inference_perf.apis.image_parts import anthropic_image_to_part, is_image_part, openai_image_to_part
+from inference_perf.datagen.replay.replay_graph_types import REASONING_EFFORT_ATTRIBUTE
 
 # Detected file shapes, returned by detect_trace_format().
 FORMAT_OTEL_JSON = "otel_json"
@@ -978,6 +979,7 @@ def _build_span(
     input_messages: List[Dict[str, Any]],
     output_msg: Optional[Dict[str, Any]],
     tool_defs: List[Dict[str, Any]],
+    reasoning_effort: object,
 ) -> Dict[str, Any]:
     """Assemble an OTel span from extracted fields."""
     is_error = not (200 <= http_status < 300)
@@ -1022,8 +1024,14 @@ def _build_span(
         attrs["gen_ai.output.messages"] = json.dumps([output_msg])
     if tool_defs:
         attrs["gen_ai.tool.definitions"] = json.dumps(tool_defs)
+    if isinstance(reasoning_effort, str):
+        attrs[REASONING_EFFORT_ATTRIBUTE] = reasoning_effort
 
     return span
+
+
+def _nested_effort(config: object) -> object:
+    return config.get("effort") if isinstance(config, dict) else None
 
 
 def _load_request(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1091,6 +1099,7 @@ def convert_responses_api_record(record: Dict[str, Any], trace_id: str, line_no:
         input_messages=input_messages,
         output_msg=_convert_responses_output(completed.get("output") or [], finish_reason),
         tool_defs=_extract_tool_defs(request.get("tools") or [], nested=False),
+        reasoning_effort=_nested_effort(request.get("reasoning")),
     )
 
 
@@ -1130,6 +1139,7 @@ def convert_chat_completions_record(record: Dict[str, Any], trace_id: str, line_
         input_messages=_convert_chat_messages(request.get("messages") or []),
         output_msg=output_msg,
         tool_defs=_extract_tool_defs(request.get("tools") or [], nested=True),
+        reasoning_effort=request.get("reasoning_effort"),
     )
 
 
@@ -1196,6 +1206,7 @@ def convert_anthropic_record(record: Dict[str, Any], trace_id: str, line_no: int
         input_messages=_convert_anthropic_messages(request.get("system"), request.get("messages") or []),
         output_msg=_convert_anthropic_output(resp, finish_reason) if resp else None,
         tool_defs=_extract_anthropic_tool_defs(request.get("tools") or []),
+        reasoning_effort=_nested_effort(request.get("output_config")),
     )
 
 

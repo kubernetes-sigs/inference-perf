@@ -33,7 +33,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass, field, replace as dc_replace
 from enum import Enum
-from multiprocessing.managers import SyncManager
+from multiprocessing.managers import DictProxy, SyncManager
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from aiohttp import ClientResponse
@@ -70,6 +70,11 @@ from inference_perf.datagen.replay.replay_graph_types import InputSegment, Repla
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 logger = logging.getLogger(__name__)
+
+# These are API-level vocabularies, not guarantees about any particular model.
+# OpenAI Chat Completions API reference; Anthropic Messages effort guide.
+_CHAT_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
+_ANTHROPIC_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
 def replayed_images(messages: List[ChatMessage]) -> Optional[Images]:
@@ -469,6 +474,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     # Whether to inject a tool_choice on recorded tool-call turns.
     # See SessionReplayConfig.tool_choice_mode.
     tool_choice_mode: ToolChoiceMode = ToolChoiceMode.FORCE_RECORDED
+    reasoning_effort: Optional[str] = None
     # Seconds to wait for predecessors before failing this event. 0 waits indefinitely;
     # see SessionReplayConfig.predecessor_wait_timeout_sec.
     predecessor_wait_timeout_sec: float = 3600.0
@@ -491,6 +497,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
     ) -> Dict[str, Any]:
         payload = await super().to_request_body(effective_model_name, max_tokens, ignore_eos, streaming)
+        if self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
 
         if self.expected_output_is_tool_call and self.tool_definitions:
             # A forced tool call MUST stop at its natural end-of-sequence: the model
@@ -1303,6 +1311,8 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             self.max_tokens,
             streaming,
         )
+        if self.reasoning_effort is not None:
+            payload["output_config"] = {"effort": self.reasoning_effort}
 
         if self.expected_output_is_tool_call and self.tool_definitions:
             if self.override_tool_call_max_tokens:
@@ -1497,6 +1507,12 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             self.session_completion_queue: Any = mp_manager.Queue()
         else:
             self.session_completion_queue = None
+        # Copied into workers along with the generator. Only opt-in runs need a
+        # shared proxy, and only the first incompatible turn per worker uses it.
+        self._warned_reasoning_effort = False
+        self._shared_replay_warnings: Optional[DictProxy[str, str]] = None
+        if mp_manager is not None and replay_config is not None and "reasoning_effort" in replay_config.replay_request_params:
+            self._shared_replay_warnings = mp_manager.dict()
 
         self.sessions: List[Optional[ReplaySession]] = []
         self._session_ids: List[str] = []
@@ -2102,6 +2118,24 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             raise IndexError(f"Event index {n} out of range (total: {len(self.all_events)})")
         return self.all_events[n]
 
+    def _reasoning_effort_for_target(self, effort: Optional[str], target_api: APIType) -> Optional[str]:
+        if effort is None or self.replay_config is None or "reasoning_effort" not in self.replay_config.replay_request_params:
+            return None
+        supported = _ANTHROPIC_REASONING_EFFORTS if target_api == APIType.AnthropicMessages else _CHAT_REASONING_EFFORTS
+        if effort in supported:
+            return effort
+        if not self._warned_reasoning_effort:
+            self._warned_reasoning_effort = True
+            # setdefault is one atomic operation on the manager's dictionary:
+            # only the worker whose token is stored should emit the warning.
+            token = uuid.uuid4().hex
+            if (
+                self._shared_replay_warnings is None
+                or self._shared_replay_warnings.setdefault("reasoning_effort", token) == token
+            ):
+                logger.warning("Skipping recorded reasoning_effort %r: unsupported by target API %s", effort, target_api.value)
+        return None
+
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         event = self._resolve_event(data)
 
@@ -2187,7 +2221,8 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
         api_data_class: type[SessionChatCompletionAPIData] = SessionChatCompletionAPIData
         api_config = getattr(self, "api_config", None)
-        if api_config is not None and api_config.type == APIType.AnthropicMessages:
+        target_api = api_config.type if api_config is not None else APIType.Chat
+        if target_api == APIType.AnthropicMessages:
             api_data_class = SessionAnthropicMessagesAPIData
 
         api_data = api_data_class(
@@ -2206,6 +2241,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             expected_output_content=event.expected_output,
             expected_output_is_tool_call=gc.expected_output_is_tool_call if gc else False,
             expected_output_tool_names=gc.expected_output_tool_names if gc else None,
+            reasoning_effort=self._reasoning_effort_for_target(gc.reasoning_effort if gc else None, target_api),
             otel_context=data.otel_context,
             session_id=data.session_id,
             request_session_id=request_session_id,
