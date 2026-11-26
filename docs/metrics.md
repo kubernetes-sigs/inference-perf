@@ -65,7 +65,7 @@ therefore keeps both and records which is which.
 
 | Field | Source | Notes |
 | :--- | :--- | :---
-| `prompt_tokens` | server `usage.prompt_tokens`, client tokenization when the server reports none | Resolved per request while the response is processed. Supersedes `prompt_len`. |
+| `prompt_tokens` | server `usage.prompt_tokens`, client tokenization when the server reports none | Resolved per request while the response is processed. Supersedes `prompt_len`. A failed or cancelled request gets no usage and carries 0, except on vLLM, where the run asks `/tokenize` for its count once the last stage ends |
 | `prompt_tokens.cached` / `.uncached` | server `usage.prompt_tokens_details` | Absent when the server does not report the detail |
 | `output_len` | client | Client re-tokenized text, reasoning, tool names, and tool-call arguments; each channel and each assembled call counted separately, without special tokens |
 | `output_tokens` | server `usage.completion_tokens` / `usage.output_tokens`, client `output_len` when the server reports none | Server-side this is an exact count of decode steps |
