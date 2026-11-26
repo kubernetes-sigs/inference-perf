@@ -57,6 +57,12 @@ class _FakeStreamingResponse:
         return content
 
 
+# _FakeStreamingResponse(chunks) typed as the ClientResponse that process_response takes.
+# The SSE parser only reads status, headers and content.iter_any(), which yields the chunks.
+def _streaming_response(chunks: List[bytes]) -> ClientResponse:
+    return cast(ClientResponse, _FakeStreamingResponse(chunks))
+
+
 @pytest.mark.asyncio
 async def test_completion_api_data() -> None:
     data = CompletionAPIData(prompt="Hello, world!")
@@ -219,7 +225,7 @@ async def test_process_response_streaming_uses_server_prompt_tokens() -> None:
         b'data: {"choices": [], "usage": {"prompt_tokens": 17, "completion_tokens": 1}}\n\n'
         b"data: [DONE]\n\n"
     )
-    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+    response = _streaming_response([sse])
 
     info = await data.process_response(response, _make_config(streaming=True), tokenizer)
 
@@ -233,7 +239,7 @@ async def test_process_response_streaming_falls_back_without_server_usage() -> N
     tokenizer = _make_tokenizer()
 
     sse = b'data: {"choices": [{"text": "hi"}]}\n\ndata: [DONE]\n\n'
-    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+    response = _streaming_response([sse])
 
     info = await data.process_response(response, _make_config(streaming=True), tokenizer)
 
@@ -276,7 +282,7 @@ async def test_process_response_non_streaming_no_choices_no_usage_raises() -> No
 @pytest.mark.asyncio
 async def test_process_response_streaming_no_content_no_usage_raises() -> None:
     data = CompletionAPIData(prompt="hi")
-    response = cast(ClientResponse, _FakeStreamingResponse([b"data: [DONE]\n\n"]))
+    response = _streaming_response([b"data: [DONE]\n\n"])
 
     with pytest.raises(EmptyResponseError) as exc_info:
         await data.process_response(response, _make_config(streaming=True), _make_tokenizer())
@@ -290,7 +296,7 @@ async def test_process_response_streaming_no_content_no_usage_raises() -> None:
 async def test_process_response_streaming_no_content_with_usage_is_a_success() -> None:
     data = CompletionAPIData(prompt="hi")
     sse = b'data: {"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 0}}\n\ndata: [DONE]\n\n'
-    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+    response = _streaming_response([sse])
 
     info = await data.process_response(response, _make_config(streaming=True), _make_tokenizer())
 
@@ -349,3 +355,54 @@ async def test_process_response_non_streaming_accepts_engine_specific_fields(cho
     assert isinstance(info.response_metrics, UnaryResponseMetrics)
     assert info.response_metrics.output_tokens == 2
     assert info.response_metrics.server_usage == {"prompt_tokens": 42, "completion_tokens": None}
+
+
+# Unary completion body with choices[0].finish_reason "length" and usage. The
+# returned response_metrics must carry finish_reason "length" and
+# delivered_output_tokens() must be the server's completion_tokens (16), not the
+# client count of the two-word text.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_records_finish_reason() -> None:
+    data = CompletionAPIData(prompt="hi", max_tokens=16)
+    response = MagicMock()
+    response.json = AsyncMock(
+        return_value={
+            "choices": [{"text": "hello there", "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 16},
+        }
+    )
+
+    info = await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "length"
+    assert info.response_metrics.delivered_output_tokens() == 16
+
+
+# Streamed completion: two content frames, the last carrying finish_reason
+# "stop", then a usage frame with completion_tokens 2. response_metrics must
+# carry finish_reason "stop" and delivered_output_tokens() == 2. A stream whose
+# frames never set finish_reason (second call) leaves it None and
+# delivered_output_tokens() falls back to the client count of the text (1).
+@pytest.mark.asyncio
+async def test_process_response_streaming_records_finish_reason() -> None:
+    data = CompletionAPIData(prompt="hi", max_tokens=16)
+    sse = (
+        b'data: {"choices": [{"text": "hello", "finish_reason": null}]}\n\n'
+        b'data: {"choices": [{"text": " there", "finish_reason": "stop"}]}\n\n'
+        b'data: {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 2}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    response = _streaming_response([sse])
+
+    info = await data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "stop"
+    assert info.response_metrics.delivered_output_tokens() == 2
+
+    bare = _streaming_response([b'data: {"choices": [{"text": "hello"}]}\n\ndata: [DONE]\n\n'])
+    info = await data.process_response(bare, _make_config(streaming=True), _make_tokenizer())
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason is None
+    assert info.response_metrics.delivered_output_tokens() == 1
