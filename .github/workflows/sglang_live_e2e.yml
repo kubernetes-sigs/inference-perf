@@ -1,0 +1,95 @@
+name: SGLang live e2e
+
+on:
+  schedule:
+    - cron: '37 5 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sglang-live:
+    # The Xeon image is amd64-only. This is not part of the ARM PR merge gate.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      IMAGE: docker.io/lmsysorg/sglang:v0.5.23-xeon
+      E2E_SGLANG_MODEL: Qwen/Qwen2.5-0.5B-Instruct
+      E2E_SGLANG_BASE_URL: http://127.0.0.1:30000
+    steps:
+      - name: Check for AMX
+        id: cpu
+        run: |
+          if grep -qw amx_tile /proc/cpuinfo; then
+            echo 'amx=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::notice::Skipping live SGLang: this runner does not expose amx_tile'
+            echo 'Skipped live SGLang: this runner does not expose `amx_tile`.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout code
+        if: steps.cpu.outputs.amx == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up PDM
+        if: steps.cpu.outputs.amx == 'true'
+        uses: pdm-project/setup-pdm@c6081998a653693a457d93c70b8007d979bc6741 # v4
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        if: steps.cpu.outputs.amx == 'true'
+        run: pdm sync -d
+
+      - name: Run against both SGLang stream formats
+        if: steps.cpu.outputs.amx == 'true'
+        shell: bash
+        run: |
+          docker pull "$IMAGE"
+          mkdir -p "$HOME/sglang-hf-cache"
+          failed=0
+
+          cleanup() {
+            docker logs sglang-live > "sglang-${mode}.log" 2>&1 || true
+            docker rm -f sglang-live >/dev/null 2>&1 || true
+          }
+
+          for mode in cumulative incremental; do
+            trap cleanup EXIT
+            args=()
+            if [[ "$mode" == incremental ]]; then
+              args+=(--incremental-streaming-output)
+            fi
+            docker run --detach --name sglang-live --shm-size 1g \
+              --publish 127.0.0.1:30000:30000 \
+              --volume "$HOME/sglang-hf-cache:/hf-cache" --env HF_HOME=/hf-cache \
+              "$IMAGE" python3 -m sglang.launch_server --device cpu \
+              --host 0.0.0.0 --port 30000 --model-path "$E2E_SGLANG_MODEL" \
+              --context-length 512 --max-total-tokens 1024 --stream-interval 1 "${args[@]}"
+
+            if ! timeout 300s bash -c '
+              until curl --fail --silent --max-time 2 "$E2E_SGLANG_BASE_URL/health" >/dev/null; do
+                [[ $(docker inspect --format "{{.State.Running}}" sglang-live) == true ]] || exit 1
+                sleep 2
+              done
+            '; then
+              echo "::error::SGLang ($mode) did not become ready; see its server log"
+              failed=1
+            elif ! E2E_SGLANG_STREAM_MODE="$mode" pdm run pytest -rs \
+                e2e/tests/test_sglang_generate_live.py 2>&1 | tee "sglang-${mode}-pytest.log"; then
+              echo "::error::SGLang ($mode) live test failed"
+              failed=1
+            fi
+            cleanup
+            trap - EXIT
+          done
+
+          exit "$failed"
+
+      - name: Upload SGLang logs
+        if: always() && steps.cpu.outputs.amx == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sglang-live-e2e
+          path: sglang-*.log
