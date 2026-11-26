@@ -14,6 +14,7 @@
    - [Tokenizer](#tokenizer)
    - [Credentials](#credentials)
    - [Observability](#observability)
+   - [Workload Catalog](#workload-catalog)
 3. [Full Configuration Examples](#full-configuration-examples)
 4. [Advanced Use Cases](#advanced-use-cases)
    - [OpenTelemetry Trace Replay](#opentelemetry-trace-replay)
@@ -615,6 +616,24 @@ The endpoint binds every interface, so a scraper reaches it by pod IP in Kuberne
 After the run ends the endpoint stays up for `linger_seconds` (default 30), counted from the end of the load, so a scraper can collect the final counters and the last stage's end timestamp. Report generation and saving happen inside that window, so the wait never delays the reports. Set `linger_seconds` to at least the scrape interval, or the last scrape may still miss the end of the run. The wait applies only when the endpoint is running, and `linger_seconds: 0` stops it as soon as the reports are saved. SIGINT or SIGTERM ends the wait immediately, and a run that was interrupted does not linger. The Helm chart and the `deploy/` Job inherit the 30 second default.
 
 Transient signals (current stage, in-flight requests) only exist while the run is active, so they need a scraper attached during the run. The final numbers are in the reports.
+
+### Workload Catalog
+
+`workload` runs a named entry from the [workload catalog](../inference_perf/workload_catalog/README.md). The entry's config is the base. Your config file and flags layer on top, the same way they layer over the defaults.
+
+```yaml
+workload: interactive-chat
+server:
+  type: vllm
+  model_name: google/gemma-3-1b-it
+  base_url: http://my-server:8000
+```
+
+Or on the command line: `inference-perf --workload interactive-chat --server.base_url http://my-server:8000`.
+
+Every entry has a `mask.yaml` that marks each config field `locked` or `open`. Open fields, such as the server address, the model name, the tokenizer and the worker count, are yours to set. If your config or flags change a locked field, the run refuses to start and prints each changed field with the value the entry requires. There is no override. To run a variant, copy the entry's `inference-perf.yaml` into your own file, drop `workload` and change it there. That run is your own config, not the entry.
+
+The `config.yaml` report records `workload`, so a report that names an entry came from a run that kept every locked field.
 
 ## Full Configuration Examples
 

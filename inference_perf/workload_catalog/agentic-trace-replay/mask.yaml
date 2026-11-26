@@ -1,0 +1,92 @@
+# Which fields of inference-perf.yaml a run of this entry may change.
+# locked: the run must keep the entry's value. open: the run may set its own.
+# A section marked locked or open covers every field under it.
+# A section split into its fields marks every one of them.
+api:
+  type: locked
+  streaming: locked
+  headers: open
+  slo_unit: open
+  slo_tpot_header: open
+  slo_ttft_header: open
+  slo_request_latency_header: open
+  response_format: locked
+  embeddings: locked
+  rerank: locked
+  session_id_header_key: open
+  clean_tool_schemas: open
+  session_token_header_key: open
+data:
+  type: locked
+  path: locked
+  load_timeout: open
+  corpus_file_path: locked
+  input_distribution: locked
+  output_distribution: locked
+  shared_prefix: locked
+  multimodal: locked
+  trace: locked
+  otel_trace_replay:
+    # The model name sent in each request follows whatever the server under test serves.
+    use_static_model: open
+    static_model_name: open
+    model_mapping: open
+    default_max_tokens: locked
+    override_tool_call_max_tokens: locked
+    tool_choice_mode: locked
+    inject_random_session_id: locked
+    duplicate_sessions_target: locked
+    max_wait_ms: locked
+    predecessor_wait_timeout_sec: open
+    include_errors: locked
+    skip_invalid_files: locked
+    bad_tool_call_handling: locked
+    trace_directory: locked
+    trace_files: locked
+    hf_dataset_path: locked
+    filter: locked
+    disable_output_substitution: locked
+    attribute_to_header_map: open
+    attribute_to_label_map: open
+    # Where a trace read from s3:// is cached locally depends on the machine, not the workload.
+    remote_cache_dir: open
+    remote_cache_max_gb: open
+  weka_trace_replay: locked
+  tracelab_trace_replay: locked
+  conversation_replay: locked
+  visionarena: locked
+  synthetic_agentic: locked
+  use_chat_template: locked
+load:
+  type: locked
+  interval: locked
+  stages: locked
+  sweep: locked
+  # How many workers the client needs depends on the machine it runs on, not the workload.
+  num_workers: open
+  worker_max_concurrency: open
+  worker_max_tcp_connections: open
+  trace: locked
+  circuit_breakers: open
+  request_timeout: open
+  request_retries: locked
+  request_retry_backoff_sec: open
+  stage_teardown_grace_seconds: open
+  lora_traffic_split: locked
+  base_seed: locked
+metrics: open
+report: open
+storage: open
+server:
+  type: open
+  model_name: open
+  base_url: open
+  # Output lengths are part of the workload, so the server may not stop early at EOS.
+  ignore_eos: locked
+  api_key: open
+  cert_path: open
+  key_path: open
+  wait_for: open
+tokenizer: open
+circuit_breakers: open
+observability: open

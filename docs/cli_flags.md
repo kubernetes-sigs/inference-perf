@@ -11,6 +11,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--analyze-rate` | Enum (achieved, requested) | Request rate on the QPS axis of the analysis charts: the achieved rate or the requested (configured) rate (default: achieved) |
 | `--analyze-latency-stat` | str | Latency statistic in the analysis charts: mean, median, min, max or a percentile such as p90 or p99 (default: mean) |
 | `--log-level` | Enum (DEBUG, INFO, WARNING, ERROR, CRITICAL) | Logging level (default: INFO) |
+| `--workload` | str | Workload catalog entry to run. Its config is the base and yours layers on top. The run refuses to start if it changes a field the entry locks. |
 | `--api.type` | Enum (completion, chat, anthropic_messages, embeddings, rerank, sglang_generate) | API endpoint to benchmark: text completion, chat completion, Anthropic messages, embeddings, rerank or SGLang's native /generate. |
 | `--api.streaming` | boolean | Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics. |
 | `--api.headers` | JSON | Additional HTTP headers to send with every request. |

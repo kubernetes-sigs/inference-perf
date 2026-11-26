@@ -12,6 +12,7 @@ load:
   - num_requests: 450
     concurrency_level: 30
   num_workers: 1
+  base_seed: 42
 api:
   type: completion
   streaming: true

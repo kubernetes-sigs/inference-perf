@@ -44,7 +44,7 @@ from inference_perf.config import read_config
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Directories and files that are inference-perf configs, i.e. loadable by `read_config`.
-CONFIG_DIRS = ("examples", "workload-catalog", "e2e")
+CONFIG_DIRS = ("examples", "inference_perf/workload_catalog", "e2e")
 CONFIG_FILES = ("config.yml", "config-weka.yaml", "demos/kubecon-na-2025/config.yaml")
 
 # YAML that is deliberately not an inference-perf config. Each entry is a directory prefix or
@@ -71,6 +71,7 @@ NON_CONFIG_FILES = {
 # next to each expected.yaml still needs to be schema-checked.
 NON_CONFIG_GLOBS = {
     "e2e/tests/parity/cases/*/expected.yaml": "tool-parity case invariants, not inference-perf configs",
+    "inference_perf/workload_catalog/*/mask.yaml": "which fields of a catalog entry are locked, not inference-perf configs",
 }
 
 
