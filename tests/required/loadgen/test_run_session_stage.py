@@ -17,6 +17,7 @@ scripted SessionGenerator, with no worker processes."""
 
 import multiprocessing as mp
 import unittest
+import warnings
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -230,6 +231,42 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         info = load_generator.stage_runtime_info[0]
         self.assertEqual(info.status.name, "TIMED_OUT")
         self.assertEqual(info.rate, 0.001)
+        self.assertEqual(info.max_stage_duration, 0.3)
+
+    # 1 session with neither max_stage_duration nor the deprecated timeout set, run with all warnings
+    # surfaced. Expects the cap to resolve without reading the deprecated field, so no DeprecationWarning
+    # fires (#1123), and the stage still completes with no cap recorded.
+    async def test_stage_without_cap_fields_emits_no_deprecation_warning(self) -> None:
+        datagen = FakeSessionGenerator(num_sessions=1)
+        stage = TraceSessionReplayLoadStage(concurrent_sessions=1)
+        load_generator = _make_load_generator(datagen, [stage])
+        load_generator.session_metrics_collector = self.collector
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            await self._run(load_generator, stage)
+
+        deprecated_reads = [
+            w for w in caught if issubclass(w.category, DeprecationWarning) and "max_stage_duration" in str(w.message)
+        ]
+        self.assertEqual(deprecated_reads, [], "run_session_stage read the deprecated timeout field")
+        info = load_generator.stage_runtime_info[0]
+        self.assertEqual(info.status.name, "COMPLETED")
+        self.assertIsNone(info.max_stage_duration)
+
+    # 3 sessions at session_rate=0.001 capped only by the deprecated timeout=0.3 spelling. Expects the
+    # legacy field to still end the stage: only s0 dispatched and the stage TIMED_OUT with limit 0.3.
+    async def test_deprecated_timeout_still_caps_the_stage(self) -> None:
+        datagen = FakeSessionGenerator(num_sessions=3)
+        stage = TraceSessionReplayLoadStage(concurrent_sessions=0, session_rate=0.001, timeout=0.3)
+        load_generator = _make_load_generator(datagen, [stage])
+        load_generator.session_metrics_collector = self.collector
+
+        await self._run(load_generator, stage)
+
+        self.assertEqual(datagen.activated, ["s0"])
+        info = load_generator.stage_runtime_info[0]
+        self.assertEqual(info.status.name, "TIMED_OUT")
         self.assertEqual(info.max_stage_duration, 0.3)
 
     # One session of 4 events preferring workers [0, 4, 5, -1] with 3 workers, run as stage 9.

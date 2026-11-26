@@ -200,7 +200,7 @@ class TraceSessionReplayLoadStage(LoadStage):
         # gap rather than only documenting one. timeout is the deprecated spelling of the
         # same cap, so compare against whichever one is in effect.
         effective_cap_field = "max_stage_duration" if self.max_stage_duration is not None else "timeout"
-        effective_cap = self.max_stage_duration if self.max_stage_duration is not None else timeout
+        effective_cap = self.effective_max_stage_duration()
         if self.duration is not None and effective_cap is not None and self.duration >= effective_cap:
             raise ValueError(
                 f"duration ({self.duration}) must be shorter than {effective_cap_field} "
@@ -211,6 +211,18 @@ class TraceSessionReplayLoadStage(LoadStage):
             )
 
         return self
+
+    def effective_max_stage_duration(self) -> Optional[float]:
+        """The wall-clock cap in effect: max_stage_duration, else the deprecated timeout spelling.
+
+        Reads timeout from raw storage rather than ``self.timeout`` so resolving the cap
+        does not emit Pydantic's DeprecationWarning when the deprecated field is unset
+        (#1123). Keep every read of the deprecated field behind this method.
+        """
+        if self.max_stage_duration is not None:
+            return self.max_stage_duration
+        timeout: Optional[float] = self.__dict__["timeout"]
+        return timeout
 
 
 class BatchJobConfig(StrictBaseModel):

@@ -207,6 +207,33 @@ def test_trace_session_replay_stage_with_timeout_warns(caplog: pytest.LogCapture
         assert stage.timeout == 30.0
 
 
+# Inputs: stages with max_stage_duration=45.0 set alone and together with timeout=30.0.
+# Expected: effective_max_stage_duration() returns 45.0 both times; the new field wins over the legacy one.
+def test_effective_max_stage_duration_prefers_max_stage_duration() -> None:
+    alone = TraceSessionReplayLoadStage(concurrent_sessions=4, max_stage_duration=45.0)
+    assert alone.effective_max_stage_duration() == 45.0
+    both = TraceSessionReplayLoadStage(concurrent_sessions=4, max_stage_duration=45.0, timeout=30.0)
+    assert both.effective_max_stage_duration() == 45.0
+
+
+# Input: a stage whose only cap is the deprecated timeout=30.0 spelling.
+# Expected: effective_max_stage_duration() returns 30.0, so legacy configs keep their cap.
+def test_effective_max_stage_duration_falls_back_to_deprecated_timeout() -> None:
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, timeout=30.0)
+    assert stage.effective_max_stage_duration() == 30.0
+
+
+# Input: a stage with neither max_stage_duration nor timeout, resolved with all warnings surfaced.
+# Expected: effective_max_stage_duration() is None and emits no DeprecationWarning, since it never
+# reads the deprecated field through Pydantic's attribute access (#1123).
+def test_effective_max_stage_duration_without_either_is_none_and_does_not_warn() -> None:
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert stage.effective_max_stage_duration() is None
+    assert [w for w in caught if issubclass(w.category, DeprecationWarning)] == []
+
+
 # --- LoadConfig cross-stage validation -----------------------------------
 
 

@@ -936,9 +936,9 @@ class LoadGenerator:
         concurrent_sessions = stage.concurrent_sessions
         session_rate = stage.session_rate
 
-        max_stage_duration = (
-            stage.max_stage_duration if stage.max_stage_duration else stage.timeout
-        )  # timeout is deprecated, kept for legacy
+        # Resolved on the stage model so the deprecated timeout spelling is honoured
+        # without re-reading the deprecated field, which warns even when unset (#1123).
+        max_stage_duration = stage.effective_max_stage_duration()
         duration = stage.duration
 
         # A duration-bounded stage draws sessions without limit: indices past the corpus
