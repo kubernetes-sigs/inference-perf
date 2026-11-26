@@ -181,6 +181,7 @@ from splitting into one bucket per failure.
 | `session_already_failed` | The session was already failed when this event was reached. |
 | `recorded_fallback_malformed` | `bad_tool_call_handling=use_recorded` fired, but the recorded fallback message was also malformed. |
 | `substitution_tool_call_expected` | The recorded trace expected a tool call at this slot but the live model returned plain text. |
+| `truncated_output` | `truncated_output_handling=fail` fired: the live turn stopped for length without the recorded shape (no text, or no tool call). |
 | `request_failed` | The request to the model server raised; `message` carries the exception type and text. |
 | `unknown` | The session failed without a more specific cause being recorded. |
 | `unreported` | The session was counted as failed but carried no error at all. Should not occur; treat as a bug. |

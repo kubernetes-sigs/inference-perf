@@ -131,6 +131,7 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | `skip_invalid_files` | boolean | No (default: `false`) | Skip invalid traces instead of failing. Covers both file-level parse errors (bad JSON, missing file) and graph-build errors (malformed spans). Skipped sessions are logged and silently omitted from the run. |
 | `filter` | string | No | Lambda expression applied to each trace record before replay. Evaluated via `eval()` — use only with trusted inputs. Example: `"lambda x: x['benchmark'] == 'gsm8k'"`. Applies uniformly across all three trace sources |
 | `bad_tool_call_handling` | enum | No (default: `none`) | How to handle tool_calls whose `function.arguments` is not valid JSON. `none`: no mitigation (upstream behavior). `use_recorded`: substitute the recorded assistant message at the affected slot. See [Bad tool-call handling](#bad-tool-call-handling) |
+| `truncated_output_handling` | enum | No (default: `none`) | How to handle a predecessor turn stopped for length without the recorded shape (no text, or no tool call). `none`: no mitigation (upstream behavior). `use_recorded`: substitute the recorded assistant message. `fail`: fail the successor event with cause `truncated_output`. See [Truncated turns](#truncated-turns) |
 | `tool_choice_mode` | enum | No (default: `force_recorded`) | Whether to inject a `tool_choice` on recorded tool-call turns. `force_recorded`: force the recorded function, or `"required"` when that isn't possible (upstream behavior). `as_recorded`: inject nothing, leaving the choice to the model. See [Forced `tool_choice` and Token Budget](#forced-tool_choice-and-token-budget) |
 | `remote_cache_dir` | string | No (default: `<system temp dir>/inference-perf-<user>/trace-cache`) | Local cache for traces read from `s3://` entries. In Kubernetes, point it at an `emptyDir` |
 | `remote_cache_max_gb` | float | No (default: `10.0`) | Disk budget for `remote_cache_dir`, least-recently-used eviction. A running session keeps its trace on disk until it ends, so many concurrent sessions can exceed the budget by their own files. `0` keeps only the traces of running sessions |
@@ -300,11 +301,57 @@ When at least one substitution fires, the session's completion record gains
 two extra keys for telemetry:
 
 - `recorded_substitution_event_ids` — sorted list of predecessor event_ids
-  whose live tool_call response was replaced
+  whose live output was replaced (a malformed tool call, or a truncated turn
+  under `truncated_output_handling=use_recorded`)
 - `n_recorded_substitutions` — `len(recorded_substitution_event_ids)`
 
 These keys are gated behind `len(...) > 0`, so a default-config run
 produces an identical wire format to upstream main.
+
+### Truncated turns
+
+Replay asks each turn for the recorded output length. A reasoning model can
+spend that budget on reasoning and stop with `finish_reason: "length"` before
+producing the recorded shape: no visible text, or no tool call where the
+recording made one. OpenAI reports `length`; Anthropic's Messages API reports
+`max_tokens`. Both are treated as truncation.
+
+Left alone, that message becomes the successor's history. In a tool-call chain
+the recorded `role: tool` result then answers a call that was never made, and
+the next request either carries a dangling `tool_call_id` or continues a
+conversation the recording never had. In a text chain the successor sees an
+empty assistant turn where the recording had a full answer.
+
+`truncated_output_handling` selects what replay does when **both** hold:
+
+- the live turn stopped for length, and
+- the recording had a tool call and the live turn made none, or the recording
+  had text and the live turn has no content.
+
+| Value | Behavior |
+|---|---|
+| `none` (default) | No mitigation. The truncated message enters the next turn's history unchanged (upstream behavior). |
+| `use_recorded` | Substitute the recorded assistant message at this slot. Its `tool_call_id`s line up with the recorded `role: tool` successor, so no ID rewrite is needed. Counted in `recorded_substitution_event_ids`. If the recorded message is itself malformed, the event fails with `recorded_fallback_malformed`. |
+| `fail` | Fail the successor event with cause `truncated_output`; downstream events skip. Use when a truncated turn should count as a failure rather than be repaired. |
+
+A length-stopped turn that still produced the recorded shape is kept: a valid
+tool call or non-empty text is the model's answer even if it hit the limit. A
+partial answer is not replaced, because doing so would change the workload.
+`max_tokens` is never raised, so replay never asks for more output than the
+recording produced.
+
+Only substituted turns are affected: with `disable_output_substitution: true`
+replay sends the recorded messages as-is, so this knob is inert.
+
+```yaml
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_directory: "production_traces/"
+    use_static_model: true
+    static_model_name: "qwen3-2b"
+    truncated_output_handling: use_recorded
+```
 
 ### Images (multimodal traces)
 

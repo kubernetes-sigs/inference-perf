@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import json
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import Any, AsyncGenerator, Callable, Mapping, Optional
 from unittest.mock import Mock
 
 import pytest
@@ -22,6 +22,7 @@ from inference_perf.apis.response_errors import InBandError
 from inference_perf.apis.streaming_parser import (
     StreamInterruptedError,
     _SSEStreamParser,
+    finish_reason_of,
     parse_sse_stream,
 )
 
@@ -706,3 +707,87 @@ async def test_parse_sse_stream_ignores_null_error_field() -> None:
     assert output_text == "Hello"
     assert len(chunk_times) == len(response_chunks) == 1
     assert server_usage is None
+
+
+# OpenAI chat delta text, narrowed rather than returned as Any: the SSE
+# extractor contract takes a decoded frame and returns the generated text.
+def _openai_delta_content(data: Mapping[str, object]) -> Optional[str]:
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return None
+    delta = choice.get("delta")
+    if not isinstance(delta, dict):
+        return None
+    content = delta.get("content")
+    return content if isinstance(content, str) else None
+
+
+# A vLLM-shaped stream: content frames carry finish_reason null, the last
+# content frame carries "length", then a usage-only frame and [DONE]. The
+# parser must report the last non-null reason so replay can detect a turn
+# stopped at the output limit (#1072).
+@pytest.mark.asyncio
+async def test_parse_sse_stream_reports_last_finish_reason() -> None:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    chunks = [
+        b'data: {"choices": [{"delta": {"content": "Hello"}, "finish_reason": null}]}\n\n',
+        b'data: {"choices": [{"delta": {"content": " world"}, "finish_reason": "length"}]}\n\n',
+        b'data: {"choices": [], "usage": {"completion_tokens": 2}}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    parsed = await parse_sse_stream(mock_response, _openai_delta_content)
+
+    assert parsed.finish_reason == "length"
+    # The reason is metadata; it must not leak into the generated-text chunks.
+    assert parsed.output_text == "Hello world"
+
+
+# Some servers send the reason on its own frame after the last content (an
+# empty delta), so capture must not depend on the frame carrying text.
+@pytest.mark.asyncio
+async def test_parse_sse_stream_finish_reason_on_content_free_frame() -> None:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    chunks = [
+        b'data: {"choices": [{"delta": {"content": "Hi"}, "finish_reason": null}]}\n\n',
+        b'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    parsed = await parse_sse_stream(mock_response, _openai_delta_content)
+
+    assert parsed.finish_reason == "stop"
+
+
+# finish_reason_of reads both API shapes and ignores frames without a reason:
+# OpenAI unary/SSE at choices[0].finish_reason, Anthropic unary at stop_reason
+# and message_delta at delta.stop_reason. Null/empty/absent returns None so a
+# later usage-only frame cannot erase a real reason.
+def test_finish_reason_of_reads_openai_and_anthropic_shapes() -> None:
+    assert finish_reason_of({"choices": [{"text": "x", "finish_reason": "stop"}]}) == "stop"
+    assert finish_reason_of({"type": "message", "stop_reason": "max_tokens", "content": []}) == "max_tokens"
+    assert finish_reason_of({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {}}) == "end_turn"
+    assert finish_reason_of({"choices": [{"delta": {"content": "x"}, "finish_reason": None}]}) is None
+    assert finish_reason_of({"choices": [], "usage": {"completion_tokens": 3}}) is None
+    assert finish_reason_of({"error": {"message": "boom"}}) is None

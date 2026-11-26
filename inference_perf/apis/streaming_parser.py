@@ -76,6 +76,12 @@ class ParsedSSEStream(NamedTuple):
     # the end token, deltas a parser swallowed. Empty when no chunk carried ids.
     token_id_times: List[float]
 
+    # The server's stop reason for the whole stream, verbatim (OpenAI
+    # `choices[0].finish_reason`, Anthropic `delta.stop_reason`). None when no
+    # frame carried one. Replay uses this to tell a length-stopped turn from a
+    # complete one (#1072).
+    finish_reason: Optional[str] = None
+
     @property
     def generated_chunk_times(self) -> List[float]:
         """Arrival times of every chunk that carried generated text, in order.
@@ -96,6 +102,25 @@ def chunk_token_id_count(data: Mapping[str, object]) -> int:
         for choice in choices
         if isinstance(choice, dict) and isinstance(token_ids := choice.get("token_ids"), list)
     )
+
+
+def finish_reason_of(data: Mapping[str, object]) -> Optional[str]:
+    """The stop reason carried by one SSE frame or unary body, in either API's shape.
+
+    OpenAI puts it at ``choices[0].finish_reason`` on the final chunk and on a
+    unary body. Anthropic puts ``stop_reason`` on a unary message and on the
+    ``message_delta`` event's ``delta``. Absent, null and empty values return
+    None, so a frame that only changes usage never overwrites a real reason.
+    """
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0]
+        if isinstance(choice, dict) and choice.get("finish_reason"):
+            return str(choice["finish_reason"])
+    for holder in (data, data.get("delta")):
+        if isinstance(holder, dict) and holder.get("stop_reason"):
+            return str(holder["stop_reason"])
+    return None
 
 
 class StreamInterruptedError(Exception):
@@ -145,6 +170,9 @@ class _SSEStreamParser:
         self.tool_argument_parts: dict[int, List[str]] = {}
         self.tool_calls: dict[int, dict[str, Any]] = {}
         self.token_id_times: List[float] = []
+        # Last non-empty stop reason seen in any frame. OpenAI sends it on the
+        # final content chunk; Anthropic on `message_delta`. None when absent.
+        self.finish_reason: Optional[str] = None
         self.buffer = bytearray()
         self.data_lines: List[bytes] = []
         self.skip_lf = False
@@ -157,6 +185,8 @@ class _SSEStreamParser:
             data = json.loads(data_str)
             if self.error_payload is None:
                 self.error_payload = in_band_error(data)
+            if reason := finish_reason_of(data):
+                self.finish_reason = reason
             if b"usage" in data_bytes or b"message" in data_bytes:
                 usage = data.get("usage")
                 if not isinstance(usage, dict):
@@ -305,6 +335,7 @@ class _SSEStreamParser:
             ],
             has_tool_calls=bool(self.tool_argument_parts),
             token_id_times=self.token_id_times,
+            finish_reason=self.finish_reason,
         )
 
 

@@ -33,7 +33,7 @@ from inference_perf.apis.anthropic_messages import build_anthropic_request_body
 from inference_perf.apis.chat import ChatMessage
 from inference_perf.apis.image_parts import count_missing_images, is_image_part, to_openai_image
 from inference_perf.client.modelserver.otel_instrumentation import summarize_media
-from inference_perf.config.datagen.replay import BadToolCallHandling, ToolChoiceMode
+from inference_perf.config.datagen.replay import BadToolCallHandling, ToolChoiceMode, TruncatedOutputHandling
 from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
     build_graph,
@@ -266,6 +266,7 @@ def _generator_for(request: Dict[str, Any]) -> Any:
     cfg = MagicMock()
     cfg.bad_tool_call_handling = BadToolCallHandling.NONE
     cfg.tool_choice_mode = ToolChoiceMode.FORCE_RECORDED
+    cfg.truncated_output_handling = TruncatedOutputHandling.NONE
     cfg.attribute_to_header_map = {}
     cfg.attribute_to_label_map = {}
     gen.otel_config = cfg

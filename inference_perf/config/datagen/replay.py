@@ -64,6 +64,39 @@ class BadToolCallHandling(str, Enum):
     USE_RECORDED = "use_recorded"
 
 
+class TruncatedOutputHandling(str, Enum):
+    """How to handle a predecessor turn the server stopped for length.
+
+    Replay asks for the recorded output length (`max_tokens`). A reasoning
+    model can spend that budget on reasoning and stop with
+    `finish_reason: "length"` before producing the shape the recording had:
+    no visible text, or no tool call where the recording made one. That turn
+    would otherwise enter the successor's history as-is, leaving a recorded
+    `role: tool` result answering a call that was never made, or an empty
+    assistant turn where the recording had a full answer.
+
+    none
+        Default. No mitigation. The truncated message enters the next
+        turn's history unchanged. Use for strict trace fidelity.
+
+    use_recorded
+        When the live turn was length-stopped and lacks the recorded shape,
+        discard it and substitute the recorded assistant message at this
+        slot. The recorded `tool_call_id`s line up with the recorded
+        `role: tool` successor, so the next request is structurally valid
+        and no ID rewrite is needed.
+
+    fail
+        Mark the successor event failed with the `truncated_output` cause,
+        as the text-fallback path does when a tool call was expected. Use
+        when a truncated turn should be scored as a failure, not repaired.
+    """
+
+    NONE = "none"
+    USE_RECORDED = "use_recorded"
+    FAIL = "fail"
+
+
 class ToolChoiceMode(str, Enum):
     """Whether replay injects a `tool_choice` policy on recorded tool-call turns.
 
@@ -204,6 +237,25 @@ class SessionReplayConfig(StrictBaseModel):
             "the live response and substitute the recorded assistant "
             "message at the affected slot; the recorded tool_call_id flows "
             "into the recorded role:tool successor unchanged."
+        ),
+    )
+
+    # Client-side handling for a predecessor turn the server length-stopped
+    # before it produced the recorded shape (no visible text, or no tool call
+    # where the recording made one). The default `none` keeps the truncated
+    # message in the successor's history, exactly as upstream main does.
+    truncated_output_handling: TruncatedOutputHandling = Field(
+        TruncatedOutputHandling.NONE,
+        description=(
+            "How to handle a predecessor turn stopped for length "
+            "(finish_reason 'length', Anthropic stop_reason 'max_tokens') "
+            "whose live message lacks the recorded shape: a recorded tool "
+            "call and no live tool call, or recorded text and no live "
+            "content. none (default): no mitigation, the truncated message "
+            "enters the next turn's history. use_recorded: substitute the "
+            "recorded assistant message at the affected slot, keeping the "
+            "recorded tool_call_id linkage intact. fail: fail the successor "
+            "event with the truncated_output cause."
         ),
     )
 

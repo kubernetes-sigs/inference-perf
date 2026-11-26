@@ -62,7 +62,12 @@ from inference_perf.datagen.replay.replay_graph_session_datagen import (
     SessionInferenceInfo,
     WorkerSessionTracker,
 )
-from inference_perf.config.datagen.replay import BadToolCallHandling, OTelTraceReplayConfig, ToolChoiceMode
+from inference_perf.config.datagen.replay import (
+    BadToolCallHandling,
+    OTelTraceReplayConfig,
+    ToolChoiceMode,
+    TruncatedOutputHandling,
+)
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
     build_graph,
@@ -991,6 +996,7 @@ class TestEndToEndSimpleChain:
         mock_otel_config.attribute_to_label_map = {}
         mock_otel_config.bad_tool_call_handling = BadToolCallHandling.NONE
         mock_otel_config.tool_choice_mode = ToolChoiceMode.FORCE_RECORDED
+        mock_otel_config.truncated_output_handling = TruncatedOutputHandling.NONE
         gen.otel_config = mock_otel_config
         gen.replay_config = mock_otel_config
         gen.session_graph_state = {session_id: MagicMock(graph=graph, random_string=None)}
@@ -2766,6 +2772,7 @@ class TestLoadLazyDataPreservesToolLinkage:
         cfg.attribute_to_label_map = {}
         cfg.bad_tool_call_handling = BadToolCallHandling.NONE
         cfg.tool_choice_mode = ToolChoiceMode.FORCE_RECORDED
+        cfg.truncated_output_handling = TruncatedOutputHandling.NONE
         gen.otel_config = cfg
         gen.replay_config = cfg
         gen.session_graph_state = {session_id: MagicMock(graph=graph, random_string=None)}
