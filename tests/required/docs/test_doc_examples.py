@@ -18,6 +18,8 @@ every markdown file under docs/ and checks two kinds of example:
 
 - a table whose header row is registered in ``CHECKS``: every row must
   recompute to what it claims, or, for a "Rejected ..." table, be rejected;
+- the supported-distributions table: it must equal the table generated from
+  the code's distribution rows, cell for cell and in order;
 - a ```yaml block on the line after ``<!-- checked-example -->``: it must load
   through the config model named by its single top-level key.
 
@@ -37,7 +39,10 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from inference_perf.config import DataConfig, LoadConfig
-from inference_perf.utils.numeric.expression import SERIES, SIGNALS, Expression, Predicate
+from inference_perf.config.datagen.multimodal import ImageDatagenConfig
+from inference_perf.config.common import validate_length_expression
+from inference_perf.utils.numeric.expression import DISTRIBUTIONS, SERIES, SIGNALS, Expression, Predicate
+from inference_perf.utils.numeric.expression.distributions import DOCS_HEADER, docs_rows
 from inference_perf.utils.numeric.expression.measured import AGGREGATES, WINDOWS
 
 DOCS = sorted((Path(__file__).resolve().parents[3] / "docs").glob("*.md"))
@@ -101,6 +106,13 @@ def _check_bounds(row: Row) -> None:
     assert Expression(expr).bounds == (_number(row[1]), _number(row[2])), f"{expr}: bounds {Expression(expr).bounds}"
 
 
+# A whole-number example must prove integer-valued, with the claimed bounds. Input: '`Min(Poisson(30), 57)`', 0, 57.
+def _check_whole_number(row: Row) -> None:
+    expr = _code(row[0])
+    assert Expression(expr).is_integer_valued, f"{expr}: not provably whole-numbered"
+    _check_bounds(row)
+
+
 # A condition must become true at the claimed second (2 dp).
 def _check_condition(row: Row) -> None:
     condition, ends_at = _code(row[0]), float(row[1])
@@ -162,6 +174,9 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Window", "Selects"): _check_window,
     ("Rejected expression", "Why"): _rejects(Expression),
     ("Rejected condition", "Why"): _rejects(Predicate),
+    ("Rejected insertion_point", "Why"): _rejects(lambda raw: ImageDatagenConfig(insertion_point=raw)),
+    ("Whole-number expression", "Lower", "Upper"): _check_whole_number,
+    ("Rejected whole-number expression", "Why"): _rejects(validate_length_expression),
 }
 
 MODELS: Dict[str, Type[BaseModel]] = {"load": LoadConfig, "data": DataConfig}
@@ -223,3 +238,23 @@ def test_every_checked_table_is_present() -> None:
 def test_measured_name_tables_are_complete(header: Tuple[str, ...], names: set[str]) -> None:
     documented = {_code(row[0]) for doc in DOCS for h, rows in _tables(doc.read_text()) if h == header for row in rows}
     assert documented == names, f"undocumented: {names - documented}, unknown: {documented - names}"
+
+
+# The supported-distributions table in the docs, found by its header, as a list of rows of cells.
+def _distribution_tables() -> List[List[Row]]:
+    return [rows for doc in DOCS for header, rows in _tables(doc.read_text()) if header == DOCS_HEADER]
+
+
+# The docs hold one supported-distributions table and it equals the one generated from the code, cell for cell
+# and in order, e.g. the row '`Exponential(rate)` | `rate > 0` | `0` | `inf` | no | `1/rate`'.
+def test_distribution_table_matches_the_code() -> None:
+    tables = _distribution_tables()
+    assert len(tables) == 1, f"expected one table with header {DOCS_HEADER}, found {len(tables)}"
+    assert tables[0] == [list(row) for row in docs_rows()]
+
+
+# Every row of the code's table is named in the docs table and nothing else is: the first cell of each docs row,
+# e.g. 'Normal(mean, std)', is the signature of exactly one row.
+def test_distribution_table_lists_every_row() -> None:
+    documented = [_code(row[0]) for rows in _distribution_tables() for row in rows]
+    assert sorted(documented) == sorted(row.signature for row in DISTRIBUTIONS.values())

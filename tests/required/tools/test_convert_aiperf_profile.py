@@ -29,6 +29,7 @@ import pytest
 from inference_perf.config import (
     APIType,
     ConcurrentLoadStage,
+    Distribution,
     DistributionType,
     LoadType,
     MetricsClientType,
@@ -106,10 +107,10 @@ def test_case_a_fixed_rate_converts() -> None:
     assert isinstance(stage, StandardLoadStage)
     assert stage.rate == 40
     assert stage.duration == 15
-    assert config.data.input_distribution is not None
+    assert isinstance(config.data.input_distribution, Distribution)
     assert config.data.input_distribution.type == DistributionType.FIXED
     assert config.data.input_distribution.mean == 128
-    assert config.data.output_distribution is not None
+    assert isinstance(config.data.output_distribution, Distribution)
     assert config.data.output_distribution.mean == 64
     assert config.server is not None
     assert config.server.ignore_eos is True
@@ -410,7 +411,7 @@ def test_normal_isl_gets_wide_clamps_and_assumption() -> None:
     config = conversion.config
     assert config is not None
     dist = config.data.input_distribution
-    assert dist is not None
+    assert isinstance(dist, Distribution)
     assert dist.type == DistributionType.NORMAL
     assert dist.std_dev == 50
     assert dist.min == 1
