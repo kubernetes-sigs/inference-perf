@@ -25,7 +25,7 @@ classes and HTTP status codes); nothing per-request goes on a label.
 """
 
 import time
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from prometheus_client import Counter, Gauge  # noqa: TID251 (declares each spec's metric_type)
 
@@ -47,6 +47,21 @@ def output_tokens(response_metrics: Optional[ResponseMetrics]) -> int:
     Resolved by the report's own function with that opt-in on, so both read
     the same usage keys and both keep a reported 0."""
     return effective_output_tokens(response_metrics, use_server_output_tokens=True)
+
+
+# The channels of the client output count: generated text, reasoning, and tool
+# names and arguments. A bounded label: these three and nothing else.
+OUTPUT_CHANNELS = ("text", "reasoning", "tool")
+
+
+def output_len_by_channel(response_metrics: Optional[ResponseMetrics]) -> Optional[Mapping[str, int]]:
+    """Client output count per channel for one response, keyed by OUTPUT_CHANNELS.
+
+    The APIs split the client count by channel since #914 but keep only the
+    sum. #917 stores the split; until then no response carries one, this
+    returns None and the per-channel series stay absent.
+    """
+    return None
 
 
 def _mark_run_start(gauge: Gauge, context: RunContext) -> None:
@@ -101,6 +116,29 @@ def _count_prompt_tokens(counter: Counter, metric: RequestLifecycleMetric) -> No
 def _count_output_tokens(counter: Counter, metric: RequestLifecycleMetric) -> None:
     if metric.error is None:
         counter.labels(stage_label(metric)).inc(output_tokens(metric.info.response_metrics))
+
+
+def _count_output_len(counter: Counter, metric: RequestLifecycleMetric) -> None:
+    if metric.error is not None:
+        return
+    lengths = output_len_by_channel(metric.info.response_metrics)
+    if lengths is None:
+        return
+    for channel in OUTPUT_CHANNELS:
+        counter.labels(stage_label(metric), channel).inc(lengths.get(channel, 0))
+
+
+def _count_output_len_requests(counter: Counter, metric: RequestLifecycleMetric) -> None:
+    if metric.error is not None:
+        return
+    lengths = output_len_by_channel(metric.info.response_metrics)
+    if lengths is None:
+        return
+    for channel in OUTPUT_CHANNELS:
+        # labels() first so every channel has a series from the first request on.
+        child = counter.labels(stage_label(metric), channel)
+        if lengths.get(channel, 0) > 0:
+            child.inc()
 
 
 def _count_workers_lost(counter: Counter, context: StageContext) -> None:
@@ -203,5 +241,27 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         metric_type=Counter,
         labelnames=("stage",),
         on_request=_count_output_tokens,
+    ),
+    MetricSpec(
+        name="inference_perf_output_len",
+        documentation=(
+            "Client-counted output tokens of successful requests by stage and channel (text, reasoning, tool), "
+            "the counts behind output_len in the summary. Unlike inference_perf_output_tokens_total these are "
+            "always client counts, since the server's usage has no tool count."
+        ),
+        metric_type=Counter,
+        labelnames=("stage", "channel"),
+        on_request=_count_output_len,
+    ),
+    MetricSpec(
+        name="inference_perf_output_len_requests",
+        documentation=(
+            "Successful requests that produced output on the channel, by stage and channel. "
+            "rate(inference_perf_output_len_total) divided by rate() of this counter is the channel's mean "
+            "length over the requests that used it."
+        ),
+        metric_type=Counter,
+        labelnames=("stage", "channel"),
+        on_request=_count_output_len_requests,
     ),
 )
