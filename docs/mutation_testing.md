@@ -51,9 +51,9 @@ Two errors stop the run before a verdict. **`The base branch ... fails its own u
 
 **Processes a mutant's tests fork end with that mutant's run.** mutmut ends a run with `os._exit` or a kill, which skips the exit hook that stops daemon processes. A test that starts Workers through `LoadGenerator.mp_run` would leave them waiting once per mutant, each one small enough to stay under the cap, until the runner ran out of memory (#946). On Linux a process a mutant's test forks, and a Python process it starts along with what that one forks, is killed when its parent exits. That reaches Workers, which the multiprocessing forkserver forks. A program that is not Python is not covered. The stats run and the clean run are left alone.
 
-## The weekly run
+## The nightly run
 
-`pdm run test:mutation` mutates the whole package against the full suite and prints survivors per module. It takes hours and is the input for a scheduled run and a burn-down, neither of which exists yet (#872).
+`pdm run test:mutation` mutates the whole package against the full suite and prints survivors per module. It takes hours. `.github/workflows/nightly_mutation.yml` runs it on main every night (and on manual dispatch), puts the per-module table in the step summary with the surviving total's delta against the previous run, and uploads `mutation.json`, the run log and the survivor count as the `nightly-mutation-results` artifact (#1003). It gates nothing. A test a PR adds can only add kills in the PR job above, so killing an old survivor pays nothing there; the nightly total falling is where that credit shows. A night that outgrows the 345 minute budget fails with the partial report rather than staying green with nothing; if that becomes routine, the run needs sharding.
 
 ## When the call flips
 

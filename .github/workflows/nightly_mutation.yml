@@ -1,0 +1,132 @@
+# Nightly whole-package mutation run (#1003, part of #1002).
+#
+# The PR mutation job pares its scope to the functions a PR touches plus the
+# tests it could have weakened, so a test that kills an old survivor no longer
+# raises anything there. This run restores the credit #881 promised: it
+# mutates the whole package on main every night (pdm run test:mutation, the
+# --all mode of scripts/check_mutation_regression.py), writes the per-module
+# survivor table to the step summary with a day over day delta, and uploads
+# mutation.json. Paying down old survivors shows up here, as a falling total.
+#
+# Deliberately gating NOTHING: it is not in merge_gate.yml's
+# REQUIRED_WORKFLOWS, no PR waits for it, and a red night blocks nobody. It
+# fails visibly rather than silently when the package outgrows the budget,
+# because a nightly that reports nothing would be indistinguishable from a
+# healthy one; if it overruns routinely, the run needs sharding (#1003 names
+# the 360 minute job maximum as the ceiling after the #796 replay in #881 ran
+# 5.5 hours on a hosted runner without finishing).
+#
+# The previous night's survivor count comes from this workflow's most recent
+# successful run artifact, not a committed file, so the job needs only
+# actions: read and never writes to the repository. A rise on main does not
+# open an issue: the delta line in the summary is the trend, and filing can
+# be added the way metric_name_drift.yml does it once the numbers prove
+# stable night over night.
+name: Nightly Mutation
+
+on:
+  schedule:
+    # Daily, early UTC, off the busy top of the hour. The run takes hours, so
+    # once a night is the cadence #1003 asks for and the job maximum allows.
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Lists this workflow's previous runs and downloads the survivor-count
+  # artifact for the day over day delta.
+  actions: read
+
+# explicit bash runs every step with -eo pipefail, so a pipe can't swallow a
+# failure. tests/test_check_workflow_shell.py holds every workflow to it.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  mutation-all:
+    # Never on forks: a fork's schedule would burn six runner-hours a night
+    # for a trend nobody reads there.
+    if: github.repository == 'kubernetes-sigs/inference-perf'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      matrix:
+        python-version: ['3.13']
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Set up PDM
+        uses: pdm-project/setup-pdm@c6081998a653693a457d93c70b8007d979bc6741 # v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Same key and install set as the coverage and PR mutation jobs, so all
+      # three share one cache.
+      - name: Restore pdm venv
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-dev-analysis-otel-${{ hashFiles('pdm.lock') }}
+      - name: Install dependencies
+        run: pdm sync -d -G analysis -G otel
+      # The most recent successful run of this workflow holds the last count.
+      # Missing on the first run and after artifact expiry, which the summary
+      # step says outright instead of failing over it.
+      - name: Fetch the previous run's survivor count
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          run_id="$(gh run list --workflow nightly_mutation.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [ -n "${run_id}" ]; then
+            gh run download "${run_id}" --name nightly-mutation-results --dir previous-results || true
+          fi
+          if [ -f previous-results/survivors.txt ]; then
+            echo "count=$(cat previous-results/survivors.txt)" >> "$GITHUB_OUTPUT"
+          else
+            echo "count=" >> "$GITHUB_OUTPUT"
+          fi
+      # The budget sits under the step timeout, which sits under the job's
+      # timeout-minutes, the same ladder as the PR mutation job: a slow run
+      # fails with a partial report instead of being cancelled without one.
+      - name: Mutation-test the whole package
+        timeout-minutes: 350
+        run: pdm run test:mutation --budget-minutes 345 2>&1 | tee mutation-all.log
+      # whole_package prints the per-module table and the final count last;
+      # everything from the table header on is the summary. survivors.txt is
+      # what the next run reads for its delta.
+      - name: Write the step summary
+        if: always()
+        env:
+          PREVIOUS: ${{ steps.previous.outputs.count }}
+        run: |
+          [ -f mutation-all.log ] || touch mutation-all.log
+          sed -n '/^| Module | Mutants | Surviving |$/,$p' mutation-all.log >> "$GITHUB_STEP_SUMMARY"
+          current="$(sed -n 's/^[0-9][0-9]* mutants, \([0-9][0-9]*\) surviving\.$/\1/p' mutation-all.log | tail -n 1)"
+          if [ -z "${current}" ]; then
+            echo "The run ended before printing a survivor table; see the job log and any error reported above." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "${current}" > survivors.txt
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${PREVIOUS}" ]; then
+            printf 'Surviving mutants: %s (previous run: %s, delta %+d).\n' "${current}" "${PREVIOUS}" "$((current - PREVIOUS))" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Surviving mutants: ${current}. No previous run artifact to compare against." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-mutation-results
+          path: |
+            mutation.json
+            mutation-all.log
+            survivors.txt
+          if-no-files-found: warn
