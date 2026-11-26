@@ -106,6 +106,10 @@ logger = logging.getLogger(__name__)
 # worker has to rebuild a payload that can include a large tokenizer.
 WORKER_STARTUP_TIMEOUT_SEC = 300.0
 
+# Upper bound on how long the run waits for workers to exit after the stop signal.
+# A worker flushes its queued metrics on exit, so they reach the collector before its sentinel.
+WORKER_EXIT_TIMEOUT_SEC = 60.0
+
 
 # Stage-teardown tuning. The teardown protocol is bounded end to end: workers
 # give in-flight requests `stage_teardown_grace_seconds` (LoadConfig) to finish
@@ -1985,6 +1989,7 @@ class LoadGenerator:
             except Exception as e:
                 logger.error(f"Preprocessing exception: {e}")
                 stop_signal.set()
+                await self._await_workers_exit()
                 return
 
         if self.load_type == LoadType.TRACE_SESSION_REPLAY:
@@ -2086,6 +2091,29 @@ class LoadGenerator:
         # Reset the request phase to get workers out of their final wait()
         request_phase.set()
         stop_signal.set()
+        await self._await_workers_exit()
+
+    async def _await_workers_exit(self) -> None:
+        """Wait, bounded, for the workers to exit before the run returns.
+
+        A worker's record_metric returns once the metric is in its queue's feeder buffer, not in the pipe.
+        The caller puts the collector's None sentinel as soon as this run returns, and the collector stops reading at it.
+        A metric still buffered in a live worker would then be dropped without an error (#913).
+        A worker flushes its feeder threads on exit.
+        """
+        deadline = time.monotonic() + WORKER_EXIT_TIMEOUT_SEC
+        # Workers are checked before the deadline, so a run whose workers have already exited never warns.
+        while True:
+            alive = [w for w in self.workers if w.is_alive()]
+            if not alive:
+                return
+            if time.monotonic() >= deadline:
+                break
+            await sleep(0.05)
+        logger.warning(
+            f"{len(alive)} worker(s) still running {WORKER_EXIT_TIMEOUT_SEC}s after stop; "
+            "metrics they had not yet flushed may be missing from the report"
+        )
 
     async def run(self, client: ModelServerClient) -> None:
         # A batch run makes its Batch API calls from this process, so it starts no worker.
