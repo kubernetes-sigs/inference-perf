@@ -30,3 +30,6 @@ class LocalRequestMetricCollector(RequestMetricCollector):
 
     def get_metrics(self) -> List[RequestLifecycleMetric]:
         return self.metrics
+
+    def snapshot(self) -> List[RequestLifecycleMetric]:
+        return list(self.metrics)

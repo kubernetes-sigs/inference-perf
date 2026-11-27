@@ -86,6 +86,67 @@ load:
 
 Regardless of the serving stack, accelerator you are running on or the number of replicas, this will make sure it will generate different request rates until the server is saturated. Saturation detection is done by doing an initial run with a 1000 concurrent requests and identifying the maximum QPS the server can handle by looking at the burn rate. This QPS is then used as the upper bound for the sweep.
 
+#### Closed-loop capacity probe
+
+The burst above estimates saturation from the *draining* side of a transient:
+it takes a percentile of sampled request rates once dispatch stops, which is
+the least stable part of the run and does not converge as more requests are
+added. Set `sweep.probe` to measure capacity from the stable side instead:
+
+```yaml
+load:
+  type: constant
+  num_workers: 8                # the probe drives worker concurrency, so it needs workers
+  sweep:
+    type: linear
+    probe:
+      rung_duration: 30         # measurement window per rung, in seconds
+      settle_duration: 5        # warm-up before the window opens
+      start_concurrency: 1      # first rung, also the unloaded latency baseline
+      growth_factor: 2.0        # concurrency multiplier between rungs
+      max_concurrency: 1024     # ladder ceiling (also capped by workers x worker_max_concurrency)
+      gain_threshold: 0.05      # stop once the throughput gain between rungs is below this fraction
+      knee_fraction: 0.9        # fraction of saturation rate that defines the knee concurrency
+      max_littles_law_residual: 0.2   # reject a rung whose N = X*R residual is larger than this
+      max_rung_error_rate: 0.1  # reject a rung whose failed-request fraction is larger than this
+```
+
+The probe holds in-flight concurrency fixed at N, measures throughput X(N) and
+mean latency R(N) over a stationary window, and grows N geometrically until
+throughput gains flatten. Little's law (`N = X * R`) is checked per rung, so a
+rung that was not actually held at N is reported as non-stationary instead of
+silently biasing the estimate. A rung is also dropped from the fit when its
+Little's law residual exceeds `max_littles_law_residual` or more than
+`max_rung_error_rate` of its requests failed, so a broken measurement or a
+failing backend cannot enter the curve as a clean point. It fits the rung
+curve two ways — an isotonic
+plateau that never extrapolates, and a saturating-curve asymptote — and keeps
+the asymptote only when it is close to the measured plateau. `r_sat` and
+`n_knee` are reported with bootstrap confidence intervals, and the generated
+stages are spaced up to `r_sat`.
+
+The ladder also watches the load generator itself. Each rung samples how late
+its dispatch loop runs against the tick it intends to keep; a rung whose loop
+is more than twice as late as the unloaded rung's, and at least 10 ms late in
+absolute terms, is classified `client_bound` and ends the ladder. This matters
+on small instances: below roughly four cores the generator can saturate before
+the server does, and without the signal that ceiling would be reported as the
+server's capacity. If you run a sweep on a small pod and see `client_bound`,
+add workers or move the generator to a larger machine before trusting `r_sat`
+for that hardware.
+
+Probe traffic runs under negative stage ids and is dropped from lifecycle
+reports, so it never pollutes the benchmark it configures. The probe still
+publishes its own evidence: every run with `sweep.probe` writes
+`sweep_probe.json` (see [reports.md](reports.md)), which carries `r_sat` and
+`n_knee` with their confidence intervals, the stop reason, whether the result
+is censored, and the full rung curve. A ladder that stopped at
+`max_concurrency`, on `client_bound`, or because a rung produced no successful
+completion (`measurement_failed`, with `failed_concurrency` naming that rung)
+sets `"censored": true`, meaning `r_sat` is a lower bound rather than a
+measured plateau. The same data is
+available in-process as `LoadGenerator.probe_result`.
+
 ### Generate specific QPS
 
 1. Set the desired request rate in the load generation config with the appropriate stages.
