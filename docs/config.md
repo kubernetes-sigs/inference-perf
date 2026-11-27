@@ -352,6 +352,7 @@ server:
   cert_path: ""                                       # Optional path to a client TLS certificate (mutual TLS)
   key_path: ""                                        # Optional path to the private key for cert_path
   wait_for: ready                                     # What to wait for before the first request (ready|reachable|none)
+  wait_timeout: 600                                   # Optional; seconds the wait_for wait may last (default 600)
 ```
 
 `server.type` selects the model server (vLLM by default). Verified servers are vLLM,
@@ -383,7 +384,7 @@ The same `/v1/models` lookup validates LoRA adapter names when
 
 `server.wait_for` sets what the client waits for before the first request. The wait
 polls the profile's readiness route (`/health` for vLLM, `/v1/models` for SGLang and
-TGI) once a second for up to 600 seconds:
+TGI) once a second for up to `server.wait_timeout` seconds, 600 by default:
 
 - `ready` (default): until the route answers 200. A 404 means the route is not served
   there, and the run starts without waiting.
@@ -392,6 +393,9 @@ TGI) once a second for up to 600 seconds:
   servers up. A probe that connects and then gets no response within 5 seconds also
   counts, since such a gateway may hold it until a backend exists.
 - `none`: no wait.
+
+With `ready`, a route that answers anything other than 200, 404, 401 or 403 is polled for
+the whole budget, and the run then fails. Lower `server.wait_timeout` to fail sooner.
 
 The `reachable` probe is itself a request to the gateway. A gateway that scales up on
 any request starts the cold start at the probe rather than at the first measured

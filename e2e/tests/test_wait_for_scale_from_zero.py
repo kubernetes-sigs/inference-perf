@@ -25,9 +25,12 @@ starts the backend.
 - ``none``: no probe at all; the same.
 - ``ready``: the readiness wait only ever sees 503, and nothing else is sent
   until it ends, so the backend never starts and the run fails at the deadline.
-  The CLI's deadline is 600 s; to keep the test short the client is built
+  The CLI's deadline is 600 s by default; to keep the test short the client is built
   in-process with ``readiness_timeout_sec`` set to ``READY_DEADLINE_S``, which
   runs the same wait.
+- ``ready`` with ``server.wait_timeout``: the same wait through the CLI, cut to
+  ``READY_DEADLINE_S`` by the field. The run exits non-zero at the deadline and
+  no completion request was sent.
 """
 
 import asyncio
@@ -157,6 +160,25 @@ async def test_ready_never_starts_a_run_against_a_pool_scaled_to_zero() -> None:
         ):
             await asyncio.to_thread(build_client)
 
+    # The wait polled and only ever saw 503; no completion request was sent, so the
+    # backend never started.
+    assert gateway.readiness_probes and set(gateway.readiness_probes) == {503}
+    assert gateway.requests == []
+    assert gateway.scale_up_s is None
+
+
+# wait_for ready with wait_timeout 5 through the CLI, against the gateway that answers 503 until a completion
+# request arrives -> the run exits non-zero naming the 5.0 s deadline and "HTTP 503", with no completion sent.
+# Without the field the wait would run its 600 s default and the 120 s process timeout would kill the run.
+async def test_wait_timeout_ends_the_ready_wait_from_the_cli() -> None:
+    async with ScaledToZeroGateway(port=get_free_port(), model=MODEL_NAME) as gateway:
+        config = _config(gateway.base_url, "ready")
+        config["server"]["wait_timeout"] = READY_DEADLINE_S
+        result = await run_benchmark_minimal(config, timeout_sec=120)
+
+    assert not result.timed_out, "the readiness wait outlived the process timeout, so wait_timeout was not applied"
+    assert not result.success
+    assert f"did not answer 200 within {READY_DEADLINE_S}s (last: HTTP 503)" in result.stdout
     # The wait polled and only ever saw 503; no completion request was sent, so the
     # backend never started.
     assert gateway.readiness_probes and set(gateway.readiness_probes) == {503}

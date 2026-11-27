@@ -468,3 +468,43 @@ def test_reachable_first_failed_probe_is_logged_at_info(caplog: pytest.LogCaptur
         f"Waiting up to 10.0s for {HEALTH_URL} to give any HTTP response (last: ConnectionError: connection refused)"
     ]
     assert _wait_messages(caplog, logging.DEBUG) == [f"Waiting for {HEALTH_URL}: ConnectionError: connection refused"]
+
+
+# --- server.wait_timeout -------------------------------------------------
+# A budget given to the constructor replaces the profile's own for that one client, for both waits.
+
+
+# Profile budget 10 s, readiness_timeout_sec=3 on each profile, route answers 503 forever -> raises at t=3
+# naming "within 3.0s", not at t=10.
+@pytest.mark.parametrize("client_cls", [vLLMModelServerClient, SGlangModelServerClient, TGImodelServerClient])
+def test_wait_timeout_replaces_the_profile_budget(client_cls: Type[openAIModelServerClient]) -> None:
+    mock_get = MagicMock(return_value=_response(503))
+    clock = FakeClock()
+    with pytest.raises(Exception, match=r"did not answer 200 within 3.0s \(last: HTTP 503\)"):
+        _build(mock_get, clock, client_cls=client_cls, readiness_timeout_sec=3.0)
+    assert clock.now == 3.0
+
+
+# wait_for=reachable, profile budget 10 s, readiness_timeout_sec=3, connection refused forever -> raises at t=3.
+def test_wait_timeout_bounds_the_reachable_wait() -> None:
+    mock_get = MagicMock(side_effect=requests.ConnectionError("connection refused"))
+    clock = FakeClock()
+    with pytest.raises(Exception, match=r"gave no HTTP response within 3.0s"):
+        _build(mock_get, clock, wait_for=WaitFor.REACHABLE, readiness_timeout_sec=3.0)
+    assert clock.now == 3.0
+
+
+# readiness_timeout_sec=None, the way an unset server.wait_timeout arrives -> the profile's 10 s budget applies.
+def test_unset_wait_timeout_keeps_the_profile_budget() -> None:
+    mock_get = MagicMock(return_value=_response(503))
+    clock = FakeClock()
+    with pytest.raises(Exception, match=r"did not answer 200 within 10.0s"):
+        _build(mock_get, clock, readiness_timeout_sec=None)
+    assert clock.now == 10.0
+
+
+# readiness_timeout_sec=3 on one client -> that client's budget is 3 s and the class still says 600 s.
+def test_wait_timeout_leaves_the_profile_default_alone() -> None:
+    client = _build(MagicMock(return_value=_response(200)), FakeClock(), readiness_timeout_sec=3.0)
+    assert client.readiness_timeout_sec == 3.0
+    assert vLLMModelServerClient.readiness_timeout_sec == 600.0

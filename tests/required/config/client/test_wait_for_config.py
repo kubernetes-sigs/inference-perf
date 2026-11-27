@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Validity rules for ``server.wait_for`` in ``inference_perf.config.client.modelserver``."""
+"""Validity rules for ``server.wait_for`` and ``server.wait_timeout`` in ``inference_perf.config.client.modelserver``."""
 
 from argparse import ArgumentParser
 from typing import List
@@ -60,3 +60,28 @@ def test_wait_for_is_a_cli_flag() -> None:
     )
     assert config.server is not None
     assert config.server.wait_for == WaitFor.REACHABLE
+
+
+# No wait_timeout -> unset, so the client keeps its own 600 s budget.
+def test_wait_timeout_defaults_to_unset() -> None:
+    assert ModelServerClientConfig(base_url="http://localhost:8000").wait_timeout is None
+
+
+# wait_timeout: 30 in YAML -> 30.0 seconds.
+def test_wait_timeout_accepts_seconds() -> None:
+    config = ModelServerClientConfig.model_validate({"base_url": "http://localhost:8000", "wait_timeout": 30})
+    assert config.wait_timeout == 30.0
+
+
+# wait_timeout 0 or -5 -> rejected. A wait that can never pass is a config error; wait_for none is how to skip it.
+@pytest.mark.parametrize("value", [0, -5])
+def test_wait_timeout_must_be_positive(value: float) -> None:
+    with pytest.raises(ValueError, match="greater than 0"):
+        ModelServerClientConfig.model_validate({"base_url": "http://localhost:8000", "wait_timeout": value})
+
+
+# --server.wait_timeout 30 on the command line -> server.wait_timeout is 30.0.
+def test_wait_timeout_is_a_cli_flag() -> None:
+    config = _config_from_argv(["--server.base_url", "http://localhost:8000", "--server.wait_timeout", "30"])
+    assert config.server is not None
+    assert config.server.wait_timeout == 30.0
