@@ -8,10 +8,42 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 
 ## Where expressions are accepted
 
-No config field accepts an expression yet. Fields are listed here as they are added, each linking to its own docs.
-
 | Field | `t` | Random | Rule |
 | --- | --- | --- | --- |
+| [`data.input_distribution`, `data.output_distribution`](./config.md#data-generation) | no | yes | Whole tokens, see [Whole numbers](#whole-numbers). |
+| [`data.shared_prefix.system_prompt_len`, `question_len`, `output_len`](./config.md#data-generation) | no | yes | Whole tokens, see [Whole numbers](#whole-numbers). |
+| [`data.conversation_replay` knobs](./conversation_replay.md#configuration-guide) | no | yes | Counts are whole numbers; `tool_call_latency_sec` takes fractions. |
+| [`data.synthetic_agentic` knobs and `context_compaction`](./synthetic_agentic.md) | no | yes | Counts are whole numbers; latencies take fractions. |
+| [`data.multimodal.*.count`](./config.md#multimodal-data-generation) | no | yes | Whole items, see [Whole numbers](#whole-numbers). |
+| [`data.multimodal.*.insertion_point`](./config.md#multimodal-data-generation) | no | yes | Provably within [0, 1]. |
+
+A whole-number field also takes a bare number, which is a fixed value. A uniform over whole numbers
+is `floor(Uniform(1, 4))`: 1, 2 and 3 each have the same weight, where `floor(Uniform(1, 3) + 1/2)`
+gives the two ends half the weight of the middle.
+
+## Legacy distribution blocks
+
+Every field above except `rate` and `stop_condition` used to take a `{type, min, max, mean, std_dev}`
+block. The block is deprecated: it still loads, rewritten to the expression it stood for, and the log
+shows that expression so the config can be updated. The block's `min` and `max` become a `Min`/`Max`
+clamp, `variance` becomes the `std_dev` it implies, and `total_count` is ignored because the number of
+values to pre-generate comes from the load stages. On a whole-number field the result goes under
+`floor(... + 1/2)`, the rounding the block applied, unless it is whole-numbered already like
+`Min(Poisson(3), 10)`.
+
+| Block | Expression |
+| --- | --- |
+| `{type: fixed, mean: 99.9}` | `99` (the truncated mean, as a bare number) |
+| `{mean: 512, std_dev: 200, min: 10, max: 1024}` | `floor(Min(Max(Normal(512, 200), 10), 1024) + 1/2)` |
+| `{type: uniform, min: 10, max: 100}` | `floor(Min(Uniform(10, 101), 100) + 1/2)`, or `floor(Uniform(10, 100) + 1/2)` on `data.input_distribution` and `data.output_distribution` |
+| `{type: lognormal, mean: 150, std_dev: 60, min: 1, max: 4096}` | `floor(Min(Max(LogNormal(4.936, 0.385), 1), 4096) + 1/2)`, the underlying normal's parameters moment-matched to the block's mean and std_dev |
+| `{type: poisson, mean: 3, min: 0, max: 10}` | `Min(Poisson(3), 10)` |
+| `{type: skew_normal, mean: 200, std_dev: 80, skew: 2.5, min: 10, max: 2000}` | `floor(Min(Max(200 + 80*(0.928*Abs(Normal(0, 1)) + 0.371*Normal(0, 1)), 10), 2000) + 1/2)`, the Azzalini two-normal form |
+
+The `data.input_distribution` and `data.output_distribution` fields compile with the parameterisations
+their old sampler used, so a `uniform` there stays `floor(Uniform(min, max) + 1/2)` and a `lognormal` is shifted by
+`min`. Same seed, same config gives the same draws run after run; the draws differ from those the block
+produced before it was compiled this way.
 
 ## Grammar
 
@@ -34,10 +66,26 @@ No config field accepts an expression yet. Fields are listed here as they are ad
 
 ## Random variables
 
-> [!IMPORTANT]
-> The table below lists common distributions only. **Any constructor in SymPy's [`sympy.stats`](https://docs.sympy.org/latest/modules/stats.html) module works, about 75 in all, and SymPy's documentation is the reference for the full set and for every parameter.** Call a constructor without SymPy's leading name argument: `Normal(512, 128)`, not `Normal("x", 512, 128)`.
->
-> Parameters follow SymPy's conventions, which do not always match the usual ones. Check SymPy's docs for any distribution not listed here.
+A random variable is one of the distributions in the table below. Any other distribution is rejected when the config loads, with an error that names it and lists these. Call one with constant arguments in the order shown: `Normal(512, 128)`.
+
+| Distribution | Requires | Lowest | Highest | Whole numbers | Mean |
+| --- | --- | --- | --- | --- | --- |
+| `Normal(mean, std)` | `std > 0` | `-inf` | `inf` | no | `mean` |
+| `LogNormal(mean, std)` | `std > 0` | `0` | `inf` | no | `exp(mean + std**2/2)` |
+| `Exponential(rate)` | `rate > 0` | `0` | `inf` | no | `1/rate` |
+| `Gamma(shape, scale)` | `shape > 0`, `scale > 0` | `0` | `inf` | no | `scale*shape` |
+| `Uniform(left, right)` | `left < right` | `left` | `right` | no | `left/2 + right/2` |
+| `Beta(alpha, beta)` | `alpha > 0`, `beta > 0` | `0` | `1` | no | `alpha/(alpha + beta)` |
+| `Weibull(scale, shape)` | `scale > 0`, `shape > 0` | `0` | `inf` | no | `scale*gamma(1 + 1/shape)` |
+| `Pareto(minimum, alpha)` | `minimum > 0`, `alpha > 0` | `minimum` | `inf` | no | `alpha*minimum/(alpha - 1)` when `alpha > 1`, otherwise infinite |
+| `Poisson(mean)` | `mean > 0` | `0` | `inf` | yes | `mean` |
+| `Binomial(n, p)` | `n >= 0`, `floor(n) == n`, `p >= 0`, `p <= 1` | `0` | `n` | yes | `n*p` |
+| `Geometric(p)` | `p > 0`, `p <= 1` | `1` | `inf` | yes | `1/p` |
+| `DiscreteUniform([values])` | at least one value, none repeated | `min(values)` | `max(values)` | when every value is | `mean(values)` |
+
+Each row is everything the grammar knows about a distribution. `Requires` is checked when the config loads, so `Normal(512, 0)` is rejected there. `Lowest` and `Highest` are the smallest and largest value a draw can take. `DiscreteUniform` takes a list and picks each value equally often: `DiscreteUniform([128, 256, 512])`. The definitions are SymPy's, which do not always match the usual ones: check the parameter order here before porting a distribution from another tool. This table is generated from the code and compared against it by a test.
+
+Worked examples, with arithmetic around a draw:
 
 | Expression | Mean |
 | --- | --- |
@@ -49,24 +97,28 @@ No config field accepts an expression yet. Fields are listed here as they are ad
 | `Gamma(2, 100)` | 200 |
 | `Beta(2, 5)` | 0.2857 |
 | `Pareto(100, 3)` | 150 |
+| `Weibull(300, 2)` | 265.9 |
 | `128 + Poisson(64)` | 192 |
 | `Min(LogNormal(6, 0.5), 4096)` | 457 |
 | `Normal(512, 128) + Normal(0, 16)` | 512 |
 
-What the parameters mean in the common cases:
+What the parameters mean where it is easy to get wrong:
 
-- `Normal(mean, std)` and `Uniform(low, high)`: as usual.
-- `LogNormal(mu, sigma)`: the mean and standard deviation of the underlying normal, not of the result. `LogNormal(6, 0.5)` has a mean near `exp(6 + 0.5**2/2)`, about 457.
+- `LogNormal(mean, std)`: the mean and standard deviation of the underlying normal, not of the result. `LogNormal(6, 0.5)` has a mean near `exp(6 + 0.5**2/2)`, about 457.
 - `Exponential(rate)`: a rate, so the mean is `1/rate`. Use `Exponential(1/300)` for a mean of 300.
-- `Gamma(shape, scale)`: mean `shape * scale`.
-- `Pareto(minimum, alpha)`: never below `minimum`; mean `alpha * minimum / (alpha - 1)`.
+- `Weibull(scale, shape)`: scale first.
+- `Pareto(minimum, alpha)`: never below `minimum`. The mean is infinite when `alpha` is 1 or less.
+- `Geometric(p)`: the number of tries up to and including the first success, so the lowest draw is 1.
 
 Each occurrence of a constructor is an independent draw, so `Normal(0, 1) + Normal(0, 1)` adds two separate samples.
 
-Not supported yet:
-
-- Constructors that take a list, such as `DiscreteUniform`: they can't be called from the grammar.
-- `Triangular` and `Weibull`: accepted when the config loads, but they fail when sampled.
+| Rejected expression | Why |
+| --- | --- |
+| `Rayleigh(2)` | `Rayleigh` has no row in the table. |
+| `Normal(512, 0)` | `std` must be greater than 0. |
+| `Uniform(256, 64)` | `left` must be less than `right`. |
+| `Normal(t, 128)` | An argument must be a constant. |
+| `Normal(512)` | `Normal` takes two arguments. |
 
 ## Conditions
 
@@ -187,7 +239,7 @@ A measured term is the system under test, so it cannot be solved like `t`. The t
 
 A field can restrict the values an expression may take, for example a rate must not be negative. A value that can provably fall outside the range is rejected when the config loads; one that can only be caught while sampling raises then. Fields that would rather truncate random draws say so in their own docs.
 
-Some fields need an expression's largest possible value, for example to check that a request fits the model's context. That bound is worked out from the expression: each random variable contributes its support, and `Min`, `Max`, `Abs` and arithmetic combine them. The bound can be wider than the true range but never narrower. An expression with no finite upper bound, such as a bare `Normal(50, 10)`, can be capped with `Min(...)`.
+Some fields need an expression's largest possible value, for example to check that a request fits the model's context. That bound is worked out from the expression: each random variable contributes its support, and `Min`, `Max`, `Abs`, `floor`, `ceiling` and arithmetic combine them. The bound can be wider than the true range but never narrower. An expression with no finite upper bound, such as a bare `Normal(50, 10)`, can be capped with `Min(...)`.
 
 | Expression | Lower | Upper |
 | --- | --- | --- |
@@ -199,3 +251,26 @@ Some fields need an expression's largest possible value, for example to check th
 | `Min(Normal(50, 10), 99)` | -inf | 99 |
 | `Beta(2, 5)` | 0 | 1 |
 | `Abs(Normal(0, 1))` | 0 | inf |
+
+## Whole numbers
+
+A token length or a count takes an expression only when every value it can take is provably a whole number. Nothing is rounded for you. A discrete distribution such as `Poisson` or `Binomial` is whole-numbered already. Wrap a continuous one in `floor(...)` to round down, `ceiling(...)` to round up, or `floor(... + 1/2)` to round to the nearest. Bounds pass through the wrapper, so `floor(Min(Normal(50, 10), 99))` is at most 99.
+
+Each field also has a range, stated in its description and in [cli_flags.md](./cli_flags.md): a token length is at least 1, a count or a duration at least 0, and `insertion_point` within [0, 1]. The expression's bounds must prove it stays in range when the config loads, so an unbounded `floor(Normal(50, 10))` on a token length is rejected with the form that fits, `Max(floor(Normal(50, 10)), 1)`. An expression whose bounds can't be proven, such as a `Piecewise` mixture, is rejected the same way.
+
+| Whole-number expression | Lower | Upper |
+| --- | --- | --- |
+| `Poisson(2)` | 0 | inf |
+| `Min(Poisson(30), 57)` | 0 | 57 |
+| `128 + Binomial(64, 1/2)` | 128 | 192 |
+| `floor(Uniform(64, 256))` | 64 | 256 |
+| `floor(Min(LogNormal(6, 0.5), 4096) + 1/2)` | 0 | 4096 |
+| `floor(Min(Max(Normal(5, 3), 1/2), 20) + 1/2)` | 1 | 20 |
+| `ceiling(Uniform(0, 2))` | 0 | 2 |
+
+| Rejected whole-number expression | Why |
+| --- | --- |
+| `Normal(512, 128)` | Continuous. Write `floor(Normal(512, 128))`. |
+| `Poisson(4) / 2` | Can be 1.5. |
+| `Min(Poisson(30), 57.5)` | The cap is not a whole number. |
+| `Poisson(2) + Uniform(0, 1)` | A continuous term inside the sum. |

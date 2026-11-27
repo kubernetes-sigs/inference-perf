@@ -320,6 +320,12 @@ def _convert_data(conversion: Conversion, ns: argparse.Namespace, present: Set[s
     if not 0.0 <= ratio < 1.0:
         conversion.refuse("--random-range-ratio", f"vllm v0.10.0 requires a range ratio in [0, 1), got {ratio}")
         return None
+    for flag, length in (("--random-input-len", input_len), ("--random-output-len", output_len)):
+        # vllm passes int(len * (1 - ratio)) straight to randint, so it can send a zero length
+        low = int(length * (1 - ratio))
+        if low < 1:
+            conversion.refuse(flag, f"vllm draws lengths down to {low} here, and an inference-perf length is at least 1")
+            return None
     conversion.assume(
         f"--random-input-len {input_len}: vllm subtracts the tokenizer's special tokens before sampling,"
         " inference-perf also counts those tokens inside the input length, so the realized lengths match"

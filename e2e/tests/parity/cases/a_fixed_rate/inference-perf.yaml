@@ -10,18 +10,8 @@ api:
   streaming: true
 data:
   type: random
-  input_distribution:
-    type: fixed
-    min: 128
-    max: 128
-    mean: 128
-    total_count: 64
-  output_distribution:
-    type: fixed
-    min: 64
-    max: 64
-    mean: 64
-    total_count: 64
+  input_distribution: 128
+  output_distribution: 64
 load:
   type: constant
   stages:

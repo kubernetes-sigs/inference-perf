@@ -106,7 +106,6 @@ from inference_perf.config import (
     CustomTokenizerConfig,
     DataConfig,
     DataGenType,
-    Distribution,
     GoodputConfig,
     LoadConfig,
     LoadType,
@@ -1087,7 +1086,7 @@ def _norm(value: Optional[str]) -> str:
     return (value or "").strip().lower().replace("-", "_")
 
 
-def _positive_normal(conversion: Conversion, flag: str, mean: float, stddev: float) -> Distribution:
+def _positive_normal(conversion: Conversion, flag: str, mean: float, stddev: float) -> Union[int, str]:
     upper = int(math.ceil(mean + 6 * stddev))
     conversion.assume(
         f"{flag}: aiperf samples a positive normal with no upper clamp (floor 1); the converted"
@@ -1430,7 +1429,7 @@ def _convert_load(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileF
 
 def _convert_data(
     conversion: Conversion, parsed: _Parsed, facts: AiperfProfileFacts, api_type: Optional[APIType]
-) -> Tuple[Optional[Distribution], Optional[Distribution]]:
+) -> Tuple[Optional[Union[int, str]], Optional[Union[int, str]]]:
     if api_type is not None and api_type is not APIType.Completion:
         # The emitted synthetic twin is data.type random, and
         # RandomDataGenerator serves only the completions path, so the
@@ -1464,6 +1463,11 @@ def _convert_data(
             " length is not expressible",
         )
         return None, None
+
+    for flag, mean, stddev in (("--isl", isl_mean, isl_stddev), ("--osl", osl_mean, osl_stddev)):
+        if stddev <= 0 and int(round(mean)) < 1:
+            conversion.refuse(flag, f"a fixed length of {int(round(mean))}, and an inference-perf length is at least 1")
+            return None, None
 
     conversion.no_equivalent(SYNTHETIC_NOTE)
     conversion.assume(

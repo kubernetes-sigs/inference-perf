@@ -30,9 +30,7 @@ from inference_perf.config import (
     APIConfig,
     APIType,
     DataConfig,
-    Distribution,
     DataGenType,
-    DistributionType,
     EmbeddingsConfig,
     RerankConfig,
 )
@@ -70,12 +68,12 @@ def test_synthetic_datagen_yields_string() -> None:
     api_config = APIConfig(type=APIType.Completion)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
-        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     tokenizer = DummyCustomTokenizer()
 
-    generator = SyntheticDataGenerator(api_config, data_config, tokenizer)
+    generator = SyntheticDataGenerator(api_config, data_config, tokenizer, total_count=5)
 
     # SyntheticDataGenerator uses LazyLoadDataMixin
     data_gen = generator.get_data()
@@ -94,10 +92,10 @@ def test_synthetic_datagen_logs_progress_on_interval(caplog: Any) -> None:
     api_config = APIConfig(type=APIType.Completion)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=20),
-        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=20),
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
-    generator = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer())
+    generator = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer(), total_count=20)
 
     # Drive time forward by the configured interval on every materialization
     # so every call crosses the heartbeat boundary.
@@ -118,10 +116,10 @@ def test_synthetic_datagen_skips_progress_log_within_interval() -> None:
     api_config = APIConfig(type=APIType.Completion)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=20),
-        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=20),
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
-    generator = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer())
+    generator = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer(), total_count=20)
 
     base_time = 1_000_000.0
     fake_time = iter([base_time, base_time + 0.1, base_time + 0.2, base_time + 0.3])
@@ -142,28 +140,14 @@ def test_synthetic_datagen_distribution_types() -> None:
     api_config = APIConfig(type=APIType.Completion)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(
-            type=DistributionType.FIXED,
-            min=10,
-            max=20,
-            mean=15,
-            std_dev=2,
-            total_count=5,
-        ),
-        output_distribution=Distribution(
-            type=DistributionType.FIXED,
-            min=5,
-            max=10,
-            mean=7,
-            std_dev=1,
-            total_count=5,
-        ),
+        input_distribution=15,
+        output_distribution=7,
     )
     tokenizer = DummyCustomTokenizer()
 
-    generator = SyntheticDataGenerator(api_config, data_config, tokenizer)
+    generator = SyntheticDataGenerator(api_config, data_config, tokenizer, total_count=5)
 
-    # With FIXED type, all generated lengths must be exactly equal to the mean
+    # A bare int is the fixed length: every generated length equals it
     assert len(generator.input_lengths) == 5
     for length in generator.input_lengths:
         assert length == 15
@@ -179,11 +163,11 @@ def test_synthetic_datagen_embeddings_batches_without_output_distribution() -> N
     api_config = APIConfig(type=APIType.Embeddings, embeddings=EmbeddingsConfig(batch_size=4))
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
     tokenizer = DummyCustomTokenizer()
 
-    generator = SyntheticDataGenerator(api_config, data_config, tokenizer)
+    generator = SyntheticDataGenerator(api_config, data_config, tokenizer, total_count=5)
 
     assert len(generator.input_lengths) == 5 * 4
     data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=1))
@@ -199,11 +183,11 @@ def test_synthetic_datagen_rerank_batches_without_output_distribution() -> None:
     api_config = APIConfig(type=APIType.Rerank, rerank=RerankConfig(document_count=3))
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
     tokenizer = DummyCustomTokenizer()
 
-    generator = SyntheticDataGenerator(api_config, data_config, tokenizer)
+    generator = SyntheticDataGenerator(api_config, data_config, tokenizer, total_count=5)
 
     assert len(generator.input_lengths) == 5 * 4
     data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=1))
@@ -216,9 +200,9 @@ def test_synthetic_datagen_rerank_default_document_count() -> None:
     api_config = APIConfig(type=APIType.Rerank)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
-    generator = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer())
+    generator = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer(), total_count=5)
 
     # Default document_count is 10, so each request samples 1 + 10 = 11 lengths.
     assert len(generator.input_lengths) == 5 * 11
@@ -230,10 +214,10 @@ def test_synthetic_datagen_rerank_default_document_count() -> None:
 def test_synthetic_datagen_completion_still_requires_output_distribution() -> None:
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
     with pytest.raises(ValueError, match="IODistribution and tokenizer are required"):
-        SyntheticDataGenerator(APIConfig(type=APIType.Completion), data_config, DummyCustomTokenizer())
+        SyntheticDataGenerator(APIConfig(type=APIType.Completion), data_config, DummyCustomTokenizer(), total_count=5)
 
 
 # Fixed 15-token inputs and 7-token outputs with api.type sglang_generate -> a /generate request whose
@@ -241,11 +225,11 @@ def test_synthetic_datagen_completion_still_requires_output_distribution() -> No
 def test_synthetic_datagen_sglang_generate() -> None:
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(type=DistributionType.FIXED, min=10, max=20, mean=15, std_dev=2, total_count=3),
-        output_distribution=Distribution(type=DistributionType.FIXED, min=5, max=10, mean=7, std_dev=1, total_count=3),
+        input_distribution=15,
+        output_distribution=7,
     )
     tokenizer = DummyCustomTokenizer()
-    generator = SyntheticDataGenerator(APIConfig(type=APIType.SGLangGenerate), data_config, tokenizer)
+    generator = SyntheticDataGenerator(APIConfig(type=APIType.SGLangGenerate), data_config, tokenizer, total_count=3)
 
     data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=2))
 
@@ -258,11 +242,11 @@ def test_synthetic_datagen_sglang_generate() -> None:
 def test_synthetic_datagen_sglang_generate_requires_output_distribution() -> None:
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=3),
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
 
     with pytest.raises(ValueError, match="IODistribution and tokenizer are required"):
-        SyntheticDataGenerator(APIConfig(type=APIType.SGLangGenerate), data_config, DummyCustomTokenizer())
+        SyntheticDataGenerator(APIConfig(type=APIType.SGLangGenerate), data_config, DummyCustomTokenizer(), total_count=3)
 
 
 # api.type chat with five synthetic prompts -> get_data() yields lazy requests
@@ -271,11 +255,11 @@ async def test_synthetic_datagen_chat_yields_chat_completion_data() -> None:
     api_config = APIConfig(type=APIType.Chat)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
-        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
+        output_distribution="floor(Min(Max(Normal(7, 1), 5), 10) + 1/2)",
     )
     tokenizer = DummyCustomTokenizer()
-    generator = SyntheticDataGenerator(api_config, data_config, tokenizer)
+    generator = SyntheticDataGenerator(api_config, data_config, tokenizer, total_count=5)
 
     assert APIType.Chat in generator.get_supported_apis()
     assert generator._materialized_count == 0
@@ -309,7 +293,7 @@ async def test_synthetic_datagen_chat_yields_chat_completion_data() -> None:
 def test_synthetic_datagen_chat_requires_output_distribution() -> None:
     data_config = DataConfig(
         type=DataGenType.Synthetic,
-        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        input_distribution="floor(Min(Max(Normal(15, 2), 10), 20) + 1/2)",
     )
 
     with pytest.raises(ValueError, match="IODistribution and tokenizer are required"):
@@ -317,4 +301,5 @@ def test_synthetic_datagen_chat_requires_output_distribution() -> None:
             APIConfig(type=APIType.Chat),
             data_config,
             DummyCustomTokenizer(),
+            total_count=5,
         )

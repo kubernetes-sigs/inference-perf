@@ -18,6 +18,7 @@ named reason from the "Where the map breaks" list, so a future edit cannot
 quietly turn a refusal into a guessed value.
 """
 
+import logging
 from typing import List
 
 import pytest
@@ -26,7 +27,6 @@ from inference_perf.config import (
     APIType,
     ConcurrentLoadStage,
     DataGenType,
-    DistributionType,
     LoadType,
     StandardLoadStage,
 )
@@ -81,12 +81,8 @@ def test_case_a_fixed_rate_converts() -> None:
     assert config.api.type == APIType.Completion
     assert config.api.streaming is True
     assert config.data.type == DataGenType.Random
-    assert config.data.input_distribution is not None
-    assert config.data.input_distribution.type == DistributionType.FIXED
-    assert config.data.input_distribution.mean == 128
-    assert config.data.input_distribution.min == config.data.input_distribution.max == 128
-    assert config.data.output_distribution is not None
-    assert config.data.output_distribution.mean == 64
+    assert config.data.input_distribution == 128
+    assert config.data.output_distribution == 64
     # v0.10.0 draws exponential gaps at burstiness 1.0 and rescales them so
     # the last request lands at exactly --num-prompts / --request-rate
     # (get_request in vllm/benchmarks/serve.py): the constant timer's own
@@ -196,16 +192,23 @@ def test_served_model_name_overrides_payload_model() -> None:
     assert conversion.config.tokenizer.pretrained_model_name_or_path == "base"
 
 
+# The case-a argv (fixed 128-token prompts, 64 output tokens) -> no "distribution
+# block is deprecated" warning: the converter never builds the block it would warn about.
+def test_conversion_logs_no_deprecated_block_warning(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="inference_perf.config.common"):
+        conversion = convert(CASE_A_ARGV + HARNESS_TAIL)
+    assert conversion.config is not None
+    assert "deprecated" not in caplog.text
+
+
 def test_range_ratio_fans_out_to_uniform_bounds() -> None:
     argv = ["--model", "m", "--random-input-len", "100", "--random-output-len", "50", "--random-range-ratio", "0.5"]
     conversion = convert(argv)
     assert conversion.config is not None
     input_dist = conversion.config.data.input_distribution
     output_dist = conversion.config.data.output_distribution
-    assert input_dist is not None and output_dist is not None
-    assert input_dist.type == DistributionType.UNIFORM
-    assert (input_dist.min, input_dist.max) == (50, 150)
-    assert (output_dist.min, output_dist.max) == (25, 75)
+    assert input_dist == "floor(Uniform(50, 150) + 1/2)"
+    assert output_dist == "floor(Uniform(25, 75) + 1/2)"
 
 
 def test_goodput_converts_ms_to_seconds() -> None:
@@ -287,6 +290,21 @@ def test_refusals_carry_named_reasons(argv: List[str], reason_fragment: str) -> 
     assert conversion.config is None
     assert conversion.refusals, f"expected a refusal for {argv}"
     assert any(reason_fragment in refusal for refusal in conversion.refusals), conversion.refusals
+
+
+# --random-output-len 7 at range ratio 0.9 -> refused: vllm draws output lengths from
+# randint(0, 13), and an inference-perf length is at least 1.
+def test_range_ratio_down_to_zero_length_refuses() -> None:
+    conversion = convert(["--model", "m", "--random-output-len", "7", "--random-range-ratio", "0.9"])
+    assert conversion.config is None
+    assert any(refusal.startswith("--random-output-len: vllm draws lengths down to 0") for refusal in conversion.refusals)
+
+
+# --random-input-len 0 -> refused rather than emitting a config that fails to load.
+def test_zero_input_len_refuses() -> None:
+    conversion = convert(["--model", "m", "--random-input-len", "0"])
+    assert conversion.config is None
+    assert any(refusal.startswith("--random-input-len:") for refusal in conversion.refusals)
 
 
 def test_all_refusals_are_collected_not_thrown() -> None:

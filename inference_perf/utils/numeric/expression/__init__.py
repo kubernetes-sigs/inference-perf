@@ -11,7 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .expression import Expression, Predicate
+from .distributions import DISTRIBUTIONS, Distribution, DistributionUse
+from .expression import Expression, ParameterConditionError, Predicate, parse_distribution_use, prove_parameter_conditions
 from .measured import SERIES, SIGNALS, MeasuredState, Observation, Series, Term
 
-__all__ = ["Expression", "Predicate", "MeasuredState", "Observation", "Series", "SERIES", "SIGNALS", "Term"]
+__all__ = [
+    "DISTRIBUTIONS",
+    "Distribution",
+    "DistributionUse",
+    "Expression",
+    "ParameterConditionError",
+    "Predicate",
+    "MeasuredState",
+    "Observation",
+    "Series",
+    "SERIES",
+    "SIGNALS",
+    "Term",
+    "parse_distribution_use",
+    "prove_parameter_conditions",
+]
