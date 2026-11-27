@@ -97,7 +97,8 @@ class openAIModelServerClient(ModelServerClient):
     # Route that answers 200 once the server can take requests. A profile without one
     # probes _READINESS_FALLBACK_ROUTE instead.
     readiness_route: Optional[str] = None
-    # Budget for the readiness wait. Profiles override it when their boot takes longer.
+    # Budget for the readiness wait. Profiles override it when their boot takes longer,
+    # and server.wait_timeout overrides it for one run.
     readiness_timeout_sec: float = 600.0
 
     def __init__(
@@ -118,6 +119,7 @@ class openAIModelServerClient(ModelServerClient):
         request_retries: int = 0,
         request_retry_backoff_sec: float = 0.5,
         wait_for: WaitFor = WaitFor.READY,
+        readiness_timeout_sec: Optional[float] = None,
     ) -> None:
         super().__init__(
             api_config,
@@ -125,6 +127,9 @@ class openAIModelServerClient(ModelServerClient):
             request_retries=request_retries,
             request_retry_backoff_sec=request_retry_backoff_sec,
         )
+        if readiness_timeout_sec is not None:
+            # set on the instance, so the profile's default stays as it is for other clients
+            self.readiness_timeout_sec = readiness_timeout_sec
         self.uri = uri
         self.max_completion_tokens = 30  # default to use when not set at the request level
         self.ignore_eos = ignore_eos

@@ -302,6 +302,7 @@ def main_cli() -> None:
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
                 wait_for=config.server.wait_for,
+                readiness_timeout_sec=config.server.wait_timeout,
             )
             # vllm_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -323,6 +324,7 @@ def main_cli() -> None:
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
                 wait_for=config.server.wait_for,
+                readiness_timeout_sec=config.server.wait_timeout,
             )
             # sglang_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -344,6 +346,7 @@ def main_cli() -> None:
                 key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
                 wait_for=config.server.wait_for,
+                readiness_timeout_sec=config.server.wait_timeout,
             )
             # tgi_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer

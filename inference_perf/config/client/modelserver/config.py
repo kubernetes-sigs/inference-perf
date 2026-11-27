@@ -54,6 +54,12 @@ class ModelServerClientConfig(StrictBaseModel):
         description="What to wait for before the first request: 'ready' (the readiness route answers 200 or 404), "
         "'reachable' (any HTTP response) or 'none'. 'reachable' and 'none' require model_name and skip the /v1/models lookups.",
     )
+    wait_timeout: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Seconds the wait_for wait may last before the run fails. Applies to 'ready' and 'reachable'. "
+        "Defaults to 600.",
+    )
 
     @model_validator(mode="after")
     def check_wait_for(self) -> "ModelServerClientConfig":
