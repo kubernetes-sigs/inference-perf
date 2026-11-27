@@ -62,23 +62,30 @@ def generate_baseline(output_path: Path):
     print("--- Generating baseline coverage from 'main' ---")
     output_path.unlink(missing_ok=True)
     try:
-        # 1. Create a temporary worktree of the main branch
+        # 1. Create a temporary worktree at the merge base with main: the commit the
+        # change forked from, so a branch behind main is not credited or blamed for
+        # commits it does not contain (#724).
         try:
             print("Fetching latest 'main' branch from origin...")
             run_command("git fetch origin main")
-            run_command(f"git worktree add -d {temp_dir} origin/main")
+            merge_base = run_command("git merge-base origin/main HEAD").stdout.strip()
         except subprocess.CalledProcessError:
             print("⚠️ Could not fetch origin/main, falling back to local 'main' branch...")
-            run_command(f"git worktree add -d {temp_dir} main")
+            merge_base = run_command("git merge-base main HEAD").stdout.strip()
+        print(f"Baseline commit (merge base with main): {merge_base}")
+        run_command(f"git worktree add -d {temp_dir} {merge_base}")
 
         # 2. Setup a fresh virtual environment to avoid contamination
         print("Setting up fresh virtualenv for baseline...")
         run_command("python3 -m venv .venv", cwd=temp_dir)
 
         print("Installing dependencies in baseline environment...")
-        # We must make sure we don't accidentally use the parent's __pypackages__ if configured that way,
-        # but standard behavior with .venv presence is to use it.
-        run_command("pdm install --group test --group analysis", cwd=temp_dir)
+        # Same install set as the coverage job in .github/workflows/coverage.yml, so a
+        # test that needs an extra (otel, analysis) runs on both sides instead of
+        # skipping on one of them (#724). We must make sure we don't accidentally use
+        # the parent's __pypackages__ if configured that way, but standard behavior
+        # with .venv presence is to use it.
+        run_command("pdm sync -d -G analysis -G otel", cwd=temp_dir)
 
         # 3. Run tests
         print("Running tests on main branch...")
