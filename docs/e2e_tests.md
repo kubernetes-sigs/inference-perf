@@ -120,7 +120,19 @@ Xeon image if the Linux amd64 runner does not expose `amx_tile`; a skip does not
 verify either streaming mode. On an AMX runner it starts SGLang twice, with and
 without `--incremental-streaming-output`, keeping streaming enabled in both tests.
 
-To test a server you started yourself, first wait for `/health`, then run:
+To reproduce the CI run on a Linux amd64 host with AMX and Docker, run from the
+repository root:
+
+```sh
+bash e2e/sglang_cpu_server.sh
+```
+
+The script starts and stops both servers in sequence, runs the tests, and prints
+the directory containing server and pytest logs. It uses the same CPU launch
+options as CI, including `--disable-overlap-schedule`.
+
+To test a CPU server that is already running, wait for `/health` and run only
+the test:
 
 ```sh
 E2E_SGLANG_BASE_URL=http://127.0.0.1:30000 \
@@ -129,7 +141,7 @@ E2E_SGLANG_STREAM_MODE=cumulative \
   pdm run pytest e2e/tests/test_sglang_generate_live.py
 ```
 
-Use `--stream-interval 1` on the server and repeat with
+Use `--disable-overlap-schedule --stream-interval 1` on the server and repeat with
 `E2E_SGLANG_STREAM_MODE=incremental` after restarting it with
 `--incremental-streaming-output`. Use the same model ID for SGLang and the test
 so the benchmark loads the matching tokenizer. The fake-server test still runs
