@@ -1,0 +1,53 @@
+name: SGLang live e2e
+
+on:
+  schedule:
+    - cron: '37 5 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sglang-live:
+    # The Xeon image is amd64-only. This is not part of the ARM PR merge gate.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check for AMX
+        id: cpu
+        run: |
+          if grep -qw amx_tile /proc/cpuinfo; then
+            echo 'amx=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::notice::Skipping live SGLang: this runner does not expose amx_tile'
+            echo 'Skipped live SGLang: this runner does not expose `amx_tile`.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout code
+        if: steps.cpu.outputs.amx == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up PDM
+        if: steps.cpu.outputs.amx == 'true'
+        uses: pdm-project/setup-pdm@c6081998a653693a457d93c70b8007d979bc6741 # v4
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        if: steps.cpu.outputs.amx == 'true'
+        run: pdm sync -d
+
+      - name: Run against both SGLang stream formats
+        if: steps.cpu.outputs.amx == 'true'
+        shell: bash
+        env:
+          SGLANG_LOG_DIR: ${{ runner.temp }}/sglang-live
+        run: bash e2e/sglang_cpu_server.sh
+
+      - name: Upload SGLang logs
+        if: always() && steps.cpu.outputs.amx == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sglang-live-e2e
+          path: ${{ runner.temp }}/sglang-live/*.log

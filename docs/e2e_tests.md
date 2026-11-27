@@ -11,8 +11,9 @@ test. For the unit-level suites and the live-tier harness internals, see
 | Suite | Server | Where it runs | What it checks |
 |---|---|---|---|
 | Unit tests (`tests/`) | none: mocks and fakes | every push, merge-gated | component logic in isolation |
-| Sim e2e (`e2e/tests/`, everything except `test_vllm_*`) | [llm-d-inference-sim](https://github.com/llm-d/llm-d-inference-sim), plus an ephemeral Prometheus where needed | every push, the `E2E Test on change` workflow, merge-gated | full-pipeline wiring: config in, reports out, metrics collection, exact-count golden token accounting, induced failure modes |
+| Sim/fake e2e (`e2e/tests/`, excluding the live-server tests below) | [llm-d-inference-sim](https://github.com/llm-d/llm-d-inference-sim), plus an ephemeral Prometheus where needed, or a fake server | every push, the `E2E Test on change` workflow, merge-gated | full-pipeline wiring: config in, reports out, metrics collection, exact-count golden token accounting, induced failure modes |
 | Live-oracle slice (`e2e/tests/test_vllm_*.py`) | a real vLLM server in CPU mode | same workflow, one pass per release listed in `e2e/vllm_releases.txt`, merge-gated | server-sourced oracles: the real tokenizer, `usage` accounting, `/metrics` exposition |
+| SGLang native `/generate` (`e2e/tests/test_sglang_generate_live.py`) | a real SGLang Xeon server in CPU mode | scheduled or manual on Linux amd64 with AMX; not merge-gated | cumulative and incremental streams, reported token counts and normalized text |
 | Live tier (`tests/optional/`) | real model servers on a GPU-backed Kubernetes cluster | hand-run before merging risky changes; scheduled runs are planned (#641, #643) | everything "passes against the sim" cannot prove: real weights, real accelerators, real serving stacks |
 
 **The placement principle, from the v0.7.0 test matrix (#606): fake the
@@ -110,6 +111,41 @@ The slice runs serially on purpose (`test:e2e:live` does not use xdist), and
 under `test:e2e`'s parallel run all vLLM modules share one
 `xdist_group(name="vllm-cpu-server")` so tests that difference the server's
 cumulative `/metrics` counters get exclusive server access.
+
+## Running the SGLang live test
+
+The [SGLang live e2e workflow](../.github/workflows/sglang_live_e2e.yml) runs on a
+schedule and can also be dispatched from Actions. It skips before pulling the
+Xeon image if the Linux amd64 runner does not expose `amx_tile`; a skip does not
+verify either streaming mode. On an AMX runner it starts SGLang twice, with and
+without `--incremental-streaming-output`, keeping streaming enabled in both tests.
+
+To reproduce the CI run on a Linux amd64 host with AMX and Docker, run from the
+repository root:
+
+```sh
+bash e2e/sglang_cpu_server.sh
+```
+
+The script starts and stops both servers in sequence, runs the tests, and prints
+the directory containing server and pytest logs. It uses the same CPU launch
+options as CI, including `--disable-overlap-schedule`.
+
+To test a CPU server that is already running, wait for `/health` and run only
+the test:
+
+```sh
+E2E_SGLANG_BASE_URL=http://127.0.0.1:30000 \
+E2E_SGLANG_MODEL=Qwen/Qwen2.5-0.5B-Instruct \
+E2E_SGLANG_STREAM_MODE=cumulative \
+  pdm run pytest e2e/tests/test_sglang_generate_live.py
+```
+
+Use `--disable-overlap-schedule --stream-interval 1` on the server and repeat with
+`E2E_SGLANG_STREAM_MODE=incremental` after restarting it with
+`--incremental-streaming-output`. Use the same model ID for SGLang and the test
+so the benchmark loads the matching tokenizer. The fake-server test still runs
+without this environment and checks timing against controlled send timestamps.
 
 ## Running the live tier
 
