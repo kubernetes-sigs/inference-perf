@@ -34,7 +34,7 @@ from collections import Counter
 from dataclasses import dataclass, field, replace as dc_replace
 from enum import Enum
 from multiprocessing.managers import SyncManager
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from aiohttp import ClientResponse
 from PIL import Image as PILImage
@@ -62,9 +62,9 @@ from inference_perf.apis.chat import ChatMessage, reasoning_field
 from inference_perf.apis.image_parts import base64_size, image_bytes, is_image_part, to_otel_part
 from inference_perf.apis.response_errors import EmptyResponseError, InBandError, in_band_error
 from inference_perf.payloads import Image, Images, RequestMetrics, Text
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.streaming_parser import finish_reason_of, parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
-from inference_perf.config.datagen.replay import BadToolCallHandling, ToolChoiceMode
+from inference_perf.config.datagen.replay import BadToolCallHandling, ToolChoiceMode, TruncatedOutputHandling
 from inference_perf.datagen.base import LazyLoadDataMixin, SessionGenerator
 from inference_perf.datagen.replay.replay_graph_types import InputSegment, ReplayGraph
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -199,6 +199,32 @@ def _detect_bad_tool_calls(
 # --- end bad_tool_call_handling --------------------------------------------
 
 
+# Finish reasons meaning the server stopped because it reached the requested
+# output length. OpenAI says `length`; Anthropic's Messages API says
+# `max_tokens`. Both can leave a reasoning turn with no visible answer.
+TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def _is_length_stopped(finish_reason: Optional[str]) -> bool:
+    """True when the server stopped this turn at the output limit."""
+    return finish_reason is not None and finish_reason in TRUNCATED_FINISH_REASONS
+
+
+def _live_turn_lacks_recorded_shape(
+    live_message: Mapping[str, object],
+    recorded_message: Mapping[str, object],
+) -> bool:
+    """True when a length-stopped live turn did not produce what the recording did.
+
+    Two shapes are worth repairing (#1072): the recording made a tool call and
+    the live turn made none, or the recording had visible text and the live
+    turn has no content. A partial answer is still an answer and is kept.
+    """
+    if recorded_message.get("tool_calls"):
+        return not live_message.get("tool_calls")
+    return bool(recorded_message.get("content")) and not live_message.get("content")
+
+
 class SessionFailureCause(str, Enum):
     """Stable cause code for a session replay failure.
 
@@ -216,6 +242,7 @@ class SessionFailureCause(str, Enum):
     PREDECESSOR_WAIT_FAILED = "predecessor_wait_failed"
     RECORDED_FALLBACK_MALFORMED = "recorded_fallback_malformed"
     SUBSTITUTION_TOOL_CALL_EXPECTED = "substitution_tool_call_expected"
+    TRUNCATED_OUTPUT = "truncated_output"
     REQUEST_FAILED = "request_failed"
     UNKNOWN = "unknown"
 
@@ -233,6 +260,10 @@ class SessionInferenceInfo(InferenceInfo):
 
     output_text: Optional[str] = None
     output_message: Optional[Dict[str, Any]] = None
+    # The server's stop reason for this turn, kept beside the message so
+    # substitution can tell a length-stopped turn from a complete one. It is
+    # registry metadata only and never becomes a field on the wire message.
+    finish_reason: Optional[str] = None
 
     def __init__(
         self,
@@ -352,6 +383,7 @@ class EventOutputRegistry:
     def __init__(self) -> None:
         self._event_output_text: Dict[str, str] = {}
         self._event_output_message: Dict[str, Dict[str, Any]] = {}
+        self._event_finish_reason: Dict[str, str] = {}
         self._event_input_messages: Dict[str, Any] = {}
         self._event_signals: Dict[str, asyncio.Event] = {}
         self._failed_event_ids: Set[str] = set()
@@ -362,6 +394,7 @@ class EventOutputRegistry:
         output_text: str,
         messages: List[Any],
         output_message: Optional[Dict[str, Any]] = None,
+        finish_reason: Optional[str] = None,
     ) -> None:
         if event_id in self._event_output_text:
             raise ValueError(
@@ -373,6 +406,8 @@ class EventOutputRegistry:
         self._event_input_messages[event_id] = list(messages) if messages else []
         if output_message is not None:
             self._event_output_message[event_id] = output_message
+        if finish_reason is not None:
+            self._event_finish_reason[event_id] = finish_reason
 
         if event_id in self._event_signals:
             self._event_signals[event_id].set()
@@ -383,6 +418,9 @@ class EventOutputRegistry:
 
     def get_message_by_event_id(self, event_id: str) -> Optional[Dict[str, Any]]:
         return self._event_output_message.get(event_id)
+
+    def get_finish_reason_by_event_id(self, event_id: str) -> Optional[str]:
+        return self._event_finish_reason.get(event_id)
 
     def get_messages_by_event_id(self, event_id: str) -> Optional[List[Any]]:
         return self._event_input_messages.get(event_id)
@@ -476,6 +514,11 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     # `none` (default) is byte-identical to upstream main; `use_recorded`
     # substitutes the recorded assistant message at the affected slot.
     bad_tool_call_handling: BadToolCallHandling = BadToolCallHandling.NONE
+    # Handling for a predecessor turn stopped at the output limit before it
+    # produced the recorded shape (no text, or no tool call). `none` (default)
+    # keeps upstream behavior; `use_recorded` substitutes the recorded message;
+    # `fail` fails the successor with the `truncated_output` cause.
+    truncated_output_handling: TruncatedOutputHandling = TruncatedOutputHandling.NONE
     # When True, output/shared segments are NOT substituted with live predecessor
     # output; the recorded assistant messages are sent as-is. Predecessor wait
     # timing is still enforced.
@@ -709,6 +752,39 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             ]
             logger.debug(f"Event {self.event_id} substitution/injection complete, {len(self.messages)} messages")
 
+    def _can_substitute_recorded(
+        self,
+        source_event_id: str,
+        recorded_message: Mapping[str, object],
+        detected: str,
+    ) -> bool:
+        """Check the recorded assistant message can replace this slot's live one.
+
+        Shared by the malformed-tool-call and truncated-output paths. Records
+        the substitution telemetry and returns True when the recorded message
+        is usable; fails the event and returns False when the recording is
+        itself malformed, since there is then no clean fallback to send. The
+        caller appends the message on True.
+        """
+        tool_calls = recorded_message.get("tool_calls")
+        bad_recorded = _detect_bad_tool_calls(tool_calls) if isinstance(tool_calls, list) else []
+        if bad_recorded:
+            logger.error(
+                f"Event {self.event_id}: {detected} from {source_event_id}, "
+                f"but the recorded fallback is also malformed "
+                f"(errors={[e for (_, _, e) in bad_recorded]}). Failing event."
+            )
+            self._substitution_failure_reason = f"recorded fallback for {source_event_id} is also malformed"
+            self._substitution_failure_cause = SessionFailureCause.RECORDED_FALLBACK_MALFORMED
+            self.registry.record_failure(self.event_id)
+            return False
+        # Tag the predecessor event_id for telemetry. Set semantics dedupe
+        # across DAG fan-out.
+        session_id = self._extract_session_id()
+        pred_event_id = source_event_id.split(":", 1)[1] if ":" in source_event_id else source_event_id
+        self.worker_tracker.record_recorded_substitution(session_id, pred_event_id)
+        return True
+
     def _build_messages_with_substitution(self) -> List[Dict[str, Any]]:
         # NOTE: when input_segments is empty, the original_messages list is returned
         # by reference (not copied). Callers must not mutate the returned list.
@@ -755,7 +831,19 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 if seg.source_event_id:
                     actual_message = self.registry.get_message_by_event_id(seg.source_event_id)
                     if actual_message:
+                        recorded_message = seg_msgs[0]
                         live_tool_calls = actual_message.get("tool_calls")
+                        finish_reason = self.registry.get_finish_reason_by_event_id(seg.source_event_id)
+                        # A length-stopped turn that never produced the recorded
+                        # shape (no text, or no tool call) is not an answer. Left
+                        # in place it becomes the successor's history: a recorded
+                        # role:tool result answering a call that was never made, or
+                        # an empty assistant turn (#1072).
+                        truncated = (
+                            self.truncated_output_handling != TruncatedOutputHandling.NONE
+                            and _is_length_stopped(finish_reason)
+                            and _live_turn_lacks_recorded_shape(actual_message, recorded_message)
+                        )
                         # Inline detection: if the live model produced tool_calls
                         # AND bad_tool_call_handling is enabled, check each
                         # `arguments` for valid JSON. Any failure means the next
@@ -765,7 +853,39 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                             if (self.bad_tool_call_handling == BadToolCallHandling.USE_RECORDED and live_tool_calls)
                             else []
                         )
-                        if bad_live:
+                        if truncated:
+                            if self.truncated_output_handling == TruncatedOutputHandling.FAIL:
+                                logger.warning(
+                                    f"Event {self.event_id}: predecessor {seg.source_event_id} was "
+                                    f"length-stopped (finish_reason={finish_reason}) without the "
+                                    f"recorded shape; failing event as configured."
+                                )
+                                self._substitution_failure_reason = (
+                                    f"live output for {seg.source_event_id} was truncated at "
+                                    f"finish_reason={finish_reason} without the recorded shape"
+                                )
+                                self._substitution_failure_cause = SessionFailureCause.TRUNCATED_OUTPUT
+                                self.registry.record_failure(self.event_id)
+                                return result  # partial; caller checks is_event_failed
+                            # Substitute the recorded assistant message. Its
+                            # `tool_call_id` flows naturally into the recorded
+                            # role:tool successors that follow in
+                            # `original_messages`, so no pending_id_rewrites entry
+                            # is needed for this position.
+                            if not self._can_substitute_recorded(
+                                seg.source_event_id,
+                                recorded_message,
+                                f"truncated_output_handling=use_recorded detected a length-stopped "
+                                f"turn (finish_reason={finish_reason})",
+                            ):
+                                return result  # partial; caller checks is_event_failed
+                            result.append(recorded_message)
+                            logger.warning(
+                                f"Event {self.event_id}: substituted RECORDED message for "
+                                f"{seg.source_event_id} (live turn was length-stopped with no "
+                                f"recorded shape; recorded structurally clean)"
+                            )
+                        elif bad_live:
                             # Substitute the recorded assistant message at this slot.
                             # The recorded message is `seg_msgs[0]` (output segments
                             # cover exactly one message — the assistant turn). Its
@@ -774,34 +894,17 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                             # entry is appended to pending_id_rewrites for this
                             # position. The wire body for the demoted slot is
                             # structurally identical to a healthy replay.
-                            recorded_message = seg_msgs[0]
-                            recorded_tool_calls = recorded_message.get("tool_calls") or []
                             # Defensive: if the recorded trace ALSO has malformed
                             # tool_calls at this slot, we have no clean fallback.
                             # Hard-fail the event; EventFailedError will cascade
                             # to downstream events that await this one. Parallel
                             # DAG branches continue.
-                            bad_recorded = _detect_bad_tool_calls(recorded_tool_calls)
-                            if bad_recorded:
-                                logger.error(
-                                    f"Event {self.event_id}: bad_tool_call_handling=use_recorded "
-                                    f"detected malformed live tool_calls from {seg.source_event_id}, "
-                                    f"but the recorded fallback is also malformed "
-                                    f"(errors={[e for (_, _, e) in bad_recorded]}). Failing event."
-                                )
-                                self._substitution_failure_reason = (
-                                    f"recorded fallback for {seg.source_event_id} is also malformed"
-                                )
-                                self._substitution_failure_cause = SessionFailureCause.RECORDED_FALLBACK_MALFORMED
-                                self.registry.record_failure(self.event_id)
+                            if not self._can_substitute_recorded(
+                                seg.source_event_id,
+                                recorded_message,
+                                f"bad_tool_call_handling=use_recorded detected malformed live tool_calls ({len(bad_live)})",
+                            ):
                                 return result  # partial; caller checks is_event_failed
-                            # Tag the predecessor event_id for telemetry. Set
-                            # semantics dedupe across DAG fan-out.
-                            session_id = self._extract_session_id()
-                            pred_event_id = (
-                                seg.source_event_id.split(":", 1)[1] if ":" in seg.source_event_id else seg.source_event_id
-                            )
-                            self.worker_tracker.record_recorded_substitution(session_id, pred_event_id)
                             result.append(recorded_message)
                             logger.warning(
                                 f"Event {self.event_id}: substituted RECORDED message for "
@@ -815,7 +918,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                                 # recorded_tool_calls is the pre-substitution assistant message's
                                 # own tool_calls — the same recorded order the successor's role:tool
                                 # messages were emitted against — used to pair by function name.
-                                recorded_tool_calls = seg_msgs[0].get("tool_calls") or []
+                                recorded_tool_calls = recorded_message.get("tool_calls") or []
                                 recorded_tool_names = [tc.get("function", {}).get("name") for tc in recorded_tool_calls]
                                 pending_id_rewrites.append((len(result), live_tool_calls, recorded_tool_names))
                             result.append(actual_message)
@@ -1024,7 +1127,14 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         output_text = info.output_text if isinstance(info, SessionInferenceInfo) else ""
         output_text = output_text or ""
         output_message = info.output_message if isinstance(info, SessionInferenceInfo) else None
-        self.registry.record(self.event_id, output_text, self.messages, output_message=output_message)
+        finish_reason = info.finish_reason if isinstance(info, SessionInferenceInfo) else None
+        self.registry.record(
+            self.event_id,
+            output_text,
+            self.messages,
+            output_message=output_message,
+            finish_reason=finish_reason,
+        )
         logger.debug(
             f"calling registry record for event {self.event_id} num input messages {len(self.messages)} and output: {output_text}"
         )
@@ -1158,6 +1268,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
                 output_message=streaming_output_message,
+                finish_reason=parsed.finish_reason,
                 extra_info={"raw_response": raw_content},
             )
             actual_tool_names = [call["function"]["name"] for call in parsed.tool_calls]
@@ -1173,8 +1284,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             tool_calls = None
             text_content = ""
             reasoning_content = ""
+            finish_reason: Optional[str] = None
             if choices:
                 msg_dict = choices[0].get("message", {})
+                finish_reason = finish_reason_of(data)
                 text_content = msg_dict.get("content", "") or ""
                 tool_calls = msg_dict.get("tool_calls")
                 reasoning_content = msg_dict.get("reasoning") or msg_dict.get("reasoning_content")
@@ -1208,6 +1321,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
                 output_message=output_message,
+                finish_reason=finish_reason,
             )
             actual_tool_names = [tc["function"]["name"] for tc in chat_tool_calls(output_message)]
 
@@ -1333,8 +1447,10 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
         # The streaming branch always builds a message dict; the unary branch gets None back from
         # parse_anthropic_content when the response carries no content blocks.
         output_message: Optional[Dict[str, Any]]
+        finish_reason: Optional[str] = None
         if config.streaming:
             parsed, output_message = await parse_anthropic_stream_response(response)
+            finish_reason = parsed.finish_reason
             output_text, server_usage = parsed.output_text, parsed.server_usage
             input_tokens = (server_usage or {}).get("input_tokens")
             output_len = count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
@@ -1369,6 +1485,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             if (error_payload := in_band_error(data)) is not None:
                 raise InBandError(error_payload)
             usage = data.get("usage") or {}
+            finish_reason = finish_reason_of(data)
             output_text, output_message = parse_anthropic_content(data.get("content"))
             input_tokens = usage.get("input_tokens")
             output_len = count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
@@ -1397,6 +1514,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             lora_adapter=lora_adapter,
             output_text=output_text or None,
             output_message=output_message,
+            finish_reason=finish_reason,
             extra_info=base_info.extra_info,
         )
         self.on_completion(info)
@@ -2221,6 +2339,9 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             bad_tool_call_handling=self.replay_config.bad_tool_call_handling
             if self.replay_config
             else BadToolCallHandling.NONE,
+            truncated_output_handling=self.replay_config.truncated_output_handling
+            if self.replay_config
+            else TruncatedOutputHandling.NONE,
             disable_output_substitution=getattr(self.replay_config, "disable_output_substitution", False)
             if self.replay_config
             else False,
