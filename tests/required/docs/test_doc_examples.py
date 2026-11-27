@@ -18,6 +18,8 @@ every markdown file under docs/ and checks two kinds of example:
 
 - a table whose header row is registered in ``CHECKS``: every row must
   recompute to what it claims, or, for a "Rejected ..." table, be rejected;
+- the supported-distributions table: it must equal the table generated from
+  the code's distribution rows, cell for cell and in order;
 - a ```yaml block on the line after ``<!-- checked-example -->``: it must load
   through the config model named by its single top-level key.
 
@@ -37,7 +39,8 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from inference_perf.config import DataConfig, LoadConfig
-from inference_perf.utils.numeric.expression import SERIES, SIGNALS, Expression, Predicate
+from inference_perf.utils.numeric.expression import DISTRIBUTIONS, SERIES, SIGNALS, Expression, Predicate
+from inference_perf.utils.numeric.expression.distributions import DOCS_HEADER, docs_rows
 from inference_perf.utils.numeric.expression.measured import AGGREGATES, WINDOWS
 
 DOCS = sorted((Path(__file__).resolve().parents[3] / "docs").glob("*.md"))
@@ -223,3 +226,23 @@ def test_every_checked_table_is_present() -> None:
 def test_measured_name_tables_are_complete(header: Tuple[str, ...], names: set[str]) -> None:
     documented = {_code(row[0]) for doc in DOCS for h, rows in _tables(doc.read_text()) if h == header for row in rows}
     assert documented == names, f"undocumented: {names - documented}, unknown: {documented - names}"
+
+
+# The supported-distributions table in the docs, found by its header, as a list of rows of cells.
+def _distribution_tables() -> List[List[Row]]:
+    return [rows for doc in DOCS for header, rows in _tables(doc.read_text()) if header == DOCS_HEADER]
+
+
+# The docs hold one supported-distributions table and it equals the one generated from the code, cell for cell
+# and in order, e.g. the row '`Exponential(rate)` | `rate > 0` | `0` | `inf` | no | `1/rate`'.
+def test_distribution_table_matches_the_code() -> None:
+    tables = _distribution_tables()
+    assert len(tables) == 1, f"expected one table with header {DOCS_HEADER}, found {len(tables)}"
+    assert tables[0] == [list(row) for row in docs_rows()]
+
+
+# Every row of the code's table is named in the docs table and nothing else is: the first cell of each docs row,
+# e.g. 'Normal(mean, std)', is the signature of exactly one row.
+def test_distribution_table_lists_every_row() -> None:
+    documented = [_code(row[0]) for rows in _distribution_tables() for row in rows]
+    assert sorted(documented) == sorted(row.signature for row in DISTRIBUTIONS.values())
