@@ -8,10 +8,11 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 
 ## Where expressions are accepted
 
-No config field accepts an expression yet. Fields are listed here as they are added, each linking to its own docs.
+Fields are listed here as they are added, each linking to its own docs.
 
 | Field | `t` | Random | Rule |
 | --- | --- | --- | --- |
+| `concurrency_level` (concurrent stages) | Yes | No | [Piecewise linear](#piecewise-linear-expressions), rounded down, at least 1, bounded. See [Concurrency Expressions](config.md#concurrency-expressions). |
 
 ## Grammar
 
@@ -34,10 +35,26 @@ No config field accepts an expression yet. Fields are listed here as they are ad
 
 ## Random variables
 
-> [!IMPORTANT]
-> The table below lists common distributions only. **Any constructor in SymPy's [`sympy.stats`](https://docs.sympy.org/latest/modules/stats.html) module works, about 75 in all, and SymPy's documentation is the reference for the full set and for every parameter.** Call a constructor without SymPy's leading name argument: `Normal(512, 128)`, not `Normal("x", 512, 128)`.
->
-> Parameters follow SymPy's conventions, which do not always match the usual ones. Check SymPy's docs for any distribution not listed here.
+A random variable is one of the distributions in the table below. Any other distribution is rejected when the config loads, with an error that names it and lists these. Call one with constant arguments in the order shown: `Normal(512, 128)`.
+
+| Distribution | Requires | Lowest | Highest | Whole numbers | Mean |
+| --- | --- | --- | --- | --- | --- |
+| `Normal(mean, std)` | `std > 0` | `-inf` | `inf` | no | `mean` |
+| `LogNormal(mean, std)` | `std > 0` | `0` | `inf` | no | `exp(mean + std**2/2)` |
+| `Exponential(rate)` | `rate > 0` | `0` | `inf` | no | `1/rate` |
+| `Gamma(shape, scale)` | `shape > 0`, `scale > 0` | `0` | `inf` | no | `scale*shape` |
+| `Uniform(left, right)` | `left < right` | `left` | `right` | no | `left/2 + right/2` |
+| `Beta(alpha, beta)` | `alpha > 0`, `beta > 0` | `0` | `1` | no | `alpha/(alpha + beta)` |
+| `Weibull(scale, shape)` | `scale > 0`, `shape > 0` | `0` | `inf` | no | `scale*gamma(1 + 1/shape)` |
+| `Pareto(minimum, alpha)` | `minimum > 0`, `alpha > 0` | `minimum` | `inf` | no | `alpha*minimum/(alpha - 1)` when `alpha > 1`, otherwise infinite |
+| `Poisson(mean)` | `mean > 0` | `0` | `inf` | yes | `mean` |
+| `Binomial(n, p)` | `n >= 0`, `floor(n) == n`, `p >= 0`, `p <= 1` | `0` | `n` | yes | `n*p` |
+| `Geometric(p)` | `p > 0`, `p <= 1` | `1` | `inf` | yes | `1/p` |
+| `DiscreteUniform([values])` | at least one value, none repeated | `min(values)` | `max(values)` | when every value is | `mean(values)` |
+
+Each row is everything the grammar knows about a distribution. `Requires` is checked when the config loads, so `Normal(512, 0)` is rejected there. `Lowest` and `Highest` are the smallest and largest value a draw can take. `DiscreteUniform` takes a list and picks each value equally often: `DiscreteUniform([128, 256, 512])`. The definitions are SymPy's, which do not always match the usual ones: check the parameter order here before porting a distribution from another tool. This table is generated from the code and compared against it by a test.
+
+Worked examples, with arithmetic around a draw:
 
 | Expression | Mean |
 | --- | --- |
@@ -49,24 +66,28 @@ No config field accepts an expression yet. Fields are listed here as they are ad
 | `Gamma(2, 100)` | 200 |
 | `Beta(2, 5)` | 0.2857 |
 | `Pareto(100, 3)` | 150 |
+| `Weibull(300, 2)` | 265.9 |
 | `128 + Poisson(64)` | 192 |
 | `Min(LogNormal(6, 0.5), 4096)` | 457 |
 | `Normal(512, 128) + Normal(0, 16)` | 512 |
 
-What the parameters mean in the common cases:
+What the parameters mean where it is easy to get wrong:
 
-- `Normal(mean, std)` and `Uniform(low, high)`: as usual.
-- `LogNormal(mu, sigma)`: the mean and standard deviation of the underlying normal, not of the result. `LogNormal(6, 0.5)` has a mean near `exp(6 + 0.5**2/2)`, about 457.
+- `LogNormal(mean, std)`: the mean and standard deviation of the underlying normal, not of the result. `LogNormal(6, 0.5)` has a mean near `exp(6 + 0.5**2/2)`, about 457.
 - `Exponential(rate)`: a rate, so the mean is `1/rate`. Use `Exponential(1/300)` for a mean of 300.
-- `Gamma(shape, scale)`: mean `shape * scale`.
-- `Pareto(minimum, alpha)`: never below `minimum`; mean `alpha * minimum / (alpha - 1)`.
+- `Weibull(scale, shape)`: scale first.
+- `Pareto(minimum, alpha)`: never below `minimum`. The mean is infinite when `alpha` is 1 or less.
+- `Geometric(p)`: the number of tries up to and including the first success, so the lowest draw is 1.
 
 Each occurrence of a constructor is an independent draw, so `Normal(0, 1) + Normal(0, 1)` adds two separate samples.
 
-Not supported yet:
-
-- Constructors that take a list, such as `DiscreteUniform`: they can't be called from the grammar.
-- `Triangular` and `Weibull`: accepted when the config loads, but they fail when sampled.
+| Rejected expression | Why |
+| --- | --- |
+| `Rayleigh(2)` | `Rayleigh` has no row in the table. |
+| `Normal(512, 0)` | `std` must be greater than 0. |
+| `Uniform(256, 64)` | `left` must be less than `right`. |
+| `Normal(t, 128)` | An argument must be a constant. |
+| `Normal(512)` | `Normal` takes two arguments. |
 
 ## Conditions
 
@@ -183,11 +204,38 @@ A measured term is the system under test, so it cannot be solved like `t`. The t
 | `(t >= 600) \| (avg_over_time(ttft[10s] @ start()) > 2)` | `@` takes a stage second. |
 | `(t >= 600) or (avg_over_last(ttft, 50) > 2)` | Combine comparisons with `\|` and `&`, not `or` and `and`. |
 
+## Piecewise-linear expressions
+
+Some fields hold a set point that the load generator changes at exact times, such as a concurrency level. They accept only piecewise-linear expressions: a straight line in `t` between breakpoints. The expression is split into its lines when the config loads, so every breakpoint, and every time the value crosses a threshold, is exact.
+
+Allowed: numbers, `t`, `+ -`, multiplying or dividing by a constant, `Min`, `Max`, `Abs`, `Heaviside`, and `Piecewise` whose conditions compare lines in `t`. A product of two terms in `t` is allowed where one of them is constant, so `t*Heaviside(t - 30)` (0, then `t`) is fine. Functions of constants are fine anywhere: `sqrt(2)*t` is a line.
+
+| Piecewise-linear expression | Breakpoints |
+| --- | --- |
+| `12` | 0 |
+| `Min(1 + t/6, 64)` | 0, 378 |
+| `Piecewise((8, t < 60), (32, True))` | 0, 60 |
+| `Max(1, Min(t/2, 120 - t/2))` | 0, 2, 120, 238 |
+| `4 * (1 + Heaviside(t - 30) + Heaviside(t - 60))` | 0, 30, 60 |
+| `64 - Abs(t - 60)` | 0, 60 |
+| `t*Heaviside(t - 30)` | 0, 30 |
+
+At a breakpoint the new line applies. What an expression does at the single instant of a jump (`Heaviside(0)` is 1/2) is ignored.
+
+| Rejected piecewise-linear expression | Why |
+| --- | --- |
+| `t**2` | A power of `t` bends the line. |
+| `1/t` | So does dividing by `t`. |
+| `sin(t)` | `sin` is not allowed on `t`. |
+| `t*Min(t, 5)` | `t` times `t` before `t = 5`. |
+| `Normal(10, 2)` | Random. A set point must be the same on every run. |
+| `Piecewise((8, t < 60))` | No value from `t = 60` on. End with a `True` branch. |
+
 ## Value ranges
 
 A field can restrict the values an expression may take, for example a rate must not be negative. A value that can provably fall outside the range is rejected when the config loads; one that can only be caught while sampling raises then. Fields that would rather truncate random draws say so in their own docs.
 
-Some fields need an expression's largest possible value, for example to check that a request fits the model's context. That bound is worked out from the expression: each random variable contributes its support, and `Min`, `Max`, `Abs` and arithmetic combine them. The bound can be wider than the true range but never narrower. An expression with no finite upper bound, such as a bare `Normal(50, 10)`, can be capped with `Min(...)`.
+Some fields need an expression's largest possible value, for example to check that a request fits the model's context. That bound is worked out from the expression: each random variable contributes its support, and `Min`, `Max`, `Abs`, `floor`, `ceiling` and arithmetic combine them. The bound can be wider than the true range but never narrower. An expression with no finite upper bound, such as a bare `Normal(50, 10)`, can be capped with `Min(...)`.
 
 | Expression | Lower | Upper |
 | --- | --- | --- |

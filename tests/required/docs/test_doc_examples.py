@@ -18,6 +18,8 @@ every markdown file under docs/ and checks two kinds of example:
 
 - a table whose header row is registered in ``CHECKS``: every row must
   recompute to what it claims, or, for a "Rejected ..." table, be rejected;
+- the supported-distributions table: it must equal the table generated from
+  the code's distribution rows, cell for cell and in order;
 - a ```yaml block on the line after ``<!-- checked-example -->``: it must load
   through the config model named by its single top-level key.
 
@@ -37,7 +39,9 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from inference_perf.config import DataConfig, LoadConfig
-from inference_perf.utils.numeric.expression import SERIES, SIGNALS, Expression, Predicate
+from inference_perf.utils.numeric.concurrency_schedule import ConcurrencySchedule
+from inference_perf.utils.numeric.expression import DISTRIBUTIONS, SERIES, SIGNALS, Expression, PiecewiseLinear, Predicate
+from inference_perf.utils.numeric.expression.distributions import DOCS_HEADER, docs_rows
 from inference_perf.utils.numeric.expression.measured import AGGREGATES, WINDOWS
 
 DOCS = sorted((Path(__file__).resolve().parents[3] / "docs").glob("*.md"))
@@ -141,6 +145,19 @@ def _check_window(row: Row) -> None:
     assert WINDOWS[_code(row[0]).removeprefix("_over_")] == row[1], row
 
 
+# Breakpoints must equal the claimed comma-separated times. Input: '`Min(1 + t/6, 64)`', '0, 378'.
+def _check_breakpoints(row: Row) -> None:
+    expr = _code(row[0])
+    starts = [round(s.start, 6) for s in PiecewiseLinear(expr).segments]
+    assert starts == [float(x) for x in row[1].split(",")], f"{expr}: breakpoints {starts}"
+
+
+# A concurrency level must start and peak at the claimed levels. Input: '`Min(1 + t/6, 64)`', '1', '64'.
+def _check_concurrency(row: Row) -> None:
+    schedule = ConcurrencySchedule(_code(row[0]))
+    assert (schedule.initial, schedule.peak) == (int(row[1]), int(row[2])), f"{row[0]}: {schedule.initial}, {schedule.peak}"
+
+
 # Each example in a rejected table must raise when built the way its table says.
 def _rejects(build: Callable[[str], object]) -> Callable[[Row], None]:
     def check(row: Row) -> None:
@@ -162,6 +179,10 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Window", "Selects"): _check_window,
     ("Rejected expression", "Why"): _rejects(Expression),
     ("Rejected condition", "Why"): _rejects(Predicate),
+    ("Piecewise-linear expression", "Breakpoints"): _check_breakpoints,
+    ("Rejected piecewise-linear expression", "Why"): _rejects(PiecewiseLinear),
+    ("Concurrency level", "Start", "Peak"): _check_concurrency,
+    ("Rejected concurrency level", "Why"): _rejects(ConcurrencySchedule),
 }
 
 MODELS: Dict[str, Type[BaseModel]] = {"load": LoadConfig, "data": DataConfig}
@@ -223,3 +244,23 @@ def test_every_checked_table_is_present() -> None:
 def test_measured_name_tables_are_complete(header: Tuple[str, ...], names: set[str]) -> None:
     documented = {_code(row[0]) for doc in DOCS for h, rows in _tables(doc.read_text()) if h == header for row in rows}
     assert documented == names, f"undocumented: {names - documented}, unknown: {documented - names}"
+
+
+# The supported-distributions table in the docs, found by its header, as a list of rows of cells.
+def _distribution_tables() -> List[List[Row]]:
+    return [rows for doc in DOCS for header, rows in _tables(doc.read_text()) if header == DOCS_HEADER]
+
+
+# The docs hold one supported-distributions table and it equals the one generated from the code, cell for cell
+# and in order, e.g. the row '`Exponential(rate)` | `rate > 0` | `0` | `inf` | no | `1/rate`'.
+def test_distribution_table_matches_the_code() -> None:
+    tables = _distribution_tables()
+    assert len(tables) == 1, f"expected one table with header {DOCS_HEADER}, found {len(tables)}"
+    assert tables[0] == [list(row) for row in docs_rows()]
+
+
+# Every row of the code's table is named in the docs table and nothing else is: the first cell of each docs row,
+# e.g. 'Normal(mean, std)', is the signature of exactly one row.
+def test_distribution_table_lists_every_row() -> None:
+    documented = [_code(row[0]) for rows in _distribution_tables() for row in rows]
+    assert sorted(documented) == sorted(row.signature for row in DISTRIBUTIONS.values())
