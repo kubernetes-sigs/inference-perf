@@ -79,7 +79,7 @@ from inference_perf.datagen.replay.replay_graph_session_datagen import (
     ReplayGraphSessionGeneratorBase,
 )
 from inference_perf.datagen.replay.otel_trace_utils import _compile_filter
-from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
+from inference_perf.datagen.replay.replay_graph_builder import (
     DEPENDENCY_TYPE,
     RawCall,
     build_graph,
