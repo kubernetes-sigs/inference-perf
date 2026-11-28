@@ -555,6 +555,30 @@ async def test_child_request_identity_keeps_parent_metrics(
     assert metric.request_session_id == "trace0_parent::sa:alpha:s0"
 
 
+# A request sent from the workload record "claude:A:round_1" reports that id on
+# its metric, also when the request itself fails. A request that came from no
+# record reports none.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("record_id", ["claude:A:round_1", None])
+async def test_a_request_metric_names_the_record_it_was_sent_from(
+    mock_client: MagicMock, mock_data: MagicMock, record_id: Optional[str]
+) -> None:
+    mock_data.record_id = record_id
+    mock_data.headers = None
+
+    session = openAIModelServerClientSession(mock_client)
+    await session.session.close()
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.record_id == record_id
+
+
 @pytest.mark.asyncio
 async def test_user_session_id_used_when_session_id_is_none(mock_client: MagicMock, mock_data: MagicMock) -> None:
     mock_data.session_id = None
