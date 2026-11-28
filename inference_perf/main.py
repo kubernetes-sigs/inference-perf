@@ -55,6 +55,8 @@ from inference_perf.datagen import (
     ConversationReplayDataGenerator,
     VisionArenaDataGenerator,
 )
+from inference_perf.datagen.base import SessionGenerator
+from inference_perf.datagen.workload import Trace, WorkloadRequestDataGenerator, WorkloadSessionGenerator, load_trace
 from inference_perf.client.modelserver import (
     ModelServerClient,
     vLLMModelServerClient,
@@ -381,7 +383,14 @@ def main_cli() -> None:
     # Must be created before workers are started, and from the same context as
     # the workers so its proxies are usable across the worker boundary.
     mp_manager = None
-    if (
+    # A replayed trace is read first: whether it needs the session runtime
+    # (and so the manager) depends on what its format records, not its type.
+    trace: Optional[Trace] = None
+    if config.data and config.data.type == DataGenType.WorkloadReplay and config.data.workload is not None:
+        trace = load_trace(
+            config.data.workload.format, config.data.workload, config.load.base_seed or 42, config.data.workload.block_size
+        )
+    needs_session_runtime = (
         config.data
         and config.data.type
         in (
@@ -390,8 +399,8 @@ def main_cli() -> None:
             DataGenType.TraceLabTraceReplay,
             DataGenType.SyntheticAgentic,
         )
-        and config.load.num_workers > 0
-    ):
+    ) or (trace is not None and trace.records_sessions)
+    if needs_session_runtime and config.load.num_workers > 0:
         mp_manager = MP_CONTEXT.Manager()
 
     datagen: BaseGenerator
@@ -410,6 +419,7 @@ def main_cli() -> None:
                 DataGenType.TraceLabTraceReplay,
                 DataGenType.SyntheticAgentic,
                 DataGenType.ConversationReplay,
+                DataGenType.WorkloadReplay,
             }
         ):
             if tokenizer is None:
@@ -489,6 +499,21 @@ def main_cli() -> None:
             datagen = SyntheticAgenticDataGenerator(
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
             )
+        elif config.data.type == DataGenType.WorkloadReplay:
+            if trace is not None and trace.records_sessions:
+                datagen = WorkloadSessionGenerator(
+                    config.api,
+                    config.data,
+                    tokenizer,
+                    mp_manager,
+                    config.load.base_seed,
+                    num_workers=config.load.num_workers,
+                    trace=trace,
+                )
+            else:
+                datagen = WorkloadRequestDataGenerator(
+                    config.api, config.data, tokenizer, seed=config.load.base_seed, trace=trace
+                )
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:
@@ -496,12 +521,7 @@ def main_cli() -> None:
 
     # Create session metrics collector only for session-replay workflows
     session_metrics_collector = None
-    if config.data and config.data.type in (
-        DataGenType.OTelTraceReplay,
-        DataGenType.WekaTraceReplay,
-        DataGenType.TraceLabTraceReplay,
-        DataGenType.SyntheticAgentic,
-    ):
+    if isinstance(datagen, SessionGenerator):
         session_metrics_collector = SessionMetricsCollector()
 
     # Define LoadGenerator with session metrics collector
