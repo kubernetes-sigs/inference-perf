@@ -37,8 +37,8 @@ Key structural properties of the new graph format:
 import json
 from typing import Any, Dict, List, Optional
 
+from inference_perf.datagen.replay.replay_graph_builder import build_graph
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
-    build_graph,
     build_raw_calls,
     extract_messages,
     is_llm_span,
