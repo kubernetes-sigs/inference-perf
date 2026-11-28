@@ -37,18 +37,80 @@ class VllmBenchFacts:
     """Verified behavior of ``vllm bench serve`` at one tag."""
 
     version: str
-    # --endpoint-type choices (ASYNC_REQUEST_FUNCS keys at this tag).
+    # Request-function choices (ASYNC_REQUEST_FUNCS keys at this tag).
     endpoint_types: FrozenSet[str] = frozenset({"vllm", "openai", "openai-chat", "openai-audio"})
-    # Sampling params injected into every request when the user passes none.
-    implicit_temperature: float = 0.0
+    # The flag that picks the request function. v0.10.0 also parses --backend
+    # and never reads it; vllm removed --endpoint-type in v0.11.1.
+    endpoint_type_flag: str = "--endpoint-type"
+    # Sampling params sent when the user passes none: temperature on every
+    # request (None leaves it to the server), repetition_penalty on
+    # completions requests.
+    implicit_temperature: Optional[float] = 0.0
     implicit_repetition_penalty: float = 1.0
-    # benchmark() sends this many untunable test requests before the run.
+    # benchmark() sends this many test requests before the run by default.
     warmup_requests: int = 1
+    # --ready-check-timeout-sec and --num-warmups exist and change that count.
+    warmup_tunable: bool = False
     # --random-range-ratio r draws lengths uniform on [len*(1-r), len*(1+r)];
     # False would mean the pre-v0.8.4 reading (0 = anywhere from 0 to len).
     range_ratio_symmetric: bool = True
+    # --random-range-ratio also takes '{"input": a, "output": b}'.
+    range_ratio_per_direction: bool = False
+    # Bounds are floor/ceil with the output floor at 1, not int() truncation.
+    range_bounds_floor_ceil: bool = False
     # Streaming is hardcoded in the request payload and cannot be disabled.
     stream_forced: bool = True
+    # main_async sets ignore_eos for the random dataset on OpenAI-compatible
+    # backends, with or without --ignore-eos.
+    ignore_eos_forced_for_random: bool = False
+    # --model may be left out; vllm then reads the first /v1/models entry.
+    model_optional: bool = False
+    # --tokenizer-mode auto picks mistral_common for Mistral models.
+    tokenizer_auto_mistral: bool = False
+    # An IPv6 --host is bracketed in the URL (join_host_port).
+    ipv6_host_bracketed: bool = False
+    # main_async rejects --max-concurrency 0 or below.
+    max_concurrency_positive: bool = False
+    # --burstiness inf spaces requests exactly 1/rate apart.
+    burstiness_inf_even: bool = False
+    # Random prompts are re-cut to the server's /tokenize count when the
+    # server's tokenizer disagrees with the local one.
+    server_prompt_alignment: bool = False
+
+
+_VLLM_V0_32_0 = VllmBenchFacts(
+    version="v0.32.0",
+    endpoint_types=frozenset(
+        {
+            "vllm",
+            "openai",
+            "openai-chat",
+            "openai-responses",
+            "openai-audio",
+            "openai-embeddings",
+            "openai-embeddings-chat",
+            "openai-embeddings-clip",
+            "openai-embeddings-vlm2vec",
+            "infinity-embeddings",
+            "infinity-embeddings-clip",
+            "vllm-pooling",
+            "vllm-rerank",
+        }
+    ),
+    endpoint_type_flag="--backend",
+    implicit_temperature=None,
+    warmup_requests=0,
+    warmup_tunable=True,
+    range_ratio_per_direction=True,
+    range_bounds_floor_ceil=True,
+    ignore_eos_forced_for_random=True,
+    model_optional=True,
+    tokenizer_auto_mistral=True,
+    ipv6_host_bracketed=True,
+    max_concurrency_positive=True,
+    burstiness_inf_even=True,
+    server_prompt_alignment=True,
+)
 
 
 @dataclass(frozen=True)
@@ -128,11 +190,12 @@ class AiperfProfileFacts:
 # The verified vllm pin. e2e/utils/vllm_bench.py pins the same tag for the
 # parity harness; tests/required/tools/test_convert_parity.py asserts the two
 # stay equal whenever that file is present in the tree.
-VLLM_BENCH_PINNED = "v0.10.0"
+VLLM_BENCH_PINNED = "v0.32.0"
 AIPERF_PROFILE_PINNED = "v0.12.0"
 
 VLLM_BENCH_VERSIONS: Dict[str, VllmBenchFacts] = {
-    VLLM_BENCH_PINNED: VllmBenchFacts(version=VLLM_BENCH_PINNED),
+    "v0.10.0": VllmBenchFacts(version="v0.10.0"),
+    VLLM_BENCH_PINNED: _VLLM_V0_32_0,
 }
 
 AIPERF_PROFILE_VERSIONS: Dict[str, AiperfProfileFacts] = {
