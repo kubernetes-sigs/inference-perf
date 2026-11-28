@@ -33,7 +33,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.clean_tool_schemas` | boolean | Rewrite tool parameter schemas into the subset strict servers accept (e.g. vLLM with xgrammar): drop keys such as 'default' and 'title', collapse anyOf/oneOf, coerce object-valued additionalProperties to false. Changes the prompt; use only when the server rejects the recorded schemas. |
 | `--api.return_token_ids` | boolean | Ask the server for the token ids of each streamed chunk (vLLM 'return_token_ids') and build the token timeline from them instead of re-tokenizing the text. Makes the client/server token count check exact, tool turns included. Streaming chat and completion only. A server that does not know the field may reject the request. |
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
-| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, tracelab_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |
+| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, tracelab_trace_replay, conversation_replay, visionarena, synthetic_agentic, workload_replay) | Dataset or generator used to produce prompts. |
 | `--data.path` | str | Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type. |
 | `--data.load_timeout` | float | Deadline in seconds for Hub dataset initialization, including startup row reads. Does not bound later streaming iteration. Null disables the deadline. |
 | `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |
@@ -388,6 +388,35 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.synthetic_agentic.context_compaction.target_tokens.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.synthetic_agentic.context_compaction.target_tokens.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.synthetic_agentic.context_compaction.target_tokens.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
+| `--data.workload.use_static_model` | boolean | Use a single static model for all requests |
+| `--data.workload.static_model_name` | str | Static model name (required if use_static_model=True) |
+| `--data.workload.model_mapping` | JSON | Map recorded model names to target models |
+| `--data.workload.default_max_tokens` | int | Default max_tokens if not specified in trace |
+| `--data.workload.override_tool_call_max_tokens` | boolean | Add tiered headroom to recorded tool-call max_tokens |
+| `--data.workload.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
+| `--data.workload.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
+| `--data.workload.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
+| `--data.workload.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |
+| `--data.workload.predecessor_wait_timeout_sec` | float | Seconds to wait for predecessor events to complete before failing. 0 waits indefinitely; use with care because a genuinely stuck predecessor will then never time out and successors will wait forever. |
+| `--data.workload.include_errors` | boolean | Include spans with error status |
+| `--data.workload.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
+| `--data.workload.bad_tool_call_handling` | Enum (none, use_recorded) | How to handle tool_calls whose function.arguments is not valid JSON. none (default): no mitigation, bytes propagate and vLLM may return HTTP 400 on the next turn. use_recorded: discard the live response and substitute the recorded assistant message at the affected slot; the recorded tool_call_id flows into the recorded role:tool successor unchanged. |
+| `--data.workload.trace_directory` | str | Directory containing the trace files |
+| `--data.workload.trace_files` | JSON | List of paths to specific trace files |
+| `--data.workload.hf_dataset_path` | JSON | HuggingFace dataset path. Can be:
+  - String: 'username/dataset-name'
+  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}
+Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
+| `--data.workload.filter` | str | Lambda expression to filter sessions. Applied uniformly to all data sources.
+Receives the session's summary as a dict: its session_id plus the aggregates
+the format derives (for TraceLab: max_tokens, total_tokens and num_rounds).
+Example: "lambda x: x['max_tokens'] < 262144"
+Security: Filter expressions use eval() and should only contain trusted input. |
+| `--data.workload.num_dataset_entries` | int | Max number of sessions to load, applied to every source. Reading stops once this many sessions pass the filter. Null loads every session. |
+| `--data.workload.trace_idle_gap_cap_seconds` | float | Cap recorded gaps between the requests of a session, in seconds. Null or <= 0 leaves them to max_wait_ms alone. |
+| `--data.workload.ignore_trace_delays` | boolean | Ignore delays from original trace and run back-to-back. Overrides trace_idle_gap_cap_seconds: every inter-round gap is set to zero. |
+| `--data.workload.format` | str | Trace format: a built-in name, or package.module:Class for a format of your own. |
+| `--data.workload.block_size` | int | Tokens per prefix block for formats that record or mint block ids. Defaults to the format's own block size. |
 | `--data.use_chat_template` | boolean | Wrap each generated prompt in the tokenizer's chat template as a single user turn before sending it on the completions path, reproducing the request shape of harnesses that benchmark with chat templating enabled. The input length distribution targets the fully templated prompt, so the server-side prefill token count still matches the configured length. Only supported by the 'random' type; setting it with any other type is a config error. |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay, batch) | Load pattern used to schedule requests. |
 | `--load.interval` | float | Seconds to wait between stages. |
