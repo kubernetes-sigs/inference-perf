@@ -329,11 +329,20 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         mock_data.preferred_worker_id = -1
         self.mock_datagen.get_data.return_value = repeat(mock_data)
 
+        # The dispatch loop sleeps until the clock passes each request's time.
+        # Advance a fake clock on every sleep so that loop ends.
+        clock = [0.0]
+
+        async def advance_clock(delay: float) -> None:
+            clock[0] += delay
+
+        mock_sleep.side_effect = advance_clock
+
         # Patch LazyLoadDataMixin to just return the object
         with (
             patch("inference_perf.loadgen.load_generator.LazyLoadDataMixin.get_request", return_value=mock_data),
             patch("inference_perf.loadgen.load_generator.TaskGroup") as MockTaskGroup,
-            patch("inference_perf.loadgen.load_generator.time.perf_counter", return_value=0.0),
+            patch("inference_perf.loadgen.load_generator.time.perf_counter", side_effect=lambda: clock[0]),
         ):
             mock_tg = MagicMock()
             MockTaskGroup.return_value.__aenter__.return_value = mock_tg

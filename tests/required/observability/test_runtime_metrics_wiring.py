@@ -281,10 +281,19 @@ class TestLoadGeneratorStageObserver(unittest.IsolatedAsyncioTestCase):
         timer = MagicMock()
         timer.start_timer.return_value = iter([0.1, 0.2])
 
+        # The dispatch loop sleeps until the clock passes each request's time.
+        # Advance a fake clock on every sleep so that loop ends.
+        clock = [0.0]
+
+        async def advance_clock(delay: float) -> None:
+            clock[0] += delay
+
+        _sleep.side_effect = advance_clock
+
         self.assertEqual(loadgen.in_flight_requests(), 0)
         with (
             patch("inference_perf.loadgen.load_generator.LazyLoadDataMixin.get_request", side_effect=lambda dg, d: d),
-            patch("inference_perf.loadgen.load_generator.time.perf_counter", return_value=0.0),
+            patch("inference_perf.loadgen.load_generator.time.perf_counter", side_effect=lambda: clock[0]),
             patch.object(loadgen, "get_timer", return_value=timer),
         ):
             await loadgen.run(client)

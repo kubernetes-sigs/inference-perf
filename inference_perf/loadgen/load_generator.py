@@ -413,13 +413,13 @@ class Worker(PreloadedForkServerProcess):
                 ) -> None:
                     inflight = False
                     try:
-                        current_time = time.perf_counter()
-                        sleep_time = request_time - current_time
-                        if sleep_time > 0:
+                        # uvloop timers have millisecond resolution and can fire up to about 1 ms early.
+                        # Re-check the clock after every wake so a request never leaves before request_time.
+                        while (sleep_time := request_time - time.perf_counter()) > 0:
                             try:
                                 await wait_for(draining.wait(), timeout=sleep_time)
                             except (AsyncioTimeoutError, TimeoutError):
-                                pass
+                                continue
                             else:
                                 logger.debug(f"[Worker {self.id}] stage tearing down, dropping scheduled-ahead request")
                                 return
@@ -2151,14 +2151,14 @@ class LoadGenerator:
                     logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
                     stage_status = StageStatus.FAILED
                     break
-                now = time.perf_counter()
                 if time_index < end_time + _STAGE_END_TOLERANCE:
                     if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                         logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
                         stage_status = StageStatus.FAILED
                         break
-                    if time_index > now:
-                        await sleep(time_index - time.perf_counter())
+                    # A timer may wake before its deadline, so sleep again until time_index has passed.
+                    while (remaining := time_index - time.perf_counter()) > 0:
+                        await sleep(remaining)
                     tg.create_task(
                         self._track_in_flight(client.process_request(request_data, stage_id, time_index, lora_adapter))
                     )
